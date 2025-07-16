@@ -158,7 +158,21 @@ class DatabaseSchema:
                         %(area_km2)s, %(metadata)s)
                 RETURNING id
             """, {
-                **species_data,
+                'species_name': species_data['species_name'],
+                'scientific_name': species_data.get('scientific_name', ''),
+                'genus': species_data.get('genus', ''),
+                'family': species_data.get('family', ''),
+                'order_name': species_data.get('order_name', ''),
+                'class_name': species_data.get('class_name', ''),
+                'phylum': species_data.get('phylum', ''),
+                'kingdom': species_data.get('kingdom', ''),
+                'category': species_data.get('category', 'unknown'),
+                'range_type': species_data.get('range_type', 'distribution'),
+                'geometry_wkt': species_data['geometry_wkt'],
+                'source_file': species_data['source_file'],
+                'source_dataset': species_data.get('source_dataset', ''),
+                'confidence': species_data.get('confidence', 1.0),
+                'area_km2': species_data.get('area_km2'),
                 'metadata': json.dumps(species_data.get('metadata', {}))
             })
             range_id = cursor.fetchone()['id']
