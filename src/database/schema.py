@@ -145,6 +145,22 @@ class DatabaseSchema:
     # Species Operations (for species/ and processors/ modules)
     def store_species_range(self, species_data: Dict[str, Any]) -> str:
         """Store species range data from .gpkg file."""
+        # Set defaults for optional fields
+        species_data_with_defaults = {
+            'scientific_name': None,
+            'genus': None,
+            'family': None,
+            'order_name': None,
+            'class_name': None,
+            'phylum': None,
+            'kingdom': None,
+            'range_type': 'unknown',
+            'source_dataset': None,
+            'confidence': None,
+            'area_km2': None,
+            **species_data
+        }
+        
         with db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO species_ranges 
@@ -158,11 +174,11 @@ class DatabaseSchema:
                         %(area_km2)s, %(metadata)s)
                 RETURNING id
             """, {
-                **species_data,
-                'metadata': json.dumps(species_data.get('metadata', {}))
+                **species_data_with_defaults,
+                'metadata': json.dumps(species_data_with_defaults.get('metadata', {}))
             })
             range_id = cursor.fetchone()['id']
-            logger.debug(f"✅ Stored species range: {species_data['species_name']} ({range_id})")
+            logger.debug(f"✅ Stored species range: {species_data_with_defaults['species_name']} ({range_id})")
             return range_id
     
     def store_species_intersections_batch(self, intersections: List[Dict]) -> int:

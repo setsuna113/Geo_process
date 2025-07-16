@@ -98,6 +98,7 @@ class DatabaseManager:
     def get_cursor(self, dict_cursor: bool = True, autocommit: bool = False):
         """Get cursor with automatic connection and transaction management."""
         with self.get_connection() as conn:
+            old_autocommit = conn.autocommit
             if autocommit:
                 conn.autocommit = True
             
@@ -118,7 +119,7 @@ class DatabaseManager:
             finally:
                 cursor.close()
                 if autocommit:
-                    conn.autocommit = False
+                    conn.autocommit = old_autocommit
     
     def execute_sql_file(self, sql_file: Path):
         """Execute SQL file with proper parsing of dollar-quoted strings."""
@@ -161,9 +162,11 @@ class DatabaseManager:
                                 errors.append((i+1, str(e)))
                         
                         if errors:
-                            logger.warning(f"⚠️  {len(errors)}/{len(statements)} statements failed")
+                            logger.error(f"❌ {len(errors)}/{len(statements)} statements failed")
                             for stmt_num, error in errors:
-                                logger.warning(f"  #{stmt_num}: {error}")
+                                logger.error(f"  #{stmt_num}: {error}")
+                            # Raise exception to enforce errors
+                            raise Exception(f"SQL execution failed: {len(errors)} statements had errors")
                         
                         logger.info(f"✅ Schema execution completed: {sql_file}")
                             
