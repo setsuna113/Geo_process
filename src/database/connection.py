@@ -1,0 +1,223 @@
+"""Database connection management with pooling and error handling."""
+
+import psycopg2
+import psycopg2.pool
+from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
+from pathlib import Path
+from ..config import config
+import logging
+import time
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+class DatabaseManager:
+    """Database connection manager with connection pooling and retry logic."""
+    
+    def __init__(self):
+        self.pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+        self.connection_attempts = 0
+        self.max_connection_attempts = 3
+        self._create_pool()
+    
+    def _create_pool(self):
+        """Create connection pool with retry logic."""
+        while self.connection_attempts < self.max_connection_attempts:
+            try:
+                self.connection_attempts += 1
+                
+                # Get database configuration
+                db_config = config.database.copy()
+                
+                # Create connection pool
+                self.pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1,
+                    maxconn=20,  # Increased for concurrent operations
+                    host=db_config['host'],
+                    port=db_config['port'],
+                    database=db_config['database'],
+                    user=db_config['user'],
+                    password=db_config['password'],
+                    connect_timeout=30,
+                    application_name='biodiversity_pipeline'
+                )
+                
+                logger.info(f"✅ Database connection pool created (attempt {self.connection_attempts})")
+                logger.info(f"   Host: {db_config['host']}:{db_config['port']}")
+                logger.info(f"   Database: {db_config['database']}")
+                logger.info(f"   User: {db_config['user']}")
+                
+                # Test the connection
+                if self.test_connection():
+                    return
+                else:
+                    raise Exception("Connection test failed")
+                    
+            except Exception as e:
+                logger.error(f"❌ Connection attempt {self.connection_attempts} failed: {e}")
+                
+                if self.connection_attempts < self.max_connection_attempts:
+                    wait_time = 2 ** self.connection_attempts  # Exponential backoff
+                    logger.info(f"   Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error("❌ Max connection attempts reached. Database unavailable.")
+                    raise
+    
+    @contextmanager
+    def get_connection(self):
+        """Get connection from pool with automatic cleanup."""
+        if not self.pool:
+            raise Exception("Database pool not initialized")
+        
+        conn = None
+        try:
+            conn = self.pool.getconn()
+            if conn.closed:
+                # Connection is closed, get a new one
+                self.pool.putconn(conn, close=True)
+                conn = self.pool.getconn()
+            
+            yield conn
+            
+        except psycopg2.OperationalError as e:
+            logger.error(f"Database operational error: {e}")
+            if conn:
+                self.pool.putconn(conn, close=True)  # Close bad connection
+            raise
+        except Exception as e:
+            logger.error(f"Database error: {e}")
+            raise
+        finally:
+            if conn:
+                self.pool.putconn(conn)
+    
+    @contextmanager
+    def get_cursor(self, dict_cursor: bool = True, autocommit: bool = False):
+        """Get cursor with automatic connection and transaction management."""
+        with self.get_connection() as conn:
+            if autocommit:
+                conn.autocommit = True
+            
+            cursor_factory = RealDictCursor if dict_cursor else None
+            cursor = conn.cursor(cursor_factory=cursor_factory)
+            
+            try:
+                yield cursor
+                
+                if not autocommit:
+                    conn.commit()
+                    
+            except Exception as e:
+                if not autocommit:
+                    conn.rollback()
+                logger.error(f"Database transaction failed: {e}")
+                raise
+            finally:
+                cursor.close()
+                if autocommit:
+                    conn.autocommit = False
+    
+    def execute_sql_file(self, sql_file: Path):
+        """Execute SQL file with proper error handling."""
+        if not sql_file.exists():
+            raise FileNotFoundError(f"SQL file not found: {sql_file}")
+        
+        try:
+            with open(sql_file, 'r', encoding='utf-8') as f:
+                sql_content = f.read()
+            
+            # Split on empty lines to handle multiple statements
+            statements = [stmt.strip() for stmt in sql_content.split('\n\n') if stmt.strip()]
+            
+            with self.get_cursor(dict_cursor=False) as cursor:
+                for i, statement in enumerate(statements):
+                    if statement and not statement.startswith('--'):
+                        try:
+                            cursor.execute(statement)
+                            logger.debug(f"Executed statement {i+1}/{len(statements)}")
+                        except Exception as e:
+                            logger.error(f"Failed to execute statement {i+1}: {e}")
+                            logger.error(f"Statement: {statement[:200]}...")
+                            raise
+            
+            logger.info(f"✅ Successfully executed SQL file: {sql_file}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to execute SQL file {sql_file}: {e}")
+            raise
+    
+    def test_connection(self) -> bool:
+        """Test database connection and PostGIS availability."""
+        try:
+            with self.get_cursor() as cursor:
+                # Test basic connection
+                cursor.execute("SELECT version();")
+                pg_version = cursor.fetchone()['version']
+                
+                # Test PostGIS
+                cursor.execute("SELECT PostGIS_Version();")
+                postgis_version = cursor.fetchone()['postgis_version']
+                
+                logger.info(f"✅ PostgreSQL: {pg_version.split(',')[0]}")
+                logger.info(f"✅ PostGIS: {postgis_version}")
+                
+                # Test basic spatial operation
+                cursor.execute("SELECT ST_AsText(ST_Point(0, 0)) as point;")
+                test_point = cursor.fetchone()['point']
+                logger.debug(f"✅ Spatial test: {test_point}")
+                
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ Database connection test failed: {e}")
+            return False
+    
+    def get_connection_info(self) -> dict:
+        """Get current connection pool information."""
+        if not self.pool:
+            return {"status": "disconnected"}
+        
+        try:
+            with self.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        current_database() as database,
+                        current_user as user,
+                        inet_server_addr() as host,
+                        inet_server_port() as port,
+                        version() as version
+                """)
+                info = cursor.fetchone()
+                
+                # Add pool information
+                info.update({
+                    "pool_min_conn": self.pool.minconn,
+                    "pool_max_conn": self.pool.maxconn,
+                    "status": "connected"
+                })
+                
+                return info
+                
+        except Exception as e:
+            logger.error(f"Failed to get connection info: {e}")
+            return {"status": "error", "error": str(e)}
+    
+    def close_pool(self):
+        """Close all connections in the pool."""
+        if self.pool:
+            try:
+                self.pool.closeall()
+                logger.info("✅ Database connection pool closed")
+            except Exception as e:
+                logger.error(f"Error closing connection pool: {e}")
+            finally:
+                self.pool = None
+    
+    def __del__(self):
+        """Cleanup on destruction."""
+        self.close_pool()
+
+# Global database manager instance
+db = DatabaseManager()
