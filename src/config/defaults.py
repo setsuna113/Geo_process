@@ -15,7 +15,7 @@ DATABASE = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 5432)),
     'database': os.getenv('DB_NAME', 'geoprocess_db'),
-    'user': os.getenv('DB_USER', os.getenv('USER')),
+    'user': os.getenv('DB_USER', 'jason'),
     'password': os.getenv('DB_PASSWORD', '123456'),
 }
 
