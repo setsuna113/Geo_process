@@ -178,12 +178,8 @@ class DatabaseManager:
             # If we hit a semicolon and we're not in a dollar-quoted string
             if char == ';' and not in_dollar_quote:
                 stmt = current_statement.strip()
-                # Skip empty statements or pure comment statements
-                if stmt:
-                    # Check if statement contains actual SQL (not just comments)
-                    sql_lines = [line.strip() for line in stmt.split("\n") if line.strip() and not line.strip().startswith("--")]
-                    if sql_lines:  # Has actual SQL content
-                        statements.append(stmt)
+                if stmt and not stmt.startswith('--'):  # Skip empty statements and comments
+                    statements.append(stmt)
                 current_statement = ""
             
             i += 1
@@ -215,13 +211,7 @@ class DatabaseManager:
                         errors = []
                         
                         for i, statement in enumerate(statements):
-                            if not statement:
-                                continue
-                            
-                            # Check if statement contains actual SQL (not just comments)
-                            sql_lines = [line.strip() for line in statement.split("\n") 
-                                       if line.strip() and not line.strip().startswith("--")]
-                            if not sql_lines:  # Skip statements that are only comments
+                            if not statement or statement.strip().startswith('--'):
                                 continue
                             
                             try:
@@ -229,27 +219,9 @@ class DatabaseManager:
                                 logger.debug(f"✅ Executed statement {i+1}/{len(statements)}")
                                 
                             except Exception as e:
-                                # Skip common recoverable SQL errors
-                                error_str = str(e).lower()
-                                statement_upper = statement.upper()
-                                
-                                # Skip "already exists" errors for schema objects
-                                if "already exists" in error_str:
-                                    if any(keyword in statement_upper for keyword in 
-                                          ["CREATE INDEX", "CREATE TABLE", "CREATE VIEW", 
-                                           "CREATE FUNCTION", "CREATE TRIGGER"]):
-                                        logger.debug(f"⚠️ Skipping existing object: {e}")
-                                        continue
-                                
                                 # Skip CREATE INDEX on non-existent tables 
-
-                                # Skip CREATE VIEW on non-existent tables (views can be created later)
-                                if ("does not exist" in error_str and
-                                    "CREATE VIEW" in statement_upper):
-                                    logger.debug(f"⚠️ Skipping view: {e}")
-                                    continue
-                                if ("does not exist" in error_str and 
-                                    "CREATE INDEX" in statement_upper):
+                                if ("does not exist" in str(e) and 
+                                    "CREATE INDEX" in statement.upper()):
                                     logger.debug(f"⚠️ Skipping index: {e}")
                                     continue
                                 
@@ -348,13 +320,15 @@ class DatabaseManager:
             if hasattr(self, 'pool') and self.pool:
                 # During interpreter shutdown, logging might not work
                 try:
-                    # Try to close pool normally first
-                    if self.pool:
+                    self.close_pool()
+                except Exception:
+                    # If close_pool fails (e.g., logger is already gone),
+                    # try to at least close the connections
+                    try:
                         self.pool.closeall()
                         self.pool = None
-                except Exception:
-                    # Silently ignore any errors during cleanup
-                    pass
+                    except Exception:
+                        pass
         except Exception:
             # Silently ignore any errors during cleanup
             pass

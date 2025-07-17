@@ -202,7 +202,7 @@ SELECT
     COUNT(DISTINCT f.cell_id) as cells_with_features,
     COUNT(DISTINCT cd.cell_id) as cells_with_climate,
     ROUND(
-        (COUNT(DISTINCT gc.id)::FLOAT / NULLIF(g.total_cells, 0)) * 100, 2
+        ((COUNT(DISTINCT gc.id)::FLOAT / NULLIF(g.total_cells, 0)) * 100)::NUMERIC, 2
     ) as generation_progress_percent
 FROM grids g
 LEFT JOIN grid_cells gc ON g.id = gc.grid_id
@@ -223,7 +223,7 @@ SELECT
     COUNT(pj.id) as total_jobs,
     COUNT(CASE WHEN pj.status = 'completed' THEN 1 END) as completed_jobs,
     COUNT(CASE WHEN pj.status = 'failed' THEN 1 END) as failed_jobs,
-    ROUND(AVG(pj.progress_percent), 2) as avg_progress
+    ROUND(AVG(pj.progress_percent)::NUMERIC, 2) as avg_progress
 FROM experiments e
 LEFT JOIN processing_jobs pj ON e.id = pj.parent_experiment_id
 GROUP BY e.id, e.name, e.description, e.status, e.started_at, e.completed_at;
