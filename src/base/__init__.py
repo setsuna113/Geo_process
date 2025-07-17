@@ -1,0 +1,117 @@
+"""
+Base classes for the biodiversity geoprocessing framework.
+
+This module provides abstract base classes that define the interfaces and common
+functionality for all processing components in the pipeline:
+
+- BaseProcessor: Memory-tracked, batch-capable processing with progress callbacks
+- BaseGrid: Spatial grid generation and cell management  
+- BaseFeature: Feature extraction from spatial data
+- BaseDataset: Data loading and validation with filtering capabilities
+
+Key Features:
+- ✅ Abstract method enforcement for consistent interfaces
+- ✅ Memory tracking and performance monitoring
+- ✅ Progress callbacks for async/parallel processing
+- ✅ Database integration ready
+- ✅ Configuration-driven with defaults
+- ✅ Type-safe with full annotations
+- ✅ Extensible through inheritance
+
+Compatibility:
+- ✅ Core module integration (registry, builder)
+- ✅ Config module integration (settings, defaults)
+- ✅ Database module integration (persistence)
+- ✅ Multiprocessing ready (stateless design)
+- ✅ Future module expansion ready
+
+Usage Example:
+    from src.base import BaseProcessor
+    from src.core import component_registry
+    
+    @component_registry.processors.register_decorator()
+    class SpeciesProcessor(BaseProcessor):
+        def process_single(self, species_data):
+            # Process single species record
+            return processed_result
+            
+        def validate_input(self, item):
+            return True, None
+            
+    processor = SpeciesProcessor(batch_size=1000, max_workers=4)
+    results = processor.process_batch(species_records)
+"""
+
+from .processor import BaseProcessor, ProcessingResult, MemoryTracker
+from .grid import BaseGrid, GridCell
+from .feature import BaseFeature, FeatureResult
+from .dataset import BaseDataset, DatasetInfo
+
+# Version and metadata
+__version__ = "1.0.0"
+__author__ = "Jason"
+
+# Public API
+__all__ = [
+    # Processor classes
+    'BaseProcessor', 
+    'ProcessingResult', 
+    'MemoryTracker',
+    
+    # Grid classes
+    'BaseGrid', 
+    'GridCell',
+    
+    # Feature classes  
+    'BaseFeature', 
+    'FeatureResult',
+    
+    # Dataset classes
+    'BaseDataset', 
+    'DatasetInfo'
+]
+
+def get_base_class_info():
+    """Get information about all base classes."""
+    import inspect
+    
+    classes = [
+        ('BaseProcessor', BaseProcessor),
+        ('BaseGrid', BaseGrid),
+        ('BaseFeature', BaseFeature), 
+        ('BaseDataset', BaseDataset)
+    ]
+    
+    info = {}
+    for name, cls in classes:
+        info[name] = {
+            'abstract_methods': list(cls.__abstractmethods__) if hasattr(cls, '__abstractmethods__') else [],
+            'module': cls.__module__,
+            'doc': cls.__doc__
+        }
+    
+    return info
+
+# Module initialization check
+def _validate_base_module():
+    """Validate base module integrity."""
+    try:
+        # Check all imports work
+        assert BaseProcessor is not None
+        assert BaseGrid is not None  
+        assert BaseFeature is not None
+        assert BaseDataset is not None
+        
+        # Check abstract methods are defined
+        for cls in [BaseProcessor, BaseGrid, BaseFeature, BaseDataset]:
+            assert hasattr(cls, '__abstractmethods__')
+            assert len(cls.__abstractmethods__) > 0
+            
+        return True
+    except Exception:
+        return False
+
+# Validate on import
+if not _validate_base_module():
+    import warnings
+    warnings.warn("Base module validation failed", UserWarning)
