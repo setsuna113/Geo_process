@@ -468,5 +468,48 @@ class DatabaseSchema:
         valid_resolutions = grid_config.get('resolutions', [])
         return resolution in valid_resolutions
 
+
+    def get_grid_status_fast(self, grid_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Optimized grid status query - avoids expensive view aggregations."""
+        with db.get_cursor() as cursor:
+            if grid_name:
+                # Single grid - use efficient targeted query
+                cursor.execute("""
+                    SELECT 
+                        g.id as grid_id,
+                        g.name as grid_name,
+                        g.grid_type,
+                        g.resolution,
+                        g.total_cells,
+                        COALESCE((SELECT COUNT(*) FROM grid_cells WHERE grid_id = g.id), 0) as cells_generated,
+                        COALESCE((SELECT COUNT(DISTINCT cell_id) FROM species_grid_intersections WHERE grid_id = g.id), 0) as cells_with_species,
+                        COALESCE((SELECT COUNT(DISTINCT cell_id) FROM features WHERE grid_id = g.id), 0) as cells_with_features,
+                        COALESCE((SELECT COUNT(DISTINCT cell_id) FROM climate_data WHERE grid_id = g.id), 0) as cells_with_climate,
+                        ROUND(
+                            (((SELECT COUNT(*) FROM grid_cells WHERE grid_id = g.id)::FLOAT / NULLIF(g.total_cells, 0)) * 100)::NUMERIC, 2
+                        ) as generation_progress_percent
+                    FROM grids g
+                    WHERE g.name = %s
+                """, (grid_name,))
+            else:
+                # Multiple grids - return basic info only (fast)
+                cursor.execute("""
+                    SELECT 
+                        id as grid_id,
+                        name as grid_name,
+                        grid_type,
+                        resolution,
+                        total_cells,
+                        -1 as cells_generated,
+                        -1 as cells_with_species,
+                        -1 as cells_with_features,
+                        -1 as cells_with_climate,
+                        -1.0 as generation_progress_percent
+                    FROM grids
+                    ORDER BY name
+                    LIMIT 100
+                """)
+            return cursor.fetchall()
 # Global schema instance
 schema = DatabaseSchema()
+

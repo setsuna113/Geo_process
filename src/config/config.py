@@ -24,7 +24,8 @@ class Config:
             'features': defaults.FEATURES.copy(),
             'paths': {
                 'project_root': defaults.PROJECT_ROOT,
-                'data_dir': defaults.RAWDATA_DIR,
+                'data_dir': defaults.DATA_DIR,
+                'rawdata_dir': defaults.RAWDATA_DIR,
                 'logs_dir': defaults.LOGS_DIR,
             }
         }
