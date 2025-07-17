@@ -48,6 +48,8 @@ class DatabaseSchema:
                     DROP TABLE IF EXISTS species_ranges CASCADE;
                     DROP TABLE IF EXISTS grid_cells CASCADE;
                     DROP TABLE IF EXISTS grids CASCADE;
+                    DROP TABLE IF EXISTS export_metadata CASCADE;
+                    DROP TYPE IF EXISTS processing_status_enum CASCADE;
                 """)
             logger.warning("⚠️ Database schema dropped")
             return True
@@ -58,7 +60,8 @@ class DatabaseSchema:
     # Grid Operations (for grid_systems/ modules)
     def store_grid_definition(self, name: str, grid_type: str, resolution: int,
                              bounds: Optional[str] = None, 
-                             metadata: Optional[Dict] = None) -> str:
+                             metadata: Optional[Dict] = None,
+                             processing_status: str = 'pending') -> str:
         """Store grid definition metadata."""
         # Get CRS from config
         grid_config = config.get(f'grids.{grid_type}')
@@ -69,9 +72,9 @@ class DatabaseSchema:
         
         with db.get_cursor() as cursor:
             cursor.execute("""
-                INSERT INTO grids (name, grid_type, resolution, crs, bounds, metadata)
+                INSERT INTO grids (name, grid_type, resolution, crs, bounds, metadata, processing_status)
                 VALUES (%(name)s, %(grid_type)s, %(resolution)s, %(crs)s, 
-                        ST_GeomFromText(%(bounds)s, 4326), %(metadata)s)
+                        ST_GeomFromText(%(bounds)s, 4326), %(metadata)s, %(processing_status)s)
                 RETURNING id
             """, {
                 'name': name,
@@ -79,7 +82,8 @@ class DatabaseSchema:
                 'resolution': resolution,
                 'crs': crs,
                 'bounds': bounds,
-                'metadata': json.dumps(metadata or {})
+                'metadata': json.dumps(metadata or {}),
+                'processing_status': processing_status
             })
             grid_id = cursor.fetchone()['id']
             logger.info(f"✅ Created grid '{name}' with ID: {grid_id}")
@@ -510,6 +514,186 @@ class DatabaseSchema:
                     LIMIT 100
                 """)
             return cursor.fetchall()
+
+    # Enhanced Grid Operations with Processing Status
+    def update_grid_processing_status(self, grid_id: str, new_status: str, 
+                                    metadata: Optional[Dict] = None) -> bool:
+        """Update grid processing status with validation."""
+        with db.get_cursor() as cursor:
+            try:
+                cursor.execute("""
+                    SELECT update_grid_processing_status(%s, %s, %s)
+                """, (grid_id, new_status, json.dumps(metadata) if metadata else None))
+                return cursor.fetchone()[0]
+            except Exception as e:
+                logger.error(f"❌ Failed to update grid status: {e}")
+                return False
+    
+    def get_grids_by_bounds(self, bounds_wkt: str, grid_type: Optional[str] = None,
+                           processing_status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get grids that intersect with given bounds."""
+        with db.get_cursor() as cursor:
+            query = """
+                SELECT g.*, ST_AsText(g.bounds) as bounds_wkt,
+                       ST_Area(ST_Intersection(g.bounds, ST_GeomFromText(%s, 4326))::geography) / 1000000.0 as intersection_area_km2
+                FROM grids g 
+                WHERE g.bounds IS NOT NULL 
+                  AND ST_Intersects(g.bounds, ST_GeomFromText(%s, 4326))
+            """
+            params = [bounds_wkt, bounds_wkt]
+            
+            if grid_type:
+                query += " AND g.grid_type = %s"
+                params.append(grid_type)
+            
+            if processing_status:
+                query += " AND g.processing_status = %s"
+                params.append(processing_status)
+            
+            query += " ORDER BY intersection_area_km2 DESC"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+    
+    def get_grid_cells_in_bounds(self, grid_id: str, bounds_wkt: str) -> List[Dict[str, Any]]:
+        """Get grid cells that intersect with given bounds."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT gc.cell_id, ST_AsText(gc.geometry) as geometry_wkt,
+                       gc.area_km2, ST_AsText(gc.centroid) as centroid_wkt,
+                       ST_Area(ST_Intersection(gc.geometry, ST_GeomFromText(%s, 4326))::geography) / 1000000.0 as intersection_area_km2
+                FROM grid_cells gc
+                WHERE gc.grid_id = %s 
+                  AND ST_Intersects(gc.geometry, ST_GeomFromText(%s, 4326))
+                ORDER BY intersection_area_km2 DESC
+            """, (bounds_wkt, grid_id, bounds_wkt))
+            return cursor.fetchall()
+    
+    # Export Metadata Operations
+    def store_export_metadata(self, export_data: Dict[str, Any]) -> str:
+        """Store export file metadata."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO export_metadata 
+                (grid_id, export_type, feature_types, file_path, file_name, 
+                 file_size_bytes, format_version, compression, spatial_extent,
+                 temporal_range, metadata, checksum, expires_at, created_by)
+                VALUES (%(grid_id)s, %(export_type)s, %(feature_types)s, %(file_path)s,
+                        %(file_name)s, %(file_size_bytes)s, %(format_version)s, 
+                        %(compression)s, ST_GeomFromText(%(spatial_extent)s, 4326),
+                        %(temporal_range)s, %(metadata)s, %(checksum)s, 
+                        %(expires_at)s, %(created_by)s)
+                RETURNING id
+            """, {
+                'grid_id': export_data['grid_id'],
+                'export_type': export_data['export_type'],
+                'feature_types': export_data.get('feature_types', []),
+                'file_path': export_data['file_path'],
+                'file_name': export_data['file_name'],
+                'file_size_bytes': export_data.get('file_size_bytes'),
+                'format_version': export_data.get('format_version'),
+                'compression': export_data.get('compression', 'none'),
+                'spatial_extent': export_data.get('spatial_extent_wkt'),
+                'temporal_range': json.dumps(export_data.get('temporal_range')) if export_data.get('temporal_range') else None,
+                'metadata': json.dumps(export_data.get('metadata', {})),
+                'checksum': export_data.get('checksum'),
+                'expires_at': export_data.get('expires_at'),
+                'created_by': export_data.get('created_by', 'system')
+            })
+            export_id = cursor.fetchone()['id']
+            logger.info(f"✅ Stored export metadata: {export_data['file_name']} ({export_id})")
+            return export_id
+    
+    def get_export_metadata(self, grid_id: Optional[str] = None, 
+                           export_type: Optional[str] = None,
+                           active_only: bool = True) -> List[Dict[str, Any]]:
+        """Get export metadata with optional filtering."""
+        with db.get_cursor() as cursor:
+            query = """
+                SELECT em.*, ST_AsText(em.spatial_extent) as spatial_extent_wkt,
+                       g.name as grid_name
+                FROM export_metadata em
+                JOIN grids g ON em.grid_id = g.id
+                WHERE 1=1
+            """
+            params = []
+            
+            if grid_id:
+                query += " AND em.grid_id = %s"
+                params.append(grid_id)
+            
+            if export_type:
+                query += " AND em.export_type = %s"
+                params.append(export_type)
+            
+            if active_only:
+                query += " AND (em.expires_at IS NULL OR em.expires_at > NOW())"
+            
+            query += " ORDER BY em.created_at DESC"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+    
+    def cleanup_expired_exports(self) -> int:
+        """Remove expired export metadata."""
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT cleanup_expired_exports()")
+            deleted_count = cursor.fetchone()[0]
+            if deleted_count > 0:
+                logger.info(f"✅ Cleaned up {deleted_count} expired export records")
+            return deleted_count
+    
+    def get_export_summary(self, grid_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get export summary statistics."""
+        with db.get_cursor() as cursor:
+            query = "SELECT * FROM export_summary"
+            params = []
+            
+            if grid_id:
+                query += " WHERE grid_id = %s"
+                params.append(grid_id)
+            
+            query += " ORDER BY grid_name, export_type"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    # Enhanced utility methods for bounds queries
+    def get_grids_summary_with_bounds(self) -> List[Dict[str, Any]]:
+        """Get grid summary including bounds information."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT 
+                    id as grid_id,
+                    name as grid_name,
+                    grid_type,
+                    resolution,
+                    processing_status,
+                    total_cells,
+                    ST_AsText(bounds) as bounds_wkt,
+                    CASE 
+                        WHEN bounds IS NOT NULL THEN ST_Area(bounds::geography) / 1000000.0
+                        ELSE NULL 
+                    END as bounds_area_km2,
+                    created_at,
+                    metadata
+                FROM grids
+                ORDER BY created_at DESC
+            """)
+            return cursor.fetchall()
+    
+    def run_migration(self, migration_file: str) -> bool:
+        """Run a database migration file."""
+        try:
+            migration_path = Path(__file__).parent / "migrations" / migration_file
+            if not migration_path.exists():
+                logger.error(f"❌ Migration file not found: {migration_file}")
+                return False
+            
+            db.execute_sql_file(migration_path)
+            logger.info(f"✅ Migration applied successfully: {migration_file}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Migration failed: {e}")
+            return False
+
 # Global schema instance
 schema = DatabaseSchema()
 
