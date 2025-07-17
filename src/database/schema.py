@@ -399,6 +399,7 @@ class DatabaseSchema:
                     pg_size_pretty(pg_total_relation_size(quote_ident(t.table_name))) as size
                 FROM information_schema.tables t
                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                  AND t.table_name NOT IN (\'spatial_ref_sys\', \'geography_columns\', \'geometry_columns\')
                 ORDER BY t.table_name;
             """)
             tables = cursor.fetchall()
@@ -408,6 +409,7 @@ class DatabaseSchema:
                 SELECT table_name as view_name
                 FROM information_schema.views
                 WHERE table_schema = 'public'
+                  AND table_name NOT IN (\'geography_columns\', \'geometry_columns\')
                 ORDER BY table_name;
             """)
             views = cursor.fetchall()

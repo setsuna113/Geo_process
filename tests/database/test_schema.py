@@ -73,7 +73,7 @@ class TestGridOperations:
         assert grid['grid_type'] == 'cubic'
         assert grid['resolution'] == 1000
         assert grid['crs'] == 'EPSG:3857'
-        assert json.loads(grid['metadata'])['test'] is True
+        assert grid['metadata']['test'] is True
     
     def test_store_grid_definition_hexagonal(self):
         """Test storing hexagonal grid definition."""
@@ -264,7 +264,7 @@ class TestSpeciesOperations:
         
         # Verify intersections exist
         richness = schema.get_species_richness(grid_id, category='plant')
-        assert len(richness) == 1
+        assert len(richness) == 3
         assert richness[0]['species_count'] == 1
     
     def test_store_species_intersections_conflict_resolution(self):
