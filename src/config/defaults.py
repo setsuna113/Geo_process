@@ -52,6 +52,51 @@ FEATURES = {
     'richness_types': ['present', 'absent', 'fossil'],
 }
 
+# Output formats configuration
+OUTPUT_FORMATS = {
+    'csv': True,
+    'parquet': True, 
+    'geojson': False
+}
+
+# Processing bounds configuration with regional presets
+PROCESSING_BOUNDS = {
+    'global': [-180, -90, 180, 90],
+    'europe': [-25.0, 35.0, 50.0, 75.0],
+    'north_america': [-170.0, 15.0, -50.0, 75.0],
+    'south_america': [-85.0, -60.0, -30.0, 15.0],
+    'africa': [-25.0, -40.0, 55.0, 40.0],
+    'asia': [60.0, -15.0, 180.0, 75.0],
+    'oceania': [110.0, -50.0, 180.0, -10.0]
+}
+
+# Species filters configuration for data cleaning rules
+SPECIES_FILTERS = {
+    'min_occurrence_count': 5,
+    'exclude_uncertain_coordinates': True,
+    'coordinate_precision_threshold': 0.01,  # degrees
+    'exclude_cultivated': True,
+    'exclude_fossil': False,
+    'valid_basis_of_record': [
+        'HUMAN_OBSERVATION',
+        'MACHINE_OBSERVATION', 
+        'PRESERVED_SPECIMEN',
+        'LIVING_SPECIMEN'
+    ],
+    'exclude_invalid_coordinates': True,
+    'max_coordinate_uncertainty': 10000,  # meters
+    'taxonomic_filters': {
+        'exclude_hybrids': True,
+        'require_species_level': True,
+        'exclude_subspecies': False
+    },
+    'temporal_filters': {
+        'min_year': 1950,
+        'max_year': 2024,
+        'exclude_future_dates': True
+    }
+}
+
 # Logging configuration
 LOGGING = {
     'level': 'INFO',

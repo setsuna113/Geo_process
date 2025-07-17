@@ -22,6 +22,9 @@ class Config:
             'logging': defaults.LOGGING.copy(),
             'processing': defaults.PROCESSING.copy(),
             'features': defaults.FEATURES.copy(),
+            'output_formats': defaults.OUTPUT_FORMATS.copy(),
+            'processing_bounds': defaults.PROCESSING_BOUNDS.copy(),
+            'species_filters': defaults.SPECIES_FILTERS.copy(),
             'paths': {
                 'project_root': defaults.PROJECT_ROOT,
                 'data_dir': defaults.DATA_DIR,
@@ -69,6 +72,18 @@ class Config:
     @property
     def grids(self) -> Dict[str, Any]:
         return self.settings['grids']
+    
+    @property
+    def output_formats(self) -> Dict[str, Any]:
+        return self.settings['output_formats']
+    
+    @property
+    def processing_bounds(self) -> Dict[str, Any]:
+        return self.settings['processing_bounds']
+    
+    @property
+    def species_filters(self) -> Dict[str, Any]:
+        return self.settings['species_filters']
 
 # Global configuration instance
 config = Config()
