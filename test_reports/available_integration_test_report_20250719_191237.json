@@ -1,0 +1,62 @@
+{
+  "timestamp": "2025-07-19T19:12:37.721975",
+  "total_duration": 1.5598156452178955,
+  "system_status": "available_components_only",
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "success_rate": 100.0
+  },
+  "results": [
+    {
+      "module": "tests/integrated_test/test_current_system.py",
+      "success": true,
+      "duration": 0.8065080642700195,
+      "exit_code": 0,
+      "stdout": "============================================================\nINTEGRATION TEST - CURRENT SYSTEM COMPONENTS\n============================================================\n\n--- Grid System Integration ---\n\u2705 Successfully imported grid system components\n\u2705 GridFactory initialized\n\u2705 Got global bounds: (-180, -90, 180, 90)\n\u2705 Created CubicGrid with resolution 10000\n\u2705 Successfully generated 3 cell IDs from test coordinates\n\n--- Database Integration ---\n\u2705 Successfully imported database components\n\u2705 Schema info available: 13 tables\n\u2705 Schema includes: climate_data, experiments, export_metadata, features, grid_cells\n\n--- Config Integration ---\n\u2705 Successfully imported config components\n\u2705 Defaults module available with attributes: ['DATABASE', 'DATA_DIR', 'FEATURES', 'GRIDS', 'LOGGING', 'LOGS_DIR', 'OUTPUT_FORMATS', 'PROCESSING', 'PROCESSING_BOUNDS', 'PROJECT_ROOT', 'Path', 'RASTER_PROCESSING', 'RAWDATA_DIR', 'SPECIES_CLASSIFICATION_DEFAULTS', 'SPECIES_FILTERS', 'os']\n\u2705 Processing bounds available: 7 re",
+      "stderr": "Could not register grid systems: cannot import name 'CubicGrid' from partially initialized module 'src.grid_systems' (most likely due to a circular import) (/home/jason/geo/src/grid_systems/__init__.py)\n"
+    },
+    {
+      "module": "tests/integrated_test/test_simple_integration.py",
+      "success": true,
+      "duration": 0.46884918212890625,
+      "exit_code": 0,
+      "stdout": "============================================================\nSIMPLE INTEGRATION TESTS - DATA GENERATION & GRIDS\n============================================================\n\n--- Test Data Generator ---\n\u2705 Created test raster: /tmp/tmpj94nkssl/test_raster_gradient_50x50.tif\n\u2705 File exists: True\n\u2705 File size: 10726 bytes\n\u2705 GDAL can open raster: 50x50\n\u2705 Projection: GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\"...\n\n--- Grid Generation ---\n\u2705 Europe bounds: (-25, 35, 50, 71)\n\u2705 Created grid: CubicGrid\n\u2705 Grid resolution: 25000m\n\u2705 Point (0, 50) -> Cell ID: C25000_00089_00053\n\u2705 Point (2, 48) -> Cell ID: C25000_00096_00046\n\u2705 Point (13, 52) -> Cell ID: C25000_00135_00060\n\u2705 Successfully generated 3/3 cell IDs\n\n============================================================\nSIMPLE INTEGRATION TEST RESULTS\n============================================================\n\u2705 PASS - Test Data Generator\n\u2705 PASS - Grid Generation\n\nSUMMARY: 2/2 tests passed\n",
+      "stderr": "Could not register grid systems: cannot import name 'CubicGrid' from partially initialized module 'src.grid_systems' (most likely due to a circular import) (/home/jason/geo/src/grid_systems/__init__.py)\n"
+    },
+    {
+      "module": "tests/integrated_test/test_minimal_workflow.py",
+      "success": true,
+      "duration": 0.28420352935791016,
+      "exit_code": 0,
+      "stdout": "======================================================================\nMINIMAL WORKFLOW SIMULATION - CURRENT SYSTEM CAPABILITIES\n======================================================================\n\n========== Minimal End-to-End Workflow ==========\n\ud83d\ude80 Starting minimal workflow simulation...\n\u2705 Step 1: Core components imported successfully\n\u2705 Step 2: Europe processing region defined: (-25, 35, 50, 71)\n\u2705 Step 3: Grid specification created - cubic at 10000m\n\u2705 Step 4: Grid initialized - CubicGrid\n\u2705 Step 5: Processing sample coordinates...\n  \u2705 Processed location 1: C10000_00224_00147\n  \u2705 Processed location 2: C10000_00243_00123\n  \u2705 Processed location 3: C10000_00342_00156\n  \u2705 Processed location 4: C10000_00334_00061\n  \u2705 Processed location 5: C10000_00189_00048\n  \u2705 Processed location 6: C10000_00410_00153\n\u2705 Step 6: Validating workflow results...\n  - Processed 6/6 locations\n  - Grid type: cubic\n  - Resolution: 10000m\n\u2705 Step 7: Database schema validation\n  - Schema contains 13 tables\n  - Grid-r",
+      "stderr": "Could not register grid systems: cannot import name 'CubicGrid' from partially initialized module 'src.grid_systems' (most likely due to a circular import) (/home/jason/geo/src/grid_systems/__init__.py)\n"
+    }
+  ],
+  "recommendations": [
+    "All available integration tests passed! \u2705",
+    "Current system components are working correctly",
+    "Grid system and database integration validated",
+    "System ready for raster processing module development"
+  ],
+  "system_readiness": {
+    "status": "ready",
+    "description": "All available components tested and working",
+    "core_components_tested": [
+      "Grid Systems",
+      "Database Schema",
+      "Configuration Management",
+      "Component Registry",
+      "Data Generation",
+      "Workflow Simulation"
+    ],
+    "missing_for_full_system": [
+      "Raster Processing Pipeline",
+      "Resampling Engines",
+      "Feature Extraction Framework",
+      "Parallel Processing Infrastructure",
+      "Real Data Integration"
+    ]
+  }
+}

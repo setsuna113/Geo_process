@@ -21,6 +21,7 @@ class Config:
             'grids': defaults.GRIDS.copy(),
             'logging': defaults.LOGGING.copy(),
             'processing': defaults.PROCESSING.copy(),
+            'raster_processing': defaults.RASTER_PROCESSING.copy(),
             'features': defaults.FEATURES.copy(),
             'output_formats': defaults.OUTPUT_FORMATS.copy(),
             'processing_bounds': defaults.PROCESSING_BOUNDS.copy(),
@@ -72,6 +73,10 @@ class Config:
     @property
     def grids(self) -> Dict[str, Any]:
         return self.settings['grids']
+    
+    @property
+    def raster_processing(self) -> Dict[str, Any]:
+        return self.settings['raster_processing']
     
     @property
     def output_formats(self) -> Dict[str, Any]:

@@ -1,6 +1,6 @@
 """Cubic (square) grid implementation using PostGIS."""
 
-from typing import List, Optional, Tuple, Iterator
+from typing import List, Optional, Tuple, Iterator, Union, cast
 import logging
 from shapely.geometry import Polygon, Point
 from shapely import wkt
@@ -9,6 +9,7 @@ import math
 from ..base import BaseGrid, GridCell
 from ..core.registry import component_registry
 from ..database.schema import schema
+from ..database.connection import db
 from .bounds_manager import BoundsManager, BoundsDefinition
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class CubicGrid(BaseGrid):
     
     def generate_grid(self) -> List[GridCell]:
         """Generate cubic grid cells."""
-        if self.use_postgis and schema.db.pool:
+        if self.use_postgis and db.pool:
             return self._generate_grid_postgis()
         else:
             return self._generate_grid_python()
@@ -101,7 +102,7 @@ class CubicGrid(BaseGrid):
         """Generate grid cells for a single chunk using PostGIS."""
         cells = []
         
-        with schema.db.get_cursor() as cursor:
+        with db.get_cursor() as cursor:
             # Create bounds polygon
             bounds_wkt = f"POLYGON(({chunk.bounds[0]} {chunk.bounds[1]}, " \
                         f"{chunk.bounds[2]} {chunk.bounds[1]}, " \
@@ -141,14 +142,14 @@ class CubicGrid(BaseGrid):
             
             cursor.execute(query, (self.cell_size_degrees, bounds_wkt, bounds_wkt))
             
-            for row in cursor:
+            for row in cursor.fetchall():
                 # Generate cell ID based on position
                 cell_id = self._generate_cell_id(row['minx'], row['miny'])
                 
                 cell = GridCell(
                     cell_id=cell_id,
-                    geometry=wkt.loads(row['geom_wkt']),
-                    centroid=wkt.loads(row['centroid_wkt']),
+                    geometry=cast(Polygon, wkt.loads(row['geom_wkt'])),
+                    centroid=cast(Point, wkt.loads(row['centroid_wkt'])),
                     area_km2=row['area_km2'],
                     bounds=(row['minx'], row['miny'], row['maxx'], row['maxy']),
                     metadata={
@@ -322,3 +323,18 @@ class CubicGrid(BaseGrid):
             
         except ValueError:
             return []
+    
+    def get_cell_size(self) -> float:
+        """Get the cell size in degrees."""
+        return self.cell_size_degrees
+    
+    def get_cell_count(self) -> int:
+        """Get the total number of cells in the grid."""
+        if not hasattr(self, '_cell_count'):
+            # Calculate approximate cell count based on bounds and resolution
+            width = self.bounds[2] - self.bounds[0]
+            height = self.bounds[3] - self.bounds[1]
+            cells_x = int(width / self.cell_size_degrees) + 1
+            cells_y = int(height / self.cell_size_degrees) + 1
+            self._cell_count = cells_x * cells_y
+        return self._cell_count

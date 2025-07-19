@@ -1,7 +1,7 @@
 # src/grid_systems/hexagonal_grid.py
 """Hexagonal grid implementation using H3."""
 
-from typing import List, Optional, Tuple, Iterator, Set
+from typing import List, Optional, Tuple, Iterator, Set, Union
 import logging
 import h3
 from shapely.geometry import Polygon, Point
@@ -131,8 +131,8 @@ class HexagonalGrid(BaseGrid):
         
         try:
             # Get hexagons using polyfill
-            hexagons = h3.polyfill(h3_poly, self.h3_resolution, geo_json_conformant=False)
-            return hexagons
+            hexagons = h3.polygon_to_cells(h3_poly, self.h3_resolution)
+            return set(hexagons)
             
         except Exception as e:
             logger.warning(f"H3 polyfill failed for bounds {bounds.name}: {e}")
@@ -154,7 +154,7 @@ class HexagonalGrid(BaseGrid):
         
         for x in x_points:
             for y in y_points:
-                hex_id = h3.geo_to_h3(y, x, self.h3_resolution)  # lat, lng
+                hex_id = h3.latlng_to_cell(y, x, self.h3_resolution)  # lat, lng
                 hexagons.add(hex_id)
                 
         return hexagons
@@ -179,7 +179,7 @@ class HexagonalGrid(BaseGrid):
             
             try:
                 # Get hexagon boundary
-                boundary = h3.h3_to_geo_boundary(hex_id, geo_json=True)
+                boundary = h3.cell_to_boundary(hex_id)
                 
                 # Convert to shapely polygon (lng, lat -> x, y)
                 coords = [(lng, lat) for lat, lng in boundary]
@@ -188,7 +188,7 @@ class HexagonalGrid(BaseGrid):
                 hex_polygon = Polygon(coords)
                 
                 # Get center
-                lat, lng = h3.h3_to_geo(hex_id)
+                lat, lng = h3.cell_to_latlng(hex_id)
                 center = Point(lng, lat)
                 
                 # Calculate area
@@ -222,7 +222,7 @@ class HexagonalGrid(BaseGrid):
             raise ValueError(f"Coordinate ({x}, {y}) outside grid bounds")
             
         # Get H3 hexagon for coordinate
-        hex_id = h3.geo_to_h3(y, x, self.h3_resolution)  # lat, lng
+        hex_id = h3.latlng_to_cell(y, x, self.h3_resolution)  # lat, lng
         return f"H{self.h3_resolution}_{hex_id}"
     
     def get_cell_by_id(self, cell_id: str) -> Optional[GridCell]:
@@ -243,7 +243,7 @@ class HexagonalGrid(BaseGrid):
                 return None
                 
             # Validate hex ID
-            if not h3.h3_is_valid(hex_id):
+            if not h3.is_valid_cell(hex_id):
                 return None
                 
             # Create cell from hex ID
@@ -264,7 +264,7 @@ class HexagonalGrid(BaseGrid):
         
         try:
             # Get H3 neighbors
-            neighbor_hexes = h3.k_ring(hex_id, 1)
+            neighbor_hexes = h3.grid_disk(hex_id, 1)
             neighbor_hexes.remove(hex_id)  # Remove center
             
             # Convert to cell IDs
@@ -284,14 +284,22 @@ class HexagonalGrid(BaseGrid):
         try:
             if target_resolution > self.h3_resolution:
                 # Get children
-                children = h3.h3_to_children(parent_hex, target_resolution)
+                children = h3.cell_to_children(parent_hex, target_resolution)
                 return [f"H{target_resolution}_{hex_id}" for hex_id in children]
             elif target_resolution < self.h3_resolution:
                 # Get parent
-                parent = h3.h3_to_parent(parent_hex, target_resolution)
+                parent = h3.cell_to_parent(parent_hex, target_resolution)
                 return [f"H{target_resolution}_{parent}"]
             else:
                 return [parent_cell_id]
                 
         except Exception:
             return []
+    
+    def get_cell_size(self) -> float:
+        """Get the average cell size in degrees for the current resolution."""
+        # H3 cell sizes vary by resolution
+        # This is an approximation of average edge length in degrees
+        edge_length_km = h3.average_hexagon_edge_length(self.h3_resolution, unit='km')
+        # Convert km to degrees (rough approximation: 1 degree ≈ 111 km)
+        return edge_length_km / 111.0

@@ -36,10 +36,35 @@ class DatabaseSchema:
         try:
             with db.get_cursor() as cursor:
                 cursor.execute("""
+                    -- Drop raster views
+                    DROP VIEW IF EXISTS processing_queue_summary CASCADE;
+                    DROP VIEW IF EXISTS cache_efficiency_summary CASCADE;
+                    DROP VIEW IF EXISTS raster_processing_status CASCADE;
+                    
+                    -- Drop existing views
                     DROP VIEW IF EXISTS experiment_summary CASCADE;
                     DROP VIEW IF EXISTS grid_processing_status CASCADE;
                     DROP VIEW IF EXISTS species_richness_summary CASCADE;
+                    DROP VIEW IF EXISTS export_summary CASCADE;
+                    
+                    -- Drop raster functions
+                    DROP FUNCTION IF EXISTS get_next_processing_task(VARCHAR, VARCHAR) CASCADE;
+                    DROP FUNCTION IF EXISTS update_tile_statistics(UUID, JSONB) CASCADE;
+                    DROP FUNCTION IF EXISTS cleanup_resampling_cache(INTEGER, INTEGER) CASCADE;
+                    DROP FUNCTION IF EXISTS update_updated_at_column() CASCADE;
+                    
+                    -- Drop existing functions
                     DROP FUNCTION IF EXISTS update_grid_cell_count() CASCADE;
+                    DROP FUNCTION IF EXISTS update_grid_processing_status(UUID, processing_status_enum, JSONB) CASCADE;
+                    DROP FUNCTION IF EXISTS cleanup_expired_exports() CASCADE;
+                    
+                    -- Drop raster tables
+                    DROP TABLE IF EXISTS processing_queue CASCADE;
+                    DROP TABLE IF EXISTS resampling_cache CASCADE;
+                    DROP TABLE IF EXISTS raster_tiles CASCADE;
+                    DROP TABLE IF EXISTS raster_sources CASCADE;
+                    
+                    -- Drop existing tables
                     DROP TABLE IF EXISTS processing_jobs CASCADE;
                     DROP TABLE IF EXISTS experiments CASCADE;
                     DROP TABLE IF EXISTS climate_data CASCADE;
@@ -49,6 +74,12 @@ class DatabaseSchema:
                     DROP TABLE IF EXISTS grid_cells CASCADE;
                     DROP TABLE IF EXISTS grids CASCADE;
                     DROP TABLE IF EXISTS export_metadata CASCADE;
+                    
+                    -- Drop raster enums
+                    DROP TYPE IF EXISTS tile_status_enum CASCADE;
+                    DROP TYPE IF EXISTS raster_status_enum CASCADE;
+                    
+                    -- Drop existing enums
                     DROP TYPE IF EXISTS processing_status_enum CASCADE;
                 """)
             logger.warning("⚠️ Database schema dropped")
@@ -693,6 +724,292 @@ class DatabaseSchema:
         except Exception as e:
             logger.error(f"❌ Migration failed: {e}")
             return False
+
+    # ==============================================================================
+    # RASTER DATA OPERATIONS
+    # ==============================================================================
+    
+    def store_raster_source(self, raster_data: Dict[str, Any]) -> str:
+        """Store raster source metadata."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO raster_sources 
+                (name, file_path, data_type, pixel_size_degrees, spatial_extent,
+                 nodata_value, band_count, file_size_mb, checksum, last_modified,
+                 source_dataset, variable_name, units, description, temporal_info, metadata)
+                VALUES (%(name)s, %(file_path)s, %(data_type)s, %(pixel_size_degrees)s,
+                        ST_GeomFromText(%(spatial_extent)s, 4326), %(nodata_value)s,
+                        %(band_count)s, %(file_size_mb)s, %(checksum)s, %(last_modified)s,
+                        %(source_dataset)s, %(variable_name)s, %(units)s, %(description)s,
+                        %(temporal_info)s, %(metadata)s)
+                RETURNING id
+            """, {
+                'name': raster_data['name'],
+                'file_path': raster_data['file_path'],
+                'data_type': raster_data['data_type'],
+                'pixel_size_degrees': raster_data.get('pixel_size_degrees', 0.016666666666667),
+                'spatial_extent': raster_data['spatial_extent_wkt'],
+                'nodata_value': raster_data.get('nodata_value'),
+                'band_count': raster_data.get('band_count', 1),
+                'file_size_mb': raster_data.get('file_size_mb'),
+                'checksum': raster_data.get('checksum'),
+                'last_modified': raster_data.get('last_modified'),
+                'source_dataset': raster_data.get('source_dataset'),
+                'variable_name': raster_data.get('variable_name'),
+                'units': raster_data.get('units'),
+                'description': raster_data.get('description'),
+                'temporal_info': json.dumps(raster_data.get('temporal_info', {})),
+                'metadata': json.dumps(raster_data.get('metadata', {}))
+            })
+            raster_id = cursor.fetchone()['id']
+            logger.info(f"✅ Stored raster source: {raster_data['name']} ({raster_id})")
+            return raster_id
+
+    def get_raster_sources(self, active_only: bool = True, 
+                          processing_status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get raster sources with optional filtering."""
+        with db.get_cursor() as cursor:
+            query = """
+                SELECT *, ST_AsText(spatial_extent) as spatial_extent_wkt
+                FROM raster_sources
+                WHERE 1=1
+            """
+            params = []
+            
+            if active_only:
+                query += " AND active = TRUE"
+            
+            if processing_status:
+                query += " AND processing_status = %s"
+                params.append(processing_status)
+            
+            query += " ORDER BY name"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def update_raster_processing_status(self, raster_id: str, status: str,
+                                       metadata: Optional[Dict] = None) -> bool:
+        """Update raster processing status."""
+        with db.get_cursor() as cursor:
+            try:
+                cursor.execute("""
+                    UPDATE raster_sources
+                    SET processing_status = %s,
+                        metadata = CASE 
+                            WHEN %s IS NOT NULL THEN metadata || %s::jsonb
+                            ELSE metadata 
+                        END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (status, json.dumps(metadata) if metadata else None,
+                      json.dumps(metadata) if metadata else None, raster_id))
+                return cursor.rowcount > 0
+            except Exception as e:
+                logger.error(f"❌ Failed to update raster status: {e}")
+                return False
+
+    def store_raster_tiles_batch(self, raster_id: str, tiles_data: List[Dict]) -> int:
+        """Bulk store raster tiles."""
+        with db.get_cursor() as cursor:
+            tile_records = []
+            for tile in tiles_data:
+                tile_records.append((
+                    raster_id,
+                    tile['tile_x'],
+                    tile['tile_y'],
+                    tile.get('tile_size_pixels', 1000),
+                    tile['tile_bounds_wkt'],
+                    tile.get('file_byte_offset'),
+                    tile.get('file_byte_length'),
+                    json.dumps(tile.get('tile_stats', {}))
+                ))
+            
+            cursor.executemany("""
+                INSERT INTO raster_tiles 
+                (raster_source_id, tile_x, tile_y, tile_size_pixels, tile_bounds,
+                 file_byte_offset, file_byte_length, tile_stats)
+                VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326), %s, %s, %s)
+                ON CONFLICT (raster_source_id, tile_x, tile_y)
+                DO UPDATE SET
+                    tile_bounds = EXCLUDED.tile_bounds,
+                    file_byte_offset = EXCLUDED.file_byte_offset,
+                    file_byte_length = EXCLUDED.file_byte_length,
+                    tile_stats = EXCLUDED.tile_stats
+            """, tile_records)
+            
+            inserted_count = cursor.rowcount
+            logger.info(f"✅ Stored {inserted_count} raster tiles for raster {raster_id}")
+            return inserted_count
+
+    def get_raster_tiles_for_bounds(self, raster_id: str, bounds_wkt: str) -> List[Dict[str, Any]]:
+        """Get raster tiles that intersect with given bounds."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT rt.*, ST_AsText(rt.tile_bounds) as tile_bounds_wkt
+                FROM raster_tiles rt
+                WHERE rt.raster_source_id = %s
+                AND ST_Intersects(rt.tile_bounds, ST_GeomFromText(%s, 4326))
+                ORDER BY rt.tile_x, rt.tile_y
+            """, (raster_id, bounds_wkt))
+            return cursor.fetchall()
+
+    def store_resampling_cache_batch(self, cache_data: List[Dict]) -> int:
+        """Bulk store resampling cache entries."""
+        with db.get_cursor() as cursor:
+            cache_records = []
+            for entry in cache_data:
+                cache_records.append((
+                    entry['source_raster_id'],
+                    entry['target_grid_id'],
+                    entry['cell_id'],
+                    entry.get('method', 'bilinear'),
+                    entry.get('band_number', 1),
+                    entry['value'],
+                    entry.get('confidence_score', 1.0),
+                    entry.get('source_tiles_used', []),
+                    json.dumps(entry.get('computation_metadata', {}))
+                ))
+            
+            cursor.executemany("""
+                INSERT INTO resampling_cache 
+                (source_raster_id, target_grid_id, cell_id, method, band_number,
+                 value, confidence_score, source_tiles_used, computation_metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (source_raster_id, target_grid_id, cell_id, method, band_number)
+                DO UPDATE SET
+                    value = EXCLUDED.value,
+                    confidence_score = EXCLUDED.confidence_score,
+                    source_tiles_used = EXCLUDED.source_tiles_used,
+                    computation_metadata = EXCLUDED.computation_metadata,
+                    last_accessed = CURRENT_TIMESTAMP,
+                    access_count = resampling_cache.access_count + 1
+            """, cache_records)
+            
+            return cursor.rowcount
+
+    def get_cached_resampling_values(self, raster_id: str, grid_id: str, 
+                                   cell_ids: List[str], method: str = 'bilinear',
+                                   band_number: int = 1) -> Dict[str, float]:
+        """Get cached resampling values for given cells."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                UPDATE resampling_cache 
+                SET last_accessed = CURRENT_TIMESTAMP,
+                    access_count = access_count + 1
+                WHERE source_raster_id = %s AND target_grid_id = %s 
+                AND cell_id = ANY(%s) AND method = %s AND band_number = %s
+                RETURNING cell_id, value
+            """, (raster_id, grid_id, cell_ids, method, band_number))
+            
+            return {row['cell_id']: row['value'] for row in cursor.fetchall()}
+
+    def add_processing_task(self, queue_type: str, raster_id: Optional[str] = None,
+                           grid_id: Optional[str] = None, tile_id: Optional[str] = None,
+                           parameters: Optional[Dict] = None, priority: int = 0) -> str:
+        """Add task to processing queue."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO processing_queue 
+                (queue_type, raster_source_id, grid_id, tile_id, parameters, priority)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (queue_type, raster_id, grid_id, tile_id, 
+                  json.dumps(parameters or {}), priority))
+            task_id = cursor.fetchone()['id']
+            logger.info(f"✅ Added processing task: {queue_type} ({task_id})")
+            return task_id
+
+    def get_next_processing_task(self, queue_type: str, worker_id: str) -> Optional[Dict[str, Any]]:
+        """Get next processing task for worker."""
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT get_next_processing_task(%s, %s)", (queue_type, worker_id))
+            result = cursor.fetchone()
+            task_id = result['get_next_processing_task'] if result else None
+            
+            if task_id:
+                cursor.execute("""
+                    SELECT pq.*, rs.name as raster_name, g.name as grid_name
+                    FROM processing_queue pq
+                    LEFT JOIN raster_sources rs ON pq.raster_source_id = rs.id
+                    LEFT JOIN grids g ON pq.grid_id = g.id
+                    WHERE pq.id = %s
+                """, (task_id,))
+                return cursor.fetchone()
+            return None
+
+    def complete_processing_task(self, task_id: str, success: bool = True,
+                                error_message: Optional[str] = None,
+                                checkpoint_data: Optional[Dict] = None) -> bool:
+        """Mark processing task as completed or failed."""
+        with db.get_cursor() as cursor:
+            if success:
+                cursor.execute("""
+                    UPDATE processing_queue 
+                    SET status = 'completed',
+                        completed_at = CURRENT_TIMESTAMP,
+                        checkpoint_data = %s
+                    WHERE id = %s
+                """, (json.dumps(checkpoint_data or {}), task_id))
+            else:
+                cursor.execute("""
+                    UPDATE processing_queue 
+                    SET status = 'failed',
+                        error_message = %s,
+                        retry_count = retry_count + 1,
+                        completed_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                """, (error_message, task_id))
+            
+            return cursor.rowcount > 0
+
+    def get_raster_processing_status(self, raster_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get raster processing status overview."""
+        with db.get_cursor() as cursor:
+            query = "SELECT * FROM raster_processing_status"
+            params = []
+            
+            if raster_id:
+                query += " WHERE raster_id = %s"
+                params.append(raster_id)
+            
+            query += " ORDER BY raster_name"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def get_cache_efficiency_summary(self, raster_id: Optional[str] = None,
+                                   grid_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get cache efficiency statistics."""
+        with db.get_cursor() as cursor:
+            query = "SELECT * FROM cache_efficiency_summary WHERE 1=1"
+            params = []
+            
+            if raster_id:
+                query += " AND source_raster_id = %s"
+                params.append(raster_id)
+            
+            if grid_id:
+                query += " AND target_grid_id = %s"
+                params.append(grid_id)
+            
+            query += " ORDER BY raster_name, grid_name, method"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+
+    def cleanup_old_cache(self, days_old: int = 30, min_access_count: int = 1) -> int:
+        """Clean up old and rarely used cache entries."""
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT cleanup_resampling_cache(%s, %s)", (days_old, min_access_count))
+            result = cursor.fetchone()
+            deleted_count = result['cleanup_resampling_cache'] if result else 0
+            if deleted_count > 0:
+                logger.info(f"✅ Cleaned up {deleted_count} old cache entries")
+            return deleted_count
+
+    def get_processing_queue_summary(self) -> List[Dict[str, Any]]:
+        """Get processing queue statistics."""
+        with db.get_cursor() as cursor:
+            cursor.execute("SELECT * FROM processing_queue_summary")
+            return cursor.fetchall()
 
 # Global schema instance
 schema = DatabaseSchema()

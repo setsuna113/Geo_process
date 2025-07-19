@@ -83,6 +83,7 @@ class BaseGrid(ABC):
         # Grid metadata
         self.grid_id: Optional[str] = None
         self._cells: Optional[List[GridCell]] = None
+        self.specification: Optional[Any] = None  # Grid specification object
         
     def _merge_config(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """Merge kwargs with default config."""
@@ -220,3 +221,172 @@ class BaseGrid(ABC):
             'bounds': self.bounds,
             'crs': self.crs
         }
+    
+    # Enhanced methods for base class enhancements
+    
+    def get_tiles_for_bounds(self, 
+                           bounds: Tuple[float, float, float, float],
+                           tile_size: Optional[int] = None) -> Iterator[Tuple[str, Tuple[float, float, float, float]]]:
+        """
+        Get tile definitions for given bounds.
+        
+        Args:
+            bounds: (minx, miny, maxx, maxy) bounding box
+            tile_size: Size of tiles in grid units (None for auto)
+            
+        Yields:
+            Tuples of (tile_id, tile_bounds)
+        """
+        actual_tile_size = tile_size or config.get('grids.default_tile_size', 10)  # 10 grid units per tile
+            
+        minx, miny, maxx, maxy = bounds
+        
+        # Calculate tile grid based on resolution
+        tile_width = self.resolution * actual_tile_size
+        tile_height = self.resolution * actual_tile_size
+        
+        # Calculate number of tiles needed
+        x_tiles = int((maxx - minx) / tile_width) + 1
+        y_tiles = int((maxy - miny) / tile_height) + 1
+        
+        for y in range(y_tiles):
+            for x in range(x_tiles):
+                tile_minx = minx + x * tile_width
+                tile_maxx = min(tile_minx + tile_width, maxx)
+                tile_miny = miny + y * tile_height
+                tile_maxy = min(tile_miny + tile_height, maxy)
+                
+                tile_id = f"tile_{x}_{y}"
+                tile_bounds = (tile_minx, tile_miny, tile_maxx, tile_maxy)
+                
+                yield tile_id, tile_bounds
+                
+    def supports_irregular_shapes(self) -> bool:
+        """
+        Check if grid supports irregular tile shapes.
+        Default implementation returns False - override in subclasses.
+        
+        Returns:
+            True if irregular shapes are supported
+        """
+        return False
+        
+    def create_irregular_tile(self, 
+                            geometry: Polygon,
+                            tile_id: str) -> List[GridCell]:
+        """
+        Create tile with irregular shape.
+        
+        Args:
+            geometry: Shape of the irregular tile
+            tile_id: Identifier for the tile
+            
+        Returns:
+            List of grid cells within the tile
+            
+        Raises:
+            NotImplementedError: If irregular shapes not supported
+        """
+        if not self.supports_irregular_shapes():
+            raise NotImplementedError(f"{self.__class__.__name__} does not support irregular tile shapes")
+            
+        # Default implementation for grids that support irregular shapes
+        return self.get_cells_for_geometry(geometry)
+        
+    def check_resolution_compatibility(self, 
+                                     other_resolution: int,
+                                     tolerance: float = 0.1) -> Tuple[bool, str]:
+        """
+        Check if this grid is compatible with another resolution.
+        
+        Args:
+            other_resolution: Resolution to check compatibility with
+            tolerance: Tolerance for floating point comparison
+            
+        Returns:
+            Tuple of (is_compatible, reason)
+        """
+        ratio = max(self.resolution, other_resolution) / min(self.resolution, other_resolution)
+        
+        # Check if resolutions are multiples of each other
+        if abs(ratio - round(ratio)) < tolerance:
+            return True, f"Resolutions are compatible (ratio: {ratio:.1f})"
+            
+        # Check if they're close enough
+        if abs(1.0 - self.resolution / other_resolution) < tolerance:
+            return True, f"Resolutions are nearly identical"
+            
+        return False, f"Resolutions not compatible (ratio: {ratio:.2f}, tolerance: {tolerance})"
+        
+    def get_neighboring_cells(self, cell_id: str, distance: int = 1) -> List[GridCell]:
+        """
+        Get neighboring cells within specified distance.
+        
+        Args:
+            cell_id: Central cell ID
+            distance: Distance in number of cells
+            
+        Returns:
+            List of neighboring cells
+        """
+        center_cell = self.get_cell_by_id(cell_id)
+        if not center_cell:
+            return []
+            
+        # Expand bounds by distance * resolution
+        expand_by = distance * self.resolution
+        minx, miny, maxx, maxy = center_cell.bounds
+        expanded_bounds = (
+            minx - expand_by,
+            miny - expand_by, 
+            maxx + expand_by,
+            maxy + expand_by
+        )
+        
+        # Get all cells in expanded bounds
+        candidates = self.get_cells_in_bounds(expanded_bounds)
+        
+        # Filter by actual distance
+        neighbors = []
+        for candidate in candidates:
+            if candidate.cell_id == cell_id:
+                continue
+                
+            # Calculate distance between centroids
+            distance_m = center_cell.centroid.distance(candidate.centroid)
+            max_distance_m = distance * self.resolution
+            
+            if distance_m <= max_distance_m:
+                neighbors.append(candidate)
+                
+        return neighbors
+        
+    def optimize_for_region(self, 
+                          focus_bounds: Tuple[float, float, float, float],
+                          density_multiplier: float = 2.0) -> 'BaseGrid':
+        """
+        Create an optimized grid for a specific region.
+        
+        Args:
+            focus_bounds: Bounds of the region to optimize for
+            density_multiplier: How much denser the grid should be in focus region
+            
+        Returns:
+            New grid instance optimized for the region
+        """
+        # Default implementation creates a higher resolution grid for focus area
+        # Subclasses can override for more sophisticated optimization
+        
+        new_resolution = int(self.resolution / density_multiplier)
+        
+        # Create new instance with same class and optimized resolution
+        optimized_grid = self.__class__(
+            resolution=new_resolution,
+            bounds=focus_bounds,
+            crs=self.crs,
+            **self.config
+        )
+        
+        logger.info(f"Created optimized grid: {self.resolution}m -> {new_resolution}m resolution")
+        
+        return optimized_grid

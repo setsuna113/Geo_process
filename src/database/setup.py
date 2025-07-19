@@ -58,6 +58,29 @@ def setup_database(reset: bool = False) -> bool:
                 else:
                     logger.warning(f"   ⚠️ Invalid {grid_type} resolution {resolution}")
         
+        # Validate raster processing configuration
+        logger.info("Validating raster processing configuration...")
+        raster_config = config.get('raster_processing', {})
+        if raster_config:
+            tile_size = raster_config.get('tile_size', 1000)
+            memory_limit = raster_config.get('memory_limit_mb', 4096)
+            cache_ttl = raster_config.get('cache_ttl_days', 30)
+            
+            logger.info(f"   ✅ Tile size: {tile_size} pixels")
+            logger.info(f"   ✅ Memory limit: {memory_limit} MB")
+            logger.info(f"   ✅ Cache TTL: {cache_ttl} days")
+            
+            # Check if raster tables exist
+            raster_tables = ['raster_sources', 'raster_tiles', 'resampling_cache', 'processing_queue']
+            table_names = [t['table_name'] for t in info['tables']]
+            for raster_table in raster_tables:
+                if raster_table in table_names:
+                    logger.info(f"   ✅ Raster table '{raster_table}' available")
+                else:
+                    logger.warning(f"   ⚠️ Raster table '{raster_table}' missing")
+        else:
+            logger.warning("   ⚠️ Raster processing configuration not found")
+        
         # Test basic operations
         logger.info("Testing basic database operations...")
         

@@ -42,7 +42,7 @@ Usage Example:
     results = processor.process_batch(species_records)
 """
 
-from .processor import BaseProcessor, ProcessingResult, MemoryTracker
+from .processor import BaseProcessor, ProcessingResult, LegacyMemoryTracker as MemoryTracker
 from .grid import BaseGrid, GridCell
 from .feature import BaseFeature, FeatureResult
 from .dataset import BaseDataset, DatasetInfo

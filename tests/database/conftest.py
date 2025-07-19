@@ -61,6 +61,51 @@ def sample_species_data():
         'area_km2': 25.0
     }
 
+@pytest.fixture
+def sample_raster_data():
+    """Provide sample raster data for tests."""
+    return {
+        'name': 'test_raster',
+        'file_path': '/tmp/test_raster.tif',
+        'data_type': 'Float32',
+        'pixel_size_degrees': 0.016666666666667,
+        'spatial_extent_wkt': 'POLYGON((-180 -90, 180 -90, 180 90, -180 90, -180 -90))',
+        'nodata_value': -9999.0,
+        'band_count': 1,
+        'file_size_mb': 125.5,
+        'checksum': 'abc123def456',
+        'source_dataset': 'Test Dataset',
+        'variable_name': 'temperature',
+        'units': 'degrees_celsius',
+        'description': 'Test temperature data',
+        'temporal_info': {'temporal_resolution': 'annual'},
+        'metadata': {'test': True}
+    }
+
+@pytest.fixture
+def sample_raster_tiles():
+    """Provide sample raster tile data for tests."""
+    return [
+        {
+            'tile_x': 0,
+            'tile_y': 0,
+            'tile_size_pixels': 1000,
+            'tile_bounds_wkt': 'POLYGON((0 0, 10 0, 10 10, 0 10, 0 0))',
+            'file_byte_offset': 0,
+            'file_byte_length': 1024,
+            'tile_stats': {'min': 0, 'max': 100, 'mean': 50}
+        },
+        {
+            'tile_x': 1,
+            'tile_y': 0,
+            'tile_size_pixels': 1000,
+            'tile_bounds_wkt': 'POLYGON((10 0, 20 0, 20 10, 10 10, 10 0))',
+            'file_byte_offset': 1024,
+            'file_byte_length': 1024,
+            'tile_stats': {'min': 10, 'max': 90, 'mean': 45}
+        }
+    ]
+
 # Add marks for different test categories
 def pytest_configure(config):
     """Configure pytest markers."""

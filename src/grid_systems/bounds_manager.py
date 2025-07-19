@@ -1,8 +1,8 @@
 """Bounds management for spatial grid generation."""
 
-from typing import Tuple, Dict, List, Optional, Union
+from typing import Tuple, Dict, List, Optional, Union, cast, TYPE_CHECKING
 from dataclasses import dataclass
-from shapely.geometry import Polygon, box, shape
+from shapely.geometry import Polygon, Point, box, shape
 from shapely.ops import transform
 import pyproj
 import json
@@ -11,6 +11,10 @@ from pathlib import Path
 
 from ..config import config
 from ..database.schema import schema
+from ..database.connection import db
+
+if TYPE_CHECKING:
+    from ..base import GridCell
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +158,7 @@ class BoundsManager:
                 if len(parts) == 4:
                     return BoundsDefinition(
                         name='custom_bounds',
-                        bounds=tuple(parts),
+                        bounds=cast(Tuple[float, float, float, float], tuple(parts)),
                         category='custom'
                     )
             except ValueError:
@@ -196,7 +200,7 @@ class BoundsManager:
     
     def get_species_data_bounds(self) -> Optional[Tuple[float, float, float, float]]:
         """Get the extent of all species data in database."""
-        with schema.db.get_cursor() as cursor:
+        with db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT 
                     ST_XMin(ST_Extent(geometry)) as minx,
@@ -240,8 +244,8 @@ class BoundsManager:
                         from ..base import GridCell
                         clipped_cell = GridCell(
                             cell_id=f"{cell.cell_id}_clipped",
-                            geometry=clipped_geom,
-                            centroid=clipped_geom.centroid,
+                            geometry=cast(Polygon, clipped_geom),
+                            centroid=cast(Point, clipped_geom.centroid),
                             area_km2=clipped_geom.area / 1_000_000,
                             bounds=clipped_geom.bounds,
                             metadata={**cell.metadata, 'clipped': True} if cell.metadata else {'clipped': True}

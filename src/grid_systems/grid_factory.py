@@ -10,6 +10,7 @@ from ..base import BaseGrid
 from ..core.registry import component_registry
 from ..config import config
 from ..database.schema import schema
+from ..database.connection import db
 from .bounds_manager import BoundsManager, BoundsDefinition
 
 logger = logging.getLogger(__name__)
@@ -136,8 +137,9 @@ class GridFactory:
             grid = self.create_grid(spec)
             grids[resolution] = grid
             
-            # Cache the grid
-            self._grid_cache[spec.name] = grid
+            # Cache the grid if name is provided
+            if spec.name:
+                self._grid_cache[spec.name] = grid
             
         logger.info(f"Created {len(grids)} grids for {base_name}")
         return grids
@@ -153,7 +155,7 @@ class GridFactory:
         Returns:
             Grid ID
         """
-        if not hasattr(grid, 'specification') or not grid.specification.name:
+        if not hasattr(grid, 'specification') or not grid.specification or not grid.specification.name:
             raise ValueError("Grid must have a specification with name")
             
         # Check if grid exists
@@ -219,7 +221,7 @@ class GridFactory:
         hierarchy = {}
         
         # Query database for matching grids
-        with schema.db.get_cursor() as cursor:
+        with db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT name, resolution, metadata
                 FROM grids
@@ -227,7 +229,7 @@ class GridFactory:
                 ORDER BY resolution DESC
             """, (base_name,))
             
-            for row in cursor:
+            for row in cursor.fetchall():
                 hierarchy[row['resolution']] = row['name']
                 
         return hierarchy

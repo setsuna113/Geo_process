@@ -46,6 +46,28 @@ PROCESSING = {
     'chunk_size': 10000,
 }
 
+# Raster processing configuration
+RASTER_PROCESSING = {
+    'tile_size': 1000,  # pixels per tile
+    'cache_ttl_days': 30,
+    'memory_limit_mb': 4096,
+    'parallel_workers': 4,
+    'lazy_loading': {
+        'chunk_size_mb': 100,
+        'prefetch_tiles': 2
+    },
+    'resampling_methods': {
+        'default': 'bilinear',
+        'categorical': 'nearest',
+        'continuous': 'bilinear'
+    },
+    'supported_formats': ['tif', 'tiff', 'nc', 'hdf5'],
+    'compression': {
+        'method': 'lzw',
+        'level': 6
+    }
+}
+
 # Feature configuration
 FEATURES = {
     'climate_variables': ['bio_1', 'bio_12'],  # Temperature, precipitation
