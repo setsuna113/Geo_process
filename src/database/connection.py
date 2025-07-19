@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from ..config import config
 import logging
+import re
 import time
 from typing import Optional
 
@@ -141,61 +142,8 @@ class DatabaseManager:
                 # Always restore original autocommit state
                 conn.autocommit = old_autocommit
     
-    def _parse_sql_statements(self, sql_content: str) -> list:
-        """Parse SQL content into individual statements, handling dollar-quoted strings properly."""
-        statements = []
-        current_statement = ""
-        in_dollar_quote = False
-        dollar_quote_tag = ""
-        i = 0
-        
-        while i < len(sql_content):
-            char = sql_content[i]
-            
-            # Handle dollar-quoted strings (like $$...$$ or $tag$...$tag$)
-            if char == '$' and not in_dollar_quote:
-                # Look for dollar quote start
-                end_tag_pos = sql_content.find('$', i + 1)
-                if end_tag_pos != -1:
-                    potential_tag = sql_content[i:end_tag_pos + 1]
-                    if potential_tag:
-                        in_dollar_quote = True
-                        dollar_quote_tag = potential_tag
-                        current_statement += char
-                        i += 1
-                        continue
-            elif char == '$' and in_dollar_quote:
-                # Look for matching end tag
-                if sql_content[i:].startswith(dollar_quote_tag):
-                    current_statement += dollar_quote_tag
-                    i += len(dollar_quote_tag)
-                    in_dollar_quote = False
-                    dollar_quote_tag = ""
-                    continue
-            
-            current_statement += char
-            
-            # If we hit a semicolon and we're not in a dollar-quoted string
-            if char == ';' and not in_dollar_quote:
-                stmt = current_statement.strip()
-                # Skip empty statements or pure comment statements
-                if stmt:
-                    # Check if statement contains actual SQL (not just comments)
-                    sql_lines = [line.strip() for line in stmt.split("\n") if line.strip() and not line.strip().startswith("--")]
-                    if sql_lines:  # Has actual SQL content
-                        statements.append(stmt)
-                current_statement = ""
-            
-            i += 1
-        
-        # Add any remaining statement
-        if current_statement.strip():
-            statements.append(current_statement.strip())
-        
-        return statements
-
     def execute_sql_file(self, sql_file: Path):
-        """Execute SQL file with proper error handling."""
+        """Execute SQL file with proper parsing of dollar-quoted strings."""
         if not sql_file.exists():
             raise FileNotFoundError(f"SQL file not found: {sql_file}")
         
@@ -215,13 +163,7 @@ class DatabaseManager:
                         errors = []
                         
                         for i, statement in enumerate(statements):
-                            if not statement:
-                                continue
-                            
-                            # Check if statement contains actual SQL (not just comments)
-                            sql_lines = [line.strip() for line in statement.split("\n") 
-                                       if line.strip() and not line.strip().startswith("--")]
-                            if not sql_lines:  # Skip statements that are only comments
+                            if not statement or statement.strip().startswith('--'):
                                 continue
                             
                             try:
@@ -229,27 +171,9 @@ class DatabaseManager:
                                 logger.debug(f"✅ Executed statement {i+1}/{len(statements)}")
                                 
                             except Exception as e:
-                                # Skip common recoverable SQL errors
-                                error_str = str(e).lower()
-                                statement_upper = statement.upper()
-                                
-                                # Skip "already exists" errors for schema objects
-                                if "already exists" in error_str:
-                                    if any(keyword in statement_upper for keyword in 
-                                          ["CREATE INDEX", "CREATE TABLE", "CREATE VIEW", 
-                                           "CREATE FUNCTION", "CREATE TRIGGER"]):
-                                        logger.debug(f"⚠️ Skipping existing object: {e}")
-                                        continue
-                                
                                 # Skip CREATE INDEX on non-existent tables 
-
-                                # Skip CREATE VIEW on non-existent tables (views can be created later)
-                                if ("does not exist" in error_str and
-                                    "CREATE VIEW" in statement_upper):
-                                    logger.debug(f"⚠️ Skipping view: {e}")
-                                    continue
-                                if ("does not exist" in error_str and 
-                                    "CREATE INDEX" in statement_upper):
+                                if ("does not exist" in str(e) and 
+                                    "CREATE INDEX" in statement.upper()):
                                     logger.debug(f"⚠️ Skipping index: {e}")
                                     continue
                                 
@@ -274,6 +198,73 @@ class DatabaseManager:
             logger.error(f"❌ Failed to execute SQL file {sql_file}: {e}")
             raise
     
+    def _parse_sql_statements(self, sql_content: str) -> list:
+        """Parse SQL content into individual statements, handling dollar-quoted strings."""
+        statements = []
+        current_statement = ""
+        in_dollar_quote = False
+        dollar_tag = None
+        in_single_quote = False
+        in_comment = False
+        i = 0
+        
+        while i < len(sql_content):
+            char = sql_content[i]
+            
+            # Handle line comments
+            if char == '-' and i + 1 < len(sql_content) and sql_content[i + 1] == '-':
+                # Skip to end of line
+                while i < len(sql_content) and sql_content[i] != '\n':
+                    i += 1
+                continue
+            
+            # Handle single quotes (but not in dollar quotes)
+            if char == "'" and not in_dollar_quote:
+                in_single_quote = not in_single_quote
+                current_statement += char
+                i += 1
+                continue
+            
+            # Handle dollar-quoted strings
+            if char == '$' and not in_single_quote:
+                if not in_dollar_quote:
+                    # Look for start of dollar quote
+                    end_pos = sql_content.find('$', i + 1)
+                    if end_pos != -1:
+                        potential_tag = sql_content[i:end_pos + 1]
+                        # Valid dollar tag (can be $$ or $tag$)
+                        if re.match(r'\$[a-zA-Z0-9_]*\$', potential_tag):
+                            in_dollar_quote = True
+                            dollar_tag = potential_tag
+                            current_statement += potential_tag
+                            i = end_pos + 1
+                            continue
+                else:
+                    # Check for end of dollar quote
+                    if dollar_tag is not None and sql_content[i:i + len(dollar_tag)] == dollar_tag:
+                        in_dollar_quote = False
+                        current_statement += dollar_tag
+                        i += len(dollar_tag)
+                        dollar_tag = None
+                        continue
+            
+            # Handle statement termination
+            if (char == ';' and not in_dollar_quote and not in_single_quote):
+                current_statement += char
+                if current_statement.strip():
+                    statements.append(current_statement.strip())
+                current_statement = ""
+            else:
+                current_statement += char
+            
+            i += 1
+        
+        # Add final statement if it doesn't end with semicolon
+        if current_statement.strip():
+            statements.append(current_statement.strip())
+        
+        return statements
+
     def test_connection(self) -> bool:
         """Test database connection and PostGIS availability."""
         try:
@@ -340,23 +331,10 @@ class DatabaseManager:
                 logger.error(f"Error closing connection pool: {e}")
             finally:
                 self.pool = None
-
+    
     def __del__(self):
         """Cleanup on destruction."""
-        try:
-            # Check if we still have a pool to close
-            if hasattr(self, 'pool') and self.pool:
-                # During interpreter shutdown, logging might not work
-                try:
-                    # Try to close pool normally first
-                    if self.pool:
-                        self.pool.closeall()
-                        self.pool = None
-                except Exception:
-                    # Silently ignore any errors during cleanup
-                    pass
-        except Exception:
-            # Silently ignore any errors during cleanup
-            pass
+        self.close_pool()
+
 # Global database manager instance
 db = DatabaseManager()
