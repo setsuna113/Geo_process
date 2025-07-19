@@ -1,2 +1,14 @@
 gpkg_data/
 data/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code
+.vscode/
+
+# Backup files
+*.backup
