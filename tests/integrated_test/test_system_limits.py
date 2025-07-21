@@ -46,7 +46,7 @@ class TestSystemLimits:
         
         # Create large raster that would exceed memory if fully loaded
         with generator.mock_large_raster(width=10000, height=10000) as large_raster:
-            from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+            from src.raster.loaders.geotiff_loader import GeoTIFFLoader
             loader = GeoTIFFLoader(memory_limited_config)
             
             # Track memory during loading

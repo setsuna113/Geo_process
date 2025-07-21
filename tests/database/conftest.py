@@ -64,9 +64,11 @@ def sample_species_data():
 @pytest.fixture
 def sample_raster_data():
     """Provide sample raster data for tests."""
+    import uuid
+    unique_id = str(uuid.uuid4())[:8]
     return {
-        'name': 'test_raster',
-        'file_path': '/tmp/test_raster.tif',
+        'name': f'test_raster_{unique_id}',
+        'file_path': f'/tmp/test_raster_{unique_id}.tif',
         'data_type': 'Float32',
         'pixel_size_degrees': 0.016666666666667,
         'spatial_extent_wkt': 'POLYGON((-180 -90, 180 -90, 180 90, -180 90, -180 -90))',
@@ -74,6 +76,7 @@ def sample_raster_data():
         'band_count': 1,
         'file_size_mb': 125.5,
         'checksum': 'abc123def456',
+        'last_modified': '2024-01-01T00:00:00Z',
         'source_dataset': 'Test Dataset',
         'variable_name': 'temperature',
         'units': 'degrees_celsius',

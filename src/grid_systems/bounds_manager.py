@@ -6,6 +6,7 @@ from shapely.geometry import Polygon, Point, box, shape
 from shapely.ops import transform
 import pyproj
 import json
+import math
 import logging
 from pathlib import Path
 
@@ -34,11 +35,18 @@ class BoundsDefinition:
     
     @property
     def area_km2(self) -> float:
-        """Calculate area in km²."""
-        # Transform to equal area projection for accurate area calculation
-        transformer = pyproj.Transformer.from_crs(self.crs, "EPSG:54009", always_xy=True)
-        projected = transform(transformer.transform, self.polygon)
-        return projected.area / 1_000_000  # m² to km²
+        """Calculate area in km² using simple approximation."""
+        # Simple approximation using WGS84 degrees to km conversion
+        # This is less accurate but works without specific projections
+        minx, miny, maxx, maxy = self.bounds
+        
+        # Approximate conversion: 1 degree ≈ 111 km at equator
+        # Adjust for latitude using cosine
+        lat_center = (miny + maxy) / 2
+        width_km = (maxx - minx) * 111.0 * abs(math.cos(math.radians(lat_center)))
+        height_km = (maxy - miny) * 111.0
+        
+        return width_km * height_km
     
     def contains(self, x: float, y: float) -> bool:
         """Check if point is within bounds."""

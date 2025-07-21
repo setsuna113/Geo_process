@@ -175,6 +175,11 @@ class BaseGrid(ABC):
         """
         logger.info(f"Storing grid '{name}'...")
         
+        # Check if already stored
+        if self.grid_id is not None:
+            logger.warning(f"Grid '{name}' already stored with ID {self.grid_id}")
+            return self.grid_id
+        
         # Store grid metadata
         grid_type = self.__class__.__name__.lower().replace('grid', '')
         metadata = {

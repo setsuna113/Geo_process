@@ -6,7 +6,7 @@ import rasterio
 from osgeo import gdal
 
 from src.config.config import Config
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+from src.raster.loaders.geotiff_loader import GeoTIFFLoader
 from src.grid_systems.grid_factory import GridFactory
 from src.processors.richness_processor import RichnessProcessor
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import logging
 
 from .lazy_loadable import LazyLoadable
-from .tileable import Tileable
+from .tileable import Tileable, TileSpec
 from .cacheable import Cacheable
 
 logger = logging.getLogger(__name__)
@@ -204,12 +204,12 @@ class BaseRasterSource(LazyLoadable, Tileable, Cacheable, ABC):
         
         return total_bytes / (1024 * 1024)
         
-    def get_tile_iterator(self, 
-                         tile_size: Optional[int] = None,
-                         overlap: int = 0,
-                         bands: Optional[List[int]] = None) -> Iterator[RasterTile]:
+    def get_raster_tiles(self, 
+                        tile_size: Optional[int] = None,
+                        overlap: int = 0,
+                        bands: Optional[List[int]] = None) -> Iterator[RasterTile]:
         """
-        Get iterator over raster tiles.
+        Get iterator over raster tiles (specific to raster sources).
         
         Args:
             tile_size: Size of tiles in pixels
@@ -245,11 +245,11 @@ class BaseRasterSource(LazyLoadable, Tileable, Cacheable, ABC):
                 # Read tile data
                 try:
                     data = self._read_tile_data(window, bands)
-                    bounds = self._get_window_bounds(window)
+                    tile_bounds = self._get_window_bounds(window)
                     
                     tile = RasterTile(
                         data=data,
-                        bounds=bounds,
+                        bounds=tile_bounds,
                         tile_id=tile_id,
                         crs=self.crs,
                         nodata=self.nodata
@@ -264,6 +264,58 @@ class BaseRasterSource(LazyLoadable, Tileable, Cacheable, ABC):
                 except Exception as e:
                     logger.error(f"Failed to read tile {tile_id}: {e}")
                     continue
+                    
+    def get_tile_iterator(self, 
+                         tile_size: Optional[int] = None,
+                         overlap: Optional[int] = None,
+                         bounds: Optional[Tuple[int, int, int, int]] = None,
+                         prioritize: bool = False) -> Iterator[TileSpec]:
+        """
+        Get iterator over tile specifications (implements Tileable interface).
+        
+        Args:
+            tile_size: Size of tiles in pixels
+            overlap: Overlap between tiles in pixels
+            bounds: Bounding box to iterate over (col_off, row_off, width, height)
+            prioritize: Whether to sort by priority (ignored in this implementation)
+            
+        Yields:
+            TileSpec objects
+        """
+        tile_size = tile_size or self.tile_size
+        overlap = overlap or 0
+        
+        # Use provided bounds or full raster
+        if bounds is not None:
+            start_col, start_row, width, height = bounds
+            end_col = start_col + width
+            end_row = start_row + height
+        else:
+            start_col, start_row = 0, 0
+            end_col, end_row = self.width, self.height
+        
+        # Calculate tile grid
+        step = max(1, tile_size - overlap)
+        cols = range(start_col, end_col, step)
+        rows = range(start_row, end_row, step)
+        
+        for tile_row, row_start in enumerate(rows):
+            for tile_col, col_start in enumerate(cols):
+                # Calculate actual window size
+                col_end = min(col_start + tile_size, end_col)
+                row_end = min(row_start + tile_size, end_row)
+                
+                window = (col_start, row_start, col_end - col_start, row_end - row_start)
+                tile_id = f"tile_{tile_row}_{tile_col}"
+                
+                tile_spec = TileSpec(
+                    tile_id=tile_id,
+                    bounds=window,
+                    overlap=overlap,
+                    priority=0
+                )
+                
+                yield tile_spec
                     
     @contextmanager
     def open_context(self):

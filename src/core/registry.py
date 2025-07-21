@@ -145,12 +145,40 @@ class EnhancedRegistry:
         """
         with self._lock:
             if name not in self._components:
-                available = list(self._components.keys())
-                raise KeyError(
-                    f"'{name}' not found in {self.name} registry. "
-                    f"Available: {available}"
-                )
+                # Try to auto-register grid components on first access
+                if self.name == "grids" and name in ["CubicGrid", "HexagonalGrid"]:
+                    try:
+                        self._auto_register_grid_components()
+                    except ImportError:
+                        pass  # Grid systems not available
+                
+                # Check again after auto-registration
+                if name not in self._components:
+                    available = list(self._components.keys())
+                    raise KeyError(
+                        f"'{name}' not found in {self.name} registry. "
+                        f"Available: {available}"
+                    )
             return self._components[name].component_class
+    
+    def _auto_register_grid_components(self):
+        """Auto-register grid components to avoid circular imports."""
+        try:
+            # Import and register CubicGrid and HexagonalGrid
+            from ..grid_systems.cubic_grid import CubicGrid
+            from ..grid_systems.hexagonal_grid import HexagonalGrid
+            
+            if "CubicGrid" not in self._components:
+                self.register(CubicGrid)
+                logger.debug("Auto-registered CubicGrid")
+            
+            if "HexagonalGrid" not in self._components:
+                self.register(HexagonalGrid)
+                logger.debug("Auto-registered HexagonalGrid")
+                
+        except ImportError as e:
+            logger.debug(f"Could not auto-register grid components: {e}")
+            raise
     
     def get_metadata(self, name: str) -> ComponentMetadata:
         """Get metadata for a registered component."""
@@ -381,15 +409,22 @@ class RegistryFactory:
 class Registry(EnhancedRegistry):
     """Backward compatibility wrapper."""
     
-    def register(self, cls: Type[T], force: bool = False) -> Type[T]:
+    def register(self, 
+                 cls: Type[T], 
+                 metadata: Optional[ComponentMetadata] = None,
+                 force: bool = False,
+                 **metadata_kwargs) -> Type[T]:
         """Legacy register method without metadata."""
-        return super().register(cls, metadata=None, force=force)
+        # Pass through all parameters to maintain compatibility
+        return super().register(cls, metadata=metadata, force=force, **metadata_kwargs)
     
-    def register_decorator(self, force: bool = False) -> Callable:
+    def register_decorator(self, 
+                          metadata: Optional[ComponentMetadata] = None,
+                          force: bool = False,
+                          **metadata_kwargs) -> Callable:
         """Legacy decorator method."""
-        def decorator(cls: Type[T]) -> Type[T]:
-            return self.register(cls, force=force)
-        return decorator
+        # Pass through all parameters to maintain compatibility  
+        return super().register_decorator(metadata=metadata, force=force, **metadata_kwargs)
 
 
 class ComponentRegistry:

@@ -86,12 +86,9 @@ def _initialize_core():
     logger = logging.getLogger(__name__)
     
     try:
-        # Try to register default components
-        register_default_components()
-        logger.debug("Core module initialized with default components")
-    except ImportError:
-        # Grid systems not yet implemented - this is expected
-        logger.debug("Core module initialized (grid systems pending)")
+        # Grid systems will be registered when first needed
+        # This avoids circular import issues during module initialization
+        logger.debug("Core module initialized (grid systems will be registered on-demand)")
     except Exception as e:
         logger.warning(f"Core module initialization issue: {e}")
 

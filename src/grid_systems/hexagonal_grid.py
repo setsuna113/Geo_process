@@ -1,9 +1,11 @@
 # src/grid_systems/hexagonal_grid.py
-"""Hexagonal grid implementation using H3."""
+"""Hexagonal grid system implementation using H3."""
 
-from typing import List, Optional, Tuple, Iterator, Set, Union
+from typing import Optional, Union, List, Tuple, Set, Iterator
 import logging
 import h3
+from h3 import LatLngPoly
+from ..grid_systems.bounds_manager import BoundsDefinition
 from shapely.geometry import Polygon, Point
 import numpy as np
 
@@ -57,6 +59,9 @@ class HexagonalGrid(BaseGrid):
             h3_resolution: Override H3 resolution selection
             **kwargs: Additional parameters
         """
+        if resolution <= 0:
+            raise ValueError(f"Resolution must be positive, got: {resolution}")
+            
         if crs != "EPSG:4326":
             raise ValueError("H3 only supports EPSG:4326 (WGS84)")
             
@@ -115,29 +120,36 @@ class HexagonalGrid(BaseGrid):
         logger.info(f"Total hexagonal grid cells generated: {len(all_cells)}")
         return all_cells
     
-    def _get_hexagons_for_bounds(self, bounds: BoundsDefinition) -> Set[str]:
-        """Get H3 hexagons covering the bounds."""
-        # Create a polygon from bounds
-        poly_coords = [
-            [bounds.bounds[0], bounds.bounds[1]],  # SW
-            [bounds.bounds[2], bounds.bounds[1]],  # SE
-            [bounds.bounds[2], bounds.bounds[3]],  # NE
-            [bounds.bounds[0], bounds.bounds[3]],  # NW
-            [bounds.bounds[0], bounds.bounds[1]]   # Close
+    def _get_hexagons_for_bounds(self, bounds: Union[Tuple[float, float, float, float], BoundsDefinition]) -> Set[str]:
+        """Get H3 hexagons that intersect with the bounds."""
+        # Extract bounding box coordinates: (min_lon, min_lat, max_lon, max_lat)
+        if isinstance(bounds, BoundsDefinition):
+            # BoundsDefinition object
+            min_lon, min_lat, max_lon, max_lat = bounds.bounds
+        else:
+            # Direct tuple
+            min_lon, min_lat, max_lon, max_lat = bounds
+        
+        # Create polygon coordinates in (lat, lng) format as tuples
+        polygon_coords = [
+            (min_lat, min_lon),  # SW corner
+            (min_lat, max_lon),  # SE corner
+            (max_lat, max_lon),  # NE corner
+            (max_lat, min_lon),  # NW corner
+            (min_lat, min_lon)   # Close polygon
         ]
         
-        # Convert to H3 format (lat, lng)
-        h3_poly = [[lat, lng] for lng, lat in poly_coords]
+        # Use LatLngPoly for proper H3 polygon format
+        polygon = LatLngPoly(polygon_coords)
         
         try:
-            # Get hexagons using polyfill
-            hexagons = h3.polygon_to_cells(h3_poly, self.h3_resolution)
+            # Get hexagons that intersect with the polygon
+            hexagons = h3.polygon_to_cells(polygon, self.h3_resolution)
+            logger.debug(f"Found {len(hexagons)} hexagons for H3 resolution {self.h3_resolution}")
             return set(hexagons)
-            
         except Exception as e:
-            logger.warning(f"H3 polyfill failed for bounds {bounds.name}: {e}")
-            # Fallback: sample points and get hexagons
-            return self._get_hexagons_by_sampling(bounds)
+            logger.error(f"Error getting hexagons for bounds {bounds}: {e}")
+            raise
     
     def _get_hexagons_by_sampling(self, bounds: BoundsDefinition) -> Set[str]:
         """Get hexagons by sampling points (fallback method)."""

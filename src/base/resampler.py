@@ -5,7 +5,7 @@ from typing import Optional, List, Dict, Any, Tuple, Union
 import numpy as np
 import logging
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .cacheable import Cacheable
 
@@ -57,11 +57,7 @@ class ResamplingConfidence:
     
     # Recommendations
     recommended_method: Optional[ResamplingMethod] = None
-    warnings: List[str] = None
-    
-    def __post_init__(self):
-        if self.warnings is None:
-            self.warnings = []
+    warnings: List[str] = field(default_factory=list)
 
 
 class BaseResampler(Cacheable, ABC):
@@ -466,7 +462,7 @@ class BaseResampler(Cacheable, ABC):
                     converted = normalized.astype(target_dtype)
                     
         # Restore no-data values
-        if nodata_mask is not None:
+        if nodata_mask is not None and nodata is not None:
             if np.issubdtype(target_dtype, np.integer):
                 target_nodata = int(nodata) if np.can_cast(nodata, target_dtype) else np.iinfo(target_dtype).min
             else:

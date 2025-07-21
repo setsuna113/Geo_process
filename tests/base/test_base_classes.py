@@ -2,6 +2,7 @@
 
 import pytest
 import time
+import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 from shapely.geometry import Point, Polygon
 
@@ -11,6 +12,8 @@ from src.base import (
     BaseFeature, FeatureResult,
     BaseDataset, DatasetInfo
 )
+from src.base.feature import SourceType
+from src.base.dataset import DataType
 
 class TestBaseProcessor:
     """Test BaseProcessor class."""
@@ -202,31 +205,38 @@ class TestBaseGrid:
 class TestBaseFeature:
     """Test BaseFeature class."""
     
-    class DummyFeature(BaseFeature):
-        """Dummy feature extractor."""
-        
-        def extract_single(self, grid_cell_id: str, data: Dict[str, Any]) -> List[FeatureResult]:
-            """Extract dummy features."""
-            return [
-                FeatureResult(
-                    feature_name="count",
-                    feature_type=self.feature_type,
-                    value=float(len(data.get('items', [])))
-                ),
-                FeatureResult(
-                    feature_name="sum",
-                    feature_type=self.feature_type,
-                    value=float(sum(data.get('items', [])))
-                )
-            ]
-            
-        def get_required_data(self) -> List[str]:
-            """Get required data types."""
-            return ['items']
-            
+class DummyFeature(BaseFeature):
+    """Test feature extractor implementation."""
+    
+    def __init__(self):
+        super().__init__(feature_type="test", store_results=False)
+        self.test_data = "dummy"
+    
+    @property
+    def source_type(self) -> SourceType:
+        """Get source type for testing."""
+        return SourceType.RASTER
+    
+    def extract_single(self, grid_cell_id: str, data: Dict[str, Any]) -> List[FeatureResult]:
+        """Extract dummy features for a single cell."""
+        return [FeatureResult(
+            feature_name="dummy_feature",
+            feature_type="test",
+            value=1.0,
+            metadata={"test": True}
+        )]
+    
+    def get_required_data(self) -> List[str]:
+        """Get required data types."""
+        return ["test_data"]
+    
+    def get_feature_count(self) -> int:
+        """Get number of features."""
+        return 3
+
     def test_feature_extraction(self):
         """Test feature extraction."""
-        extractor = self.DummyFeature(feature_type="test")
+        extractor = DummyFeature()
         
         # Single cell
         features = extractor.extract_single("cell_1", {'items': [1, 2, 3]})
@@ -236,7 +246,7 @@ class TestBaseFeature:
         
     def test_batch_extraction(self):
         """Test batch feature extraction."""
-        extractor = self.DummyFeature(feature_type="test", store_results=False)
+        extractor = DummyFeature()
         
         cell_data = {
             'cell_1': {'items': [1, 2, 3]},
@@ -253,11 +263,7 @@ class TestBaseFeature:
         
     def test_normalization(self):
         """Test feature normalization."""
-        extractor = self.DummyFeature(
-            feature_type="test",
-            normalize=True,
-            store_results=False
-        )
+        extractor = DummyFeature()
         
         features = [
             FeatureResult("test", "test", 0.0),
@@ -270,54 +276,61 @@ class TestBaseFeature:
         assert normalized[0].value == 0.0
         assert normalized[1].value == 0.5
         assert normalized[2].value == 1.0
+
+
+class DummyDataset(BaseDataset):
+    """Dummy dataset for testing."""
+    
+    @property
+    def data_type(self) -> DataType:
+        """Get the data type of this dataset."""
+        return DataType.TABULAR
+    
+    def load_info(self) -> DatasetInfo:
+        """Load dataset info."""
+        return DatasetInfo(
+            name="test_dataset",
+            source=str(self.source),
+            format="dummy",
+            size_mb=10.5,
+            record_count=1000,
+            bounds=(0, 0, 10, 10),
+            crs="EPSG:4326",
+            metadata={'test': True},
+            data_type=DataType.TABULAR
+        )
+        
+    def read_records(self):
+        """Read dummy records."""
+        for i in range(10):
+            yield {'id': i, 'value': i * 10}
+            
+    def read_chunks(self):
+        """Read in chunks."""
+        chunk = []
+        for i, record in enumerate(self.read_records()):
+            chunk.append(record)
+            if len(chunk) >= self.chunk_size:
+                yield chunk
+                chunk = []
+        if chunk:
+            yield chunk
+            
+    def validate_record(self, record: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Validate record has required fields."""
+        if 'id' not in record:
+            return False, "Missing 'id' field"
+        if 'value' not in record:
+            return False, "Missing 'value' field"
+        return True, None
         
 
 class TestBaseDataset:
     """Test BaseDataset class."""
-    
-    class DummyDataset(BaseDataset):
-        """Dummy dataset for testing."""
-        
-        def load_info(self) -> DatasetInfo:
-            """Load dataset info."""
-            return DatasetInfo(
-                name="test_dataset",
-                source=str(self.source),
-                format="dummy",
-                size_mb=10.5,
-                record_count=1000,
-                bounds=(0, 0, 10, 10),
-                crs="EPSG:4326",
-                metadata={'test': True}
-            )
-            
-        def read_records(self):
-            """Read dummy records."""
-            for i in range(10):
-                yield {'id': i, 'value': i * 10}
-                
-        def read_chunks(self):
-            """Read in chunks."""
-            chunk = []
-            for i, record in enumerate(self.read_records()):
-                chunk.append(record)
-                if len(chunk) >= self.chunk_size:
-                    yield chunk
-                    chunk = []
-            if chunk:
-                yield chunk
-                
-        def validate_record(self, record: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-            """Validate record has required fields."""
-            if 'id' not in record:
-                return False, "Missing 'id' field"
-            if 'value' not in record:
-                return False, "Missing 'value' field"
-            return True, None
             
     def test_dataset_info(self):
         """Test dataset info loading."""
-        dataset = self.DummyDataset("dummy.txt")
+        dataset = DummyDataset("dummy.txt")
         
         info = dataset.get_info()
         assert info.name == "test_dataset"
@@ -326,7 +339,7 @@ class TestBaseDataset:
         
     def test_record_reading(self):
         """Test record reading."""
-        dataset = self.DummyDataset("dummy.txt")
+        dataset = DummyDataset("dummy.txt")
         
         records = list(dataset.read_records())
         assert len(records) == 10
@@ -335,7 +348,7 @@ class TestBaseDataset:
         
     def test_chunked_reading(self):
         """Test chunked reading."""
-        dataset = self.DummyDataset("dummy.txt", chunk_size=3)
+        dataset = DummyDataset("dummy.txt", chunk_size=3)
         
         chunks = list(dataset.read_chunks())
         assert len(chunks) == 4  # 3, 3, 3, 1
@@ -344,7 +357,7 @@ class TestBaseDataset:
         
     def test_filtering(self):
         """Test record filtering."""
-        dataset = self.DummyDataset("dummy.txt")
+        dataset = DummyDataset("dummy.txt")
         
         # Filter even values
         filtered = list(dataset.filter_records(
@@ -356,7 +369,7 @@ class TestBaseDataset:
         
     def test_sampling(self):
         """Test record sampling."""
-        dataset = self.DummyDataset("dummy.txt")
+        dataset = DummyDataset("dummy.txt")
         
         sample = dataset.sample_records(5, seed=42)
         assert len(sample) == 5

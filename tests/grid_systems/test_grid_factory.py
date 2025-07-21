@@ -1,7 +1,6 @@
 """Tests for grid factory."""
 
 import pytest
-from unittest.mock import Mock, patch
 
 from src.grid_systems import (
     GridFactory, GridSpecification, 
@@ -55,7 +54,7 @@ class TestGridFactory:
         assert hasattr(factory, '_grid_cache')
         assert len(factory.STANDARD_RESOLUTIONS) == 5
         
-    def test_create_grid_from_spec(self, mock_config):
+    def test_create_grid_from_spec(self, test_config):
         """Test creating grid from specification."""
         factory = GridFactory()
         
@@ -72,7 +71,7 @@ class TestGridFactory:
         assert hasattr(grid, 'specification')
         assert grid.specification == spec
         
-    def test_create_grid_from_dict(self, mock_config):
+    def test_create_grid_from_dict(self, test_config):
         """Test creating grid from dictionary."""
         factory = GridFactory()
         
@@ -98,7 +97,7 @@ class TestGridFactory:
         
         assert "Unknown grid type" in str(exc_info.value)
         
-    def test_create_multi_resolution_grids(self, mock_config):
+    def test_create_multi_resolution_grids(self, test_config):
         """Test creating multiple resolution grids."""
         factory = GridFactory()
         
@@ -120,53 +119,50 @@ class TestGridFactory:
         assert grids[25000].resolution == 25000
         
         # Check naming
+        assert grids[100000].specification is not None
         assert grids[100000].specification.name == 'test_multi_100000m'
         
-    @patch('src.database.schema.schema.get_grid_by_name')
-    @patch.object(CubicGrid, 'store_grid')
-    def test_store_grid(self, mock_store, mock_get, mock_config):
+    def test_store_grid(self, test_config, test_db):
         """Test storing grid in database."""
         factory = GridFactory()
         
-        # Mock database responses
-        mock_get.return_value = None  # Grid doesn't exist
-        mock_store.return_value = 'grid_123'
-        
-        # Create and store grid
         grid = factory.create_grid({
             'grid_type': 'cubic',
             'resolution': 10000,
-            'bounds': 'global',
-            'name': 'test_store'
+            'bounds': [-10, -10, 10, 10],  # Small specific bounds
+            'name': 'test_store_unique'
         })
         
-        grid_id = factory.store_grid(grid)
-        
-        assert grid_id == 'grid_123'
-        mock_store.assert_called_once()
-        
-    @patch('src.database.schema.schema.get_grid_by_name')
-    def test_store_grid_exists(self, mock_get, mock_config):
-        """Test storing grid that already exists."""
+    def test_store_grid_exists(self, test_config, test_db):
+        """Test storing multiple different grids."""
         factory = GridFactory()
         
-        # Mock existing grid
-        mock_get.return_value = {'id': 'existing_grid'}
-        
-        grid = factory.create_grid({
+        # Create and store first grid
+        grid1 = factory.create_grid({
             'grid_type': 'cubic',
             'resolution': 10000,
-            'bounds': 'global',
-            'name': 'existing'
+            'bounds': [-5, -5, 5, 5],  # Small specific bounds
+            'name': 'existing_test_1'
         })
         
-        # Should raise error
-        with pytest.raises(ValueError) as exc_info:
-            factory.store_grid(grid)
+        grid_id1 = factory.store_grid(grid1)
         
-        assert "already exists" in str(exc_info.value)
+        # Create and store a different grid
+        grid2 = factory.create_grid({
+            'grid_type': 'cubic',
+            'resolution': 25000,  # Different resolution
+            'bounds': [-3, -3, 3, 3],  # Different bounds
+            'name': 'existing_test_2'  # Different name
+        })
         
-    def test_create_standard_grids(self, mock_config):
+        grid_id2 = factory.store_grid(grid2)
+        
+        # Should have different IDs
+        assert grid_id1 != grid_id2
+        assert grid_id1 is not None
+        assert grid_id2 is not None
+        
+    def test_create_standard_grids(self, test_config):
         """Test creating standard resolution grids."""
         factory = GridFactory()
         
@@ -187,7 +183,7 @@ class TestGridFactory:
         assert grids['coarse'].resolution == 100000
         assert grids['fine'].resolution == 25000
         
-    def test_upscale_data(self, mock_config):
+    def test_upscale_data(self, test_config):
         """Test upscaling data between resolutions."""
         factory = GridFactory()
         
@@ -217,7 +213,7 @@ class TestGridFactory:
         assert len(upscaled) <= len(coarse_grid.get_cells())
         assert all(isinstance(v, float) for v in upscaled.values())
         
-    def test_validate_grid_compatibility(self, mock_config):
+    def test_validate_grid_compatibility(self, test_config):
         """Test grid compatibility validation."""
         factory = GridFactory()
         

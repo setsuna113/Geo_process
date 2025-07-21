@@ -2,7 +2,7 @@
 """Tests for cubic grid implementation."""
 
 import pytest
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, Polygon, box
 
 from src.grid_systems import CubicGrid, BoundsDefinition
 from src.base import GridCell
@@ -11,7 +11,7 @@ from src.base import GridCell
 class TestCubicGrid:
     """Test CubicGrid class."""
     
-    def test_grid_creation(self, mock_config):
+    def test_grid_creation(self, test_config):
         """Test basic grid creation."""
         grid = CubicGrid(
             resolution=10000,  # 10km
@@ -23,7 +23,7 @@ class TestCubicGrid:
         assert grid.bounds == (0, 0, 10, 10)
         assert grid.crs == "EPSG:4326"
         
-    def test_cell_size_calculation(self, mock_config):
+    def test_cell_size_calculation(self, test_config):
         """Test cell size calculation in degrees."""
         # At equator
         grid = CubicGrid(
@@ -35,7 +35,7 @@ class TestCubicGrid:
         # Should be approximately 1 degree
         assert 0.9 < grid.cell_size_degrees < 1.1
         
-    def test_generate_grid_python(self, mock_config):
+    def test_generate_grid_python(self, test_config):
         """Test grid generation using Python implementation."""
         grid = CubicGrid(
             resolution=111000,  # ~1 degree cells
@@ -54,9 +54,10 @@ class TestCubicGrid:
             assert cell.cell_id.startswith('C111000_')
             assert isinstance(cell.geometry, Polygon)
             assert cell.area_km2 > 0
+            assert cell.metadata is not None
             assert cell.metadata['grid_type'] == 'cubic'
             
-    def test_cell_id_generation(self, mock_config):
+    def test_cell_id_generation(self, test_config):
         """Test cell ID generation."""
         grid = CubicGrid(
             resolution=10000,
@@ -72,7 +73,7 @@ class TestCubicGrid:
         with pytest.raises(ValueError):
             grid.get_cell_id(-1, 5)
             
-    def test_get_cell_by_id(self, mock_config):
+    def test_get_cell_by_id(self, test_config):
         """Test retrieving cell by ID."""
         grid = CubicGrid(
             resolution=111000,
@@ -91,7 +92,7 @@ class TestCubicGrid:
         assert grid.get_cell_by_id('H3_12345') is None  # Wrong type
         assert grid.get_cell_by_id('C50000_00001_00001') is None  # Wrong resolution
         
-    def test_get_neighbor_ids(self, mock_config):
+    def test_get_neighbor_ids(self, test_config):
         """Test getting neighbor cell IDs."""
         grid = CubicGrid(
             resolution=111000,
@@ -111,7 +112,7 @@ class TestCubicGrid:
         neighbors = grid.get_neighbor_ids('C111000_00001_00000')
         assert len(neighbors) == 5
         
-    def test_bounds_integration(self, mock_config):
+    def test_bounds_integration(self, test_config):
         """Test integration with BoundsDefinition."""
         bounds_def = BoundsDefinition('test', (10, 20, 30, 40))
         
@@ -124,7 +125,7 @@ class TestCubicGrid:
         assert grid.bounds == bounds_def.bounds
         assert grid.bounds_def == bounds_def
         
-    def test_spatial_queries(self, mock_config):
+    def test_spatial_queries(self, test_config):
         """Test spatial query methods."""
         grid = CubicGrid(
             resolution=111000,
@@ -143,7 +144,7 @@ class TestCubicGrid:
         assert len(cells) > 0
         assert all(cell.geometry.intersects(test_poly) for cell in cells)
         
-    def test_large_grid_generation(self, mock_config):
+    def test_large_grid_generation(self, test_config):
         """Test generation of large grids."""
         # This would normally use PostGIS
         grid = CubicGrid(
@@ -164,3 +165,46 @@ class TestCubicGrid:
         
         # Should cover significant portion of Earth
         assert total_area > earth_area * 0.5
+
+    def test_calculate_cell_size_degrees_precision(self, test_config):
+        """Test precise cell size calculation in degrees."""
+        grid = CubicGrid(resolution=11132, bounds=(0, 0, 10, 10), use_postgis=False)
+        cell_size = grid._calculate_cell_size_degrees()
+        
+        # Should be approximately 0.1 degrees for ~11km resolution
+        assert 0.05 < cell_size < 0.15
+        
+    def test_generate_cell_id_consistency(self, test_config):
+        """Test cell ID generation consistency."""
+        grid = CubicGrid(resolution=10000, bounds=(0, 0, 10, 10), use_postgis=False)
+        
+        cell_id = grid._generate_cell_id(1.0, 2.0)
+        
+        assert cell_id.startswith("C10000_")
+        assert "_" in cell_id
+        
+        # Test consistency
+        cell_id2 = grid._generate_cell_id(1.0, 2.0)
+        assert cell_id == cell_id2
+        
+    def test_area_calculation_positive(self, test_config):
+        """Test area calculation returns positive values."""
+        grid = CubicGrid(resolution=10000, bounds=(0, 0, 1, 1), use_postgis=False)
+        
+        # Create a 1x1 degree polygon
+        polygon = box(0, 0, 1, 1)
+        area = grid._calculate_area_km2(polygon)
+        
+        # Area calculation should return a positive number
+        assert area > 0
+        
+    def test_get_cell_id_bounds_checking(self, test_config):
+        """Test cell ID retrieval with bounds checking."""
+        grid = CubicGrid(resolution=10000, bounds=(0, 0, 10, 10), use_postgis=False)
+        
+        cell_id = grid.get_cell_id(5.0, 5.0)
+        assert cell_id.startswith("C10000_")
+        
+        # Test out of bounds
+        with pytest.raises(ValueError):
+            grid.get_cell_id(15.0, 15.0)

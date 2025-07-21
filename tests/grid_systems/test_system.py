@@ -14,13 +14,18 @@ from src.grid_systems import (
 class TestGridSystemE2E:
     """End-to-end tests for complete grid system workflows."""
     
-    @patch('src.database.schema.schema')
-    def test_complete_grid_workflow(self, mock_schema, mock_config):
+    @patch('src.grid_systems.grid_factory.schema')
+    @patch('src.base.grid.schema')
+    def test_complete_grid_workflow(self, mock_base_schema, mock_factory_schema, test_config):
         """Test complete workflow from creation to storage."""
-        # Mock database operations
-        mock_schema.get_grid_by_name.return_value = None
-        mock_schema.store_grid_definition.return_value = 'grid_123'
-        mock_schema.store_grid_cells_batch.return_value = None
+        # Mock database operations for both schema instances
+        mock_base_schema.get_grid_by_name.return_value = None
+        mock_base_schema.store_grid_definition.return_value = 'grid_123'
+        mock_base_schema.store_grid_cells_batch.return_value = None
+        
+        mock_factory_schema.get_grid_by_name.return_value = None
+        mock_factory_schema.store_grid_definition.return_value = 'grid_123'
+        mock_factory_schema.store_grid_cells_batch.return_value = None
         
         # 1. Initialize system
         bounds_manager = BoundsManager()
@@ -52,11 +57,11 @@ class TestGridSystemE2E:
             grid_id = factory.store_grid(grid)
             assert grid_id == 'grid_123'
             
-        # Verify storage calls
-        assert mock_schema.store_grid_definition.call_count == 3
-        assert mock_schema.store_grid_cells_batch.call_count > 0
+        # 7. Verify storage operations
+        assert mock_base_schema.store_grid_definition.call_count == 3
+        assert mock_base_schema.store_grid_cells_batch.call_count > 0
         
-    def test_global_grid_generation_scenario(self, mock_config):
+    def test_global_grid_generation_scenario(self, test_config):
         """Test generating global grids for biodiversity analysis."""
         factory = GridFactory()
         bounds_manager = BoundsManager()
@@ -82,7 +87,7 @@ class TestGridSystemE2E:
         assert total_cells > 0
         assert len(chunks) > 1  # Global should be subdivided
         
-    def test_mixed_grid_types_workflow(self, mock_config):
+    def test_mixed_grid_types_workflow(self, test_config):
         """Test workflow with both cubic and hexagonal grids."""
         factory = GridFactory()
         
@@ -118,7 +123,7 @@ class TestGridSystemE2E:
         assert cubic_cell_id.startswith('C50000_')
         assert hex_cell_id.startswith('H')
         
-    def test_regional_analysis_workflow(self, mock_config):
+    def test_regional_analysis_workflow(self, test_config):
         """Test workflow for regional biodiversity analysis."""
         factory = GridFactory()
         bounds_manager = BoundsManager()
@@ -152,7 +157,7 @@ class TestGridSystemE2E:
         assert len(regional_grids) == 3
         assert all(grid is not None for grid in regional_grids.values())
         
-    def test_error_handling_workflow(self, mock_config):
+    def test_error_handling_workflow(self, test_config):
         """Test error handling in grid system workflow."""
         factory = GridFactory()
         bounds_manager = BoundsManager()
@@ -179,7 +184,7 @@ class TestGridSystemE2E:
                 'crs': 'EPSG:3857'
             })
             
-    def test_performance_characteristics(self, mock_config):
+    def test_performance_characteristics(self, test_config):
         """Test performance with different grid sizes."""
         import time
         
@@ -213,7 +218,7 @@ class TestGridSystemPerformance:
     """Performance tests for grid system."""
     
     @pytest.mark.slow
-    def test_large_grid_generation(self, mock_config):
+    def test_large_grid_generation(self, test_config):
         """Test generating large grid."""
         factory = GridFactory()
         
@@ -235,7 +240,7 @@ class TestGridSystemPerformance:
         assert len(cells) < expected_cells * 2
         
     @pytest.mark.slow 
-    def test_memory_efficiency(self, mock_config):
+    def test_memory_efficiency(self, test_config):
         """Test memory usage stays reasonable."""
         import psutil
         import gc

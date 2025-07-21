@@ -3,6 +3,7 @@ data/
 
 # Python artifacts
 __pycache__/
+pytest.cache/
 *.pyc
 *.pyo
 *.pyd

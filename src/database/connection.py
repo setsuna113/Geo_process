@@ -7,8 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from ..config import config
 import logging
-import re
 import time
+import re
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -171,12 +171,21 @@ class DatabaseManager:
                                 logger.debug(f"✅ Executed statement {i+1}/{len(statements)}")
                                 
                             except Exception as e:
+                                error_str = str(e).lower()
+                                
                                 # Skip CREATE INDEX on non-existent tables 
-                                if ("does not exist" in str(e) and 
+                                if ("does not exist" in error_str and 
                                     "CREATE INDEX" in statement.upper()):
                                     logger.debug(f"⚠️ Skipping index: {e}")
                                     continue
                                 
+                                # Skip "already exists" errors - these are expected in schema setup
+                                if ("already exists" in error_str or 
+                                    "duplicate object" in error_str):
+                                    logger.debug(f"⚠️ Object already exists (expected): {e}")
+                                    continue
+                                
+                                # Log real errors
                                 error_msg = f"Statement {i+1} failed: {e}"
                                 logger.warning(error_msg)
                                 logger.warning(f"Statement: {statement[:200]}...")

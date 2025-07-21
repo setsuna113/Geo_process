@@ -38,6 +38,9 @@ class CubicGrid(BaseGrid):
             use_postgis: Whether to use PostGIS functions
             **kwargs: Additional parameters
         """
+        if resolution <= 0:
+            raise ValueError(f"Resolution must be positive, got: {resolution}")
+            
         # Convert bounds to BoundsDefinition if needed
         if bounds is not None and not isinstance(bounds, BoundsDefinition):
             bounds_manager = BoundsManager()
@@ -116,7 +119,7 @@ class CubicGrid(BaseGrid):
                 WITH grid AS (
                     SELECT 
                         row_number() OVER () as gid,
-                        cell
+                        geom as cell
                     FROM (
                         SELECT (
                             ST_SquareGrid(
@@ -130,7 +133,14 @@ class CubicGrid(BaseGrid):
                     gid,
                     ST_AsText(cell) as geom_wkt,
                     ST_AsText(ST_Centroid(cell)) as centroid_wkt,
-                    ST_Area(ST_Transform(cell, 54009)) / 1000000 as area_km2,
+                    CASE 
+                        WHEN ST_YMin(cell) < -85 OR ST_YMax(cell) > 85 THEN 
+                            -- For polar regions, use a simple approximation
+                            (ST_XMax(cell) - ST_XMin(cell)) * (ST_YMax(cell) - ST_YMin(cell)) * 111.0 * 111.0
+                        ELSE 
+                            -- For non-polar regions, use proper area calculation
+                            ST_Area(ST_Transform(cell, 3857)) / 1000000
+                    END as area_km2,
                     ST_XMin(cell) as minx,
                     ST_YMin(cell) as miny,
                     ST_XMax(cell) as maxx,
@@ -220,17 +230,17 @@ class CubicGrid(BaseGrid):
         return f"C{self.resolution}_{i:05d}_{j:05d}"
     
     def _calculate_area_km2(self, polygon: Polygon) -> float:
-        """Calculate polygon area in km²."""
-        # Transform to equal area projection
-        from shapely.ops import transform
+        """Calculate polygon area in km² using simple approximation."""
+        # Simple approximation using WGS84 degrees to km conversion
+        minx, miny, maxx, maxy = polygon.bounds
         
-        transformer = self.transformer_to_crs if self.crs != "EPSG:54009" else None
-        if transformer:
-            projected = transform(transformer.transform, polygon)
-        else:
-            projected = polygon
-            
-        return projected.area / 1_000_000
+        # Approximate conversion: 1 degree ≈ 111 km at equator
+        # Adjust for latitude using cosine
+        lat_center = (miny + maxy) / 2
+        width_km = (maxx - minx) * 111.0 * abs(math.cos(math.radians(lat_center)))
+        height_km = (maxy - miny) * 111.0
+        
+        return width_km * height_km
     
     def get_cell_id(self, x: float, y: float) -> str:
         """Get cell ID for a coordinate."""

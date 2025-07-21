@@ -150,7 +150,7 @@ class TestEdgeCases:
                 pattern="gradient"
             )
             
-            from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+            from src.raster.loaders.geotiff_loader import GeoTIFFLoader
             from src.config.config import Config
             
             config = Config()
@@ -246,7 +246,7 @@ class TestEdgeCases:
                 f"Coordinate precision lost: {actual_bounds[i]} != {precise_bounds[i]}"
         
         # Test point sampling at precise coordinates
-        from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+        from src.raster.loaders.geotiff_loader import GeoTIFFLoader
         
         test_points = [
             (-10.123456789, 40.987654321),  # Exact corner

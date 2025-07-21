@@ -48,7 +48,7 @@ class TestRasterManager:
         assert manager is not None
     
     @patch('src.raster.metadata.RasterMetadataExtractor.extract_metadata')
-    @patch('src.raster.metadata.RasterMetadataExtractor.calculate_checksum')
+    @patch('src.raster.metadata.RasterMetadataExtractor.calculate_file_checksum')
     def test_register_raster_source(self, mock_checksum, mock_metadata, 
                                    mock_raster_file, sample_raster_metadata):
         """Test registering a new raster source."""
@@ -144,8 +144,10 @@ class TestRasterManager:
                     # Check status updates
                     assert mock_update.call_count == 2  # tiling -> ready
                     mock_update.assert_any_call('raster-123', 'tiling')
+                    # Check that the call was made with proper structure - using ANY for dynamic timestamp
+                    from unittest.mock import ANY
                     mock_update.assert_any_call('raster-123', 'ready', 
-                                               {'tiling_completed_at': pytest.approx(str), 'tile_count': 1})
+                                               {'tiling_completed_at': ANY, 'tile_count': 1})
     
     @patch('src.raster.processor.RasterProcessor.perform_resampling')
     def test_resample_to_grid(self, mock_resample):
@@ -293,7 +295,7 @@ class TestRasterSchemaIntegration:
         # For now, we'll mock the database operations
         
         sample_raster_data = {
-            'name': 'bio_1_annual',
+            'name': f'bio_1_annual_{hash(id(self))}',
             'file_path': '/data/worldclim/bio_1.tif',
             'data_type': 'Float32',
             'pixel_size_degrees': 0.016666666666667,
@@ -302,6 +304,7 @@ class TestRasterSchemaIntegration:
             'band_count': 1,
             'file_size_mb': 125.5,
             'checksum': 'abc123',
+            'last_modified': '2024-01-01T00:00:00Z',
             'source_dataset': 'WorldClim_v2.1',
             'variable_name': 'bio_1',
             'units': 'degrees_celsius',
@@ -322,8 +325,9 @@ class TestRasterSchemaIntegration:
                 
                 # Test retrieval
                 sources = schema.get_raster_sources()
-                assert len(sources) == 1
-                assert sources[0]['name'] == 'bio_1_annual'
+                test_sources = [s for s in sources if s['name'].startswith('bio_1_annual')]
+                assert len(test_sources) == 1
+                assert test_sources[0]['name'].startswith('bio_1_annual')
     
     def test_cache_operations(self):
         """Test resampling cache operations."""

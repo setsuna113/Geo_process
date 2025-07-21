@@ -233,8 +233,8 @@ class TestComponentRegistry:
         TestGrid.__module__ = "test_module"
         TestProcessor.__module__ = "test_module"
         
-        module.TestGrid = TestGrid
-        module.TestProcessor = TestProcessor
+        setattr(module, 'TestGrid', TestGrid)
+        setattr(module, 'TestProcessor', TestProcessor)
         
         # Auto-register
         self.registry.auto_register_module(module, "grids")

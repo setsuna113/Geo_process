@@ -21,6 +21,7 @@ class MemorySnapshot:
     
     # Process memory
     heap_memory_mb: float
+    heap_used_mb: float  # Alias for compatibility with tests
     virtual_memory_mb: float
     rss_memory_mb: float  # Resident Set Size
     
@@ -158,6 +159,7 @@ class MemoryTracker:
             return MemorySnapshot(
                 timestamp=time.time(),
                 heap_memory_mb=heap_memory_mb,
+                heap_used_mb=heap_memory_mb,  # Same as heap_memory_mb for compatibility
                 virtual_memory_mb=virtual_memory_mb,
                 rss_memory_mb=rss_memory_mb,
                 mapped_files_mb=mapped_files_mb,

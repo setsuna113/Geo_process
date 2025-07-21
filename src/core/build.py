@@ -89,6 +89,10 @@ class ComponentBuilder:
             try:
                 # Import the module
                 spec = importlib.util.spec_from_file_location(module_name, py_file)
+                if spec is None or spec.loader is None:
+                    logger.warning(f"Could not create module spec for {py_file}")
+                    continue
+                    
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 
