@@ -103,10 +103,11 @@ class ValueValidator:
                 'has_valid_data': False
             }
         
-        values = np.array(values)
+        values_array = np.array(values)
+        values_list = values_array.tolist()
         
         return {
-            'count': len(values),
+            'count': len(values_array),
             'nodata_count': nodata_count,
             'min': float(np.min(values)),
             'max': float(np.max(values)),
@@ -176,7 +177,7 @@ class ValueValidator:
     
     def _detect_anomalies(self, sample_stats: Dict, metadata: RasterMetadata) -> List[Dict]:
         """Detect statistical anomalies in the data."""
-        anomalies = []
+        anomalies: List[Dict[str, Any]] = []
         
         if not sample_stats.get('has_valid_data', False):
             return anomalies

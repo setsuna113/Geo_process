@@ -15,6 +15,7 @@ from src.base.processor import BaseProcessor
 from src.raster_data.catalog import RasterCatalog, RasterEntry
 from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
 from src.database.connection import DatabaseManager
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +102,8 @@ class RasterMerger(BaseProcessor):
             'metadata': {
                 'bands': ['plants', 'animals', 'fungi'],
                 'sources': {k: v.path for k, v in rasters.items()},
-                'shape': merged_data.shape,
-                'dtype': str(merged_data.dtype)
+                'shape': dict(merged_data.sizes),
+                'dtype': str(merged_data.to_array().dtype)
             }
         }
     
@@ -283,7 +284,16 @@ class RasterMerger(BaseProcessor):
         # rioxarray imported at top
         
         # Use rioxarray for better CRS handling
-        da = rioxarray.open_rasterio(raster_path, chunks={'x': 1000, 'y': 1000})
+        da_temp = rioxarray.open_rasterio(raster_path, chunks={'x': 1000, 'y': 1000})
+        if isinstance(da_temp, xr.DataArray):
+            da: xr.DataArray = da_temp
+        elif isinstance(da_temp, xr.Dataset):
+            da = da_temp.to_array().squeeze()
+        elif isinstance(da_temp, list) and da_temp:
+            # Handle list case - take first dataset and convert
+            da = da_temp[0].to_array().squeeze()
+        else:
+            raise TypeError(f"Unexpected type from rioxarray.open_rasterio: {type(da_temp)}")
         
         # If multi-band, select first band
         if 'band' in da.dims:
@@ -331,15 +341,15 @@ class RasterMerger(BaseProcessor):
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
             """, (
-                {k: v.id for k, v in rasters.items()},
+                json.dumps({k: v.id for k, v in rasters.items()}),
                 list(rasters.keys()),
                 list(merged_data.dims.values()),
                 datetime.now(),
-                {
+                json.dumps({
                     'sources': {k: str(v.path) for k, v in rasters.items()},
                     'alignment_checked': True,
                     'dtype': str(merged_data.to_array().dtype)
-                }
+                })
             ))
             
             merge_id = cur.fetchone()[0]

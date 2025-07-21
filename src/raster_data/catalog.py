@@ -40,7 +40,7 @@ class RasterCatalog:
         self.db = db_connection
         self.config = config
         self.registry = Registry("raster_catalog")
-        self._loader_cache = {}
+        self._loader_cache: Dict[str, Any] = {}
         
         # Initialize components
         self.metadata_extractor = RasterMetadataExtractor(db_connection)
@@ -191,7 +191,7 @@ class RasterCatalog:
     
     def validate_catalog(self, fix_issues: bool = False) -> Dict[str, Any]:
         """Validate all entries in catalog."""
-        results = {
+        results: Dict[str, Any] = {
             'total': 0,
             'valid': 0,
             'issues': [],
@@ -290,7 +290,7 @@ class RasterCatalog:
         """Generate catalog report."""
         entries = self.list_rasters()
         
-        report = {
+        report: Dict[str, Any] = {
             'generated': datetime.now().isoformat(),
             'total_rasters': len(entries),
             'total_size_gb': sum(e.file_size_mb for e in entries) / 1024,

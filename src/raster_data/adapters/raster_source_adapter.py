@@ -69,7 +69,7 @@ class RasterSourceAdapter(BaseRasterSource):
             'Float32': np.float32,
             'Float64': np.float64,
         }
-        self._dtype = dtype_map.get(self._metadata.data_type, np.float32)
+        self._dtype: Optional[np.dtype] = np.dtype(dtype_map.get(self._metadata.data_type, np.float32))
     
     # Implement abstract methods from LazyLoadable
     def _load_resource(self) -> Any:

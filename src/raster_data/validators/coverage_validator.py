@@ -113,7 +113,7 @@ class CoverageValidator:
     def validate_multiple_rasters(self, raster_paths: List[Path], 
                                  check_consistency: bool = True) -> Dict[str, Any]:
         """Validate multiple rasters for consistency."""
-        results = {}
+        results: Dict[str, Any] = {}
         metadata_list = []
         
         for path in raster_paths:

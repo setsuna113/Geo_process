@@ -62,10 +62,12 @@ class DataNormalizer(BaseProcessor):
             scaler = scaler_class()
         
         # Normalize based on data type
+        normalized: Union[xr.DataArray, xr.Dataset]
         if isinstance(data, xr.DataArray):
             normalized, params = self._normalize_dataarray(data, scaler, by_band)
         else:
             normalized, params = self._normalize_dataset(data, scaler, by_band)
+        # normalized is now Union[xr.DataArray, xr.Dataset]
         
         # Save parameters if requested
         if save_params:

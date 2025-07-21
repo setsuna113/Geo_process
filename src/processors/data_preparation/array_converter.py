@@ -2,7 +2,7 @@
 """Convert between different array formats while preserving spatial information."""
 
 import logging
-from typing import Union, Tuple, Dict, Any, Optional, List
+from typing import Union, Tuple, Dict, Any, Optional, List, Callable
 from typing import Union, Tuple, Dict, Any, Optional, List
 import numpy as np
 import xarray as xr
@@ -346,7 +346,7 @@ class ArrayConverter(BaseProcessor):
             chunked_data = data.chunk(chunk_dict)
         
         # Map operation
-        operation_map = {
+        operation_map: Dict[str, Callable] = {
             'to_numpy': self.xarray_to_numpy,
             'to_geopandas': self.xarray_to_geopandas,
             'flatten': self.flatten_spatial
@@ -393,7 +393,7 @@ class ArrayConverter(BaseProcessor):
         coord_info = {}
         
         for coord_name, coord in data_array.coords.items():
-            coord_info[coord_name] = {
+            coord_info[str(coord_name)] = {
                 'values': coord.values,
                 'dims': coord.dims,
                 'attrs': dict(coord.attrs)

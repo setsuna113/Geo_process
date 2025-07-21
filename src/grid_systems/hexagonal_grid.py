@@ -105,7 +105,7 @@ class HexagonalGrid(BaseGrid):
         chunks = bounds_manager.subdivide_bounds(self.bounds_def, max_size_degrees=10.0)
         
         all_cells = []
-        all_hexagons = set()  # Track unique hexagons
+        all_hexagons: set = set()  # Track unique hexagons
         
         for chunk in chunks:
             chunk_hexagons = self._get_hexagons_for_bounds(chunk)

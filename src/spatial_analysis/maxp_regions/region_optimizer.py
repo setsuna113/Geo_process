@@ -10,8 +10,8 @@ from spopt.region import MaxPHeuristic
 import libpysal
 
 from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
-from src.core.config import Config
-from src.database.connection import DatabaseConnection
+from src.config.config import Config
+from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ class MaxPAnalyzer(BaseAnalyzer):
     ensuring each region meets a minimum area threshold.
     """
     
-    def __init__(self, config: Config, db_connection: Optional[DatabaseConnection] = None):
+    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
         super().__init__(config, db_connection)
         
         # Max-p specific config

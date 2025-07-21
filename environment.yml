@@ -71,8 +71,10 @@ dependencies:
   - c-blosc2=2.17.1=h4257ac4_0
   - ca-certificates=2025.7.14=hbd8a1cb_0
   - cachetools=5.5.1=py313h06a4308_0
+  - cairo=1.16.0=he5ede1b_6
   - certifi=2025.7.14=pyhd8ed1ab_0
   - cffi=1.17.1=py313h1fdaa30_1
+  - cfitsio=3.470=hb418390_7
   - chardet=4.0.0=py313h06a4308_1003
   - charset-normalizer=3.3.2=pyhd3eb1b0_0
   - click=8.1.8=py313h06a4308_0
@@ -128,6 +130,7 @@ dependencies:
   - fontconfig=2.14.1=h55d465d_3
   - fonttools=4.55.3=py313h5eee18b_0
   - freetype=2.13.3=h4a9f257_0
+  - freexl=2.0.0=hf309648_0
   - frozendict=2.4.2=py313h06a4308_0
   - frozenlist=1.5.0=py313h5eee18b_0
   - fsspec=2025.3.2=py313h7040dfc_0

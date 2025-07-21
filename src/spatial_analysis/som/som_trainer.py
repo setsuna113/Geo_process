@@ -203,10 +203,10 @@ class SOMAnalyzer(BaseAnalyzer):
         
         # Store additional outputs
         additional_outputs = {
-            'som_weights': "MiniSom".get_weights(),
-            'distance_map': "MiniSom".distance_map(),
-            'quantization_error': "MiniSom".quantization_error(prepared_data),
-            'topographic_error': "MiniSom".topographic_error(prepared_data),
+            'som_weights': som.get_weights(),
+            'distance_map': som.distance_map(),
+            'quantization_error': som.quantization_error(prepared_data),
+            'topographic_error': som.topographic_error(prepared_data),
             'activation_map': self._get_activation_map(som, prepared_data),
             'component_planes': self._get_component_planes(som, metadata)
         }
@@ -250,8 +250,8 @@ class SOMAnalyzer(BaseAnalyzer):
         return {
             'n_clusters': n_clusters,
             'grid_size': params['grid_size'],
-            'quantization_error': float(som.quantization_error(data)  # type: ignore),  # type: ignore[attr-defined]
-            'topographic_error': float(som.topographic_error(data)  # type: ignore),  # type: ignore[attr-defined]
+            "quantization_error": float(som.quantization_error(data)),  # type: ignore[attr-defined]
+            "topographic_error": float(som.topographic_error(data)),  # type: ignore[attr-defined]
             'cluster_statistics': cluster_stats,
             'empty_neurons': self._count_empty_neurons(labels, params['grid_size']),
             'cluster_balance': self._calculate_cluster_balance(labels)
@@ -259,7 +259,7 @@ class SOMAnalyzer(BaseAnalyzer):
     
     def _get_activation_map(self, som: Any, data: np.ndarray) -> np.ndarray:
         """Get activation frequency for each neuron."""
-        activation_map = np.zeros(som.get_weights()  # type: ignore.shape[:2])  # type: ignore[attr-defined]
+        activation_map = np.zeros(som.get_weights().shape[:2])  # type: ignore[attr-defined]
         
         for sample in data:
             winner = som.winner(sample)  # type: ignore  # type: ignore[attr-defined]

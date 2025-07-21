@@ -2,7 +2,7 @@
 """Visualization tools for SOM analysis results."""
 
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import statistics
 import matplotlib.pyplot as plt
@@ -42,17 +42,17 @@ class SOMVisualizer:
         spatial_data = result.spatial_output
         
         # Create discrete colormap
-        n_clusters = result.statistics.get('n_clusters', 0) if statistics is not None else None
+        n_clusters = result.statistics.get('n_clusters', 0) if result.statistics is not None else 0
         colors = plt.cm.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
         cmap = ListedColormap(colors)
         
         # Plot
-        im = if spatial_data is not None:
+        if spatial_data is not None:
             data_to_plot = spatial_data.values if hasattr(spatial_data, "values") else spatial_data
         else:
             data_to_plot = np.zeros((1, 1))
         ax.imshow(data_to_plot if data_to_plot is not None else np.zeros((1, 1)),spatial_data.values if spatial_data is not None and hasattr(spatial_data, "values") else (spatial_data if spatial_data is not None else np.array([])), cmap=cmap, aspect='auto')
-        
+        im = ax.imshow(data_to_plot, cmap=cmap, aspect="auto")
         # Add colorbar
         cbar = plt.colorbar(im, ax=ax, label='Cluster ID')
         cbar.set_ticks(range(n_clusters))
@@ -71,8 +71,7 @@ class SOMVisualizer:
         return fig
     
     def plot_umatrix(self, result: AnalysisResult,
-                    save_path: if Optional is not None:
-                Optional[str] = None) -> Any:
+                    save_path: Optional[str] = None) -> Any:
         """
         Plot U-matrix (distance map) showing cluster boundaries.
         
@@ -88,7 +87,7 @@ class SOMVisualizer:
         distance_map = result.additional_outputs['distance_map']
         
         # Plot U-matrix
-        im = if spatial_data is not None:
+        if spatial_data is not None:
             data_to_plot = spatial_data.values if hasattr(spatial_data, "values") else spatial_data
         else:
             data_to_plot = np.zeros((1, 1))
@@ -123,8 +122,7 @@ class SOMVisualizer:
         return fig
     
     def plot_component_planes(self, result: AnalysisResult,
-                            save_path: if Optional is not None:
-                Optional[str] = None) -> Any:
+                            save_path: Optional[str] = None) -> Any:
         """
         Plot component planes showing feature weights.
         
@@ -152,11 +150,7 @@ class SOMVisualizer:
         for idx, (name, plane) in enumerate(component_planes.items()):
             ax = axes[idx]
             
-            im = if spatial_data is not None:
-            data_to_plot = spatial_data.values if hasattr(spatial_data, "values") else spatial_data
-        else:
-            data_to_plot = np.zeros((1, 1))
-        ax.imshow(data_to_plot if data_to_plot is not None else np.zeros((1, 1)),plane.T, cmap='RdBu_r', aspect='auto')
+            im = ax.imshow(plane.T, cmap="RdBu_r", aspect="auto")
             plt.colorbar(im, ax=ax, label='Weight')
             
             ax.set_title(f'{name} Component', fontsize=12, fontweight='bold')
@@ -178,8 +172,7 @@ class SOMVisualizer:
     
     def plot_cluster_profiles(self, result: AnalysisResult,
                             normalize: bool = True,
-                            save_path: if Optional is not None:
-                Optional[str] = None) -> Any:
+                            save_path: Optional[str] = None) -> Any:
         """
         Plot average profiles for each cluster.
         
@@ -191,7 +184,7 @@ class SOMVisualizer:
         Returns:
             Matplotlib figure
         """
-        cluster_stats = result.statistics.get('cluster_statistics', 0) if statistics is not None else None
+        cluster_stats = result.statistics.get('cluster_statistics', 0) if result.statistics is not None else 0
         n_clusters = len(cluster_stats)
         
         # Extract means for each cluster
@@ -244,8 +237,7 @@ class SOMVisualizer:
         return fig
     
     def create_summary_figure(self, result: AnalysisResult,
-                            save_path: if Optional is not None:
-                Optional[str] = None) -> Any:
+                            save_path: Optional[str] = None) -> Any:
         """Create a comprehensive summary figure."""
         fig = plt.figure(figsize=(16, 12))
         
@@ -255,7 +247,7 @@ class SOMVisualizer:
         # 1. Cluster map (large)
         ax1 = fig.add_subplot(gs[0:2, 0:2])
         spatial_data = result.spatial_output
-        n_clusters = result.statistics.get('n_clusters', 0) if statistics is not None else None
+        n_clusters = result.statistics.get('n_clusters', 0) if result.statistics is not None else 0
         colors = plt.cm.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
         cmap = ListedColormap(colors)
         im1 = ax1.imshow(spatial_data.values if spatial_data is not None and hasattr(spatial_data, "values") else (spatial_data if spatial_data is not None else np.array([])), cmap=cmap, aspect='auto')
@@ -274,7 +266,7 @@ class SOMVisualizer:
         
         # 3. Cluster sizes
         ax3 = fig.add_subplot(gs[1, 2])
-        cluster_stats = result.statistics.get('cluster_statistics', 0) if statistics is not None else None
+        cluster_stats = result.statistics.get('cluster_statistics', 0) if result.statistics is not None else 0
         sizes = [stats['count'] for stats in cluster_stats.values()]
         clusters = list(cluster_stats.keys())
         _ = ax3.bar(clusters, sizes, color=colors[:len(clusters)])  # Intentionally unused
@@ -286,10 +278,10 @@ class SOMVisualizer:
         # 4. Quality metrics
         ax4 = fig.add_subplot(gs[2, 0])
         metrics_text = (
-            f"Quantization Error: {result.statistics.get('quantization_error', 0) if statistics is not None else None:.4f}\n"
-            f"Topographic Error: {result.statistics.get('topographic_error', 0) if statistics is not None else None:.4f}\n"
-            f"Empty Neurons: {result.statistics.get('empty_neurons', 0) if statistics is not None else None}\n"
-            f"Cluster Balance: {result.statistics.get('cluster_balance', 0) if statistics is not None else None:.4f}"
+            f"Quantization Error: {result.statistics.get('quantization_error', 0) if result.statistics is not None else 0:.4f}\n"
+            f"Topographic Error: {result.statistics.get('topographic_error', 0) if result.statistics is not None else 0:.4f}\n"
+            f"Empty Neurons: {result.statistics.get('empty_neurons', 0) if result.statistics is not None else 0}\n"
+            f"Cluster Balance: {result.statistics.get('cluster_balance', 0) if result.statistics is not None else 0:.4f}"
         )
         ax4.text(0.1, 0.5, metrics_text, transform=ax4.transAxes,
                 fontsize=12, verticalalignment='center',

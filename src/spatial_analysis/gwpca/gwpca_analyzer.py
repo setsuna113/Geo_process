@@ -13,8 +13,8 @@ from sklearn.preprocessing import StandardScaler
 import xarray as xr
 
 from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
-from src.core.config import Config
-from src.database.connection import DatabaseConnection
+from src.config.config import Config
+from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class GWPCAAnalyzer(BaseAnalyzer):
     across geographic space using aggregated blocks for computational efficiency.
     """
     
-    def __init__(self, config: Config, db_connection: Optional[DatabaseConnection] = None):
+    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
         super().__init__(config, db_connection)
         
         # GWPCA specific config

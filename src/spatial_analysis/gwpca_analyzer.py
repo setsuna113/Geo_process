@@ -12,7 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
-from src.core.config import Config
+from src.config.config import Config
 from src.database.connection import DatabaseConnection
 
 logger = logging.getLogger(__name__)

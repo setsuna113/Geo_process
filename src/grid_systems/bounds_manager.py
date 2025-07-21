@@ -176,7 +176,7 @@ class BoundsManager:
     
     def list_available(self) -> Dict[str, List[str]]:
         """List all available bounds grouped by category."""
-        available = {}
+        available: Dict[str, List[str]] = {}
         
         # Group predefined regions
         for name, bounds_def in self.REGIONS.items():

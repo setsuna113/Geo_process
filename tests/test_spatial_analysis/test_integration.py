@@ -7,11 +7,11 @@ import xarray as xr
 import tempfile
 from pathlib import Path
 
-from src.core.config import Config
+from src.config.config import Config
 from src.spatial_analysis.som.som_trainer import SOMAnalyzer
 from src.spatial_analysis.maxp_regions.region_optimizer import MaxPAnalyzer
 from src.spatial_analysis.gwpca.gwpca_analyzer import GWPCAAnalyzer
-from src.spatial_analysis.report_generator import UnifiedReportGenerator
+# from src.spatial_analysis.report_generator import UnifiedReportGenerator
 
 
 @pytest.fixture

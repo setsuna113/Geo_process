@@ -59,7 +59,7 @@ class BaseRasterLoader(ABC):
         else:
             self.cache_size = config.get('cache_size_mb', 100) if hasattr(config, 'get') else 100
             
-        self._tile_cache = {}  # Simple cache, will be replaced with LRU
+        self._tile_cache: Dict[str, Any] = {}  # Simple cache, will be replaced with LRU
         
     @abstractmethod
     def can_handle(self, file_path: Path) -> bool:

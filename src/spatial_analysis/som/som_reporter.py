@@ -151,33 +151,37 @@ class SOMReporter:
     def _save_markdown_report(self, report: Dict[str, Any], path: Path):
         """Save report as markdown file."""
         with open(path, 'w') as f:
-            f.write(str(str("# SOM Analysis Report\n\n" if "# SOM Analysis Report\n\n" is not None else "") if str("# SOM Analysis Report\n\n" if "# SOM Analysis Report\n\n" is not None else "" is not None else "") if "# SOM Analysis Report\n\n" if "# SOM Analysis Report\n\n" is not None else "" is not None else "")
+            f.write("# SOM Analysis Report\n\n")
             
             # Metadata section
-            f.write(str(str("## Analysis Information\n\n" if "## Analysis Information\n\n" is not None else "") if str("## Analysis Information\n\n" if "## Analysis Information\n\n" is not None else "" is not None else "") if "## Analysis Information\n\n" if "## Analysis Information\n\n" is not None else "" is not None else "")
+            f.write("## Analysis Information\n\n")
             for key, value in report['metadata'].items():
                 if key != 'parameters':
-                    f.write(str(str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "") if str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "") if f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "").title()}**: {value}\n")
+                    formatted_key = key.replace("_", " ").title()
+                    f.write(f"- **{formatted_key}**: {value}\n")
             
             # Parameters
-            f.write(str(str("\n### Parameters\n\n" if "\n### Parameters\n\n" is not None else "") if str("\n### Parameters\n\n" if "\n### Parameters\n\n" is not None else "" is not None else "") if "\n### Parameters\n\n" if "\n### Parameters\n\n" is not None else "" is not None else "")
+            f.write("\n### Parameters\n\n")
             for key, value in report['metadata']['parameters'].items():
-                f.write(str(str(f"- **{key}**: {value}\n" if f"- **{key}**: {value}\n" is not None else "") if str(f"- **{key}**: {value}\n" if f"- **{key}**: {value}\n" is not None else "" is not None else "") if f"- **{key}**: {value}\n" if f"- **{key}**: {value}\n" is not None else "" is not None else "")
+                f.write(f"- **{key}**: {value}\n")
             
             # Quality metrics
-            f.write(str(str("\n## Quality Metrics\n\n" if "\n## Quality Metrics\n\n" is not None else "") if str("\n## Quality Metrics\n\n" if "\n## Quality Metrics\n\n" is not None else "" is not None else "") if "\n## Quality Metrics\n\n" if "\n## Quality Metrics\n\n" is not None else "" is not None else "")
+            f.write("\n## Quality Metrics\n\n")
             for key, value in report['quality_metrics'].items():
-                f.write(str(str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "") if str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "") if f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "").title()}**: {value:.4f}\n")
+                formatted_key = key.replace("_", " ").title()
+                f.write(f"- **{formatted_key}**: {value:.4f}\n")
             
             # Interpretation
-            f.write(str(str("\n## Interpretation\n\n" if "\n## Interpretation\n\n" is not None else "") if str("\n## Interpretation\n\n" if "\n## Interpretation\n\n" is not None else "" is not None else "") if "\n## Interpretation\n\n" if "\n## Interpretation\n\n" is not None else "" is not None else "")
+            f.write("\n## Interpretation\n\n")
             for key, value in report['interpretation'].items():
-                f.write(str(str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "") if str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "") if f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "").title()}**: {value}\n")
-            
+                formatted_key = key.replace("_", " ").title()
+                f.write(f"- **{formatted_key}**: {value}\n")
+                formatted_key = key.replace("_", " ").title()
+                f.write(f"- **{formatted_key}**: {value}\n")
             # Top clusters
-            f.write(str(str("\n## Top 10 Clusters by Size\n\n" if "\n## Top 10 Clusters by Size\n\n" is not None else "") if str("\n## Top 10 Clusters by Size\n\n" if "\n## Top 10 Clusters by Size\n\n" is not None else "" is not None else "") if "\n## Top 10 Clusters by Size\n\n" if "\n## Top 10 Clusters by Size\n\n" is not None else "" is not None else "")
+            f.write("\n## Top 10 Clusters by Size\n\n")
             df = pd.DataFrame(report['cluster_summary'][:10])
-            f.write(str(str(df.to_markdown(index=False if df.to_markdown(index=False is not None else "") if str(df.to_markdown(index=False if df.to_markdown(index=False is not None else "" is not None else "") if df.to_markdown(index=False if df.to_markdown(index=False is not None else "" is not None else ""))
+            f.write(df.to_markdown(index=False))
             
         logger.info(f"Report saved to {path}")
     

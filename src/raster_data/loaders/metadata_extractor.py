@@ -125,7 +125,7 @@ class RasterMetadataExtractor:
             # Try to get existing statistics
             stats = band.GetStatistics(False, False)
             
-            if stats[0] is None:
+            if stats is None or stats[0] is None:
                 # Compute approximate statistics from sample
                 stats = self._compute_sample_statistics(band, sample_size)
             

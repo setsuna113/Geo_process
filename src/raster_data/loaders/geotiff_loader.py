@@ -22,7 +22,7 @@ class GeoTIFFLoader(BaseRasterLoader):
     
     def __init__(self, config: Config):
         super().__init__(config)
-        self._metadata_cache = {}
+        self._metadata_cache: Dict[str, Any] = {}
         
     def can_handle(self, file_path: Path) -> bool:
         """Check if file is a GeoTIFF."""

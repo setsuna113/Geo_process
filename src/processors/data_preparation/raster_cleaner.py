@@ -14,6 +14,7 @@ from src.base.processor import BaseProcessor
 from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
 from src.raster_data.loaders.base_loader import RasterWindow
 from src.database.connection import DatabaseManager
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -334,13 +335,18 @@ class RasterCleaner(BaseProcessor):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """, (
-                raster_path.name,
+                str(raster_path.name),
                 dataset_type,
-                stats.total_pixels,
-                stats.outliers_removed + stats.negative_values_fixed + stats.capped_values,
-                stats.cleaning_ratio,
-                stats.value_range,
-                operations,
+                int(stats.total_pixels),
+                int(stats.outliers_removed + stats.negative_values_fixed + stats.capped_values),
+                float(stats.cleaning_ratio),
+                list([float(v) if isinstance(v, (np.number, np.floating)) else v for v in stats.value_range]),
+                json.dumps([
+                    {**op, 'window': {'col_off': op['window'].col_off, 'row_off': op['window'].row_off, 
+                                      'width': op['window'].width, 'height': op['window'].height} 
+                     if 'window' in op and hasattr(op['window'], 'col_off') else op.get('window', {})}
+                    for op in operations
+                ]),
                 datetime.now()
             ))
             
