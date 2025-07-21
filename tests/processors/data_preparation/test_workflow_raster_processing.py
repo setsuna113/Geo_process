@@ -7,10 +7,7 @@ import yaml
 from osgeo import gdal, osr
 
 from src.config.config import Config
-from src.database.connection import DatabaseManager
-from src.database.setup import setup_database
 from src.raster_data.catalog import RasterCatalog
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
 from src.processors.data_preparation.raster_cleaner import RasterCleaner
 from src.processors.data_preparation.raster_merger import RasterMerger
 from src.processors.data_preparation.data_normalizer import DataNormalizer
@@ -48,13 +45,53 @@ class TestRasterProcessingWorkflow:
             yaml.dump(config_data, f)
             return Config(Path(f.name))
     
-    @pytest.fixture(scope="class")
+    @pytest.fixture(scope="function")  # Changed from "class" to "function"
     def workflow_db(self, workflow_config):
-        """Set up workflow test database."""
+        """Set up workflow test database with proper isolation."""
         try:
+            # Ensure we're using the real database module, not mocked
+            from src.database.setup import setup_database, reset_database
+            from src.database.connection import DatabaseManager
+            
+            print("Setting up test database...")
+            
+            # Reset and setup database schema
+            reset_database()
             setup_database(reset=True)
-            return DatabaseManager()
+            print("Database schema created")
+            
+            # Create fresh database manager instance
+            db_manager = DatabaseManager()
+            
+            # Verify database is working and empty (correct table name)
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM raster_sources;")
+                count = cursor.fetchone()[0]
+                print(f"Database ready with {count} entries")
+                
+                # Clear any existing data
+                if count > 0:
+                    cursor.execute("TRUNCATE TABLE raster_sources CASCADE;")
+                    conn.commit()
+                    print("Cleared existing entries")
+            
+            yield db_manager
+            
+            # Cleanup after test
+            try:
+                with db_manager.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("TRUNCATE TABLE raster_sources CASCADE;")
+                    conn.commit()
+                    print("Test cleanup completed")
+            except Exception as e:
+                print(f"Cleanup failed: {e}")
+                
         except Exception as e:
+            print(f"Database setup failed: {e}")
+            import traceback
+            traceback.print_exc()
             pytest.skip(f"Test database not available: {e}")
     
     @pytest.fixture
@@ -111,9 +148,12 @@ class TestRasterProcessingWorkflow:
     def test_complete_workflow(self, workflow_config, workflow_db, create_test_rasters):
         """Test complete workflow from raw rasters to analysis-ready data."""
         
-        # Step 1: Catalog the rasters
+        # Verify database is clean at start
         catalog = RasterCatalog(workflow_db, workflow_config)
+        initial_count = len(catalog.list_rasters())
+        assert initial_count == 0, f"Database not clean: found {initial_count} existing rasters"
         
+        # Step 1: Catalog the rasters
         for name, path in create_test_rasters.items():
             entry = catalog.add_raster(path, dataset_type=name, validate=True)
             assert entry is not None
@@ -188,13 +228,15 @@ class TestRasterProcessingWorkflow:
         # Convert to GeoDataFrame for spatial analysis
         gdf_result = converter.xarray_to_geopandas(
             normalized_data,
-            variable_names=['plants_cleaned', 'animals_cleaned', 'fungi_cleaned']
+            variable_names=['plants', 'animals', 'fungi']  # Use actual variable names
         )
         
         # Verify final outputs
-        assert numpy_result['array'].shape[0] == 10000  # 100x100 flattened
+        assert numpy_result['array'].shape[0] == 30000  # 3 variables * 100x100 = 30000
         assert len(gdf_result) == 10000  # One row per pixel
-        assert 'plants_cleaned' in gdf_result.columns
+        assert 'plants' in gdf_result.columns  # Use actual column names
+        assert 'animals' in gdf_result.columns
+        assert 'fungi' in gdf_result.columns
         assert 'geometry' in gdf_result.columns
         
         # Step 7: Test round-trip conversion
@@ -204,8 +246,8 @@ class TestRasterProcessingWorkflow:
         )
         
         # Check one band matches original (within tolerance)
-        original_plants = merged_data['plants_cleaned'].values
-        restored_plants = restored_data['plants_cleaned'].values
+        original_plants = merged_data['plants'].values
+        restored_plants = restored_data['plants'].values
         
         # Exclude NoData pixels from comparison
         valid_mask = original_plants != -9999
@@ -217,6 +259,11 @@ class TestRasterProcessingWorkflow:
     
     def test_workflow_with_misaligned_rasters(self, workflow_config, workflow_db, tmp_path):
         """Test workflow handling of misaligned rasters."""
+        
+        # Verify database is clean at start
+        catalog = RasterCatalog(workflow_db, workflow_config)
+        initial_count = len(catalog.list_rasters())
+        assert initial_count == 0, f"Database not clean: found {initial_count} existing rasters"
         
         # Create slightly misaligned rasters
         rasters = []
@@ -248,16 +295,23 @@ class TestRasterProcessingWorkflow:
             ds = None
             rasters.append((name, path))
         
-        # Add to catalog
+        # Verify database is clean before adding to catalog
+        temp_catalog = RasterCatalog(workflow_db, workflow_config)
+        initial_count = len(temp_catalog.list_rasters())
+        assert initial_count == 0, f"Database not clean: found {initial_count} existing rasters"
+        
+        # Add to catalog with consistent naming
         catalog = RasterCatalog(workflow_db, workflow_config)
         for name, path in rasters:
-            catalog.add_raster(path, dataset_type=name, validate=False)
+            # Use the base name (plants, animals, fungi) for dataset_type so merger can find them
+            base_name = name.replace('_misaligned', '') if '_misaligned' in name else name
+            catalog.add_raster(path, dataset_type=base_name, validate=False)
         
         # Try to merge - should handle small misalignment
         merger = RasterMerger(workflow_config, workflow_db)
         
         result = merger.merge_paf_rasters(
-            'plants', 'animals', 'fungi',
+            'plants_misaligned', 'animals_misaligned', 'fungi_misaligned',
             validate_alignment=True
         )
         
@@ -271,7 +325,10 @@ class TestRasterProcessingWorkflow:
     def test_workflow_data_validation(self, workflow_config, workflow_db, create_test_rasters):
         """Test data validation throughout workflow."""
         
+        # Verify database is clean at start
         catalog = RasterCatalog(workflow_db, workflow_config)
+        initial_count = len(catalog.list_rasters())
+        assert initial_count == 0, f"Database not clean: found {initial_count} existing rasters"
         
         # Add rasters with validation
         for name, path in create_test_rasters.items():

@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from typing import Union as TypingUnion
 import json
 
 from src.config.config import Config
@@ -116,7 +117,7 @@ class DataNormalizer(BaseProcessor):
     
     def _normalize_dataarray(self, 
                            da: xr.DataArray,
-                           scaler: StandardScaler,
+                           scaler: Union[StandardScaler, MinMaxScaler, RobustScaler],
                            by_band: bool) -> Tuple[xr.DataArray, Dict]:
         """Normalize a DataArray."""
         # Get dimensions
@@ -162,22 +163,42 @@ class DataNormalizer(BaseProcessor):
             "dims": list(da.dims),
         }
         
-        # Extract scaler-specific parameters
-        if hasattr(scaler, "mean_") and scaler.mean_ is not None:
-            params["mean"] = float(scaler.mean_[0])
-            params["scale"] = float(scaler.scale_[0])
-        elif hasattr(scaler, "min_") and scaler.min_ is not None:
-            params["min"] = float(scaler.min_[0])
-            params["scale"] = float(scaler.scale_[0])
-            # For MinMaxScaler, also save data_max_ for proper reconstruction
-            if hasattr(scaler, "data_max_"):
-                params["data_max"] = float(scaler.data_max_[0])
+        # Extract scaler-specific parameters based on scaler type
+        def safe_extract_scalar(value: Any) -> float:
+            """Safely extract a scalar value from scaler attributes."""
+            if value is None:
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value)
+            if hasattr(value, '__len__') and len(value) > 0:
+                return float(value[0])
+            if hasattr(value, 'item'):  # numpy scalar
+                return float(value.item())
+            return float(value)
+        
+        if isinstance(scaler, StandardScaler):
+            if hasattr(scaler, "mean_") and scaler.mean_ is not None:
+                params["mean"] = safe_extract_scalar(scaler.mean_)
+            if hasattr(scaler, "scale_") and scaler.scale_ is not None:
+                params["scale"] = safe_extract_scalar(scaler.scale_)
+        elif isinstance(scaler, MinMaxScaler):
+            if hasattr(scaler, "min_") and scaler.min_ is not None:
+                params["min"] = safe_extract_scalar(scaler.min_)
+            if hasattr(scaler, "scale_") and scaler.scale_ is not None:
+                params["scale"] = safe_extract_scalar(scaler.scale_)
+            if hasattr(scaler, "data_max_") and scaler.data_max_ is not None:
+                params["data_max"] = safe_extract_scalar(scaler.data_max_)
+        elif isinstance(scaler, RobustScaler):
+            if hasattr(scaler, "center_") and scaler.center_ is not None:
+                params["center"] = safe_extract_scalar(scaler.center_)
+            if hasattr(scaler, "scale_") and scaler.scale_ is not None:
+                params["scale"] = safe_extract_scalar(scaler.scale_)
         
         return normalized_da, params
     
     def _normalize_dataset(self,
                          ds: xr.Dataset,
-                         scaler: StandardScaler,
+                         scaler: Union[StandardScaler, MinMaxScaler, RobustScaler],
                          by_band: bool) -> Tuple[xr.Dataset, Dict]:
         """Normalize a Dataset."""
         normalized_vars = {}

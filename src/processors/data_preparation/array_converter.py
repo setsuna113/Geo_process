@@ -49,17 +49,24 @@ class ArrayConverter(BaseProcessor):
         
         # Convert to numpy
         if flatten:
-            # Stack spatial dimensions
-            spatial_dims = [d for d in data_array.dims if d in ['lat', 'lon', 'x', 'y']]
-            if len(spatial_dims) == 2:
-                stacked = data_array.stack(pixel=spatial_dims)
-                np_array = stacked.values
-                pixel_coords = np.array([
-                    stacked.pixel.values[i] for i in range(len(stacked.pixel))
-                ])
-            else:
+            # Handle different cases for flattening
+            if isinstance(data, xr.Dataset):
+                # For Dataset, we want to flatten all spatial dimensions for all variables
+                # The to_array() creates (variable, lat, lon) - we want to flatten to (variable * lat * lon)
                 np_array = data_array.values.flatten()
                 pixel_coords = None
+            else:
+                # For DataArray, stack spatial dimensions only
+                spatial_dims = [d for d in data_array.dims if d in ['lat', 'lon', 'x', 'y']]
+                if len(spatial_dims) == 2:
+                    stacked = data_array.stack(pixel=spatial_dims)
+                    np_array = stacked.values
+                    pixel_coords = np.array([
+                        stacked.pixel.values[i] for i in range(len(stacked.pixel))
+                    ])
+                else:
+                    np_array = data_array.values.flatten()
+                    pixel_coords = None
         else:
             np_array = data_array.values
             pixel_coords = None
@@ -197,7 +204,7 @@ class ArrayConverter(BaseProcessor):
             lat_diff = np.diff(sorted(gdf['lat'].unique()))
             
             if len(lon_diff) > 0 and len(lat_diff) > 0:
-                resolution = float(min(np.median(lon_diff), np.median(lat_diff)))
+                resolution = float(min(float(np.median(lon_diff)), float(np.median(lat_diff))))
             else:
                 resolution = 0.1  # Default
             
