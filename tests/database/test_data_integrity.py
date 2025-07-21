@@ -279,7 +279,7 @@ class TestUniqueConstraints:
         yield
     
     def test_grid_cell_unique_constraint(self):
-        """Test unique constraint on grid_id, cell_id."""
+        """Test unique constraint handling on grid_id, cell_id."""
         grid_id = schema.store_grid_definition("test_grid", "cubic", 1000)
         
         # Add cell
@@ -288,11 +288,12 @@ class TestUniqueConstraints:
             'geometry_wkt': 'POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))',
             'area_km2': 1.0
         }]
-        schema.store_grid_cells_batch(grid_id, cells_data)
+        result1 = schema.store_grid_cells_batch(grid_id, cells_data)
+        assert result1 == 1  # One cell inserted
         
-        # Try to add same cell again
-        with pytest.raises(Exception):
-            schema.store_grid_cells_batch(grid_id, cells_data)
+        # Try to add same cell again - should be handled gracefully with ON CONFLICT DO NOTHING
+        result2 = schema.store_grid_cells_batch(grid_id, cells_data)
+        assert result2 == 0  # No new cells inserted due to conflict handling
     
     def test_species_intersection_unique_constraint(self):
         """Test unique constraint on species intersections."""

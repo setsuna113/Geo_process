@@ -1,7 +1,7 @@
 """Mixin for lazy-loading support with resource management."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict, Union, ClassVar
+from typing import Optional, Any, Dict, Union
 from contextlib import contextmanager
 import weakref
 import threading
@@ -11,13 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class LazyLoadable(ABC):
-    """
-    Mixin for lazy-loading support.
-    
-    Provides context manager for resource management and memory pressure response.
-    """
-    
-    _instances: ClassVar[weakref.WeakSet] = weakref.WeakSet()
     """
     Mixin for lazy-loading support.
     

@@ -2,14 +2,9 @@
 """Build spatial contiguity structures for raster data."""
 
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import numpy as np
-try:
-    import libpysal
-except ImportError:
-    libpysal = None
-    import warnings
-    warnings.warn("libpysal not available. Install with: pip install libpysal")
+import libpysal
 from scipy.sparse import csr_matrix
 
 logger = logging.getLogger(__name__)
@@ -18,7 +13,7 @@ class ContiguityBuilder:
     """Build various types of spatial contiguity for grid data."""
     
     @staticmethod
-    def build_rook_contiguity(height: int, width: int) -> libpysal.weights  # type: ignore.W:
+    def build_rook_contiguity(height: int, width: int) -> libpysal.weights.W:
         """
         Build rook contiguity (4-connected neighbors).
         
@@ -29,10 +24,10 @@ class ContiguityBuilder:
         Returns:
             Spatial weights object
         """
-        return libpysal.weights  # type: ignore.lat2W(height, width, rook=True)
+        return libpysal.weights.lat2W(height, width, rook=True)
     
     @staticmethod
-    def build_queen_contiguity(height: int, width: int) -> libpysal.weights  # type: ignore.W:
+    def build_queen_contiguity(height: int, width: int) -> libpysal.weights.W:
         """
         Build queen contiguity (8-connected neighbors).
         
@@ -43,11 +38,11 @@ class ContiguityBuilder:
         Returns:
             Spatial weights object
         """
-        return libpysal.weights  # type: ignore.lat2W(height, width, rook=False)
+        return libpysal.weights.lat2W(height, width, rook=False)
     
     @staticmethod
     def build_distance_band(coordinates: np.ndarray, 
-                          threshold: float) -> libpysal.weights  # type: ignore.W:
+                          threshold: float) -> libpysal.weights.W:
         """
         Build distance band contiguity.
         
@@ -58,13 +53,13 @@ class ContiguityBuilder:
         Returns:
             Spatial weights object
         """
-        return libpysal.weights  # type: ignore.DistanceBand.from_array(
+        return libpysal.weights.DistanceBand.from_array(
             coordinates, threshold=threshold
         )
     
     @staticmethod
     def build_knn_contiguity(coordinates: np.ndarray, 
-                           k: int) -> libpysal.weights  # type: ignore.W:
+                           k: int) -> libpysal.weights.W:
         """
         Build k-nearest neighbors contiguity.
         
@@ -75,11 +70,11 @@ class ContiguityBuilder:
         Returns:
             Spatial weights object
         """
-        return libpysal.weights  # type: ignore.KNN.from_array(coordinates, k=k)
+        return libpysal.weights.KNN.from_array(coordinates, k=k)
     
     @staticmethod
     def build_custom_contiguity(height: int, width: int,
-                              kernel: np.ndarray) -> libpysal.weights  # type: ignore.W:
+                              kernel: np.ndarray) -> libpysal.weights.W:
         """
         Build custom contiguity based on a kernel.
         
@@ -120,11 +115,11 @@ class ContiguityBuilder:
                                 neighbors[idx].append(nidx)
                                 weights[idx].append(1.0)
         
-        return libpysal.weights  # type: ignore.W(neighbors, weights)
+        return libpysal.weights.W(neighbors, weights)
     
     @staticmethod
-    def add_higher_order_neighbors(w: libpysal.weights  # type: ignore.W, 
-                                 order: int) -> libpysal.weights  # type: ignore.W:
+    def add_higher_order_neighbors(w: libpysal.weights.W, 
+                                 order: int) -> libpysal.weights.W:
         """
         Add higher order neighbors to existing weights.
         
@@ -135,11 +130,11 @@ class ContiguityBuilder:
         Returns:
             Extended spatial weights
         """
-        return libpysal.weights  # type: ignore.higher_order(w, order)
+        return libpysal.weights.higher_order(w, order)
     
     @staticmethod
     def create_block_weights(height: int, width: int,
-                           block_size: int) -> libpysal.weights  # type: ignore.W:
+                           block_size: int) -> libpysal.weights.W:
         """
         Create weights for block-based analysis.
         
@@ -179,4 +174,4 @@ class ContiguityBuilder:
                     neighbors[pixel_idx].append(other_pixel)
                     weights[pixel_idx].append(1.0)
         
-        return libpysal.weights  # type: ignore.W(neighbors, weights)
+        return libpysal.weights.W(neighbors, weights)

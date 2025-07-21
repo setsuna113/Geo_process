@@ -1,7 +1,7 @@
 """Base class for raster resampling with data type conversion and confidence calculation."""
 
 from abc import ABC, abstractmethod
-from typing import Optional, List, Dict, Any, Tuple, Union
+from typing import Optional, List, Dict, Any, Tuple, Union, Sequence
 import numpy as np
 import logging
 from enum import Enum
@@ -270,7 +270,7 @@ class BaseResampler(Cacheable, ABC):
         """Get list of supported resampling methods."""
         return self._supported_methods.copy()
         
-    def get_supported_dtypes(self) -> List[np.dtype]:
+    def get_supported_dtypes(self) -> Sequence[type]:
         """Get list of supported data types."""
         return self._supported_dtypes.copy()
         
@@ -464,7 +464,7 @@ class BaseResampler(Cacheable, ABC):
         # Restore no-data values
         if nodata_mask is not None and nodata is not None:
             if np.issubdtype(target_dtype, np.integer):
-                target_nodata = int(nodata) if np.can_cast(nodata, target_dtype) else np.iinfo(target_dtype).min
+                target_nodata: float = float(int(nodata)) if np.can_cast(nodata, target_dtype) else float(np.iinfo(target_dtype).min)
             else:
                 target_nodata = float(nodata)
             converted[nodata_mask] = target_nodata

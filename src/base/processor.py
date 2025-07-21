@@ -145,8 +145,8 @@ class BaseProcessor(ABC):
         self.config = self._merge_config(kwargs)
         
         # Progress tracking
-        self._progress_callback = None
-        self._job_id = None
+        self._progress_callback: Optional[Callable[[float], None]] = None
+        self._job_id: Optional[str] = None
         self._tile_progress: Dict[str, float] = {}
         self._processing_region: Optional[Tuple[float, float, float, float]] = None
         
@@ -579,8 +579,8 @@ class BaseProcessor(ABC):
         total_processed = 0
         total_failed = 0
         all_errors = []
-        total_time = 0
-        total_memory = 0
+        total_time = 0.0
+        total_memory = 0.0
         
         batch = []
         batch_num = 0

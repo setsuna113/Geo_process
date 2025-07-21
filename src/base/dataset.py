@@ -250,7 +250,7 @@ class BaseDataset(ABC):
     
     def compute_statistics(self) -> Dict[str, Any]:
         """Compute dataset statistics."""
-        stats = {
+        stats: Dict[str, Any] = {
             'total_records': 0,
             'valid_records': 0,
             'invalid_records': 0,

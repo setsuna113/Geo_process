@@ -595,7 +595,7 @@ class ComponentRegistry:
     
     def get_format_compatibility_matrix(self) -> Dict[str, Dict[str, List[str]]]:
         """Get format compatibility matrix for all components."""
-        matrix = {}
+        matrix: Dict[str, Dict[str, List[str]]] = {}
         
         for registry_name in self.factory.list_registries():
             registry = self.factory.get_registry(registry_name)

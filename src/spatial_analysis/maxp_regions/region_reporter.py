@@ -2,12 +2,12 @@
 """Generate reports for Max-p regionalization results."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Dict, Any, Optional, List
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
-from matplotlib.figure import Figure
+import seaborn as sns
 
 from src.spatial_analysis.base_analyzer import AnalysisResult
 
@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 class RegionReporter:
     """Generate statistical reports for Max-p regionalization."""
     
-    def __init__(self, output_dir: if Optional is not None:
-                Optional[Path] = if Optional is not None else None = None):
+    def __init__(self, output_dir: Optional[Path] = None):
         self.output_dir = output_dir or Path('reports/maxp')
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -31,36 +30,35 @@ class RegionReporter:
         Returns:
             DataFrame with region statistics
         """
-        region_stats = result.statistics.get('region_statistics', 0) if statistics is not None else None
+        region_stats = result.statistics['region_statistics']
         band_names = result.metadata.input_bands
         
         # Build summary data
         summary_data = []
-        compactness = result.additional_outputs.get('compactness_scores', {}) if additional_outputs is not None else None
-        homogeneity = result.additional_outputs.get('homogeneity_scores', {}) if additional_outputs is not None else None
+        compactness = result.additional_outputs.get('compactness_scores', {})
+        homogeneity = result.additional_outputs.get('homogeneity_scores', {})
         
         for region_id, stats in region_stats.items():
             row = {
                 'region_id': region_id,
-                'pixel_count': stats['count'],
-                'percentage': stats['percentage'],
+                'area_km2': stats['area_km2'],
+                'pixel_count': stats['pixel_count'],
+                'percentage': stats['percentage_of_total'],
                 'within_variance': stats['within_variance'],
-                'compactness': compactness.get(region_id, np.nan) if compactness is not None else None,
-                'homogeneity': homogeneity.get(region_id, np.nan) if homogeneity is not None else None
+                'compactness': compactness.get(region_id, np.nan),
+                'homogeneity': homogeneity.get(region_id, np.nan)
             }
             
             # Add mean values for each band
             for i, band in enumerate(band_names):
                 if i < len(stats['mean']):
-                    if row is not None:
-                row[f'{band}_mean'] = if row is not None else None = stats['mean'][i]
-                    if row is not None:
-                row[f'{band}_std'] = if row is not None else None = stats['std'][i]
+                    row[f'{band}_mean'] = stats['mean'][i]
+                    row[f'{band}_std'] = stats['std'][i]
             
             summary_data.append(row)
         
         df = pd.DataFrame(summary_data)
-        df = df.sort_values('pixel_count', ascending=False)
+        df = df.sort_values('area_km2', ascending=False)
         
         return df
     
@@ -76,9 +74,9 @@ class RegionReporter:
         """
         stats = result.statistics
         
-        # Calculate size imbalance
-        sizes = [r['count'] for r in stats['region_statistics'].values()]
-        size_cv = np.std(sizes) / np.mean(sizes)
+        # Area-based metrics
+        areas = [r['area_km2'] for r in stats['region_statistics'].values()]
+        area_cv = stats['area_coefficient_variation']
         
         # Calculate average compactness
         compactness_scores = list(result.additional_outputs['compactness_scores'].values())
@@ -91,19 +89,104 @@ class RegionReporter:
         quality = {
             'variance_explained': stats['variance_explained'],
             'n_regions': stats['n_regions'],
-            'size_balance': 1 - size_cv,  # Higher is better
+            'ecological_scale': stats['ecological_scale'],
+            'min_area_threshold_km2': stats['min_area_threshold_km2'],
+            'threshold_satisfied': stats['threshold_satisfied'],
+            'size_balance': 1 - area_cv,  # Higher is better
             'avg_compactness': avg_compactness,
             'avg_homogeneity': avg_homogeneity,
-            'smallest_region_pct': (stats['smallest_region'] / sum(sizes)) * 100,
-            'largest_region_pct': (stats['largest_region'] / sum(sizes)) * 100,
-            'constraint_satisfied': stats['smallest_region'] >= stats['floor_constraint']
+            'smallest_region_km2': stats['smallest_region_km2'],
+            'largest_region_km2': stats['largest_region_km2'],
+            'mean_region_area_km2': stats['mean_region_area_km2']
         }
+        
+        # Add perturbation analysis results if available
+        if 'perturbation_results' in result.additional_outputs:
+            pert = result.additional_outputs['perturbation_results']
+            if pert:
+                quality['stability_assessment'] = pert['stability_assessment']
+                quality['avg_boundary_stability'] = np.mean(pert['boundary_stability'])
         
         return quality
     
+    def plot_perturbation_analysis(self, result: AnalysisResult,
+                                 save_path: Optional[Path] = None) -> Optional[plt.Figure]:
+        """
+        Plot perturbation analysis results.
+        
+        Args:
+            result: Max-p analysis result
+            save_path: Optional path to save figure
+            
+        Returns:
+            Matplotlib figure or None if no perturbation results
+        """
+        if 'perturbation_results' not in result.additional_outputs:
+            return None
+        
+        pert = result.additional_outputs['perturbation_results']
+        if not pert:
+            return None
+        
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # 1. Number of regions vs threshold
+        ax = axes[0, 0]
+        ax.plot(pert['tested_areas_km2'], pert['n_regions'], 'o-', markersize=8)
+        ax.axvline(pert['baseline_area_km2'], color='red', linestyle='--', 
+                  label='Baseline threshold')
+        ax.set_xlabel('Minimum Area Threshold (km²)')
+        ax.set_ylabel('Number of Regions')
+        ax.set_title('Region Count Sensitivity')
+        ax.legend()
+        
+        # 2. Boundary stability
+        ax = axes[0, 1]
+        ax.plot(pert['tested_areas_km2'], pert['boundary_stability'], 'o-', markersize=8)
+        ax.axhline(0.8, color='green', linestyle='--', alpha=0.5, label='High stability')
+        ax.axhline(0.6, color='orange', linestyle='--', alpha=0.5, label='Moderate stability')
+        ax.set_xlabel('Minimum Area Threshold (km²)')
+        ax.set_ylabel('Boundary Stability')
+        ax.set_title('Boundary Stability Analysis')
+        ax.set_ylim(0, 1)
+        ax.legend()
+        
+        # 3. Region correspondence
+        ax = axes[1, 0]
+        ax.plot(pert['tested_areas_km2'], pert['region_correspondence'], 'o-', markersize=8)
+        ax.set_xlabel('Minimum Area Threshold (km²)')
+        ax.set_ylabel('Rand Index')
+        ax.set_title('Region Correspondence')
+        ax.set_ylim(0, 1)
+        
+        # 4. Summary text
+        ax = axes[1, 1]
+        ax.text(0.1, 0.9, f"Stability Assessment:\n{pert['stability_assessment']}", 
+               transform=ax.transAxes, fontsize=12, fontweight='bold',
+               verticalalignment='top')
+        
+        avg_stability = np.mean(pert['boundary_stability'])
+        summary_text = (
+            f"\nAverage Boundary Stability: {avg_stability:.3f}\n"
+            f"Tested Range: {min(pert['tested_areas_km2']):.0f} - "
+            f"{max(pert['tested_areas_km2']):.0f} km²\n"
+            f"Region Count Range: {min(pert['n_regions'])} - {max(pert['n_regions'])}"
+        )
+        
+        ax.text(0.1, 0.6, summary_text, transform=ax.transAxes, fontsize=10,
+               verticalalignment='top')
+        ax.axis('off')
+        
+        plt.suptitle('Perturbation Analysis Results', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        
+        return fig
+    
     def plot_region_characteristics(self, result: AnalysisResult,
-                                  save_path: if Optional is not None:
-                Optional[Path] = if Optional is not None else None = None) -> Figure:
+                                  save_path: Optional[Path] = None) -> plt.Figure:
         """
         Plot characteristics of regions.
         
@@ -118,25 +201,38 @@ class RegionReporter:
         
         df = self.generate_region_summary(result)
         
-        # 1. Region sizes
+        # 1. Region sizes (in km²)
         ax = axes[0, 0]
-        df_sorted = df.sort_values('pixel_count', ascending=True)
-        ax.barh(range(len(df_sorted)), df_sorted['pixel_count'])
+        df_sorted = df.sort_values('area_km2', ascending=True)
+        bars = ax.barh(range(len(df_sorted)), df_sorted['area_km2'])
         ax.set_yticks(range(len(df_sorted)))
         ax.set_yticklabels([f"R{id}" for id in df_sorted['region_id']])
-        ax.set_xlabel('Number of Pixels')
+        ax.set_xlabel('Area (km²)')
         ax.set_title('Region Sizes')
-        ax.axvline(result.statistics.get('floor_constraint', 0) if statistics is not None else None, 
-                  color='red', linestyle='--', label='Floor constraint')
+        
+        # Add threshold line
+        threshold = result.statistics['min_area_threshold_km2']
+        ax.axvline(threshold, color='red', linestyle='--', label=f'Threshold: {threshold:.0f} km²')
         ax.legend()
+        
+        # Color bars based on threshold satisfaction
+        for i, (idx, row) in enumerate(df_sorted.iterrows()):
+            if row['area_km2'] < threshold:
+                bars[i].set_color('red')
+            else:
+                bars[i].set_color('green')
         
         # 2. Compactness vs Homogeneity
         ax = axes[0, 1]
-        ax.scatter(df['compactness'], df['homogeneity'], 
-                  s=df['pixel_count']/10, alpha=0.6)
+        scatter = ax.scatter(df['compactness'], df['homogeneity'], 
+                           s=df['area_km2']/10, alpha=0.6, c=df['area_km2'],
+                           cmap='viridis')
         ax.set_xlabel('Compactness')
         ax.set_ylabel('Homogeneity')
         ax.set_title('Region Quality Metrics')
+        
+        # Add colorbar
+        cbar = plt.colorbar(scatter, ax=ax, label='Area (km²)')
         
         # Add region labels
         for _, row in df.iterrows():
@@ -152,19 +248,21 @@ class RegionReporter:
         ax.set_ylabel('Within-region Variance')
         ax.set_title('Region Homogeneity (Lower is Better)')
         
-        # 4. Feature means by region
+        # 4. Area distribution
         ax = axes[1, 1]
-        band_names = result.metadata.input_bands
-        mean_cols = [f'{band}_mean' for band in band_names if f'{band}_mean' in df.columns]
+        ax.hist(df['area_km2'], bins=20, edgecolor='black', alpha=0.7)
+        ax.axvline(threshold, color='red', linestyle='--', 
+                  label=f'Threshold: {threshold:.0f} km²')
+        ax.set_xlabel('Area (km²)')
+        ax.set_ylabel('Number of Regions')
+        ax.set_title('Distribution of Region Areas')
+        ax.legend()
         
-        if mean_cols:
-            df_means = df[['region_id'] + mean_cols].set_index('region_id')
-            df_means.columns = [col.replace('_mean', '') for col in df_means.columns]
-            df_means.T.plot(ax=ax, marker='o')
-            ax.set_xlabel('Feature')
-            ax.set_ylabel('Mean Value')
-            ax.set_title('Feature Profiles by Region')
-            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        # Add scale annotation
+        scale = result.statistics['ecological_scale']
+        ax.text(0.95, 0.95, f"Scale: {scale}", transform=ax.transAxes,
+               ha='right', va='top', fontsize=10,
+               bbox=dict(boxstyle='round', facecolor='lightgray'))
         
         plt.tight_layout()
         
@@ -172,46 +270,6 @@ class RegionReporter:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
         
         return fig
-    
-    def generate_full_report(self, result: AnalysisResult,
-                           save_path: if Optional is not None:
-                Optional[Path] = if Optional is not None else None = None) -> Dict[str, Any]:
-        """
-        Generate comprehensive report.
-        
-        Args:
-            result: Max-p analysis result
-            save_path: Optional path to save report
-            
-        Returns:
-            Dictionary containing report sections
-        """
-        report = {
-            'metadata': {
-                'analysis_type': result.metadata.analysis_type,
-                'timestamp': result.metadata.timestamp,
-                'input_shape': result.metadata.input_shape,
-                'processing_time': f"{result.metadata.processing_time:.2f} seconds",
-                'parameters': result.metadata.parameters
-            },
-            'quality_metrics': self.generate_quality_report(result),
-            'region_summary': self.generate_region_summary(result).to_dict('records'),
-            'interpretation': self._generate_interpretation(result)
-        }
-        
-        if save_path:
-            # Save as markdown
-            self._save_markdown_report(report, save_path)
-            
-            # Save region summary as CSV
-            csv_path = save_path.parent / f"{save_path.stem}_regions.csv"
-            self.generate_region_summary(result).to_csv(csv_path, index=False)
-            
-            # Save plots
-            fig_path = save_path.parent / f"{save_path.stem}_characteristics.png"
-            self.plot_region_characteristics(result, fig_path)
-        
-        return report
     
     def _generate_interpretation(self, result: AnalysisResult) -> Dict[str, str]:
         """Generate automated interpretation of results."""
@@ -229,73 +287,33 @@ class RegionReporter:
             ve_text = "Moderate - consider adjusting threshold for better separation"
         else:
             ve_text = "Poor - regions may be too constrained"
-        if interp is not None:
-                interp['variance_quality'] = if interp is not None else None = ve_text
+        interp['variance_quality'] = ve_text
         
-        # Interpret compactness
-        comp = quality['avg_compactness']
-        if comp > 0.7:
-            comp_text = "Highly compact regions"
-        elif comp > 0.5:
-            comp_text = "Moderately compact regions"
+        # Interpret scale appropriateness
+        scale = quality['ecological_scale']
+        n_regions = quality['n_regions']
+        if scale == 'ecoregion':
+            if 10 <= n_regions <= 50:
+                scale_text = "Appropriate number of regions for ecoregion scale"
+            elif n_regions < 10:
+                scale_text = "Few regions - consider reducing area threshold"
+            else:
+                scale_text = "Many regions - consider increasing area threshold"
         else:
-            comp_text = "Regions are fragmented - consider different parameters"
-        if interp is not None:
-                interp['spatial_coherence'] = if interp is not None else None = comp_text
+            scale_text = f"Using {scale} scale with {n_regions} regions"
+        interp['scale_assessment'] = scale_text
         
-        # Interpret balance
-        balance = quality['size_balance']
-        if balance > 0.8:
-            balance_text = "Well-balanced region sizes"
-        elif balance > 0.6:
-            balance_text = "Moderately balanced regions"
+        # Interpret threshold satisfaction
+        if quality['threshold_satisfied']:
+            threshold_text = "All regions meet minimum area requirement"
         else:
-            balance_text = "Highly imbalanced regions"
-        if interp is not None:
-                interp['size_balance'] = if interp is not None else None = balance_text
+            smallest = quality['smallest_region_km2']
+            threshold = quality['min_area_threshold_km2']
+            threshold_text = f"WARNING: Smallest region ({smallest:.0f} km²) below threshold ({threshold:.0f} km²)"
+        interp['threshold_check'] = threshold_text
         
-        # Constraint satisfaction
-        if quality['constraint_satisfied']:
-            const_text = "All regions meet minimum size constraint"
-        else:
-            const_text = "WARNING: Some regions violate size constraint"
-        if interp is not None:
-                interp['constraint_check'] = if interp is not None else None = const_text
+        # Interpret stability if available
+        if 'stability_assessment' in quality:
+            interp['robustness'] = quality['stability_assessment']
         
         return interp
-    
-    def _save_markdown_report(self, report: Dict[str, Any], path: Path):
-        """Save report as markdown file."""
-        with open(path, 'w') as f:
-            f.write(str(str("# Max-p Regionalization Report\n\n" if "# Max-p Regionalization Report\n\n" is not None else "") if str("# Max-p Regionalization Report\n\n" if "# Max-p Regionalization Report\n\n" is not None else "" is not None else "") if "# Max-p Regionalization Report\n\n" if "# Max-p Regionalization Report\n\n" is not None else "" is not None else "")
-            
-            # Metadata section
-            f.write(str(str("## Analysis Information\n\n" if "## Analysis Information\n\n" is not None else "") if str("## Analysis Information\n\n" if "## Analysis Information\n\n" is not None else "" is not None else "") if "## Analysis Information\n\n" if "## Analysis Information\n\n" is not None else "" is not None else "")
-            for key, value in report['metadata'].items():
-                if key != 'parameters':
-                    f.write(str(str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "") if str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "") if f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "").title()}**: {value}\n")
-            
-            # Parameters
-            f.write(str(str("\n### Parameters\n\n" if "\n### Parameters\n\n" is not None else "") if str("\n### Parameters\n\n" if "\n### Parameters\n\n" is not None else "" is not None else "") if "\n### Parameters\n\n" if "\n### Parameters\n\n" is not None else "" is not None else "")
-            for key, value in report['metadata']['parameters'].items():
-                f.write(str(str(f"- **{key}**: {value}\n" if f"- **{key}**: {value}\n" is not None else "") if str(f"- **{key}**: {value}\n" if f"- **{key}**: {value}\n" is not None else "" is not None else "") if f"- **{key}**: {value}\n" if f"- **{key}**: {value}\n" is not None else "" is not None else "")
-            
-            # Quality metrics
-            f.write(str(str("\n## Quality Metrics\n\n" if "\n## Quality Metrics\n\n" is not None else "") if str("\n## Quality Metrics\n\n" if "\n## Quality Metrics\n\n" is not None else "" is not None else "") if "\n## Quality Metrics\n\n" if "\n## Quality Metrics\n\n" is not None else "" is not None else "")
-            for key, value in report['quality_metrics'].items():
-                if isinstance(value, float):
-                    f.write(str(str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "") if str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "") if f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "").title()}**: {value:.4f}\n")
-                else:
-                    f.write(str(str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "") if str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "") if f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "").title()}**: {value}\n")
-            
-            # Interpretation
-            f.write(str(str("\n## Interpretation\n\n" if "\n## Interpretation\n\n" is not None else "") if str("\n## Interpretation\n\n" if "\n## Interpretation\n\n" is not None else "" is not None else "") if "\n## Interpretation\n\n" if "\n## Interpretation\n\n" is not None else "" is not None else "")
-            for key, value in report['interpretation'].items():
-                f.write(str(str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "") if str(f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "") if f"- **{key.replace('_', ' ' if f"- **{key.replace('_', ' ' is not None else "" is not None else "").title()}**: {value}\n")
-            
-            # Region details
-            f.write(str(str("\n## Region Details\n\n" if "\n## Region Details\n\n" is not None else "") if str("\n## Region Details\n\n" if "\n## Region Details\n\n" is not None else "" is not None else "") if "\n## Region Details\n\n" if "\n## Region Details\n\n" is not None else "" is not None else "")
-            df = pd.DataFrame(report['region_summary'])
-            f.write(str(str(df.to_markdown(index=False, floatfmt='.2f' if df.to_markdown(index=False, floatfmt='.2f' is not None else "") if str(df.to_markdown(index=False, floatfmt='.2f' if df.to_markdown(index=False, floatfmt='.2f' is not None else "" is not None else "") if df.to_markdown(index=False, floatfmt='.2f' if df.to_markdown(index=False, floatfmt='.2f' is not None else "" is not None else ""))
-            
-        logger.info(f"Report saved to {path}")

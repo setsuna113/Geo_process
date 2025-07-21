@@ -317,9 +317,10 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
     def _process_tiles_parallel(self, input_data: Any, tiles: List[TileSpec], **kwargs) -> Dict[str, Any]:
         """Process tiles in parallel using worker threads."""
         import queue
+        from typing import Any
         
-        tile_queue = queue.Queue()
-        result_queue = queue.Queue()
+        tile_queue: queue.Queue[Any] = queue.Queue()
+        result_queue: queue.Queue[Any] = queue.Queue()
         
         # Add tiles to queue
         for tile in tiles:

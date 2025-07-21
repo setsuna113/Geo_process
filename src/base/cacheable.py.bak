@@ -1,7 +1,7 @@
 """Mixin for caching support with TTL management and memory tracking."""
 
 from abc import ABC
-from typing import Any, Optional, Dict, Union, Callable, ClassVar
+from typing import Any, Optional, Dict, Union, Callable
 import time
 import threading
 import weakref
@@ -46,8 +46,6 @@ class Cacheable(ABC):
     
     Provides cache key generation, TTL management, and memory tracking.
     """
-    
-    _instances: ClassVar[weakref.WeakSet] = weakref.WeakSet()
     
     def __init__(self):
         self._cache: Dict[str, CacheEntry] = {}
@@ -337,12 +335,14 @@ class Cacheable(ABC):
         
     def _register_cache_instance(self) -> None:
         """Register this instance for global cache management."""
-        self.__class__._instances.add(self)
+        if not hasattr(Cacheable, '_instances'):
+            Cacheable._instances = weakref.WeakSet()
+        Cacheable._instances.add(self)
         
     @classmethod
     def get_global_cache_stats(cls) -> Dict[str, Any]:
         """Get cache statistics for all instances."""
-        if not cls._instances:
+        if not hasattr(cls, '_instances'):
             return {}
             
         global_stats = {

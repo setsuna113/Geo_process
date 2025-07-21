@@ -9,6 +9,8 @@ from ..config import config
 import logging
 import time
 import re
+import subprocess
+import platform
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -20,8 +22,37 @@ class DatabaseManager:
         self.pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
         self.connection_attempts = 0
         self.max_connection_attempts = 3
+        self._ensure_postgresql_service()
         self._create_pool()
     
+    def _ensure_postgresql_service(self):
+        """Ensure PostgreSQL service is running."""
+        try:
+            # Check if we're on Linux (WSL or native)
+            if platform.system() == 'Linux':
+                # Check service status
+                result = subprocess.run(['sudo', 'service', 'postgresql', 'status'], 
+                                      capture_output=True, text=True, timeout=10)
+                
+                if result.returncode != 0 or 'offline' in result.stdout.lower():
+                    logger.info("🔄 Starting PostgreSQL service...")
+                    start_result = subprocess.run(['sudo', 'service', 'postgresql', 'start'],
+                                                capture_output=True, text=True, timeout=30)
+                    
+                    if start_result.returncode == 0:
+                        logger.info("✅ PostgreSQL service started successfully")
+                        # Wait a moment for service to be ready
+                        time.sleep(2)
+                    else:
+                        logger.warning(f"⚠️ Failed to start PostgreSQL service: {start_result.stderr}")
+                else:
+                    logger.debug("✅ PostgreSQL service already running")
+                    
+        except subprocess.TimeoutExpired:
+            logger.warning("⚠️ PostgreSQL service check timed out")
+        except Exception as e:
+            logger.debug(f"⚠️ Could not check/start PostgreSQL service: {e}")
+
     def _create_pool(self):
         """Create connection pool with retry logic."""
         while self.connection_attempts < self.max_connection_attempts:
