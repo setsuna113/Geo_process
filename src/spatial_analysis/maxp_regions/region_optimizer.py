@@ -71,7 +71,7 @@ class MaxPAnalyzer(BaseAnalyzer):
         # Check if area is reasonable
         min_pixels = min_area / self.pixel_area_km2
         if min_pixels < 4:
-            issues.append(f"min_area_km2 ({min_area}) is too small - less than 4 pixels")
+            issues.append(f"min_area_km2 ({min_area}) is too small - less than 4 pixels (pixel_area={self.pixel_area_km2:.2f} km², min_pixels={min_pixels:.1f})")
         
         # Check ecological scale
         valid_scales = list(self.ecological_scales.keys()) + ['custom']
@@ -248,7 +248,7 @@ class MaxPAnalyzer(BaseAnalyzer):
         )
         
         # Store in database if configured
-        if self.save_results:
+        if self.save_results_enabled:
             self.store_in_database(result)
         
         return result

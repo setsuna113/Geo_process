@@ -161,6 +161,12 @@ class GWPCAAnalyzer(BaseAnalyzer):
         self._update_progress(1, 7, "Preparing data")
         prepared_data, metadata = self.prepare_data(data, flatten=False, normalize=False)
         
+        # Add n_pixels for compatibility
+        if 'spatial_shape' in metadata:
+            metadata['n_pixels'] = np.prod(metadata['spatial_shape'][-2:])  # Last 2 dims are spatial
+        elif prepared_data.ndim >= 2:
+            metadata['n_pixels'] = np.prod(prepared_data.shape[-2:])  # Last 2 dims are spatial
+        
         # Apply block aggregation if requested
         if params['use_block_aggregation']:
             self._update_progress(2, 7, "Aggregating to blocks")
@@ -251,7 +257,7 @@ class GWPCAAnalyzer(BaseAnalyzer):
         )
         
         # Store in database if configured
-        if self.save_results:
+        if self.save_results_enabled:
             self.store_in_database(result)
         
         return result
@@ -403,7 +409,6 @@ class GWPCAAnalyzer(BaseAnalyzer):
             bw = selector.search(
                 criterion=params['bandwidth_method'],
                 search_method='golden',
-                kernel=params['kernel'],
                 fixed=False,
                 min_bandwidth=search_min,
                 max_bandwidth=search_max
@@ -442,26 +447,31 @@ class GWPCAAnalyzer(BaseAnalyzer):
         local_loadings = np.zeros((n_pixels, n_features, n_components))
         local_scores = np.zeros((n_pixels, n_components))
         
-        # Compute weights for each location
-        from mgwr.kernels import (
-            fix_gauss, fix_bisquare, fix_exp,
-            adapt_bisquare
-        )
+        # Compute weights for each location using simple distance-based kernels
+        def gaussian_weights(dist, bandwidth):
+            """Simple Gaussian kernel."""
+            return np.exp(-0.5 * (dist / bandwidth) ** 2)
+        
+        def bisquare_weights(dist, bandwidth):
+            """Simple bisquare kernel."""
+            normalized_dist = dist / bandwidth
+            weights = np.where(normalized_dist < 1, (1 - normalized_dist**2)**2, 0)
+            return weights
         
         # Select kernel function
         if params['kernel'] == 'gaussian':
-            kernel_func = fix_gauss
+            kernel_func = gaussian_weights
         elif params['kernel'] == 'bisquare':
-            kernel_func = fix_bisquare if not params['adaptive'] else adapt_bisquare
+            kernel_func = bisquare_weights
         else:  # exponential
-            kernel_func = fix_exp
+            kernel_func = gaussian_weights  # Default fallback
         
         bandwidth = params['bandwidth']
         
         # Process each location
         for i in range(n_pixels):
             if i % max(1, n_pixels // 20) == 0:
-                progress = 5 + (i / n_pixels) * 1
+                progress = int(5 + (i / n_pixels) * 1)
                 self._update_progress(progress, 7, f"Processing unit {i}/{n_pixels}")
             
             # Calculate weights

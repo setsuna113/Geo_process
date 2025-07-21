@@ -108,6 +108,16 @@ class Config:
     @property
     def data_cleaning(self) -> Dict[str, Any]:
         return self.settings['data_cleaning']
+    
+    @property 
+    def config(self) -> Dict[str, Any]:
+        """Access to settings dict for backward compatibility."""
+        return self.settings
+    
+    @config.setter
+    def config(self, value: Dict[str, Any]):
+        """Set settings dict for test compatibility."""
+        self.settings = value
 
 # Global configuration instance
 config = Config()

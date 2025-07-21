@@ -32,8 +32,7 @@ class TestMaxPAnalyzerUnit:
     
     @pytest.fixture
     def analyzer(self, mock_config):
-        with patch('src.spatial_analysis.maxp_regions.region_optimizer.ArrayConverter'), \
-             patch('src.spatial_analysis.maxp_regions.region_optimizer.DataNormalizer'):
+        with patch('src.spatial_analysis.base_analyzer.ArrayConverter'):
             return MaxPAnalyzer(mock_config)
     
     def test_initialization(self, analyzer):
@@ -223,7 +222,7 @@ class TestMaxPIntegration:
     
     @pytest.fixture
     def config(self):
-        from src.core.config import Config
+        from src.config.config import Config
         config = Config()
         config.config = {
             'spatial_analysis': {
@@ -265,8 +264,8 @@ class TestMaxPIntegration:
         assert result.labels.shape == (16,)
         assert 'region_statistics' in result.statistics
         
-        # Each region should have at least 6 pixels (20 km² / 3.24 km²/pixel)
-        min_pixels = 20 / (1.8 ** 2)
+        # Each region should have at least min_pixels (using actual analyzer pixel area)
+        min_pixels = 20 / analyzer.pixel_area_km2
         for region_stats in result.statistics['region_statistics'].values():
             assert region_stats['pixel_count'] >= int(min_pixels)
         

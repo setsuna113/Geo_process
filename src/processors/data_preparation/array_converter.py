@@ -51,9 +51,12 @@ class ArrayConverter(BaseProcessor):
         if flatten:
             # Handle different cases for flattening
             if isinstance(data, xr.Dataset):
-                # For Dataset, we want to flatten all spatial dimensions for all variables
-                # The to_array() creates (variable, lat, lon) - we want to flatten to (variable * lat * lon)
-                np_array = data_array.values.flatten()
+                # For Dataset, we want (n_pixels, n_variables) shape
+                # The to_array() creates (variable, lat, lon)
+                data_array = data.to_array()
+                n_vars = data_array.shape[0]
+                # Reshape to (n_vars, n_pixels) then transpose to (n_pixels, n_vars)
+                np_array = data_array.values.reshape(n_vars, -1).T
                 pixel_coords = None
             else:
                 # For DataArray, stack spatial dimensions only

@@ -180,13 +180,28 @@ class LocalStatsMapper:
         
         # 5. Summary statistics
         ax5 = fig.add_subplot(gs[1, 2])
+        
+        # Get original pixels count with fallback
+        original_pixels = result.statistics.get('original_pixels', result.statistics.get('n_pixels', 'N/A'))
+        if isinstance(original_pixels, (int, float)):
+            original_pixels_str = f"{original_pixels:,}"
+        else:
+            original_pixels_str = str(original_pixels)
+            
+        # Get reduction factor with fallback
+        reduction_factor = result.statistics.get('data_reduction_factor', None)
+        if reduction_factor is not None:
+            reduction_factor_str = f"{reduction_factor:.0f}×"
+        else:
+            reduction_factor_str = "N/A"
+        
         stats_text = (
             f"Analysis Summary\n"
             f"{'='*20}\n"
             f"Block Size: {result.metadata.parameters['block_size_km']} km\n"
             f"Total Blocks: {result.statistics['n_blocks_analyzed']}\n"
-            f"Original Pixels: {result.statistics['original_pixels']:,}\n"
-            f"Reduction Factor: {result.statistics['data_reduction_factor']:.0f}×\n"
+            f"Original Pixels: {original_pixels_str}\n"
+            f"Reduction Factor: {reduction_factor_str}\n"
             f"\nBandwidth: {result.statistics['bandwidth']:.1f}\n"
             f"Kernel: {result.metadata.parameters['kernel']}\n"
             f"Adaptive: {result.metadata.parameters['adaptive']}\n"

@@ -4,6 +4,7 @@
 import pytest
 import numpy as np
 import xarray as xr
+import matplotlib.pyplot as plt
 import tempfile
 from pathlib import Path
 
@@ -298,7 +299,7 @@ class TestUnifiedWorkflow:
         maxp_analyzer = MaxPAnalyzer(config)
         results['maxp'] = maxp_analyzer.analyze(
             test_data.to_array(dim='band'),
-            min_area_km2=200,
+            min_area_km2=500,  # 5 pixels with 10km pixel size (100 km² per pixel)
             run_perturbation=False
         )
         

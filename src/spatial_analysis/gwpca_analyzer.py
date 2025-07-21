@@ -207,7 +207,7 @@ class GWPCAAnalyzer(BaseAnalyzer):
         )
         
         # Store in database if configured
-        if self.save_results:
+        if self.save_results_enabled:
             self.store_in_database(result)
         
         return result

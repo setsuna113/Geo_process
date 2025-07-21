@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import seaborn as sns
 from matplotlib.colors import TwoSlopeNorm
 import xarray as xr
@@ -20,7 +21,7 @@ class LocalStatsMapper:
         self.figsize = figsize
     
     def plot_local_r2_map(self, result: AnalysisResult,
-                         save_path: Optional[str] = None) -> plt.Figure:
+                         save_path: Optional[str] = None) -> Figure:
         """
         Plot map of local R² values.
         
@@ -64,9 +65,8 @@ class LocalStatsMapper:
         
         return fig
     
-    def plot_loading_maps(self, result: AnalysisResult,
-                        component: int = 1,
-                        save_path: Optional[str] = None) -> plt.Figure:
+    def plot_component_loadings(self, result: AnalysisResult, component: int,
+                        save_path: Optional[str] = None) -> Figure:
         """
         Plot loading maps for a specific component.
         
@@ -127,7 +127,7 @@ class LocalStatsMapper:
         return fig
     
     def plot_eigenvalue_maps(self, result: AnalysisResult,
-                           save_path: Optional[str] = None) -> plt.Figure:
+                           save_path: Optional[str] = None) -> Figure:
         """
         Plot eigenvalue maps for all components.
         
@@ -168,11 +168,12 @@ class LocalStatsMapper:
         return fig
     
     def create_summary_figure(self, result: AnalysisResult,
-                            save_path: Optional[str] = None) -> plt.Figure:
+                            save_path: Optional[str] = None) -> Figure:
         """Create comprehensive summary figure."""
         fig = plt.figure(figsize=(16, 12))
         
         # Create grid
         gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
         
-        # 1. Local
+        # Return the figure (placeholder for now)
+        return fig

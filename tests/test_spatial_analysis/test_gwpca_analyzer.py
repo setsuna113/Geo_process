@@ -4,6 +4,7 @@
 import pytest
 import numpy as np
 import xarray as xr
+import matplotlib.pyplot as plt
 from unittest.mock import Mock, patch, MagicMock
 
 from src.spatial_analysis.gwpca.gwpca_analyzer import GWPCAAnalyzer
@@ -32,8 +33,7 @@ class TestGWPCAAnalyzerUnit:
     
     @pytest.fixture
     def analyzer(self, mock_config):
-        with patch('src.spatial_analysis.gwpca.gwpca_analyzer.ArrayConverter'), \
-             patch('src.spatial_analysis.gwpca.gwpca_analyzer.DataNormalizer'):
+        with patch('src.spatial_analysis.base_analyzer.ArrayConverter'):
             return GWPCAAnalyzer(mock_config)
     
     def test_aggregate_to_blocks(self, analyzer):
@@ -201,7 +201,7 @@ class TestGWPCAIntegration:
     
     @pytest.fixture
     def config(self):
-        from src.core.config import Config
+        from src.config.config import Config
         config = Config()
         config.config = {
             'spatial_analysis': {

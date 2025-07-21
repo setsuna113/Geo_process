@@ -4,11 +4,13 @@
 import pytest
 import numpy as np
 import xarray as xr
+import matplotlib.pyplot as plt
 from unittest.mock import Mock, patch, MagicMock
 
 from src.spatial_analysis.som.som_trainer import SOMAnalyzer
 from src.spatial_analysis.som.som_visualizer import SOMVisualizer
 from src.spatial_analysis.som.som_reporter import SOMReporter
+from src.spatial_analysis.base_analyzer import AnalysisResult, AnalysisMetadata
 
 
 class TestSOMAnalyzerUnit:
@@ -30,8 +32,7 @@ class TestSOMAnalyzerUnit:
     
     @pytest.fixture
     def analyzer(self, mock_config):
-        with patch('src.spatial_analysis.som.som_trainer.ArrayConverter'), \
-             patch('src.spatial_analysis.som.som_trainer.DataNormalizer'):
+        with patch('src.spatial_analysis.base_analyzer.ArrayConverter'):
             return SOMAnalyzer(mock_config)
     
     def test_get_default_parameters(self, analyzer):
@@ -196,6 +197,36 @@ class TestSOMReporter:
     def reporter(self):
         return SOMReporter()
     
+    @pytest.fixture
+    def mock_result(self):
+        """Create mock analysis result for testing."""
+        metadata = AnalysisMetadata(
+            analysis_type='SOM',
+            input_shape=(3, 3),
+            input_bands=['P', 'A'],
+            parameters={'grid_size': [2, 2]},
+            processing_time=1.0,
+            timestamp='2024-01-01T00:00:00'
+        )
+        
+        statistics = {
+            'cluster_statistics': {
+                0: {'count': 5, 'percentage': 55.6, 'mean': [0.5, 0.3], 'std': [0.1, 0.1], 'min': [0.4, 0.2], 'max': [0.6, 0.4]},
+                1: {'count': 3, 'percentage': 33.3, 'mean': [0.7, 0.8], 'std': [0.1, 0.1], 'min': [0.6, 0.7], 'max': [0.8, 0.9]},
+                2: {'count': 1, 'percentage': 11.1, 'mean': [0.2, 0.5], 'std': [0.1, 0.1], 'min': [0.1, 0.4], 'max': [0.3, 0.6]}
+            },
+            'quantization_error': 0.1,
+            'topographic_error': 0.05,
+            'empty_neurons': 1,
+            'cluster_balance': 0.3
+        }
+        
+        return AnalysisResult(
+            labels=np.array([0, 0, 1, 0, 2, 0, 1, 1, 0]),
+            metadata=metadata,
+            statistics=statistics
+        )
+    
     def test_generate_cluster_summary(self, reporter, mock_result):
         """Test cluster summary generation."""
         df = reporter.generate_cluster_summary(mock_result)
@@ -212,7 +243,7 @@ class TestSOMIntegration:
     
     @pytest.fixture
     def config(self):
-        from src.core.config import Config
+        from src.config.config import Config
         config = Config()
         config.config = {
             'spatial_analysis': {
@@ -250,6 +281,7 @@ class TestSOMIntegration:
         assert result.metadata.analysis_type == 'SOM'
         assert result.labels.shape == (16,)  # 4x4 pixels
         assert 'quantization_error' in result.statistics
+        assert result.additional_outputs is not None
         assert 'component_planes' in result.additional_outputs
         
         # Test visualization

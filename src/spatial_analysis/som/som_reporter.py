@@ -28,7 +28,7 @@ class SOMReporter:
         Returns:
             DataFrame with cluster statistics
         """
-        cluster_stats = result.statistics.get('cluster_statistics', 0) if statistics is not None else None
+        cluster_stats = result.statistics.get('cluster_statistics', {}) if result.statistics is not None else {}
         band_names = result.metadata.input_bands
         
         # Build summary data
@@ -76,10 +76,10 @@ class SOMReporter:
                 'parameters': result.metadata.parameters
             },
             'quality_metrics': {
-                'quantization_error': result.statistics.get('quantization_error', 0) if statistics is not None else None,
-                'topographic_error': result.statistics.get('topographic_error', 0) if statistics is not None else None,
-                'empty_neurons': result.statistics.get('empty_neurons', 0) if statistics is not None else None,
-                'cluster_balance': result.statistics.get('cluster_balance', 0) if statistics is not None else None
+                'quantization_error': result.statistics.get('quantization_error', 0) if result.statistics is not None else None,
+                'topographic_error': result.statistics.get('topographic_error', 0) if result.statistics is not None else None,
+                'empty_neurons': result.statistics.get('empty_neurons', 0) if result.statistics is not None else None,
+                'cluster_balance': result.statistics.get('cluster_balance', 0) if result.statistics is not None else None
             },
             'cluster_summary': self.generate_cluster_summary(result).to_dict('records'),
             'interpretation': self._generate_interpretation(result)
@@ -100,45 +100,45 @@ class SOMReporter:
         interp = {}
         
         # Interpret quantization error
-        qe = result.statistics.get('quantization_error', 0) if statistics is not None else None
-        if qe < 0.1:
+        qe = result.statistics.get('quantization_error', 0) if result.statistics is not None else None
+        if qe is not None and qe < 0.1:
             qe_text = "Excellent - the SOM represents the data very accurately"
-        elif qe < 0.5:
+        elif qe is not None and qe < 0.5:
             qe_text = "Good - the SOM captures the main patterns well"
-        elif qe < 1.0:
+        elif qe is not None and qe < 1.0:
             qe_text = "Moderate - consider increasing grid size for better representation"
         else:
             qe_text = "Poor - the SOM may be too small for the data complexity"
         interp['quantization_quality'] = qe_text
         
         # Interpret topographic error
-        te = result.statistics.get('topographic_error', 0) if statistics is not None else None
-        if te < 0.05:
+        te = result.statistics.get('topographic_error', 0) if result.statistics is not None else None
+        if te is not None and te < 0.05:
             te_text = "Excellent topology preservation"
-        elif te < 0.1:
+        elif te is not None and te < 0.1:
             te_text = "Good topology preservation"
-        elif te < 0.2:
+        elif te is not None and te < 0.2:
             te_text = "Moderate topology preservation"
         else:
             te_text = "Poor topology - consider adjusting SOM parameters"
         interp['topology_quality'] = te_text
         
         # Interpret cluster balance
-        balance = result.statistics.get('cluster_balance', 0) if statistics is not None else None
-        if balance < 0.5:
+        balance = result.statistics.get('cluster_balance', 0) if result.statistics is not None else None
+        if balance is not None and balance < 0.5:
             balance_text = "Well-balanced cluster sizes"
-        elif balance < 1.0:
+        elif balance is not None and balance < 1.0:
             balance_text = "Moderately balanced clusters"
         else:
             balance_text = "Highly imbalanced clusters - some patterns dominate"
         interp['cluster_balance'] = balance_text
         
         # Interpret empty neurons
-        empty = result.statistics.get('empty_neurons', 0) if statistics is not None else None
+        empty = result.statistics.get('empty_neurons', 0) if result.statistics is not None else None
         total = np.prod(result.metadata.parameters['grid_size'])
-        empty_pct = (empty / total) * 100
+        empty_pct = (empty / total) * 100 if empty is not None else 0
         
-        if empty_pct < 10:
+        if empty is not None and empty_pct < 10:
             empty_text = f"Good neuron utilization ({empty_pct:.1f}% empty)"
         elif empty_pct < 30:
             empty_text = f"Moderate neuron utilization ({empty_pct:.1f}% empty)"
@@ -176,8 +176,6 @@ class SOMReporter:
             for key, value in report['interpretation'].items():
                 formatted_key = key.replace("_", " ").title()
                 f.write(f"- **{formatted_key}**: {value}\n")
-                formatted_key = key.replace("_", " ").title()
-                f.write(f"- **{formatted_key}**: {value}\n")
             # Top clusters
             f.write("\n## Top 10 Clusters by Size\n\n")
             df = pd.DataFrame(report['cluster_summary'][:10])
@@ -203,11 +201,11 @@ class SOMReporter:
                 'timestamp': result.metadata.timestamp,
                 'grid_size': f"{result.metadata.parameters['grid_size'][0]}x{result.metadata.parameters['grid_size'][1]}",
                 'iterations': result.metadata.parameters['iterations'],
-                'n_clusters': result.statistics.get('n_clusters', 0) if statistics is not None else None,
-                'quantization_error': result.statistics.get('quantization_error', 0) if statistics is not None else None,
-                'topographic_error': result.statistics.get('topographic_error', 0) if statistics is not None else None,
-                'empty_neurons': result.statistics.get('empty_neurons', 0) if statistics is not None else None,
-                'cluster_balance': result.statistics.get('cluster_balance', 0) if statistics is not None else None,
+                'n_clusters': result.statistics.get('n_clusters', 0) if result.statistics is not None else None,
+                'quantization_error': result.statistics.get('quantization_error', 0) if result.statistics is not None else None,
+                'topographic_error': result.statistics.get('topographic_error', 0) if result.statistics is not None else None,
+                'empty_neurons': result.statistics.get('empty_neurons', 0) if result.statistics is not None else None,
+                'cluster_balance': result.statistics.get('cluster_balance', 0) if result.statistics is not None else None,
                 'processing_time': result.metadata.processing_time
             }
             comparison_data.append(row)

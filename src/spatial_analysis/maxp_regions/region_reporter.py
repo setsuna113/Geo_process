@@ -35,8 +35,11 @@ class RegionReporter:
         
         # Build summary data
         summary_data = []
-        compactness = result.additional_outputs.get('compactness_scores', {})
-        homogeneity = result.additional_outputs.get('homogeneity_scores', {})
+        compactness = {}
+        homogeneity = {}
+        if result.additional_outputs is not None:
+            compactness = result.additional_outputs.get('compactness_scores', {})
+            homogeneity = result.additional_outputs.get('homogeneity_scores', {})
         
         for region_id, stats in region_stats.items():
             row = {
@@ -76,15 +79,19 @@ class RegionReporter:
         
         # Area-based metrics
         areas = [r['area_km2'] for r in stats['region_statistics'].values()]
-        area_cv = stats['area_coefficient_variation']
+        area_cv = stats.get('area_coefficient_variation', 0.0)  # Use fallback if missing
         
         # Calculate average compactness
-        compactness_scores = list(result.additional_outputs['compactness_scores'].values())
-        avg_compactness = np.mean(compactness_scores)
+        compactness_scores = []
+        if result.additional_outputs is not None and 'compactness_scores' in result.additional_outputs:
+            compactness_scores = list(result.additional_outputs['compactness_scores'].values())
+        avg_compactness = np.mean(compactness_scores) if compactness_scores else 0.0
         
         # Calculate average homogeneity
-        homogeneity_scores = list(result.additional_outputs['homogeneity_scores'].values())
-        avg_homogeneity = np.mean(homogeneity_scores)
+        homogeneity_scores = []
+        if result.additional_outputs is not None and 'homogeneity_scores' in result.additional_outputs:
+            homogeneity_scores = list(result.additional_outputs['homogeneity_scores'].values())
+        avg_homogeneity = np.mean(homogeneity_scores) if homogeneity_scores else 0.0
         
         quality = {
             'variance_explained': stats['variance_explained'],
@@ -101,7 +108,7 @@ class RegionReporter:
         }
         
         # Add perturbation analysis results if available
-        if 'perturbation_results' in result.additional_outputs:
+        if result.additional_outputs is not None and 'perturbation_results' in result.additional_outputs:
             pert = result.additional_outputs['perturbation_results']
             if pert:
                 quality['stability_assessment'] = pert['stability_assessment']
@@ -121,7 +128,7 @@ class RegionReporter:
         Returns:
             Matplotlib figure or None if no perturbation results
         """
-        if 'perturbation_results' not in result.additional_outputs:
+        if result.additional_outputs is None or 'perturbation_results' not in result.additional_outputs:
             return None
         
         pert = result.additional_outputs['perturbation_results']

@@ -220,13 +220,15 @@ class SOMAnalyzer(BaseAnalyzer):
         )
         
         # Store in database if configured
-        if self.save_results:
+        if self.save_results_enabled:
             self.store_in_database(result)
+            # Also save to disk
+            self.save_results(result)
         
         return result
     
     def _calculate_statistics(self, data: np.ndarray, labels: np.ndarray, 
-                            som: MiniSom, params: Dict[str, Any]) -> Dict[str, Any]:
+                            som: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         """Calculate SOM statistics."""
         unique_labels = np.unique(labels)
         n_clusters = len(unique_labels)

@@ -86,7 +86,7 @@ class BaseAnalyzer(BaseProcessor):
         
         # Analysis parameters
         self.normalize_data = config.get('spatial_analysis', {}).get('normalize_data', True)
-        self.save_results = config.get('spatial_analysis', {}).get('save_results', True)
+        self.save_results_enabled = config.get('spatial_analysis', {}).get('save_results', True)
         self.output_dir = Path(config.get('spatial_analysis', {}).get('output_dir', 'outputs/spatial_analysis'))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -155,9 +155,18 @@ class BaseAnalyzer(BaseProcessor):
                 raise ValueError("Numpy array must be 3D (bands, height, width)")
         
         # Store original metadata
+        if isinstance(data, xr.Dataset):
+            # For Dataset, use shape of first data variable for spatial dims
+            first_var = list(data.data_vars)[0]
+            spatial_shape = data[first_var].shape
+            # But for full shape, include all variables as bands
+            data_shape = (len(data.data_vars),) + spatial_shape
+        else:
+            data_shape = data.shape
+            
         metadata = {
             'original_type': type(data).__name__,
-            'original_shape': data.shape,
+            'original_shape': data_shape,
             'dims': list(data.dims) if hasattr(data, 'dims') else None,
             'coords': {k: v.values.tolist() for k, v in data.coords.items()} if hasattr(data, 'coords') else None
         }
@@ -231,8 +240,39 @@ class BaseAnalyzer(BaseProcessor):
         logger.info("Restoring spatial structure to results")
         
         if 'coords_info' in metadata:
-            # Unflatten using original coordinates
-            result_da = self.array_converter.unflatten_spatial(labels, metadata)
+            # Handle xarray_to_numpy results - need special handling for Dataset inputs
+            if 'dims' in metadata and 'shape' in metadata:
+                dims = metadata['dims']
+                shape = metadata['shape']
+                
+                if len(dims) == 3 and dims[0] == 'variable':
+                    # Dataset was converted to (variable, lat, lon), so spatial shape is shape[1:]
+                    spatial_shape = shape[1:]
+                    spatial_dims = dims[1:]
+                    
+                    # Extract coordinate info for spatial dimensions
+                    coords = {}
+                    coords_info = metadata['coords_info']
+                    for dim in spatial_dims:
+                        if dim in coords_info:
+                            coords[dim] = coords_info[dim]['values']
+                    
+                    # Reshape to spatial dimensions
+                    reshaped = labels.reshape(spatial_shape)
+                    
+                    # Create DataArray
+                    result_da = xr.DataArray(
+                        reshaped,
+                        coords=coords,
+                        dims=spatial_dims,
+                        name='analysis_result'
+                    )
+                else:
+                    # DataArray case - use unflatten_spatial
+                    result_da = self.array_converter.unflatten_spatial(labels, metadata)
+            else:
+                # Fallback to unflatten_spatial
+                result_da = self.array_converter.unflatten_spatial(labels, metadata)
         else:
             # Manual restoration
             original_shape = metadata.get('original_shape', labels.shape)
@@ -392,7 +432,7 @@ class BaseAnalyzer(BaseProcessor):
         Returns:
             Database record ID if successful
         """
-        if not self.db or not self.save_results:
+        if not self.db or not self.save_results_enabled:
             return None
         
         try:
@@ -475,6 +515,10 @@ class BaseAnalyzer(BaseProcessor):
         elif isinstance(data, (xr.Dataset, xr.DataArray)):
             if isinstance(data, xr.Dataset) and len(data.data_vars) == 0:
                 issues.append("Dataset has no variables")
+            elif isinstance(data, xr.Dataset):
+                # Check if Dataset is empty by checking sizes
+                if all(data[var].size == 0 for var in data.data_vars):
+                    issues.append("Empty data provided")
             elif data.size == 0:
                 issues.append("Empty data provided")
         

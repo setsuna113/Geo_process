@@ -16,11 +16,25 @@ class ConcreteAnalyzer(BaseAnalyzer):
     """Concrete implementation for testing."""
     
     def analyze(self, data, **kwargs):
-        # Simple implementation
-        labels = np.zeros(data.size, dtype=int)
+        # Simple implementation - handle different data types
+        if isinstance(data, xr.Dataset):
+            # For Dataset, get total size from all data variables
+            first_var = list(data.data_vars)[0]
+            var_size = data[first_var].size
+            n_variables = len(data.data_vars)
+            total_size = var_size * n_variables
+            data_shape = (n_variables,) + data[first_var].shape
+        elif isinstance(data, xr.DataArray):
+            total_size = data.size
+            data_shape = data.shape
+        else:
+            total_size = data.size
+            data_shape = data.shape
+            
+        labels = np.zeros(total_size, dtype=int)
         metadata = AnalysisMetadata(
             analysis_type='Test',
-            input_shape=data.shape,
+            input_shape=data_shape,
             input_bands=['test'],
             parameters={},
             processing_time=0.1,
@@ -60,14 +74,13 @@ class TestBaseAnalyzerUnit:
     
     @pytest.fixture
     def analyzer(self, mock_config, mock_db):
-        with patch('src.spatial_analysis.base_analyzer.ArrayConverter'), \
-             patch('src.spatial_analysis.base_analyzer.DataNormalizer'):
+        with patch('src.spatial_analysis.base_analyzer.ArrayConverter'):
             return ConcreteAnalyzer(mock_config, mock_db)
     
     def test_initialization(self, analyzer):
         """Test analyzer initialization."""
         assert analyzer.normalize_data == True
-        assert analyzer.save_results == True
+        assert analyzer.save_results_enabled == True
         assert analyzer.output_dir.name == 'test_output'
     
     def test_prepare_data_numpy(self, analyzer):
@@ -208,7 +221,7 @@ class TestBaseAnalyzerIntegration:
     
     @pytest.fixture
     def config(self):
-        from src.core.config import Config
+        from src.config.config import Config
         config = Config()
         config.config = {
             'spatial_analysis': {

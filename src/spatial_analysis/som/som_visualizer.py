@@ -20,7 +20,7 @@ class SOMVisualizer:
     
     def __init__(self, figsize: Tuple[int, int] = (10, 8)):
         self.figsize = figsize
-        self.cmap = plt.cm.get_cmap("viridis")
+        self.cmap = plt.colormaps.get_cmap("viridis")
         
     def plot_cluster_map(self, result: AnalysisResult, 
                         save_path: Optional[str] = None,
@@ -43,7 +43,7 @@ class SOMVisualizer:
         
         # Create discrete colormap
         n_clusters = result.statistics.get('n_clusters', 0) if result.statistics is not None else 0
-        colors = plt.cm.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
+        colors = plt.colormaps.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
         cmap = ListedColormap(colors)
         
         # Plot
@@ -51,7 +51,6 @@ class SOMVisualizer:
             data_to_plot = spatial_data.values if hasattr(spatial_data, "values") else spatial_data
         else:
             data_to_plot = np.zeros((1, 1))
-        ax.imshow(data_to_plot if data_to_plot is not None else np.zeros((1, 1)),spatial_data.values if spatial_data is not None and hasattr(spatial_data, "values") else (spatial_data if spatial_data is not None else np.array([])), cmap=cmap, aspect='auto')
         im = ax.imshow(data_to_plot, cmap=cmap, aspect="auto")
         # Add colorbar
         cbar = plt.colorbar(im, ax=ax, label='Cluster ID')
@@ -84,18 +83,14 @@ class SOMVisualizer:
         """
         fig, ax = plt.subplots(figsize=self.figsize)
         
-        distance_map = result.additional_outputs['distance_map']
+        distance_map = result.additional_outputs['distance_map'] if result.additional_outputs else np.zeros((1, 1))
         
         # Plot U-matrix
-        if spatial_data is not None:
-            data_to_plot = spatial_data.values if hasattr(spatial_data, "values") else spatial_data
-        else:
-            data_to_plot = np.zeros((1, 1))
-        ax.imshow(data_to_plot if data_to_plot is not None else np.zeros((1, 1)),distance_map.T, cmap='bone_r', aspect='auto')
+        im = ax.imshow(distance_map.T, cmap='bone_r', aspect='auto')
         plt.colorbar(im, ax=ax, label='Distance')
         
         # Add activation overlay
-        activation = result.additional_outputs['activation_map'].T
+        activation = result.additional_outputs['activation_map'].T if result.additional_outputs else np.zeros((1, 1))
         # Normalize activation for overlay
         activation_norm = activation / activation.max()
         
@@ -133,8 +128,17 @@ class SOMVisualizer:
         Returns:
             Matplotlib figure
         """
-        component_planes = result.additional_outputs['component_planes']
+        component_planes = result.additional_outputs.get('component_planes', {}) if result.additional_outputs else {}
         n_components = len(component_planes)
+        
+        if n_components == 0:
+            # Return empty figure if no component planes available
+            fig, ax = plt.subplots(figsize=self.figsize)
+            ax.text(0.5, 0.5, 'No component planes available', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            return fig
         
         # Create subplot grid
         ncols = min(3, n_components)
@@ -184,8 +188,17 @@ class SOMVisualizer:
         Returns:
             Matplotlib figure
         """
-        cluster_stats = result.statistics.get('cluster_statistics', 0) if result.statistics is not None else 0
+        cluster_stats = result.statistics.get('cluster_statistics', {}) if result.statistics is not None else {}
         n_clusters = len(cluster_stats)
+        
+        if n_clusters == 0:
+            # Return empty figure if no cluster statistics available
+            fig, ax = plt.subplots(figsize=self.figsize)
+            ax.text(0.5, 0.5, 'No cluster statistics available', 
+                   ha='center', va='center', transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            return fig
         
         # Extract means for each cluster
         clusters = sorted(cluster_stats.keys())
@@ -211,7 +224,7 @@ class SOMVisualizer:
         angles = np.concatenate([angles, [angles[0]]])  # Complete the circle
         
         # Plot each cluster
-        colors = plt.cm.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
+        colors = plt.colormaps.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
         
         for idx, (cluster, color) in enumerate(zip(clusters, colors)):
             values = data[idx]
@@ -248,7 +261,7 @@ class SOMVisualizer:
         ax1 = fig.add_subplot(gs[0:2, 0:2])
         spatial_data = result.spatial_output
         n_clusters = result.statistics.get('n_clusters', 0) if result.statistics is not None else 0
-        colors = plt.cm.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
+        colors = plt.colormaps.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
         cmap = ListedColormap(colors)
         im1 = ax1.imshow(spatial_data.values if spatial_data is not None and hasattr(spatial_data, "values") else (spatial_data if spatial_data is not None else np.array([])), cmap=cmap, aspect='auto')
         ax1.set_title('Spatial Cluster Distribution', fontsize=14, fontweight='bold')
@@ -258,7 +271,7 @@ class SOMVisualizer:
         
         # 2. U-matrix
         ax2 = fig.add_subplot(gs[0, 2])
-        distance_map = result.additional_outputs['distance_map']
+        distance_map = result.additional_outputs.get('distance_map', np.zeros((1, 1))) if result.additional_outputs else np.zeros((1, 1))
         _ = ax2.imshow(distance_map.T, cmap='bone_r', aspect='auto')  # Intentionally unused
         ax2.set_title('U-Matrix', fontsize=12, fontweight='bold')
         ax2.set_xlabel('Grid X')
@@ -266,10 +279,11 @@ class SOMVisualizer:
         
         # 3. Cluster sizes
         ax3 = fig.add_subplot(gs[1, 2])
-        cluster_stats = result.statistics.get('cluster_statistics', 0) if result.statistics is not None else 0
-        sizes = [stats['count'] for stats in cluster_stats.values()]
-        clusters = list(cluster_stats.keys())
-        _ = ax3.bar(clusters, sizes, color=colors[:len(clusters)])  # Intentionally unused
+        cluster_stats = result.statistics.get('cluster_statistics', {}) if result.statistics is not None else {}
+        if cluster_stats:
+            sizes = [stats['count'] for stats in cluster_stats.values()]
+            clusters = list(cluster_stats.keys())
+            _ = ax3.bar(clusters, sizes, color=colors[:len(clusters)])  # Intentionally unused
         ax3.set_title('Cluster Sizes', fontsize=12, fontweight='bold')
         ax3.set_xlabel('Cluster ID')
         ax3.set_ylabel('Number of Pixels')
@@ -292,9 +306,12 @@ class SOMVisualizer:
         # 5. Top clusters info
         ax5 = fig.add_subplot(gs[2, 1:])
         # Get top 5 clusters by size
-        sorted_clusters = sorted(cluster_stats.items(), 
-                               key=lambda x: x[1]['count'], 
-                               reverse=True)[:5]
+        if cluster_stats:
+            sorted_clusters = sorted(cluster_stats.items(), 
+                                   key=lambda x: x[1]['count'], 
+                                   reverse=True)[:5]
+        else:
+            sorted_clusters = []
         
         table_data = []
         for cluster_id, stats in sorted_clusters:
