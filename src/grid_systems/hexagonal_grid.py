@@ -3,8 +3,8 @@
 
 from typing import Optional, Union, List, Tuple, Set, Iterator
 import logging
-import h3
-from h3 import LatLngPoly
+import h3  # type: ignore
+from h3 import LatLngPoly  # type: ignore
 from ..grid_systems.bounds_manager import BoundsDefinition
 from shapely.geometry import Polygon, Point
 import numpy as np

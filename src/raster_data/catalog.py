@@ -276,6 +276,16 @@ class RasterCatalog:
         else:
             return 'unknown'
     
+    def get_rasters_by_type(self, dataset_types: List[str]) -> Dict[str, RasterEntry]:
+        """Get multiple rasters by dataset type."""
+        results = {}
+        for dtype in dataset_types:
+            entries = self.list_rasters(dataset_type=dtype, active_only=True)
+            if entries:
+                # Return first active entry for each type
+                results[dtype] = entries[0]
+        return results
+
     def generate_report(self, output_path: Path) -> None:
         """Generate catalog report."""
         entries = self.list_rasters()

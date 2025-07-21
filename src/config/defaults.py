@@ -125,3 +125,18 @@ LOGGING = {
     'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     'file': LOGS_DIR / 'biodiversity.log',
 }
+
+# Data preparation configuration
+DATA_PREPARATION = {
+    'chunk_size': 1000,  # Size for chunked processing
+    'resolution_tolerance': 1e-6,  # Tolerance for resolution matching
+    'bounds_tolerance': 1e-4,  # Tolerance for bounds matching
+}
+
+# Data cleaning configuration
+DATA_CLEANING = {
+    'log_operations': True,  # Whether to log cleaning operations
+    'outlier_removal': True,
+    'outlier_std_threshold': 4,  # Standard deviations for outlier detection
+}
+

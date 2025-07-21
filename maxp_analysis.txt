@@ -1,0 +1,156 @@
+/home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:5:20 - warning: Import "Dict" is not accessed (reportUnusedImport)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:5:26 - warning: Import "List" is not accessed (reportUnusedImport)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:5:32 - warning: Import "Tuple" is not accessed (reportUnusedImport)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:8:12 - error: Import "libpysal" could not be resolved (reportMissingImports)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:13:6 - warning: Stub file not found for "scipy.sparse" (reportMissingTypeStubs)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:13:26 - warning: Import "csr_matrix" is not accessed (reportUnusedImport)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:21:59 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:32:25 - error: "weights" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:35:60 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:46:25 - error: "weights" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:50:48 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:61:25 - error: "weights" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:67:39 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:78:25 - error: "weights" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:82:54 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:94:9 - warning: Variable "n" is not accessed (reportUnusedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:123:25 - error: "weights" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:126:39 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:127:49 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:138:25 - error: "weights" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:142:48 - error: Variable not allowed in type expression (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:155:9 - warning: Variable "n_blocks_y" is not accessed (reportUnusedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/contiguity_builder.py:182:25 - error: "weights" is not a known attribute of "None" (reportOptionalMemberAccess)
+/home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:8:8 - warning: Stub file not found for "pandas" (reportMissingTypeStubs)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:8:18 - warning: Import "pd" is not accessed (reportUnusedImport)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:10:10 - error: Import "spopt.region" could not be resolved (reportMissingImports)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:11:12 - error: Import "libpysal" could not be resolved (reportMissingImports)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:32:17 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:32:83 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:39:23 - error: "config" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:39:61 - error: "config" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:39:90 - error: Cannot access attribute "get" for class "None"
+    Attribute "get" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:40:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:41:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:42:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:43:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:48:31 - error: Cannot access attribute "default_threshold" for class "MaxPAnalyzer*"
+    Attribute "default_threshold" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:50:32 - error: Cannot access attribute "default_contiguity" for class "MaxPAnalyzer*"
+    Attribute "default_contiguity" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:51:33 - error: Cannot access attribute "default_min_regions" for class "MaxPAnalyzer*"
+    Attribute "default_min_regions" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:52:32 - error: Cannot access attribute "default_iterations" for class "MaxPAnalyzer*"
+    Attribute "default_iterations" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:61:54 - error: Cannot access attribute "default_threshold" for class "MaxPAnalyzer*"
+    Attribute "default_threshold" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:65:20 - error: Operator "<" not supported for types "Literal[0]" and "Any | None"
+    Operator "<" not supported for types "Literal[0]" and "None" (reportOperatorIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:65:24 - error: Operator "<=" not supported for "None" (reportOptionalOperand)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:68:16 - error: Operator "<=" not supported for "None" (reportOptionalOperand)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:75:56 - error: Cannot access attribute "default_contiguity" for class "MaxPAnalyzer*"
+    Attribute "default_contiguity" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:80:56 - error: Cannot access attribute "default_iterations" for class "MaxPAnalyzer*"
+    Attribute "default_iterations" is unknown (reportAttributeAccessIssue)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:86:16 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:88:46 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:118:31 - error: Type annotation not supported for this statement (reportInvalidTypeForm)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:118:31 - error: "threshold_type" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:118:45 - error: Statements must be separated by newlines or semicolons
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:118:45 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:126:25 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:126:50 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:131:25 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:131:50 - error: "data" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:136:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:137:35 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:137:53 - error: "data" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:157:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:158:19 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:158:62 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:161:12 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:161:37 - error: Expected ":"
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:162:25 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:164:25 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:169:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:172:21 - error: Object of type "None" cannot be called (reportOptionalCall)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:178:23 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:179:22 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:191:22 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:191:68 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:194:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:195:22 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:195:81 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:198:9 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:200:26 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:206:25 - error: Argument of type "Unknown | None" cannot be assigned to parameter "input_bands" of type "List[str]" in function "__init__"
+    Type "Unknown | None" is not assignable to type "List[str]"
+      "None" is not assignable to "List[str]" (reportArgumentType)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:207:24 - error: "params" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:208:43 - error: "start_time" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:210:35 - error: Argument of type "Unknown | None" cannot be assigned to parameter "normalization_applied" of type "bool" in function "__init__"
+    Type "Unknown | None" is not assignable to type "bool"
+      "None" is not assignable to "bool" (reportArgumentType)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:215:29 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:216:33 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:217:35 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:218:35 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:230:12 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:231:13 - error: "self" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:233:9 - error: "return" can be used only within a function
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:257:40 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:299:51 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:300:51 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:335:50 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:337:50 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:356:47 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:358:47 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:360:43 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_optimizer.py:382:51 - error: Expected expression to the right of "="
+/home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:6:8 - warning: Stub file not found for "pandas" (reportMissingTypeStubs)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:10:31 - warning: Import "Figure" is not accessed (reportUnusedImport)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:19:17 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:19:53 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:23:47 - warning: Expression value is unused (reportUnusedExpression)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:23:61 - error: Statements must be separated by newlines or semicolons
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:23:61 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:24:1 - error: Unexpected indentation
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:33:24 - error: "result" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:33:73 - error: "statistics" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:34:22 - error: "result" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:38:23 - error: "result" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:38:82 - error: "additional_outputs" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:39:23 - error: "result" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:39:82 - error: "additional_outputs" is not defined (reportUndefinedVariable)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:41:46 - error: "items" is not a known attribute of "None" (reportOptionalMemberAccess)
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:54:43 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:55:42 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:62:9 - error: "return" can be used only within a function
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:101:36 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:102:63 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:170:9 - error: "return" can be used only within a function
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:172:29 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:173:56 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:192:68 - error: Statements must be separated by newlines or semicolons
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:192:68 - error: Expected expression
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:209:9 - error: "return" can be used only within a function
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:227:38 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:237:39 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:247:34 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:254:38 - error: Expected expression to the right of "="
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:261:20 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:261:163 - error: Expected "else"
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:264:20 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:264:142 - error: Expected "else"
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:267:28 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:267:32 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:267:51 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:267:82 - error: "(" was not closed
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:292:47 - error: Unterminated expression in f-string; expecting "}"
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:292:47 - error: Expected "else"
+  /home/jason/geo/src/spatial_analysis/maxp_regions/region_reporter.py:292:47 - error: Statements must be separated by newlines or semicolons
+127 errors, 12 warnings, 0 informations 

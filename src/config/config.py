@@ -4,10 +4,18 @@ from typing import Dict, Any, Optional
 from . import defaults
 
 class Config:
-    """Congiguration manager with YAML override support."""
+    """Configuration manager with YAML override support."""
 
     def __init__(self, config_file: Optional[Path] = None):
         self.settings = self.load_defaults()
+
+        # Auto-discover config.yml if not specified
+        if config_file is None:
+            # Look for config.yml in project root
+            project_root = Path(__file__).parent.parent.parent
+            potential_config = project_root / 'config.yml'
+            if potential_config.exists():
+                config_file = potential_config
 
         if config_file and config_file.exists():
             self._load_yaml_config(config_file)
@@ -26,6 +34,8 @@ class Config:
             'output_formats': defaults.OUTPUT_FORMATS.copy(),
             'processing_bounds': defaults.PROCESSING_BOUNDS.copy(),
             'species_filters': defaults.SPECIES_FILTERS.copy(),
+            'data_preparation': defaults.DATA_PREPARATION.copy(),
+            'data_cleaning': defaults.DATA_CLEANING.copy(),
             'paths': {
                 'project_root': defaults.PROJECT_ROOT,
                 'data_dir': defaults.DATA_DIR,
@@ -33,6 +43,7 @@ class Config:
                 'logs_dir': defaults.LOGS_DIR,
             }
         }
+    
     def _load_yaml_config(self, config_file: Path):
         """Load and merge configuration from a YAML file."""
         with open(config_file, 'r') as file:
@@ -89,6 +100,14 @@ class Config:
     @property
     def species_filters(self) -> Dict[str, Any]:
         return self.settings['species_filters']
+    
+    @property
+    def data_preparation(self) -> Dict[str, Any]:
+        return self.settings['data_preparation']
+    
+    @property
+    def data_cleaning(self) -> Dict[str, Any]:
+        return self.settings['data_cleaning']
 
 # Global configuration instance
 config = Config()

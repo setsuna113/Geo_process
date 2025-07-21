@@ -746,3 +746,135 @@ COMMENT ON TABLE raster_sources IS 'Metadata for raster data files used in analy
 COMMENT ON TABLE raster_tiles IS 'Spatial tiles for efficient raster processing and access';
 COMMENT ON TABLE resampling_cache IS 'Cache for expensive raster resampling operations';
 COMMENT ON TABLE processing_queue IS 'Queue for managing distributed raster processing tasks';
+
+-- ==============================================================================
+-- DATA PREPARATION TABLES
+-- ==============================================================================
+
+-- Table for cleaning operations log
+CREATE TABLE IF NOT EXISTS data_cleaning_log (
+    id SERIAL PRIMARY KEY,
+    raster_name VARCHAR(255) NOT NULL,
+    dataset_type VARCHAR(50),
+    total_pixels BIGINT,
+    pixels_cleaned BIGINT,
+    cleaning_ratio FLOAT,
+    value_range FLOAT[],
+    operations JSONB,
+    processing_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table for merge operations
+CREATE TABLE IF NOT EXISTS raster_merge_log (
+    id SERIAL PRIMARY KEY,
+    source_rasters JSONB NOT NULL,
+    band_names TEXT[],
+    output_shape INTEGER[],
+    merge_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB
+);
+
+-- Table for normalization parameters
+CREATE TABLE IF NOT EXISTS normalization_parameters (
+    id SERIAL PRIMARY KEY,
+    method VARCHAR(50) NOT NULL,
+    parameters JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for faster lookups
+CREATE INDEX idx_cleaning_log_raster ON data_cleaning_log(raster_name);
+CREATE INDEX idx_merge_log_date ON raster_merge_log(merge_date);
+
+-- Comments for data preparation tables
+COMMENT ON TABLE data_cleaning_log IS 'Log of data cleaning operations performed on rasters';
+COMMENT ON TABLE raster_merge_log IS 'Log of raster merge operations and their metadata';
+COMMENT ON TABLE normalization_parameters IS 'Storage for normalization parameters used in data preparation';
+
+-- ==============================================================================
+-- DATA PREPARATION TABLES
+-- ==============================================================================
+
+-- Table for cleaning operations log
+CREATE TABLE IF NOT EXISTS data_cleaning_log (
+    id SERIAL PRIMARY KEY,
+    raster_name VARCHAR(255) NOT NULL,
+    dataset_type VARCHAR(50),
+    total_pixels BIGINT,
+    pixels_cleaned BIGINT,
+    cleaning_ratio FLOAT,
+    value_range FLOAT[],
+    operations JSONB,
+    processing_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table for merge operations
+CREATE TABLE IF NOT EXISTS raster_merge_log (
+    id SERIAL PRIMARY KEY,
+    source_rasters JSONB NOT NULL,
+    band_names TEXT[],
+    output_shape INTEGER[],
+    merge_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB
+);
+
+-- Table for normalization parameters
+CREATE TABLE IF NOT EXISTS normalization_parameters (
+    id SERIAL PRIMARY KEY,
+    method VARCHAR(50) NOT NULL,
+    parameters JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for faster lookups
+CREATE INDEX IF NOT EXISTS idx_cleaning_log_raster ON data_cleaning_log(raster_name);
+CREATE INDEX IF NOT EXISTS idx_merge_log_date ON raster_merge_log(merge_date);
+
+-- Comments for data preparation tables
+COMMENT ON TABLE data_cleaning_log IS 'Log of data cleaning operations performed on rasters';
+COMMENT ON TABLE raster_merge_log IS 'Log of raster merge operations and their metadata';
+COMMENT ON TABLE normalization_parameters IS 'Storage for normalization parameters used in data preparation';
+
+-- ==============================================================================
+-- DATA PREPARATION TABLES
+-- ==============================================================================
+
+-- Table for cleaning operations log
+CREATE TABLE IF NOT EXISTS data_cleaning_log (
+    id SERIAL PRIMARY KEY,
+    raster_name VARCHAR(255) NOT NULL,
+    dataset_type VARCHAR(50),
+    total_pixels BIGINT,
+    pixels_cleaned BIGINT,
+    cleaning_ratio FLOAT,
+    value_range FLOAT[],
+    operations JSONB,
+    processing_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table for merge operations
+CREATE TABLE IF NOT EXISTS raster_merge_log (
+    id SERIAL PRIMARY KEY,
+    source_rasters JSONB NOT NULL,
+    band_names TEXT[],
+    output_shape INTEGER[],
+    merge_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB
+);
+
+-- Table for normalization parameters
+CREATE TABLE IF NOT EXISTS normalization_parameters (
+    id SERIAL PRIMARY KEY,
+    method VARCHAR(50) NOT NULL,
+    parameters JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Index for faster lookups
+CREATE INDEX IF NOT EXISTS idx_cleaning_log_raster ON data_cleaning_log(raster_name);
+CREATE INDEX IF NOT EXISTS idx_merge_log_date ON raster_merge_log(merge_date);
+
+-- Comments for data preparation tables
+COMMENT ON TABLE data_cleaning_log IS 'Log of data cleaning operations performed on rasters';
+COMMENT ON TABLE raster_merge_log IS 'Log of raster merge operations and their metadata';
+COMMENT ON TABLE normalization_parameters IS 'Storage for normalization parameters used in data preparation';

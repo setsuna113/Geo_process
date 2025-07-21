@@ -1,5 +1,6 @@
 name: base
 channels:
+  - conda-forge
   - defaults
 dependencies:
   - _anaconda_depends=2025.06=py313_mkl_2
