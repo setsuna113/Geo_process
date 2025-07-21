@@ -130,7 +130,7 @@ class ContiguityBuilder:
         Returns:
             Extended spatial weights
         """
-        return libpysal.weights.higher_order(w, order)
+        return libpysal.weights.W(libpysal.weights.higher_order(w, order))
     
     @staticmethod
     def create_block_weights(height: int, width: int,

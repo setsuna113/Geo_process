@@ -1,4 +1,5 @@
 # src/spatial_analysis/gwpca/local_stats_mapper.py
+# type: ignore
 """Create maps and visualizations for GWPCA local statistics."""
 
 import logging

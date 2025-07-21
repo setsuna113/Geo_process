@@ -1,0 +1,45 @@
+{
+  "n_clusters": 9,
+  "quantization_error": 0.1,
+  "topographic_error": 0.05,
+  "empty_neurons": 0,
+  "cluster_balance": 0.3,
+  "cluster_statistics": {
+    "0": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "1": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "2": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "3": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "4": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "5": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "6": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "7": {
+      "count": 1,
+      "percentage": 11.1
+    },
+    "8": {
+      "count": 1,
+      "percentage": 11.1
+    }
+  }
+}

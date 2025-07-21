@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import statistics
 import matplotlib.pyplot as plt
+from matplotlib.patches import Circle
 
 
 from matplotlib.colors import ListedColormap
@@ -48,7 +49,12 @@ class SOMVisualizer:
         
         # Plot
         if spatial_data is not None:
-            data_to_plot = spatial_data.values if hasattr(spatial_data, "values") else spatial_data
+            if hasattr(spatial_data, "values"):
+                data_to_plot = np.array(spatial_data.values)
+            elif hasattr(spatial_data, "data"):
+                data_to_plot = np.array(spatial_data.data)
+            else:
+                data_to_plot = np.array(spatial_data)
         else:
             data_to_plot = np.zeros((1, 1))
         im = ax.imshow(data_to_plot, cmap=cmap, aspect="auto")
@@ -98,7 +104,7 @@ class SOMVisualizer:
         for i in range(activation.shape[0]):
             for j in range(activation.shape[1]):
                 if activation[i, j] > 0:
-                    circle = plt.Circle((j, i), 
+                    circle = Circle((j, i), 
                                       radius=0.3 * activation_norm[i, j],
                                       color='red', alpha=0.5)
                     ax.add_patch(circle)
@@ -263,7 +269,18 @@ class SOMVisualizer:
         n_clusters = result.statistics.get('n_clusters', 0) if result.statistics is not None else 0
         colors = plt.colormaps.get_cmap("tab20")(np.linspace(0, 1, max(1, n_clusters)))
         cmap = ListedColormap(colors)
-        im1 = ax1.imshow(spatial_data.values if spatial_data is not None and hasattr(spatial_data, "values") else (spatial_data if spatial_data is not None else np.array([])), cmap=cmap, aspect='auto')
+        # Prepare spatial data
+        if spatial_data is not None:
+            if hasattr(spatial_data, "values"):
+                plot_data = np.array(spatial_data.values)
+            elif hasattr(spatial_data, "data"):
+                plot_data = np.array(spatial_data.data)
+            else:
+                plot_data = np.array(spatial_data)
+        else:
+            plot_data = np.array([])
+        
+        im1 = ax1.imshow(plot_data, cmap=cmap, aspect='auto')
         ax1.set_title('Spatial Cluster Distribution', fontsize=14, fontweight='bold')
         ax1.set_xlabel('Longitude')
         ax1.set_ylabel('Latitude')

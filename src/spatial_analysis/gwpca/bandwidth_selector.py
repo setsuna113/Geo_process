@@ -2,7 +2,7 @@
 """Bandwidth selection methods for GWPCA."""
 
 import logging
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Tuple, List
 import numpy as np
 from scipy.spatial.distance import cdist
 from sklearn.model_selection import KFold
@@ -78,7 +78,7 @@ class BandwidthSelector:
         for train_idx, test_idx in kf.split(X):
             # Compute weights for test points
             test_weights = self._compute_weights(
-                test_idx, bandwidth, adaptive
+                test_idx.tolist(), bandwidth, adaptive
             )
             
             # Predict and score
@@ -90,7 +90,7 @@ class BandwidthSelector:
             mse = np.mean((X[test_idx] - predictions) ** 2)
             scores.append(mse)
         
-        return np.mean(scores)
+        return float(np.mean(scores))
     
     def aic_score(self, bandwidth: float, X: np.ndarray,
                  adaptive: bool = True) -> float:
@@ -169,7 +169,7 @@ class BandwidthSelector:
         """Make weighted predictions."""
         predictions = []
         
-        for i, weights in enumerate(weights_list):
+        for weights in weights_list:
             # Weighted mean
             w_sum = np.sum(weights)
             if w_sum > 0:
@@ -203,12 +203,15 @@ class BandwidthSelector:
         """
         if adaptive:
             # For adaptive, use percentage of points
-            lower = max(10, int(0.01 * self.n_points))
+            lower = max(2, int(0.01 * self.n_points))  # Minimum 2 neighbors
             upper = min(int(0.5 * self.n_points), 200)
+            # Ensure upper > lower
+            if upper <= lower:
+                upper = max(lower + 1, min(self.n_points - 1, 10))
         else:
             # For fixed, use percentage of max distance
             max_dist = np.max(self.distances)
             lower = 0.01 * max_dist
             upper = 0.3 * max_dist
         
-        return lower, upper
+        return float(lower), float(upper)

@@ -264,11 +264,14 @@ class MaxPAnalyzer(BaseAnalyzer):
                 threshold_name=None,
                 threshold=floor_pixels,
                 top_n=params['iterations'],
-                seed=params['random_seed']
+                verbose=False
             )
             
-            model.solve(data)
-            return model.labels_
+            model.solve()
+            if hasattr(model, 'labels_') and model.labels_ is not None:
+                return np.array(model.labels_)
+            else:
+                raise ValueError("MaxP solver did not produce valid labels")
             
         except Exception as e:
             logger.error(f"Max-p optimization failed: {e}")
@@ -370,7 +373,7 @@ class MaxPAnalyzer(BaseAnalyzer):
                                        labels2: np.ndarray) -> float:
         """Calculate correspondence between two region sets using Rand index."""
         from sklearn.metrics import rand_score
-        return rand_score(labels1, labels2)
+        return float(rand_score(labels1, labels2))
     
     def _calculate_statistics(self, data: np.ndarray, labels: np.ndarray,
                             weights: libpysal.weights.W, params: Dict[str, Any],

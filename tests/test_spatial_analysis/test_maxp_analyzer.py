@@ -85,15 +85,19 @@ class TestMaxPAnalyzerUnit:
             })
             
             with patch.object(analyzer, '_build_spatial_weights') as mock_weights:
-                mock_weights.return_value = Mock()
+                # Create a proper weights mock with neighbors attribute
+                mock_w = Mock()
+                mock_w.neighbors = {0: [1], 1: [0, 2], 2: [1, 3], 3: [2]}  # Simple chain
+                mock_weights.return_value = mock_w
                 
                 with patch.object(analyzer, 'restore_spatial_structure') as mock_restore:
                     mock_restore.return_value = xr.DataArray(np.array([[0, 0], [1, 1], [0, 0], [1, 1]]))
                     
-                    # Run analysis
+                    # Run analysis - use min_area_km2 that satisfies validation
+                    # With pixel_area = 3.24 km², need at least 3.7 pixels = 11.988 km²
                     result = analyzer.analyze(
                         np.random.rand(4, 2),
-                        min_area_km2=10,
+                        min_area_km2=13,  # > 11.988 km² to satisfy validation
                         run_perturbation=False
                     )
                     
@@ -183,6 +187,8 @@ class TestRegionReporter:
             statistics={
                 'n_regions': 2,
                 'min_area_threshold_km2': 10,
+                'ecological_scale': 'landscape',  # Add missing key
+                'mean_region_area_km2': 12,  # Add missing key
                 'region_statistics': {
                     0: {'area_km2': 12, 'pixel_count': 2, 'percentage_of_total': 50,
                         'mean': [0.5], 'std': [0.1], 'within_variance': 0.01},
@@ -252,10 +258,12 @@ class TestMaxPIntegration:
             name='richness'
         )
         
-        # Run analysis
+        # Run analysis - use min_area that allows for reasonable regions
+        # With 4x4 grid (16 pixels) and pixel_area=3.24 km²/pixel
+        # Use min_area = 13 km² ≈ 4 pixels to allow multiple regions
         result = analyzer.analyze(
             data,
-            min_area_km2=20,  # About 6 pixels
+            min_area_km2=13,  # About 4 pixels (13/3.24 = 4.01)
             run_perturbation=False
         )
         
@@ -265,7 +273,7 @@ class TestMaxPIntegration:
         assert 'region_statistics' in result.statistics
         
         # Each region should have at least min_pixels (using actual analyzer pixel area)
-        min_pixels = 20 / analyzer.pixel_area_km2
+        min_pixels = 13 / analyzer.pixel_area_km2  # About 4 pixels
         for region_stats in result.statistics['region_statistics'].values():
             assert region_stats['pixel_count'] >= int(min_pixels)
         

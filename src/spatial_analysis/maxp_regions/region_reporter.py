@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import seaborn as sns
 
 from src.spatial_analysis.base_analyzer import AnalysisResult
@@ -117,7 +118,7 @@ class RegionReporter:
         return quality
     
     def plot_perturbation_analysis(self, result: AnalysisResult,
-                                 save_path: Optional[Path] = None) -> Optional[plt.Figure]:
+                                 save_path: Optional[Path] = None) -> Optional[Figure]:
         """
         Plot perturbation analysis results.
         
@@ -193,7 +194,7 @@ class RegionReporter:
         return fig
     
     def plot_region_characteristics(self, result: AnalysisResult,
-                                  save_path: Optional[Path] = None) -> plt.Figure:
+                                  save_path: Optional[Path] = None) -> Figure:
         """
         Plot characteristics of regions.
         

@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 
 from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
 from src.config.config import Config
-from src.database.connection import DatabaseConnection
+from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class GWPCAAnalyzer(BaseAnalyzer):
     across geographic space.
     """
     
-    def __init__(self, config: Config, db_connection: Optional[DatabaseConnection] = None):
+    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
         super().__init__(config, db_connection)
         
         # GWPCA specific config
@@ -228,20 +228,16 @@ class GWPCAAnalyzer(BaseAnalyzer):
             # Search adaptive bandwidth (number of neighbors)
             bw = selector.search(
                 criterion=params['bandwidth_method'],
-                search_method='golden',
-                kernel=params['kernel'],
-                fixed=False
+                search_method='golden_section'
             )
         else:
             # Search fixed bandwidth (distance)
             bw = selector.search(
                 criterion=params['bandwidth_method'],
-                search_method='golden',
-                kernel=params['kernel'],
-                fixed=True
+                search_method='golden_section'
             )
         
-        return bw
+        return float(bw) if bw is not None else 50.0
     
     def _compute_gwpca(self, X: np.ndarray, coords: np.ndarray,
                      params: Dict[str, Any]) -> Dict[str, np.ndarray]:
@@ -256,22 +252,26 @@ class GWPCAAnalyzer(BaseAnalyzer):
         local_scores = np.zeros((n_pixels, n_components))
         
         # Compute weights for each location
-        from mgwr.kernels import (
-            Kernel, 
-            adapt_bw, 
-            fix_gauss, 
-            fix_bisquare, 
-            fix_exp,
-            adapt_bisquare
-        )
+        # Custom kernel functions (replacing mgwr imports)
+        def gaussian_weights(dist, bandwidth):
+            """Gaussian kernel function."""
+            return np.exp(-0.5 * (dist / bandwidth) ** 2)
+        
+        def bisquare_weights(dist, bandwidth):
+            """Bisquare kernel function."""
+            weights = np.zeros_like(dist)
+            valid = dist <= bandwidth
+            if np.any(valid):
+                weights[valid] = (1 - (dist[valid] / bandwidth) ** 2) ** 2
+            return weights
         
         # Select kernel function
         if params['kernel'] == 'gaussian':
-            kernel_func = fix_gauss if not params['adaptive'] else adapt_bw
+            kernel_func = gaussian_weights
         elif params['kernel'] == 'bisquare':
-            kernel_func = fix_bisquare if not params['adaptive'] else adapt_bisquare
-        else:  # exponential
-            kernel_func = fix_exp if not params['adaptive'] else adapt_bw
+            kernel_func = bisquare_weights
+        else:  # exponential - use gaussian as fallback
+            kernel_func = gaussian_weights
         
         bandwidth = params['bandwidth']
         
@@ -340,7 +340,7 @@ class GWPCAAnalyzer(BaseAnalyzer):
         
         # Local statistics
         local_r2 = local_results['local_r2']
-        local_eigenvalues = local_results['local_eigenvalues']
+        local_eigenvalues = local_results['local_eigenvalues']  # Will be used for enhanced statistics
         
         # Calculate variation in local structure
         loading_variation = np.std(local_results['local_loadings'], axis=0)

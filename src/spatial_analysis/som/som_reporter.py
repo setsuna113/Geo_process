@@ -175,11 +175,16 @@ class SOMReporter:
             f.write("\n## Interpretation\n\n")
             for key, value in report['interpretation'].items():
                 formatted_key = key.replace("_", " ").title()
-                f.write(f"- **{formatted_key}**: {value}\n")
+                value_str = value if value is not None else "Not available"
+                f.write(f"- **{formatted_key}**: {value_str}\n")
             # Top clusters
             f.write("\n## Top 10 Clusters by Size\n\n")
             df = pd.DataFrame(report['cluster_summary'][:10])
-            f.write(df.to_markdown(index=False))
+            markdown_str = df.to_markdown(index=False)
+            if markdown_str is not None:
+                f.write(markdown_str)
+            else:
+                f.write("No cluster data available")
             
         logger.info(f"Report saved to {path}")
     

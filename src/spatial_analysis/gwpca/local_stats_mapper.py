@@ -1,10 +1,12 @@
 # src/spatial_analysis/gwpca/local_stats_mapper.py
+# type: ignore
 """Create maps and visualizations for GWPCA local statistics."""
 
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 import seaborn as sns
 from matplotlib.colors import TwoSlopeNorm
 from matplotlib.patches import Rectangle
@@ -22,7 +24,7 @@ class LocalStatsMapper:
     
     def plot_local_r2_map(self, result: AnalysisResult,
                          save_path: Optional[str] = None,
-                         show_blocks: bool = True) -> plt.Figure:
+                         show_blocks: bool = True) -> Figure:
         """
         Plot map of local R² values.
         
@@ -38,27 +40,40 @@ class LocalStatsMapper:
         
         # Get local R² map
         r2_map = result.spatial_output
+        if r2_map is None:
+            raise ValueError("No spatial output available for plotting")
         
         # Check if block-based analysis
         is_block_based = 'block_size_km' in result.metadata.parameters and \
                         result.metadata.parameters.get('use_block_aggregation', False)
         
+        # Get data values - handle both xarray and numpy arrays
+        if hasattr(r2_map, 'values'):
+            # xarray DataArray
+            map_data = np.array(r2_map.values)
+        elif hasattr(r2_map, 'data'):
+            # xarray Dataset
+            map_data = np.array(r2_map.data)
+        else:
+            # numpy array or other
+            map_data = np.array(r2_map)
+        
         # Plot with appropriate colormap
         if is_block_based:
             # Use nearest neighbor interpolation for blocks
-            im = ax.imshow(r2_map.values, cmap='YlOrRd', aspect='auto',
+            im = ax.imshow(map_data, cmap='YlOrRd', aspect='auto',
                          vmin=0, vmax=1, interpolation='nearest')
             
             # Add block boundaries if requested
             if show_blocks:
-                height, width = r2_map.shape
+                height, width = map_data.shape
                 for i in range(height + 1):
                     ax.axhline(i - 0.5, color='gray', linewidth=0.5, alpha=0.5)
                 for j in range(width + 1):
                     ax.axvline(j - 0.5, color='gray', linewidth=0.5, alpha=0.5)
         else:
             # Smooth interpolation for pixel-based
-            im = ax.imshow(r2_map.values, cmap='YlOrRd', aspect='auto',
+            im = ax.imshow(map_data, cmap='YlOrRd', aspect='auto',
                          vmin=0, vmax=1, interpolation='bilinear')
         
         # Add colorbar

@@ -31,7 +31,7 @@ class GWPCAAnalyzer(BaseAnalyzer):
         
         # GWPCA specific config
         gwpca_config = config.get('spatial_analysis', {}).get('gwpca', {})
-        self.default_bandwidth_method = gwpca_config.get('bandwidth_method', 'cv')
+        self.default_bandwidth_method = gwpca_config.get('bandwidth_method', 'AICc')
         self.default_adaptive = gwpca_config.get('adaptive', True)
         self.default_n_components = gwpca_config.get('n_components', 2)
         self.default_kernel = gwpca_config.get('kernel', 'bisquare')
@@ -70,7 +70,7 @@ class GWPCAAnalyzer(BaseAnalyzer):
                     issues.append("fixed bandwidth must be a positive number")
         
         # Check bandwidth method
-        valid_methods = ['cv', 'aic', 'bic']
+        valid_methods = ['cv', 'aic', 'bic', 'AIC', 'AICc', 'BIC', 'CV']
         method = parameters.get('bandwidth_method', self.default_bandwidth_method)
         if method not in valid_methods:
             issues.append(f"bandwidth_method must be one of {valid_methods}")
@@ -408,10 +408,9 @@ class GWPCAAnalyzer(BaseAnalyzer):
             
             bw = selector.search(
                 criterion=params['bandwidth_method'],
-                search_method='golden',
-                fixed=False,
-                min_bandwidth=search_min,
-                max_bandwidth=search_max
+                search_method='golden_section',
+                bw_min=search_min,
+                bw_max=search_max
             )
         else:
             # Search fixed bandwidth (distance)
@@ -426,14 +425,12 @@ class GWPCAAnalyzer(BaseAnalyzer):
             
             bw = selector.search(
                 criterion=params['bandwidth_method'],
-                search_method='golden',
-                kernel=params['kernel'],
-                fixed=True,
-                min_bandwidth=search_min,
-                max_bandwidth=search_max
+                search_method='golden_section',
+                bw_min=search_min,
+                bw_max=search_max
             )
         
-        return bw
+        return float(bw) if bw is not None else 50.0
     
     def _compute_gwpca(self, X: np.ndarray, coords: np.ndarray,
                      params: Dict[str, Any]) -> Dict[str, np.ndarray]:
@@ -546,6 +543,8 @@ class GWPCAAnalyzer(BaseAnalyzer):
             'global_variance_explained': pca_global.explained_variance_ratio_.tolist(),
             'global_eigenvalues': pca_global.explained_variance_.tolist(),
             'global_loadings': pca_global.components_.tolist(),
+            'mean_local_r2': float(np.mean(local_r2)),
+            'mean_local_eigenvalues': [float(x) for x in np.mean(local_eigenvalues, axis=0)],
             'local_r2_mean': float(np.mean(local_r2)),
             'local_r2_std': float(np.std(local_r2)),
             'local_r2_min': float(np.min(local_r2)),

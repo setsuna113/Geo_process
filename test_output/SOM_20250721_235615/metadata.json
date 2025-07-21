@@ -1,0 +1,30 @@
+{
+  "analysis_type": "SOM",
+  "input_shape": [
+    3,
+    10,
+    10
+  ],
+  "input_bands": [
+    "P",
+    "A",
+    "F"
+  ],
+  "parameters": {
+    "grid_size": [
+      3,
+      3
+    ],
+    "iterations": 20,
+    "sigma": 1.0,
+    "learning_rate": 0.5,
+    "neighborhood_function": "gaussian",
+    "random_seed": 42,
+    "topology": "rectangular"
+  },
+  "processing_time": 0.0033180713653564453,
+  "timestamp": "2025-07-21 23:56:15",
+  "data_source": null,
+  "normalization_applied": true,
+  "coordinate_system": "EPSG:4326"
+}
