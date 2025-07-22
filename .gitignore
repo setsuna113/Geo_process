@@ -1,5 +1,5 @@
 gpkg_data/
-data/*.json
+outputs/
 data/
 test_output/
 
