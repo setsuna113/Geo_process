@@ -1,5 +1,5 @@
 gpkg_data/
-data/
+data/*.json
 test_output/
 
 # Python artifacts
@@ -8,6 +8,7 @@ pytest.cache/
 *.pyc
 *.pyo
 *.pyd
+*.npy
 
 # VS Code
 .vscode/
