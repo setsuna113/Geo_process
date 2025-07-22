@@ -79,7 +79,7 @@ class DataNormalizer(BaseProcessor):
         return {
             'data': normalized,
             'parameters': params,
-            'method': method,
+            'method': scaler.__class__.__name__.replace('Scaler', '').lower(),
             'parameter_id': param_id
         }
     
@@ -134,11 +134,44 @@ class DataNormalizer(BaseProcessor):
         valid_mask = ~np.isnan(flat_data)
         valid_data = flat_data[valid_mask]
         
-        # Fit and transform
-        scaler.fit(valid_data.reshape(-1, 1))
-        normalized_flat = np.full_like(flat_data, np.nan)
-        transformed = scaler.transform(valid_data.reshape(-1, 1))
-        normalized_flat[valid_mask] = np.asarray(transformed).flatten()
+        # Check if we have any valid data
+        if len(valid_data) == 0:
+            # All values are NaN, return array filled with zeros or NaN based on preference
+            normalized_flat = np.zeros_like(flat_data)  # or np.full_like(flat_data, np.nan)
+            params = {
+                'mean': 0.0,
+                'scale': 1.0,
+                'method': scaler.__class__.__name__.replace('Scaler', '').lower(),
+                'dims': list(da.dims)
+            }
+        else:
+            # Fit and transform
+            scaler.fit(valid_data.reshape(-1, 1))
+            normalized_flat = np.full_like(flat_data, np.nan)
+            transformed = scaler.transform(valid_data.reshape(-1, 1))
+            normalized_flat[valid_mask] = np.asarray(transformed).flatten()
+            
+            # Extract parameters for saving
+            if hasattr(scaler, 'mean_'):
+                params = {
+                    'mean': float(scaler.mean_[0]),
+                    'scale': float(scaler.scale_[0]),
+                    'method': scaler.__class__.__name__.replace('Scaler', '').lower(),
+                    'dims': list(da.dims)
+                }
+            elif hasattr(scaler, 'data_min_'):
+                params = {
+                    'min': float(scaler.data_min_[0]),
+                    'max': float(scaler.data_max_[0]),
+                    'scale': float(scaler.scale_[0]),
+                    'method': scaler.__class__.__name__.replace('Scaler', '').lower(),
+                    'dims': list(da.dims)
+                }
+            else:
+                params = {
+                    'method': scaler.__class__.__name__.replace('Scaler', '').lower(),
+                    'dims': list(da.dims)
+                }
         
         # Reshape back
         normalized = normalized_flat.reshape(original_shape)
