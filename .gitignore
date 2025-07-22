@@ -1,5 +1,6 @@
 gpkg_data/
 data/
+test_output/
 
 # Python artifacts
 __pycache__/
