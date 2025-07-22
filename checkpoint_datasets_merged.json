@@ -1,0 +1,16 @@
+{
+  "stage": "datasets_merged",
+  "timestamp": "2025-07-22T22:40:09.650825",
+  "elapsed_time": 3.6064023971557617,
+  "data": {
+    "shape": {
+      "lon": 21600,
+      "lat": 10410
+    },
+    "bands": [
+      "plants_richness",
+      "terrestrial_richness"
+    ],
+    "alignment_report": "AlignmentReport(aligned=False, issues=[AlignmentIssue(type='bounds_mismatch', severity='critical', description='Bounds mismatch between daru-plants-richness.tif and iucn-terrestrial-richness.tif', values={'reference': BoundingBox(left=-180.0000000000036, bottom=-89.83333333333513, right=180.00000000000355, top=83.66666666666833), 'raster': BoundingBox(left=-180.0, bottom=-54.99609999948974, right=180.00000000000716, top=83.00390000051301), 'difference': (3.609557097661309e-12, 34.83723333384539, 3.609557097661309e-12, 0.6627666661553206)}, fixable=True, suggested_fix='reproject_to_common_bounds')], reference_raster='data/richness_maps/daru-plants-richness.tif', compared_rasters=['data/richness_maps/iucn-terrestrial-richness.tif'], summary={'total_issues': 1, 'critical_issues': 1, 'warning_issues': 0, 'fixable_issues': 1, 'reference_metadata': {'crs': 'EPSG:4326', 'bounds': BoundingBox(left=-180.0000000000036, bottom=-89.83333333333513, right=180.00000000000355, top=83.66666666666833), 'resolution': (0.016666666666667, 0.016666666666667), 'shape': (10410, 21600)}, 'issue_types': ['bounds_mismatch'], 'recommended_strategy': 'reproject_to_intersection'})"
+  }
+}

@@ -54,13 +54,15 @@ results = pipeline.run(
 
   Detach and let run in background:
   Ctrl+B then d
+  or tmux detach-client -s richness_analysis from another terminal window
 
   Check if still running:
   tmux list-sessions
+  tmux capture-pane -p -t richness_analysis
 
   Emergency stop:
   tmux kill-session -t richness_analysis
-
+d
   📁 Output Files:
 
   - Results: outputs/spatial_analysis/Richness_SOM_*
