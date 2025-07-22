@@ -36,6 +36,7 @@ class Config:
             'species_filters': defaults.SPECIES_FILTERS.copy(),
             'data_preparation': defaults.DATA_PREPARATION.copy(),
             'data_cleaning': defaults.DATA_CLEANING.copy(),
+            'testing': defaults.TESTING.copy(),
             'paths': {
                 'project_root': defaults.PROJECT_ROOT,
                 'data_dir': defaults.DATA_DIR,
@@ -113,6 +114,10 @@ class Config:
     def config(self) -> Dict[str, Any]:
         """Access to settings dict for backward compatibility."""
         return self.settings
+    
+    @property
+    def testing(self) -> Dict[str, Any]:
+        return self.settings.get('testing', {})
     
     @config.setter
     def config(self, value: Dict[str, Any]):

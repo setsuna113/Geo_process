@@ -878,3 +878,140 @@ CREATE INDEX IF NOT EXISTS idx_merge_log_date ON raster_merge_log(merge_date);
 COMMENT ON TABLE data_cleaning_log IS 'Log of data cleaning operations performed on rasters';
 COMMENT ON TABLE raster_merge_log IS 'Log of raster merge operations and their metadata';
 COMMENT ON TABLE normalization_parameters IS 'Storage for normalization parameters used in data preparation';
+
+-- =============================================================================
+-- TEST DATA TRACKING ENHANCEMENTS
+-- =============================================================================
+
+-- Add created_by columns to tables that don't have them for better test data tracking
+-- These columns help identify test data vs production data
+
+-- Add created_by to grids table
+ALTER TABLE grids ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to grid_cells table  
+ALTER TABLE grid_cells ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to species_ranges table
+ALTER TABLE species_ranges ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to species_grid_intersections table
+ALTER TABLE species_grid_intersections ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to features table
+ALTER TABLE features ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to climate_data table
+ALTER TABLE climate_data ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to processing_queue table
+ALTER TABLE processing_queue ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to raster_sources table
+ALTER TABLE raster_sources ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to raster_tiles table
+ALTER TABLE raster_tiles ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to resampling_cache table
+ALTER TABLE resampling_cache ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to data_cleaning_log table
+ALTER TABLE data_cleaning_log ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to raster_merge_log table
+ALTER TABLE raster_merge_log ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- Add created_by to normalization_parameters table
+ALTER TABLE normalization_parameters ADD COLUMN IF NOT EXISTS created_by VARCHAR(100) DEFAULT 'system';
+
+-- =============================================================================
+-- TEST DATA TRACKING INDEXES
+-- =============================================================================
+
+-- Create indexes for efficient test data queries
+-- These indexes help quickly identify and clean up test data
+
+-- Index on created_by for fast filtering of test data
+CREATE INDEX IF NOT EXISTS idx_grids_created_by ON grids(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_grid_cells_created_by ON grid_cells(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_species_ranges_created_by ON species_ranges(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_species_grid_intersections_created_by ON species_grid_intersections(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_features_created_by ON features(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_climate_data_created_by ON climate_data(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_processing_queue_created_by ON processing_queue(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_raster_sources_created_by ON raster_sources(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_raster_tiles_created_by ON raster_tiles(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_resampling_cache_created_by ON resampling_cache(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_data_cleaning_log_created_by ON data_cleaning_log(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_raster_merge_log_created_by ON raster_merge_log(created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_normalization_parameters_created_by ON normalization_parameters(created_by) WHERE created_by LIKE 'test_%';
+
+-- Indexes for test data in metadata JSONB columns (for tables that have them)
+-- These help identify test data marked in JSON metadata
+CREATE INDEX IF NOT EXISTS idx_grids_test_metadata ON grids((metadata->>'__test_data__')) 
+WHERE metadata->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_species_ranges_test_metadata ON species_ranges((metadata->>'__test_data__')) 
+WHERE metadata->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_features_test_metadata ON features((computation_metadata->>'__test_data__')) 
+WHERE computation_metadata->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_climate_data_test_metadata ON climate_data((computation_metadata->>'__test_data__')) 
+WHERE computation_metadata->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_experiments_test_metadata ON experiments((config->>'__test_data__')) 
+WHERE config->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_test_metadata ON processing_jobs((results->>'__test_data__')) 
+WHERE results->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_export_metadata_test_metadata ON export_metadata((metadata->>'__test_data__')) 
+WHERE metadata->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raster_sources_test_metadata ON raster_sources((temporal_info->>'__test_data__')) 
+WHERE temporal_info->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raster_tiles_test_metadata ON raster_tiles((tile_stats->>'__test_data__')) 
+WHERE tile_stats->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_resampling_cache_test_metadata ON resampling_cache((computation_metadata->>'__test_data__')) 
+WHERE computation_metadata->>'__test_data__' IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raster_merge_log_test_metadata ON raster_merge_log((metadata->>'__test_data__')) 
+WHERE metadata->>'__test_data__' IS NOT NULL;
+
+-- Composite indexes for time-based test data cleanup
+-- These support efficient cleanup queries: "WHERE created_at > X AND created_by LIKE 'test_%'"
+CREATE INDEX IF NOT EXISTS idx_grids_test_cleanup ON grids(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_grid_cells_test_cleanup ON grid_cells(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_species_ranges_test_cleanup ON species_ranges(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_species_grid_intersections_test_cleanup ON species_grid_intersections(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_features_test_cleanup ON features(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_climate_data_test_cleanup ON climate_data(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_processing_queue_test_cleanup ON processing_queue(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_raster_sources_test_cleanup ON raster_sources(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_raster_tiles_test_cleanup ON raster_tiles(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_resampling_cache_test_cleanup ON resampling_cache(created_at, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_data_cleaning_log_test_cleanup ON data_cleaning_log(processing_date, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_raster_merge_log_test_cleanup ON raster_merge_log(merge_date, created_by) WHERE created_by LIKE 'test_%';
+CREATE INDEX IF NOT EXISTS idx_normalization_parameters_test_cleanup ON normalization_parameters(created_at, created_by) WHERE created_by LIKE 'test_%';
+
+-- =============================================================================
+-- COMMENTS FOR TEST DATA TRACKING
+-- =============================================================================
+
+COMMENT ON COLUMN grids.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN grid_cells.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN species_ranges.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN species_grid_intersections.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN features.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN climate_data.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN processing_queue.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN raster_sources.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN raster_tiles.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN resampling_cache.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN data_cleaning_log.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN raster_merge_log.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';
+COMMENT ON COLUMN normalization_parameters.created_by IS 'Identifies who/what created this record - use test_ prefix for test data';

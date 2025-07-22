@@ -136,8 +136,8 @@ class DataNormalizer(BaseProcessor):
         
         # Check if we have any valid data
         if len(valid_data) == 0:
-            # All values are NaN, return array filled with zeros or NaN based on preference
-            normalized_flat = np.zeros_like(flat_data)  # or np.full_like(flat_data, np.nan)
+            # All values are NaN, fill with zeros (common strategy for ML applications)
+            normalized_flat = np.zeros_like(flat_data)
             params = {
                 'mean': 0.0,
                 'scale': 1.0,
@@ -147,7 +147,7 @@ class DataNormalizer(BaseProcessor):
         else:
             # Fit and transform
             scaler.fit(valid_data.reshape(-1, 1))
-            normalized_flat = np.full_like(flat_data, np.nan)
+            normalized_flat = np.zeros_like(flat_data)  # Fill NaNs with zeros
             transformed = scaler.transform(valid_data.reshape(-1, 1))
             normalized_flat[valid_mask] = np.asarray(transformed).flatten()
             

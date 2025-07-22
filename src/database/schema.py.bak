@@ -841,32 +841,16 @@ class DatabaseSchema:
             return False
         
         from ..config import config
-        import json
         metadata_key = config.testing.get('test_data_markers', {}).get('metadata_key', '__test_data__')
         
         with db.get_cursor() as cursor:
-            # Check for different JSON column names based on table
-            json_column = None
+            # Check if table has metadata column
             if 'metadata' in self._get_table_columns(cursor, table):
-                json_column = 'metadata'
-            elif 'config' in self._get_table_columns(cursor, table):
-                json_column = 'config'
-            elif 'temporal_info' in self._get_table_columns(cursor, table):
-                json_column = 'temporal_info'
-            elif 'computation_metadata' in self._get_table_columns(cursor, table):
-                json_column = 'computation_metadata'
-            elif 'tile_stats' in self._get_table_columns(cursor, table):
-                json_column = 'tile_stats'
-            elif 'results' in self._get_table_columns(cursor, table):
-                json_column = 'results'
-            
-            if json_column:
-                marker_data = json.dumps({metadata_key: True})
                 cursor.execute(f"""
                     UPDATE {table} 
-                    SET {json_column} = COALESCE({json_column}, '{{}}') || %s::jsonb
+                    SET metadata = COALESCE(metadata, '{{}}') || %s
                     WHERE id = %s
-                """, (marker_data, record_id))
+                """, ({metadata_key: True}, record_id))
                 return cursor.rowcount > 0
         
         return False

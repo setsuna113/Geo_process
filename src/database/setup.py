@@ -1,5 +1,6 @@
 """Database setup and initialization script."""
 
+import os
 import sys
 import logging
 from typing import Dict, Any
@@ -155,6 +156,58 @@ def check_database_status() -> Dict[str, Any]:
         logger.error(f"Database status check failed: {e}")
     
     return status
+
+def setup_test_database() -> bool:
+    """Setup database for testing with safety checks."""
+    try:
+        # Ensure test mode is active
+        if not db.is_test_mode:
+            logger.error("Test database setup can only run in test mode")
+            return False
+        
+        # Validate test mode safety
+        db.validate_test_mode_operation()
+        
+        logger.info("🧪 Setting up TEST database...")
+        
+        # Regular setup
+        success = setup_database(reset=False)
+        
+        if success:
+            logger.info("✅ Test database ready")
+            
+            # Create test marker experiment
+            try:
+                exp_id = schema.create_experiment(
+                    name="TEST_setup_verification",
+                    description="Test mode verification",
+                    config={"test_mode": True, "created_by": "pytest"}
+                )
+                schema.mark_test_data('experiments', exp_id)
+                logger.info("✅ Test marker created")
+            except Exception as e:
+                logger.warning(f"Could not create test marker: {e}")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"Test database setup failed: {e}")
+        return False
+
+def cleanup_test_database() -> Dict[str, int]:
+    """Clean up test data from database."""
+    try:
+        if not db.is_test_mode:
+            raise RuntimeError("Cleanup can only run in test mode")
+        
+        logger.info("🧹 Cleaning up test database...")
+        results = schema.cleanup_test_data()
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Test cleanup failed: {e}")
+        return {}
 
 def main():
     """Main setup script."""

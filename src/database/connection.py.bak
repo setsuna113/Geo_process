@@ -51,16 +51,6 @@ class DatabaseManager:
             return False
         
         return True
-    
-    def refresh_test_mode(self) -> None:
-        """Refresh test mode detection - useful when config changes during tests."""
-        old_mode = self.is_test_mode
-        self.is_test_mode = self._detect_test_mode()
-        if old_mode != self.is_test_mode:
-            if self.is_test_mode:
-                logger.info("🧪 Database switched to TEST MODE")
-            else:
-                logger.info("📊 Database switched to PRODUCTION MODE")
 
     def validate_test_mode_operation(self) -> None:
         """Validate that test mode operations are safe."""
@@ -73,7 +63,7 @@ class DatabaseManager:
         # Validate database name
         if safety_checks.get('require_test_database_name', True):
             db_name = config.database.get('database', '').lower()
-            allowed_patterns = safety_checks.get('database_name_patterns', safety_checks.get('allowed_database_patterns', ['test', 'dev']))
+            allowed_patterns = safety_checks.get('allowed_database_patterns', ['test', 'dev'])
             
             if not any(pattern in db_name for pattern in allowed_patterns):
                 raise RuntimeError(

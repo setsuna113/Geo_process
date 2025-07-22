@@ -140,3 +140,31 @@ DATA_CLEANING = {
     'outlier_std_threshold': 4,  # Standard deviations for outlier detection
 }
 
+# Testing configuration - DISABLED by default for safety
+TESTING = {
+    'enabled': False,  # Must be explicitly enabled
+    'cleanup_after_test': True,
+    'test_data_retention_hours': 1,
+    'allowed_cleanup_tables': [
+        'experiments',
+        'processing_jobs',
+        'features',
+        'species_grid_intersections',
+        'climate_data',
+        'resampling_cache',
+        'processing_queue'
+        # Note: NOT including core tables like grids, grid_cells, species_ranges
+    ],
+    'safety_checks': {
+        'require_pytest_environment': True,
+        'require_test_database_name': True,
+        'require_test_prefix': True,
+        'max_retention_hours': 24,
+        'allowed_database_patterns': ['test', 'dev', 'staging', 'tmp']
+    },
+    'test_data_markers': {
+        'name_prefix': 'TEST_',
+        'metadata_key': '__test_data__',
+        'created_by': 'pytest'
+    }
+}
