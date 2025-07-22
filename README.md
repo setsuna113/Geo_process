@@ -44,6 +44,29 @@ results = pipeline.run(
 )
 ```
 
+🎮 Usage:
+
+  Start analysis:
+  ./run_analysis.sh
+
+  Monitor running analysis:
+  tmux attach -t richness_analysis
+
+  Detach and let run in background:
+  Ctrl+B then d
+
+  Check if still running:
+  tmux list-sessions
+
+  Emergency stop:
+  tmux kill-session -t richness_analysis
+
+  📁 Output Files:
+
+  - Results: outputs/spatial_analysis/Richness_SOM_*
+  - Logs: logs/richness_analysis_*.log
+  - Checkpoints: checkpoint_*.json
+
 ## Acknowledgments
 This project's architecture was inspired by the GeoCore framework. See ATTRIBUTIONS.md for full credits.
 

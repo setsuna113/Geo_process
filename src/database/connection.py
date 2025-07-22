@@ -87,32 +87,10 @@ class DatabaseManager:
                 raise RuntimeError("Test mode requires pytest environment")
 
     def _ensure_postgresql_service(self):
-        """Ensure PostgreSQL service is running."""
-        try:
-            # Check if we're on Linux (WSL or native)
-            if platform.system() == 'Linux':
-                # Check service status
-                result = subprocess.run(['sudo', 'service', 'postgresql', 'status'], 
-                                      capture_output=True, text=True, timeout=10)
-                
-                if result.returncode != 0 or 'offline' in result.stdout.lower():
-                    logger.info("🔄 Starting PostgreSQL service...")
-                    start_result = subprocess.run(['sudo', 'service', 'postgresql', 'start'],
-                                                capture_output=True, text=True, timeout=30)
-                    
-                    if start_result.returncode == 0:
-                        logger.info("✅ PostgreSQL service started successfully")
-                        # Wait a moment for service to be ready
-                        time.sleep(2)
-                    else:
-                        logger.warning(f"⚠️ Failed to start PostgreSQL service: {start_result.stderr}")
-                else:
-                    logger.debug("✅ PostgreSQL service already running")
-                    
-        except subprocess.TimeoutExpired:
-            logger.warning("⚠️ PostgreSQL service check timed out")
-        except Exception as e:
-            logger.debug(f"⚠️ Could not check/start PostgreSQL service: {e}")
+        """Check PostgreSQL availability (removed service management)."""
+        # Application should not manage system services
+        # Database connection will fail gracefully if service is not running
+        logger.debug("Assuming PostgreSQL service is managed externally")
 
     def _create_pool(self):
         """Create connection pool with retry logic."""

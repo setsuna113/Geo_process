@@ -7,6 +7,7 @@ from dataclasses import dataclass, asdict
 import logging
 
 from src.database.connection import DatabaseManager
+from src.database.utils import DatabaseSchemaUtils
 from .loaders.geotiff_loader import GeoTIFFLoader
 from .loaders.metadata_extractor import RasterMetadataExtractor
 from .validators.coverage_validator import CoverageValidator
@@ -44,6 +45,7 @@ class RasterCatalog:
         
         # Initialize components
         self.metadata_extractor = RasterMetadataExtractor(db_connection)
+        self.schema_utils = DatabaseSchemaUtils(db_connection, config)
         
     def scan_directory(self, directory: Path, 
                       pattern: str = "*.tif",
@@ -116,13 +118,20 @@ class RasterCatalog:
         """Get raster entry by name."""
         with self.db.get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("""
-                SELECT id, name, file_path, pixel_size_degrees, data_type, 
-                       nodata_value, file_size_mb, active, metadata,
-                       ST_XMin(bounds), ST_YMin(bounds), ST_XMax(bounds), ST_YMax(bounds)
-                FROM raster_sources
-                WHERE name = %s AND active = true
-            """, (name,))
+            
+            # Build query using schema utils
+            columns = ['id', 'name', 'file_path', 'pixel_size_degrees', 'data_type', 
+                      'nodata_value', 'file_size_mb', 'active', 'metadata']
+            
+            query, params = self.schema_utils.build_select_query(
+                'raster_sources', 
+                columns,
+                include_geometry_bounds=True,
+                where_conditions=['name = %s'],
+                include_active_filter=True
+            )
+            
+            cur.execute(query, [name] + params)
             
             row = cur.fetchone()
             if not row:
@@ -134,7 +143,7 @@ class RasterCatalog:
                 path=Path(row[2]),
                 dataset_type=self._detect_dataset_type(Path(row[2])),
                 resolution_degrees=row[3],
-                bounds=(row[9], row[10], row[11], row[12]),
+                bounds=(row[9], row[10], row[11], row[12]),  # min_x, min_y, max_x, max_y from bounds
                 data_type=row[4],
                 nodata_value=row[5],
                 file_size_mb=row[6],
@@ -149,25 +158,28 @@ class RasterCatalog:
         with self.db.get_connection() as conn:
             cur = conn.cursor()
             
-            query = """
-                SELECT id, name, file_path, pixel_size_degrees, data_type, 
-                       nodata_value, file_size_mb, active, metadata,
-                       ST_XMin(bounds), ST_YMin(bounds), ST_XMax(bounds), ST_YMax(bounds)
-                FROM raster_sources
-                WHERE 1=1
-            """
+            # Build query using schema utils
+            columns = ['id', 'name', 'file_path', 'pixel_size_degrees', 'data_type', 
+                      'nodata_value', 'file_size_mb', 'active', 'metadata']
+            
+            where_conditions = []
             params = []
             
-            if active_only:
-                query += " AND active = true"
-            
             if dataset_type:
-                query += " AND metadata->>'dataset_type' = %s"
+                metadata_col = self.schema_utils.get_metadata_column('raster_sources') or 'metadata'
+                where_conditions.append(f"{metadata_col}->>'dataset_type' = %s")
                 params.append(dataset_type)
             
-            query += " ORDER BY name"
+            query, base_params = self.schema_utils.build_select_query(
+                'raster_sources',
+                columns,
+                include_geometry_bounds=True,
+                where_conditions=where_conditions,
+                include_active_filter=active_only
+            )
             
-            cur.execute(query, params)
+            query += " ORDER BY name"
+            cur.execute(query, params + base_params)
             
             entries = []
             for row in cur.fetchall():

@@ -19,6 +19,24 @@ DATABASE = {
     'password': os.getenv('DB_PASSWORD', '123456'),
 }
 
+# Database schema mapping - allows flexibility across different database designs
+DATABASE_SCHEMA_MAPPING = {
+    'raster_sources': {
+        'geometry_column': 'spatial_extent',  # Primary geometry column
+        'fallback_geometry_columns': ['bounds', 'geometry', 'geom', 'shape'],  # Fallbacks to try
+        'active_column': 'active',  # Column indicating if record is active
+        'status_column': 'processing_status',  # Column for processing status
+        'metadata_column': 'metadata'  # JSON metadata column
+    },
+    'grid_cells': {
+        'geometry_column': 'geometry',
+        'fallback_geometry_columns': ['geom', 'shape', 'bounds'],
+        'active_column': None,  # No active column
+        'metadata_column': None
+    },
+    # Add other tables as needed
+}
+
 # Grid configurations
 GRIDS = {
     'cubic': {

@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 import rioxarray
-from dataclasses import dataclass
 from datetime import datetime
 
 from src.config.config import Config
@@ -15,20 +14,10 @@ from src.base.processor import BaseProcessor
 from src.raster_data.catalog import RasterCatalog, RasterEntry
 from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
 from src.database.connection import DatabaseManager
+from src.processors.data_preparation.raster_alignment import RasterAligner, AlignmentConfig, AlignmentStrategy
 import json
 
 logger = logging.getLogger(__name__)
-
-@dataclass
-class AlignmentCheck:
-    """Results of spatial alignment check."""
-    aligned: bool
-    same_resolution: bool
-    same_bounds: bool
-    same_crs: bool
-    resolution_diff: Optional[float]
-    bounds_diff: Optional[Tuple[float, float, float, float]]
-    crs_mismatch: Optional[Tuple[str, str]]
 
 class RasterMerger(BaseProcessor):
     """Merge multiple rasters into multi-band datasets."""
@@ -39,13 +28,13 @@ class RasterMerger(BaseProcessor):
         self.catalog = RasterCatalog(db_connection, config)
         self.loader = GeoTIFFLoader(config)
         
-        # Tolerance for alignment checks
-        self.resolution_tolerance = config.get('data_preparation', {}).get(
-            'resolution_tolerance', 1e-6
+        # Configure alignment handling
+        alignment_config = AlignmentConfig(
+            resolution_tolerance=config.get('data_preparation', {}).get('resolution_tolerance', 1e-6),
+            bounds_tolerance=config.get('data_preparation', {}).get('bounds_tolerance', 1e-4),
+            strategy=AlignmentStrategy.REPROJECT  # Default strategy for merging
         )
-        self.bounds_tolerance = config.get('data_preparation', {}).get(
-            'bounds_tolerance', 1e-4
-        )
+        self.aligner = RasterAligner(alignment_config)
     
     def merge_paf_rasters(self, 
                          plants_name: str,
@@ -75,18 +64,67 @@ class RasterMerger(BaseProcessor):
             'fungi': fungi_name
         })
         
-        alignment = None
-        # Check alignment
+        alignment_report = None
+        # Check alignment using robust aligner
         if validate_alignment:
-            alignment = self._check_alignment(list(rasters.values()))
-            if not alignment.aligned:
-                if not self._can_fix_alignment(alignment):
-                    raise ValueError(f"Rasters are not aligned: {alignment}")
+            raster_paths = [raster.path for raster in rasters.values()]
+            alignment_report = self.aligner.analyze_alignment(raster_paths)
+            
+            if not alignment_report.aligned:
+                if alignment_report.has_issues("critical"):
+                    # Try to fix alignment issues automatically
+                    logger.info(f"Found {len(alignment_report.issues)} alignment issues, attempting fixes...")
+                    
+                    # Create temporary aligned versions  
+                    import tempfile
+                    import shutil
+                    temp_dir = tempfile.mkdtemp()
+                    temp_dir_path = Path(temp_dir)
+                    
+                    try:
+                        aligned_paths = self.aligner.fix_alignment(raster_paths, temp_dir_path)
+                        
+                        # Reload entries with aligned rasters
+                        temp_rasters = {}
+                        for key, original_raster in rasters.items():
+                            aligned_path = aligned_paths[str(original_raster.path)]
+                            # Create temporary entry with aligned path
+                            temp_rasters[key] = type(original_raster)(
+                                id=original_raster.id,
+                                name=original_raster.name,
+                                path=aligned_path,
+                                dataset_type=original_raster.dataset_type,
+                                resolution_degrees=original_raster.resolution_degrees,
+                                bounds=original_raster.bounds,
+                                data_type=original_raster.data_type,
+                                nodata_value=original_raster.nodata_value,
+                                file_size_mb=original_raster.file_size_mb,
+                                last_validated=original_raster.last_validated,
+                                is_active=original_raster.is_active,
+                                metadata=original_raster.metadata
+                            )
+                        rasters = temp_rasters
+                        logger.info("✅ Successfully aligned rasters for merging")
+                        
+                        # Store temp_dir for cleanup after merge
+                        self._temp_alignment_dir = temp_dir_path
+                        
+                    except Exception as e:
+                        # Clean up temp dir if alignment fails
+                        shutil.rmtree(temp_dir)
+                        raise e
                 else:
-                    logger.warning("Rasters misaligned but fixable, proceeding with adjustment")
+                    logger.warning("Minor alignment issues found, proceeding with xarray interpolation")
         
         # Load and merge data
         merged_data = self._merge_raster_data(rasters)
+        
+        # Clean up temporary alignment files if they exist
+        if hasattr(self, '_temp_alignment_dir') and self._temp_alignment_dir.exists():
+            import shutil
+            shutil.rmtree(self._temp_alignment_dir)
+            delattr(self, '_temp_alignment_dir')
+            logger.info("🧹 Cleaned up temporary alignment files")
         
         # Save if requested
         if output_path:
@@ -98,7 +136,7 @@ class RasterMerger(BaseProcessor):
         return {
             'data': merged_data,
             'merge_id': merge_id,
-            'alignment': alignment if validate_alignment else None,
+            'alignment_report': alignment_report if validate_alignment else None,
             'metadata': {
                 'bands': ['plants', 'animals', 'fungi'],
                 'sources': {k: v.path for k, v in rasters.items()},
@@ -127,11 +165,53 @@ class RasterMerger(BaseProcessor):
         # Load raster entries
         rasters = self._load_raster_entries(raster_names)
         
-        alignment = None
-        # Check alignment
-        alignment = self._check_alignment(list(rasters.values()))
-        if not alignment.aligned:
-            raise ValueError(f"Rasters are not aligned: {alignment}")
+        # Check alignment using robust aligner
+        raster_paths = [raster.path for raster in rasters.values()]
+        alignment_report = self.aligner.analyze_alignment(raster_paths)
+        
+        if not alignment_report.aligned:
+            if alignment_report.has_issues("critical"):
+                # Try to fix alignment issues automatically
+                logger.info(f"Found {len(alignment_report.issues)} alignment issues, attempting fixes...")
+                
+                import tempfile
+                import shutil
+                temp_dir = tempfile.mkdtemp()
+                temp_dir_path = Path(temp_dir)
+                
+                try:
+                    aligned_paths = self.aligner.fix_alignment(raster_paths, temp_dir_path)
+                    
+                    # Reload entries with aligned rasters
+                    temp_rasters = {}
+                    for key, original_raster in rasters.items():
+                        aligned_path = aligned_paths[str(original_raster.path)]
+                        temp_rasters[key] = type(original_raster)(
+                            id=original_raster.id,
+                            name=original_raster.name,
+                            path=aligned_path,
+                            dataset_type=original_raster.dataset_type,
+                            resolution_degrees=original_raster.resolution_degrees,
+                            bounds=original_raster.bounds,
+                            data_type=original_raster.data_type,
+                            nodata_value=original_raster.nodata_value,
+                            file_size_mb=original_raster.file_size_mb,
+                            last_validated=original_raster.last_validated,
+                            is_active=original_raster.is_active,
+                            metadata=original_raster.metadata
+                        )
+                    rasters = temp_rasters
+                    logger.info("✅ Successfully aligned rasters for merging")
+                    
+                    # Store temp_dir for cleanup after merge
+                    self._temp_alignment_dir = temp_dir_path
+                    
+                except Exception as e:
+                    # Clean up temp dir if alignment fails
+                    shutil.rmtree(temp_dir)
+                    raise e
+            else:
+                logger.warning("Minor alignment issues found, proceeding with xarray interpolation")
         
         # Use provided band names or dict keys
         if band_names is None:
@@ -140,13 +220,20 @@ class RasterMerger(BaseProcessor):
         # Load and merge
         merged_data = self._merge_raster_data(rasters, band_names)
         
+        # Clean up temporary alignment files if they exist
+        if hasattr(self, '_temp_alignment_dir') and self._temp_alignment_dir.exists():
+            import shutil
+            shutil.rmtree(self._temp_alignment_dir)
+            delattr(self, '_temp_alignment_dir')
+            logger.info("🧹 Cleaned up temporary alignment files")
+        
         # Save if requested
         if output_path:
             self._save_merged_raster(merged_data, output_path)
         
         return {
             'data': merged_data,
-            'alignment': alignment,
+            'alignment_report': alignment_report,
             'metadata': {
                 'bands': band_names,
                 'sources': {k: v.path for k, v in rasters.items()}
@@ -165,71 +252,6 @@ class RasterMerger(BaseProcessor):
             
         return entries
     
-    def _check_alignment(self, rasters: List[RasterEntry]) -> AlignmentCheck:
-        """Check if rasters are spatially aligned."""
-        if len(rasters) < 2:
-            return AlignmentCheck(
-                aligned=True,
-                same_resolution=True,
-                same_bounds=True,
-                same_crs=True,
-                resolution_diff=None,
-                bounds_diff=None,
-                crs_mismatch=None
-            )
-        
-        ref_raster = rasters[0]
-        ref_metadata = self.loader.extract_metadata(ref_raster.path)
-        
-        for raster in rasters[1:]:
-            metadata = self.loader.extract_metadata(raster.path)
-            
-            # Check resolution
-            res_diff = abs(metadata.resolution_degrees - ref_metadata.resolution_degrees)
-            same_resolution = res_diff < self.resolution_tolerance
-            
-            # Check bounds
-            # Calculate bounds difference
-            bounds_diff_calc = [
-                abs(m - r) for m, r in zip(metadata.bounds, ref_metadata.bounds)
-            ]
-            bounds_diff = (bounds_diff_calc[0], bounds_diff_calc[1], bounds_diff_calc[2], bounds_diff_calc[3]) if len(bounds_diff_calc) >= 4 else (0.0, 0.0, 0.0, 0.0)
-            same_bounds = all(d < self.bounds_tolerance for d in bounds_diff)
-            
-            # Check CRS
-            same_crs = metadata.crs == ref_metadata.crs
-            
-            if not (same_resolution and same_bounds and same_crs):
-                return AlignmentCheck(
-                    aligned=False,
-                    same_resolution=same_resolution,
-                    same_bounds=same_bounds,
-                    same_crs=same_crs,
-                    resolution_diff=res_diff if not same_resolution else None,
-                    bounds_diff=bounds_diff if not same_bounds else None,
-                    crs_mismatch=(metadata.crs, ref_metadata.crs) if not same_crs else None
-                )
-        
-        return AlignmentCheck(
-            aligned=True,
-            same_resolution=True,
-            same_bounds=True,
-            same_crs=True,
-            resolution_diff=None,
-            bounds_diff=None,
-            crs_mismatch=None
-        )
-    
-    def _can_fix_alignment(self, alignment: AlignmentCheck) -> bool:
-        """Check if alignment issues can be automatically fixed."""
-        # Can fix small bounds differences
-        if not alignment.same_bounds and alignment.bounds_diff:
-            max_diff = max(alignment.bounds_diff)
-            if max_diff < 0.1:  # Less than 0.1 degrees
-                return True
-        
-        # Cannot fix CRS or resolution differences automatically
-        return False
     
     def _merge_raster_data(self, 
                           rasters: Dict[str, RasterEntry],

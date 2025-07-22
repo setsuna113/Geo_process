@@ -1,0 +1,511 @@
+# src/processors/data_preparation/raster_alignment.py
+"""
+Robust raster alignment utilities for spatial data processing.
+
+This module provides comprehensive tools for detecting, analyzing, and correcting
+spatial alignment issues between rasters.
+"""
+
+import logging
+from typing import Dict, Any, List, Optional, Tuple, Union
+from pathlib import Path
+from enum import Enum
+from dataclasses import dataclass
+import numpy as np
+import rasterio
+from rasterio.warp import reproject, Resampling, calculate_default_transform
+from rasterio.transform import from_bounds
+import xarray as xr
+import rioxarray
+
+logger = logging.getLogger(__name__)
+
+class AlignmentStrategy(Enum):
+    """Strategies for handling alignment issues."""
+    STRICT = "strict"           # Fail on any misalignment
+    REPROJECT = "reproject"     # Reproject to common grid
+    INTERSECT = "intersect"     # Use intersection bounds
+    SNAP = "snap"              # Snap to reference grid
+    
+class ResamplingMethod(Enum):
+    """Resampling methods for reprojection."""
+    NEAREST = Resampling.nearest
+    BILINEAR = Resampling.bilinear
+    CUBIC = Resampling.cubic
+    LANCZOS = Resampling.lanczos
+
+@dataclass
+class AlignmentIssue:
+    """Detailed description of an alignment issue."""
+    type: str
+    severity: str
+    description: str
+    values: Dict[str, Any]
+    fixable: bool
+    suggested_fix: Optional[str] = None
+
+@dataclass
+class AlignmentReport:
+    """Comprehensive alignment analysis report."""
+    aligned: bool
+    issues: List[AlignmentIssue]
+    reference_raster: str
+    compared_rasters: List[str]
+    summary: Dict[str, Any]
+    
+    def has_issues(self, severity: str = None) -> bool:
+        """Check if report has issues of given severity."""
+        if severity is None:
+            return len(self.issues) > 0
+        return any(issue.severity == severity for issue in self.issues)
+    
+    def get_fixable_issues(self) -> List[AlignmentIssue]:
+        """Get list of issues that can be automatically fixed."""
+        return [issue for issue in self.issues if issue.fixable]
+
+@dataclass
+class AlignmentConfig:
+    """Configuration for alignment checking and fixing."""
+    resolution_tolerance: float = 1e-6
+    bounds_tolerance: float = 1e-4
+    strategy: AlignmentStrategy = AlignmentStrategy.REPROJECT
+    resampling_method: ResamplingMethod = ResamplingMethod.NEAREST
+    target_resolution: Optional[float] = None
+    target_bounds: Optional[Tuple[float, float, float, float]] = None
+    target_crs: Optional[str] = None
+
+class RasterAligner:
+    """Robust raster alignment and correction utilities."""
+    
+    def __init__(self, config: AlignmentConfig = None):
+        self.config = config or AlignmentConfig()
+        
+    def analyze_alignment(self, raster_paths: List[Union[str, Path]], 
+                         reference_idx: int = 0) -> AlignmentReport:
+        """
+        Comprehensive alignment analysis of multiple rasters.
+        
+        Args:
+            raster_paths: List of raster file paths
+            reference_idx: Index of reference raster (default: first)
+            
+        Returns:
+            Detailed alignment report
+        """
+        raster_paths = [Path(p) for p in raster_paths]
+        
+        if len(raster_paths) < 2:
+            return AlignmentReport(
+                aligned=True,
+                issues=[],
+                reference_raster=str(raster_paths[0]) if raster_paths else "",
+                compared_rasters=[],
+                summary={'message': 'Single or no raster provided'}
+            )
+        
+        reference_path = raster_paths[reference_idx]
+        compared_paths = [p for i, p in enumerate(raster_paths) if i != reference_idx]
+        
+        logger.info(f"Analyzing alignment with reference: {reference_path.name}")
+        
+        issues = []
+        
+        # Load reference metadata
+        with rasterio.open(reference_path) as ref_src:
+            ref_meta = self._extract_spatial_metadata(ref_src)
+        
+        # Compare each raster to reference
+        for raster_path in compared_paths:
+            with rasterio.open(raster_path) as src:
+                meta = self._extract_spatial_metadata(src)
+                raster_issues = self._compare_spatial_metadata(
+                    ref_meta, meta, reference_path.name, raster_path.name
+                )
+                issues.extend(raster_issues)
+        
+        aligned = len(issues) == 0
+        
+        # Generate summary
+        summary = self._generate_alignment_summary(issues, ref_meta)
+        
+        return AlignmentReport(
+            aligned=aligned,
+            issues=issues,
+            reference_raster=str(reference_path),
+            compared_rasters=[str(p) for p in compared_paths],
+            summary=summary
+        )
+    
+    def fix_alignment(self, raster_paths: List[Union[str, Path]], 
+                     output_dir: Path,
+                     reference_idx: int = 0,
+                     force_fix: bool = False) -> Dict[str, Path]:
+        """
+        Fix alignment issues in raster collection.
+        
+        Args:
+            raster_paths: List of raster file paths
+            output_dir: Directory for aligned outputs
+            reference_idx: Index of reference raster
+            force_fix: Fix even if no issues detected
+            
+        Returns:
+            Dictionary mapping original paths to aligned output paths
+        """
+        raster_paths = [Path(p) for p in raster_paths]
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Analyze alignment first
+        report = self.analyze_alignment(raster_paths, reference_idx)
+        
+        if report.aligned and not force_fix:
+            logger.info("Rasters are already aligned, returning original paths")
+            return {str(p): p for p in raster_paths}
+        
+        if report.has_issues("critical") and self.config.strategy == AlignmentStrategy.STRICT:
+            raise ValueError(f"Critical alignment issues found with STRICT strategy")
+        
+        # Determine target grid
+        reference_path = raster_paths[reference_idx]
+        target_grid = self._determine_target_grid(raster_paths, reference_path)
+        
+        aligned_paths = {}
+        
+        # Process each raster
+        for i, raster_path in enumerate(raster_paths):
+            if i == reference_idx and not force_fix:
+                # Reference raster might not need changes
+                aligned_path = output_dir / f"aligned_{raster_path.name}"
+                self._copy_raster(raster_path, aligned_path)
+            else:
+                aligned_path = output_dir / f"aligned_{raster_path.name}"
+                self._align_raster_to_grid(raster_path, aligned_path, target_grid)
+            
+            aligned_paths[str(raster_path)] = aligned_path
+            logger.info(f"Aligned {raster_path.name} -> {aligned_path.name}")
+        
+        # Verify alignment of outputs
+        aligned_report = self.analyze_alignment(list(aligned_paths.values()))
+        if not aligned_report.aligned:
+            logger.warning("Output rasters still have alignment issues!")
+            logger.warning(f"Remaining issues: {len(aligned_report.issues)}")
+        else:
+            logger.info("✅ All rasters successfully aligned")
+        
+        return aligned_paths
+    
+    def create_aligned_subsets(self, raster_paths: List[Union[str, Path]],
+                             output_dir: Path,
+                             subset_size: int = 100,
+                             bounds: Optional[Tuple[float, float, float, float]] = None) -> Dict[str, Path]:
+        """
+        Create perfectly aligned subsets from multiple rasters.
+        
+        Args:
+            raster_paths: List of raster file paths
+            output_dir: Directory for subset outputs
+            subset_size: Size in pixels (creates square subsets)
+            bounds: Optional specific bounds for subsets
+            
+        Returns:
+            Dictionary mapping original paths to subset paths
+        """
+        raster_paths = [Path(p) for p in raster_paths]
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Determine common bounds and resolution
+        if bounds is None:
+            bounds = self._calculate_intersection_bounds(raster_paths)
+        
+        logger.info(f"Intersection bounds: {bounds}")
+        
+        # Get reference resolution (use first raster)
+        with rasterio.open(raster_paths[0]) as src:
+            # Extract pixel size from transform: [0] is x-pixel size, [4] is y-pixel size
+            pixel_size = abs(src.transform[0])
+        
+        logger.info(f"Pixel size: {pixel_size}")
+        
+        # Calculate subset bounds within intersection
+        subset_width = subset_size * pixel_size
+        subset_height = subset_size * pixel_size
+        
+        # Ensure we have valid bounds with non-zero dimensions
+        bounds_width = bounds[2] - bounds[0]  # right - left
+        bounds_height = bounds[3] - bounds[1]  # top - bottom
+        
+        if bounds_width <= 0 or bounds_height <= 0:
+            raise ValueError(f"Invalid intersection bounds: {bounds} (width: {bounds_width}, height: {bounds_height})")
+        
+        # Limit subset size to available area
+        actual_subset_width = min(subset_width, bounds_width * 0.8)  # Use 80% of available width
+        actual_subset_height = min(subset_height, bounds_height * 0.8)
+        
+        # Position subset at center of bounds
+        center_x = (bounds[0] + bounds[2]) / 2
+        center_y = (bounds[1] + bounds[3]) / 2
+        
+        subset_bounds = (
+            center_x - actual_subset_width / 2,  # left
+            center_y - actual_subset_height / 2,  # bottom
+            center_x + actual_subset_width / 2,   # right
+            center_y + actual_subset_height / 2   # top
+        )
+        
+        logger.info(f"Creating {subset_size}x{subset_size} subsets")
+        logger.info(f"Subset bounds: {subset_bounds}")
+        logger.info(f"Subset dimensions: {actual_subset_width:.6f} x {actual_subset_height:.6f}")
+        
+        # Create transform for subset
+        subset_transform = from_bounds(*subset_bounds, subset_size, subset_size)
+        
+        subset_paths = {}
+        
+        # Process each raster
+        for raster_path in raster_paths:
+            subset_path = output_dir / f"subset_{raster_path.name}"
+            
+            with rasterio.open(raster_path) as src:
+                # Prepare output metadata
+                out_meta = src.meta.copy()
+                out_meta.update({
+                    'height': subset_size,
+                    'width': subset_size,
+                    'transform': subset_transform
+                })
+                
+                # Create output array
+                out_data = np.zeros((1, subset_size, subset_size), dtype=out_meta['dtype'])
+                
+                # Reproject to subset
+                reproject(
+                    source=rasterio.band(src, 1),
+                    destination=out_data,
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=subset_transform,
+                    dst_crs=src.crs,
+                    resampling=self.config.resampling_method.value
+                )
+                
+                # Write subset
+                with rasterio.open(subset_path, 'w', **out_meta) as dst:
+                    dst.write(out_data)
+            
+            subset_paths[str(raster_path)] = subset_path
+            logger.info(f"Created subset: {raster_path.name} -> {subset_path.name}")
+        
+        return subset_paths
+    
+    def _extract_spatial_metadata(self, src: rasterio.DatasetReader) -> Dict[str, Any]:
+        """Extract spatial metadata from rasterio dataset."""
+        return {
+            'crs': src.crs,
+            'transform': src.transform,
+            'bounds': src.bounds,
+            'shape': (src.height, src.width),
+            'resolution': (abs(src.transform[0]), abs(src.transform[4])),
+            'nodata': src.nodata,
+            'dtype': src.dtypes[0]
+        }
+    
+    def _compare_spatial_metadata(self, ref_meta: Dict[str, Any], 
+                                 meta: Dict[str, Any],
+                                 ref_name: str, 
+                                 raster_name: str) -> List[AlignmentIssue]:
+        """Compare spatial metadata and identify issues."""
+        issues = []
+        
+        # Check CRS
+        if ref_meta['crs'] != meta['crs']:
+            issues.append(AlignmentIssue(
+                type="crs_mismatch",
+                severity="critical",
+                description=f"CRS mismatch between {ref_name} and {raster_name}",
+                values={'reference': str(ref_meta['crs']), 'raster': str(meta['crs'])},
+                fixable=True,
+                suggested_fix="reproject_to_common_crs"
+            ))
+        
+        # Check resolution
+        ref_res = ref_meta['resolution']
+        raster_res = meta['resolution']
+        res_diff = (abs(ref_res[0] - raster_res[0]), abs(ref_res[1] - raster_res[1]))
+        
+        if max(res_diff) > self.config.resolution_tolerance:
+            severity = "critical" if max(res_diff) > 0.001 else "warning"
+            issues.append(AlignmentIssue(
+                type="resolution_mismatch",
+                severity=severity,
+                description=f"Resolution mismatch between {ref_name} and {raster_name}",
+                values={'reference': ref_res, 'raster': raster_res, 'difference': res_diff},
+                fixable=True,
+                suggested_fix="resample_to_common_resolution"
+            ))
+        
+        # Check bounds
+        ref_bounds = ref_meta['bounds']
+        raster_bounds = meta['bounds']
+        bounds_diff = tuple(abs(r - m) for r, m in zip(ref_bounds, raster_bounds))
+        
+        if max(bounds_diff) > self.config.bounds_tolerance:
+            severity = "critical" if max(bounds_diff) > 1.0 else "warning"
+            issues.append(AlignmentIssue(
+                type="bounds_mismatch",
+                severity=severity,
+                description=f"Bounds mismatch between {ref_name} and {raster_name}",
+                values={'reference': ref_bounds, 'raster': raster_bounds, 'difference': bounds_diff},
+                fixable=True,
+                suggested_fix="reproject_to_common_bounds"
+            ))
+        
+        # Check transform alignment (pixel grid alignment)
+        ref_transform = ref_meta['transform']
+        raster_transform = meta['transform']
+        
+        # Check if origins are aligned
+        origin_diff = (
+            abs(ref_transform[2] - raster_transform[2]),  # x origin
+            abs(ref_transform[5] - raster_transform[5])   # y origin
+        )
+        
+        pixel_size = max(abs(ref_transform[1]), abs(ref_transform[5]))
+        if max(origin_diff) > pixel_size * 0.1:  # 10% of pixel size
+            issues.append(AlignmentIssue(
+                type="grid_misalignment",
+                severity="warning",
+                description=f"Pixel grid misalignment between {ref_name} and {raster_name}",
+                values={'origin_difference': origin_diff, 'pixel_size': pixel_size},
+                fixable=True,
+                suggested_fix="snap_to_pixel_grid"
+            ))
+        
+        return issues
+    
+    def _generate_alignment_summary(self, issues: List[AlignmentIssue], 
+                                  ref_meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate summary of alignment analysis."""
+        return {
+            'total_issues': len(issues),
+            'critical_issues': len([i for i in issues if i.severity == "critical"]),
+            'warning_issues': len([i for i in issues if i.severity == "warning"]),
+            'fixable_issues': len([i for i in issues if i.fixable]),
+            'reference_metadata': {
+                'crs': str(ref_meta['crs']),
+                'bounds': ref_meta['bounds'],
+                'resolution': ref_meta['resolution'],
+                'shape': ref_meta['shape']
+            },
+            'issue_types': list(set(issue.type for issue in issues)),
+            'recommended_strategy': self._recommend_strategy(issues)
+        }
+    
+    def _recommend_strategy(self, issues: List[AlignmentIssue]) -> str:
+        """Recommend alignment strategy based on issues found."""
+        if not issues:
+            return "no_action_needed"
+        
+        has_critical = any(issue.severity == "critical" for issue in issues)
+        has_crs_issues = any(issue.type == "crs_mismatch" for issue in issues)
+        has_bounds_issues = any(issue.type == "bounds_mismatch" for issue in issues)
+        
+        if has_crs_issues:
+            return "reproject_to_common_crs"
+        elif has_critical and has_bounds_issues:
+            return "reproject_to_intersection"
+        elif has_bounds_issues:
+            return "crop_to_intersection"
+        else:
+            return "minor_adjustment"
+    
+    def _determine_target_grid(self, raster_paths: List[Path], 
+                              reference_path: Path) -> Dict[str, Any]:
+        """Determine target grid for alignment."""
+        with rasterio.open(reference_path) as ref_src:
+            if self.config.target_crs:
+                target_crs = self.config.target_crs
+            else:
+                target_crs = ref_src.crs
+            
+            if self.config.target_resolution:
+                pixel_size = self.config.target_resolution
+            else:
+                pixel_size = abs(ref_src.transform[0])
+            
+            if self.config.target_bounds:
+                bounds = self.config.target_bounds
+            else:
+                # Calculate intersection or union bounds
+                bounds = self._calculate_intersection_bounds(raster_paths)
+            
+            # Create target transform
+            width = int((bounds[2] - bounds[0]) / pixel_size)
+            height = int((bounds[3] - bounds[1]) / pixel_size)
+            
+            transform = from_bounds(*bounds, width, height)
+            
+            return {
+                'crs': target_crs,
+                'transform': transform,
+                'bounds': bounds,
+                'width': width,
+                'height': height,
+                'nodata': ref_src.nodata,
+                'dtype': ref_src.dtypes[0]
+            }
+    
+    def _calculate_intersection_bounds(self, raster_paths: List[Path]) -> Tuple[float, float, float, float]:
+        """Calculate intersection bounds of multiple rasters."""
+        all_bounds = []
+        
+        for raster_path in raster_paths:
+            with rasterio.open(raster_path) as src:
+                all_bounds.append(src.bounds)
+        
+        # Calculate intersection
+        left = max(bounds.left for bounds in all_bounds)
+        bottom = max(bounds.bottom for bounds in all_bounds)
+        right = min(bounds.right for bounds in all_bounds)
+        top = min(bounds.top for bounds in all_bounds)
+        
+        return (left, bottom, right, top)
+    
+    def _align_raster_to_grid(self, input_path: Path, output_path: Path, 
+                             target_grid: Dict[str, Any]):
+        """Align a raster to target grid specification."""
+        with rasterio.open(input_path) as src:
+            # Prepare output metadata
+            out_meta = src.meta.copy()
+            out_meta.update({
+                'crs': target_grid['crs'],
+                'transform': target_grid['transform'],
+                'width': target_grid['width'],
+                'height': target_grid['height']
+            })
+            
+            # Create output array
+            out_data = np.zeros((src.count, target_grid['height'], target_grid['width']), 
+                              dtype=out_meta['dtype'])
+            
+            # Reproject each band
+            for i in range(1, src.count + 1):
+                reproject(
+                    source=rasterio.band(src, i),
+                    destination=out_data[i-1],
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=target_grid['transform'],
+                    dst_crs=target_grid['crs'],
+                    resampling=self.config.resampling_method.value
+                )
+            
+            # Write aligned raster
+            with rasterio.open(output_path, 'w', **out_meta) as dst:
+                dst.write(out_data)
+    
+    def _copy_raster(self, input_path: Path, output_path: Path):
+        """Copy raster file to new location."""
+        import shutil
+        shutil.copy2(input_path, output_path)

@@ -8,12 +8,14 @@ import numpy as np
 
 from .base_loader import RasterMetadata
 from src.database.connection import DatabaseManager
+from src.database.utils import DatabaseSchemaUtils
 
 class RasterMetadataExtractor:
     """Extract and store comprehensive metadata from raster files."""
     
     def __init__(self, db_connection: DatabaseManager):
         self.db = db_connection
+        self.schema_utils = DatabaseSchemaUtils(db_connection)
         
     def extract_full_metadata(self, file_path: Path) -> Dict[str, Any]:
         """Extract comprehensive metadata from raster."""
@@ -125,16 +127,24 @@ class RasterMetadataExtractor:
             # Try to get existing statistics
             stats = band.GetStatistics(False, False)
             
-            if stats[0] is None:
-                # Compute approximate statistics from sample
+            if stats is None:
+                # GetStatistics returned None - compute from sample
                 stats = self._compute_sample_statistics(band, sample_size)
+            elif len(stats) >= 4 and stats[0] is None:
+                # Statistics exist but are invalid - compute from sample
+                stats = self._compute_sample_statistics(band, sample_size)
+            
+            # Ensure we have valid statistics
+            if stats is None or len(stats) < 4:
+                # Fallback to safe default values
+                stats = [0.0, 0.0, 0.0, 0.0]
             
             stats_info.append({
                 'band': i,
-                'min': stats[0],
-                'max': stats[1],
-                'mean': stats[2],
-                'std_dev': stats[3],
+                'min': stats[0] if stats[0] is not None else 0.0,
+                'max': stats[1] if stats[1] is not None else 0.0,
+                'mean': stats[2] if stats[2] is not None else 0.0,
+                'std_dev': stats[3] if stats[3] is not None else 0.0,
                 'computed': stats[0] is not None
             })
         
@@ -200,14 +210,21 @@ class RasterMetadataExtractor:
         with self.db.get_connection() as conn:
             cur = conn.cursor()
             
-            # Insert into raster_sources
-            cur.execute("""
+            # Get schema-aware column names
+            geometry_col = self.schema_utils.get_geometry_column('raster_sources')
+            active_col = self.schema_utils.get_active_column('raster_sources')
+            metadata_col = self.schema_utils.get_metadata_column('raster_sources')
+            
+            # Build INSERT query with schema-aware column names
+            query = f"""
                 INSERT INTO raster_sources 
                 (name, file_path, pixel_size_degrees, data_type, nodata_value, 
-                 bounds, file_size_mb, metadata, active)
+                 {geometry_col}, file_size_mb, {metadata_col}, {active_col})
                 VALUES (%s, %s, %s, %s, %s, ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s, %s, true)
                 RETURNING id
-            """, (
+            """
+            
+            cur.execute(query, (
                 raster_name,
                 metadata['file_info']['path'],
                 metadata['spatial_info']['pixel_size']['x'],
