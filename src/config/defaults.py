@@ -62,6 +62,16 @@ PROCESSING = {
     'batch_size': 1000,
     'max_workers': 4,
     'chunk_size': 10000,
+    # Memory-aware subsampling configuration
+    'subsampling': {
+        'enabled': True,
+        'max_samples': 500000,  # Maximum samples for in-memory processing
+        'strategy': 'stratified',  # 'random', 'stratified', 'grid'
+        'random_seed': 42,
+        'spatial_block_size': 100,  # For stratified sampling
+        'min_samples_per_class': 100,  # For balanced sampling
+        'memory_limit_gb': 8.0  # Trigger subsampling if data exceeds this
+    }
 }
 
 # Raster processing configuration
@@ -142,6 +152,21 @@ LOGGING = {
     'level': 'INFO',
     'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     'file': LOGS_DIR / 'biodiversity.log',
+}
+
+# SOM-specific analysis configuration
+SOM_ANALYSIS = {
+    'max_pixels_in_memory': 1000000,  # 1M pixels max
+    'chunk_overlap': 10,  # Overlap between chunks for continuity
+    'subsample_ratio': 0.1,  # Default 10% sampling for very large datasets
+    'min_samples': 10000,  # Minimum samples even for small datasets
+    'use_memory_mapping': True,  # Use memmap for large arrays
+    'batch_training': {
+        'enabled': True,
+        'batch_size': 50000,
+        'epochs_per_batch': 5
+    },
+    'memory_overhead_factor': 3.0  # SOM requires 3x memory (data + weights + calculations)
 }
 
 # Data preparation configuration

@@ -11,6 +11,8 @@ from pathlib import Path
 import xarray as xr
 import pandas as pd
 import matplotlib.pyplot as plt
+from typing import Iterator
+import logging
 
 from src.database.connection import DatabaseManager
 from src.raster.loaders.geotiff_loader import GeoTIFFLoader
@@ -20,6 +22,8 @@ from src.processors.data_preparation.array_converter import ArrayConverter
 from src.spatial_analysis.som.som_trainer import SOMAnalyzer
 from src.spatial_analysis.som.som_visualizer import SOMVisualizer
 from src.spatial_analysis.som.som_reporter import SOMReporter
+
+logger = logging.getLogger(__name__)
 
 
 class TestFullPipeline:
@@ -71,7 +75,7 @@ class TestFullPipeline:
         config.settings['database'] = original_database
 
     @pytest.fixture
-    def real_db(self) -> DatabaseManager:
+    def real_db(self) -> Iterator[DatabaseManager]:
         """Setup real database connection with proper tables and cleanup."""
         database_manager: DatabaseManager = DatabaseManager()
         
@@ -176,16 +180,6 @@ class TestFullPipeline:
                 assert data.shape == (10, 10)
                 assert metadata.crs is not None
                 assert metadata.band_count == 1
-            
-            # Step 4: Create combined dataset
-            combined_data = xr.Dataset({
-                band: xr.DataArray(
-                    loaded_data[band]['data'],
-                    dims=['y', 'x'],
-                    attrs=loaded_data[band]['metadata']
-                )
-                for band in ['P', 'A', 'F']
-            })
                 
             # Step 5: Clean data  
             cleaner = self.cleaner
@@ -536,7 +530,8 @@ class TestFullPipeline:
             assert 'lon' in result.spatial_output.coords
             
             # Debug output to understand coordinate changes
-            print(f"Original coords - lat: {len(coords_info['lat'])}, lon: {len(coords_info['lon'])}")
+            if coords_info is not None:
+                print(f"Original coords - lat: {len(coords_info['lat'])}, lon: {len(coords_info['lon'])}")
             print(f"Result coords - lat: {len(result.spatial_output.coords['lat'])}, lon: {len(result.spatial_output.coords['lon'])}")
             print(f"Original data shape: {combined_data['P'].shape}")
             print(f"Result shape: {result.spatial_output.shape}")

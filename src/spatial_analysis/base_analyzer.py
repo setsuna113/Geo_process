@@ -479,6 +479,55 @@ class BaseAnalyzer(BaseProcessor):
             logger.error(f"Failed to store results in database: {e}")
             return None
     
+    def estimate_memory_requirements(self, data_shape: Tuple[int, ...], 
+                                   dtype: np.dtype = np.dtype(np.float64)) -> Dict[str, Any]:
+        """Estimate memory requirements for analysis."""
+        import psutil
+        
+        # Calculate data size
+        n_elements = np.prod(data_shape)
+        element_size = dtype.itemsize
+        data_size_bytes = n_elements * element_size
+        
+        # Add overhead for analysis (varies by method)
+        overhead_factor = getattr(self, 'memory_overhead_factor', 2.0)
+        total_required_bytes = data_size_bytes * overhead_factor
+        
+        # Get system memory
+        memory = psutil.virtual_memory()
+        
+        return {
+            'data_size_gb': float(data_size_bytes / (1024**3)),
+            'total_required_gb': float(total_required_bytes / (1024**3)),
+            'available_gb': float(memory.available / (1024**3)),
+            'total_system_gb': float(memory.total / (1024**3)),
+            'fits_in_memory': bool(total_required_bytes < memory.available * 0.8)
+        }
+
+    def create_data_generator(self, data_path: str, chunk_size: int = 50000):
+        """Create generator for chunk-wise data loading."""
+        # This is a template - implement based on your data format
+        try:
+            import h5py
+            
+            with h5py.File(data_path, 'r') as f:
+                dataset = f['data']
+                n_samples = dataset.shape[0]
+                
+                for start_idx in range(0, n_samples, chunk_size):
+                    end_idx = min(start_idx + chunk_size, n_samples)
+                    yield dataset[start_idx:end_idx]
+                    
+        except ImportError:
+            logger.warning("h5py not available, falling back to numpy loading")
+            # Fallback to numpy - load full array and chunk it
+            data = np.load(data_path)
+            n_samples = data.shape[0]
+            
+            for start_idx in range(0, n_samples, chunk_size):
+                end_idx = min(start_idx + chunk_size, n_samples)
+                yield data[start_idx:end_idx]
+    
     def _update_progress(self, step: int, total: int, message: str = ""):
         """Update progress tracking."""
         self._current_step = step

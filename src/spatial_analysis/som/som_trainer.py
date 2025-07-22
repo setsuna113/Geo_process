@@ -5,16 +5,17 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
-try:
-    from minisom import MiniSom
-    MINISOM_AVAILABLE = True
-except ImportError:
-    MINISOM_AVAILABLE = False
-    MiniSom = None  # type: ignore
-    import warnings
-    warnings.warn("minisom not available. Install with: pip install minisom")
+import tempfile
+import os
+import gc
+from minisom import MiniSom
 
 from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
+from src.spatial_analysis.memory_aware_processor import (
+    SubsamplingStrategy, 
+    MemoryAwareProcessor, 
+    check_memory_usage
+)
 from src.config.config import Config
 from src.database.connection import DatabaseManager
 
@@ -41,6 +42,19 @@ class SOMAnalyzer(BaseAnalyzer):
         self.default_sigma = som_config.get('sigma', 1.0)
         self.default_learning_rate = som_config.get('learning_rate', 0.5)
         self.default_neighborhood = som_config.get('neighborhood_function', 'gaussian')
+        
+        # Memory-aware processing config
+        self.subsampling_config = config.get('processing', {}).get('subsampling', {})
+        self.som_analysis_config = config.get('som_analysis', {})
+        self.max_pixels_in_memory = self.som_analysis_config.get('max_pixels_in_memory', 1000000)
+        self.memory_overhead_factor = self.som_analysis_config.get('memory_overhead_factor', 3.0)
+        self.use_memory_mapping = self.som_analysis_config.get('use_memory_mapping', True)
+        
+        # Initialize subsampling strategy
+        self.subsampler = SubsamplingStrategy(self.subsampling_config)
+        self.memory_processor = MemoryAwareProcessor(
+            memory_limit_gb=self.subsampling_config.get('memory_limit_gb', 8.0)
+        )
         
     def get_default_parameters(self) -> Dict[str, Any]:
         """Get default SOM parameters."""
@@ -87,6 +101,204 @@ class SOMAnalyzer(BaseAnalyzer):
             issues.append(f"neighborhood_function must be one of {valid_neighborhoods}")
         
         return len(issues) == 0, issues
+    
+    def estimate_memory_requirements(self, data_shape: Tuple[int, ...], 
+                                   dtype: np.dtype = np.dtype(np.float64)) -> Dict[str, Any]:
+        """Estimate memory requirements for SOM analysis."""
+        memory_info = check_memory_usage(data_shape, dtype)
+        
+        # Add SOM-specific overhead with proper type conversion
+        som_overhead_gb = float(memory_info['data_size_gb'] * self.memory_overhead_factor)
+        memory_info['som_overhead_gb'] = som_overhead_gb
+        memory_info['total_required_gb'] = som_overhead_gb
+        memory_info['fits_in_memory'] = bool(som_overhead_gb < memory_info['available_gb'] * 0.6)
+        
+        return memory_info
+    
+    def train_with_subsampling(self, 
+                              data: np.ndarray, 
+                              som: Any,
+                              params: Dict[str, Any],
+                              coordinates: Optional[np.ndarray] = None) -> Tuple[Any, Dict[str, Any]]:
+        """
+        Train SOM with automatic subsampling for large datasets.
+        
+        Args:
+            data: Input data (n_samples, n_features)
+            som: Initialized SOM object
+            params: Training parameters
+            coordinates: Spatial coordinates for stratified sampling
+            
+        Returns:
+            Tuple of (trained_som, sampling_info)
+        """
+        n_samples, n_features = data.shape
+        
+        # Check memory requirements
+        memory_info = self.estimate_memory_requirements(data.shape, data.dtype)
+        logger.info(f"Data size: {memory_info['data_size_gb']:.2f} GB, "
+                   f"SOM overhead: {memory_info['som_overhead_gb']:.2f} GB, "
+                   f"Available: {memory_info['available_gb']:.2f} GB")
+        
+        # Decide if subsampling is needed
+        needs_subsampling = (
+            not memory_info['fits_in_memory'] or 
+            n_samples > self.max_pixels_in_memory or
+            self.subsampling_config.get('enabled', True)
+        )
+        
+        if needs_subsampling:
+            logger.warning(f"Dataset too large ({n_samples:,} samples), using subsampling")
+            
+            # Create spatial coordinates if not provided
+            if coordinates is None and data.ndim >= 2:
+                # Improved synthetic coordinate generation
+                logger.info("Generating synthetic spatial coordinates for stratified sampling")
+                # More robust synthetic coordinate generation
+                n_rows = int(np.sqrt(n_samples))
+                n_cols = int(np.ceil(n_samples / n_rows))
+                row_indices = np.repeat(np.arange(n_rows), n_cols)[:n_samples]
+                col_indices = np.tile(np.arange(n_cols), n_rows)[:n_samples]
+                coordinates = np.column_stack([col_indices, row_indices])
+            
+            # Memory mapping with proper scope management
+            original_data = data
+            mmap_data = None
+            temp_file = None
+            
+            try:
+                if self.use_memory_mapping and isinstance(data, np.ndarray):
+                    temp_file = tempfile.NamedTemporaryFile(delete=False)
+                    mmap_data = np.memmap(temp_file.name, dtype=data.dtype, 
+                                         mode='w+', shape=data.shape)
+                    mmap_data[:] = data
+                    data = mmap_data  # Use mmap for training
+                    del original_data  # Free original memory only after successful mmap
+                
+                # All data processing happens within try block
+                # Subsample for training
+                train_data, sample_indices = self.subsampler.subsample_data(data, coordinates)
+                
+                # Train on subsample
+                logger.info(f"Training SOM on {train_data.shape[0]:,} samples (subsampled from {n_samples:,})")
+                som.train_random(train_data, params['iterations'])
+                
+                # Store sampling info with proper type conversion
+                sampling_info = {
+                    'used_subsampling': True,
+                    'sample_indices': sample_indices,
+                    'total_samples': int(n_samples),  # Ensure Python int
+                    'train_samples': int(train_data.shape[0]),  # Ensure Python int
+                    'sampling_ratio': float(train_data.shape[0] / n_samples)  # Ensure Python float
+                }
+                
+                # Force garbage collection
+                gc.collect()
+                
+            finally:
+                # Proper cleanup of memory-mapped resources
+                if mmap_data is not None:
+                    try:
+                        del mmap_data  # Close the memmap
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up memory map: {e}")
+                if temp_file is not None:
+                    try:
+                        os.unlink(temp_file.name)
+                    except OSError:
+                        logger.warning(f"Could not remove temporary file: {temp_file.name}")
+                
+                # Note: We don't restore data reference as it's not used after this point        else:
+            # Train on full dataset
+            logger.info(f"Training SOM on full dataset ({n_samples:,} samples)")
+            som.train_random(data, params['iterations'])
+            sampling_info = {
+                'used_subsampling': False,
+                'total_samples': int(n_samples),  # Ensure Python int
+                'train_samples': int(n_samples),  # Ensure Python int
+                'sampling_ratio': float(1.0)  # Ensure Python float
+            }
+        
+        return som, sampling_info
+    
+    def classify_in_batches(self, 
+                           data: np.ndarray, 
+                           som: Any, 
+                           batch_size: Optional[int] = None) -> np.ndarray:
+        """
+        Classify large dataset in batches to avoid memory issues.
+        
+        Args:
+            data: Full dataset to classify
+            som: Trained SOM model
+            batch_size: Size of processing batches
+            
+        Returns:
+            Cluster labels for all samples
+        """
+        n_samples = data.shape[0]
+        
+        if batch_size is None:
+            # Calculate optimal batch size with proper type conversion
+            memory_available_mb = float(self.memory_processor.memory_limit_gb * 1024)
+            sample_size_mb = float((data.nbytes / n_samples) / (1024 * 1024))
+            batch_size = max(1000, int(memory_available_mb / (sample_size_mb * 2)))
+        
+        logger.info(f"Classifying {n_samples:,} samples in batches of {batch_size:,}")
+        
+        labels = np.zeros(n_samples, dtype=int)
+        last_log_time = time.time()
+        
+        for start_idx in range(0, n_samples, batch_size):
+            end_idx = min(start_idx + batch_size, n_samples)
+            batch_data = data[start_idx:end_idx]
+            
+            # Process batch
+            for i, sample in enumerate(batch_data):
+                winner = som.winner(sample)
+                # Convert 2D grid position to 1D cluster ID
+                labels[start_idx + i] = winner[0] * som._weights.shape[1] + winner[1]
+            
+            # Throttled progress logging - update at most every 5 seconds
+            progress = int((end_idx / n_samples) * 100)
+            current_time = time.time()
+            if current_time - last_log_time >= 5.0 or end_idx >= n_samples:
+                batch_num = start_idx // batch_size + 1
+                total_batches = int(np.ceil(n_samples / batch_size))
+                logger.info(f"Classification progress: {progress}% - Batch {batch_num}/{total_batches}")
+                last_log_time = current_time
+            
+            # Force garbage collection every few batches
+            if (start_idx // batch_size) % 5 == 0:
+                gc.collect()
+        
+        return labels
+    
+    def _safe_quantization_error(self, som: Any, data: np.ndarray, sampling_info: Dict[str, Any]) -> float:
+        """Calculate quantization error safely for large datasets."""
+        if sampling_info['used_subsampling']:
+            # Use a small sample for error calculation
+            sample_size = min(10000, data.shape[0])
+            indices = np.random.choice(data.shape[0], sample_size, replace=False)
+            sample_data = data[indices]
+            error = som.quantization_error(sample_data)
+            return float(error)  # Ensure Python float
+        else:
+            error = som.quantization_error(data)
+            return float(error)  # Ensure Python float
+    
+    def _safe_topographic_error(self, som: Any, data: np.ndarray, sampling_info: Dict[str, Any]) -> float:
+        """Calculate topographic error safely for large datasets."""
+        if sampling_info['used_subsampling']:
+            # Use a small sample for error calculation
+            sample_size = min(10000, data.shape[0])
+            indices = np.random.choice(data.shape[0], sample_size, replace=False)
+            sample_data = data[indices]
+            error = som.topographic_error(sample_data)
+            return float(error)  # Ensure Python float
+        else:
+            error = som.topographic_error(data)
+            return float(error)  # Ensure Python float
     
     def analyze(self, 
                 data,
@@ -170,22 +382,41 @@ class SOMAnalyzer(BaseAnalyzer):
             random_seed=params['random_seed']
         )
         
-        # Train SOM
+        # Memory-aware training
         self._update_progress(3, 5, "Training SOM")
-        som.train_random(prepared_data, params['iterations'])  # type: ignore[attr-defined]
         
-        # Get cluster assignments
+        # Extract coordinates if available in metadata
+        coordinates = kwargs.get('coordinates', None)
+        if coordinates is None and 'coordinates' in metadata:
+            coordinates = metadata['coordinates']
+        
+        # Use memory-aware training
+        trained_som, sampling_info = self.train_with_subsampling(
+            prepared_data, som, params, coordinates
+        )
+        
+        # Memory-aware cluster assignment
         self._update_progress(4, 5, "Assigning clusters")
-        labels = np.zeros(n_samples, dtype=int)
         
-        for i, sample in enumerate(prepared_data):
-            winner = som.winner(sample)  # type: ignore  # type: ignore[attr-defined]
-            # Convert 2D grid position to 1D cluster ID
-            labels[i] = winner[0] * params['grid_size'][1] + winner[1]
+        if sampling_info['used_subsampling'] and n_samples > self.max_pixels_in_memory:
+            # Use batch classification for large datasets
+            labels = self.classify_in_batches(prepared_data, trained_som)
+        else:
+            # Standard classification for smaller datasets
+            labels = np.zeros(n_samples, dtype=int)
+            for i, sample in enumerate(prepared_data):
+                winner = trained_som.winner(sample)
+                labels[i] = winner[0] * params['grid_size'][1] + winner[1]
         
         # Calculate statistics
         self._update_progress(5, 5, "Calculating statistics")
-        statistics = self._calculate_statistics(prepared_data, labels, som, params)
+        statistics = self._calculate_statistics(prepared_data, labels, trained_som, params)
+        
+        # Add sampling information to statistics
+        statistics.update({
+            'sampling_info': sampling_info,
+            'memory_usage': self.estimate_memory_requirements(prepared_data.shape, prepared_data.dtype)
+        })
         
         # Restore spatial structure
         spatial_output = self.restore_spatial_structure(labels, metadata)
@@ -203,12 +434,13 @@ class SOMAnalyzer(BaseAnalyzer):
         
         # Store additional outputs
         additional_outputs = {
-            'som_weights': som.get_weights(),
-            'distance_map': som.distance_map(),
-            'quantization_error': som.quantization_error(prepared_data),
-            'topographic_error': som.topographic_error(prepared_data),
-            'activation_map': self._get_activation_map(som, prepared_data),
-            'component_planes': self._get_component_planes(som, metadata)
+            'som_weights': trained_som.get_weights(),
+            'distance_map': trained_som.distance_map(),
+            # Only calculate these on subsampled data to avoid memory issues
+            'quantization_error': self._safe_quantization_error(trained_som, prepared_data, sampling_info),
+            'topographic_error': self._safe_topographic_error(trained_som, prepared_data, sampling_info),
+            'activation_map': self._get_activation_map(trained_som, prepared_data),
+            'component_planes': self._get_component_planes(trained_som, metadata)
         }
         
         result = AnalysisResult(

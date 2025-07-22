@@ -14,6 +14,7 @@ import sys
 import os
 import logging
 import time
+import argparse
 from pathlib import Path
 from datetime import datetime
 import json
@@ -125,8 +126,58 @@ def estimate_processing_time(num_pixels: int) -> str:
     else:
         return f"~{minutes}m"
 
+def parse_arguments():
+    """Parse command-line arguments for memory and processing control."""
+    parser = argparse.ArgumentParser(
+        description="Run richness analysis with memory-aware processing",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Memory control options
+    parser.add_argument('--max-samples', type=int, default=500000,
+                        help='Maximum samples for in-memory SOM processing')
+    parser.add_argument('--sampling-strategy', choices=['random', 'stratified', 'grid'],
+                        default='stratified', help='Subsampling strategy for large datasets')
+    parser.add_argument('--memory-limit', type=float, default=8.0,
+                        help='Memory limit in GB')
+    parser.add_argument('--batch-processing', action='store_true',
+                        help='Use batch processing for very large datasets')
+    parser.add_argument('--chunk-size', type=int, default=50000,
+                        help='Chunk size for batch processing')
+    
+    # SOM parameters
+    parser.add_argument('--som-grid-size', type=int, nargs=2, default=[10, 10],
+                        help='SOM grid dimensions [width height]')
+    parser.add_argument('--som-iterations', type=int, default=1000,
+                        help='Number of SOM training iterations')
+    
+    # Processing options
+    parser.add_argument('--skip-merge', action='store_true',
+                        help='Skip raster merging step (use existing merged data)')
+    parser.add_argument('--force-restart', action='store_true',
+                        help='Force restart from beginning (ignore checkpoints)')
+    
+    args = parser.parse_args()
+    
+    # Validate inputs
+    if args.max_samples <= 0:
+        parser.error("--max-samples must be positive")
+    if args.memory_limit <= 0:
+        parser.error("--memory-limit must be positive")
+    if args.chunk_size <= 0:
+        parser.error("--chunk-size must be positive")
+    if args.som_grid_size[0] <= 0 or args.som_grid_size[1] <= 0:
+        parser.error("--som-grid-size dimensions must be positive")
+    if args.som_iterations <= 0:
+        parser.error("--som-iterations must be positive")
+    
+    return args
+
 def main():
     """Enhanced main processing pipeline."""
+    # Parse command-line arguments
+    args = parse_arguments()
+    
     # Setup
     signal.signal(signal.SIGINT, signal_handler)
     logger = setup_logging()
@@ -134,10 +185,49 @@ def main():
     
     logger.info("🚀 Starting ENHANCED richness dataset processing pipeline")
     logger.info("🔧 Features: Progress tracking, Checkpoints, Memory monitoring, Error recovery")
+    logger.info(f"💾 Memory limit: {args.memory_limit} GB")
+    logger.info(f"📊 Max samples: {args.max_samples:,}")
+    logger.info(f"🎯 Sampling strategy: {args.sampling_strategy}")
+    
+    if args.force_restart:
+        logger.info("🔄 Force restart mode - clearing all checkpoints")
+        # Clear checkpoint files
+        import glob
+        for checkpoint_file in glob.glob("checkpoint_*.json"):
+            try:
+                os.unlink(checkpoint_file)
+                logger.info(f"Removed checkpoint: {checkpoint_file}")
+            except OSError:
+                pass
     
     try:
         # Initialize configuration and database
         config = Config()
+        
+        # Ensure config object has proper structure
+        if not hasattr(config, 'config'):
+            config.config = {}
+        
+        # Update config with command-line arguments using safer nested updates
+        processing_config = config.config.setdefault('processing', {})
+        subsampling_config = processing_config.setdefault('subsampling', {})
+        subsampling_config.update({
+            'enabled': True,
+            'max_samples': args.max_samples,
+            'strategy': args.sampling_strategy,
+            'memory_limit_gb': args.memory_limit
+        })
+        
+        som_config = config.config.setdefault('som_analysis', {})
+        som_config.update({
+            'max_pixels_in_memory': min(args.max_samples, 1000000),
+            'use_memory_mapping': args.memory_limit <= 16.0,  # Use memory mapping for systems with <= 16GB
+            'batch_training': {
+                'enabled': args.batch_processing,
+                'batch_size': args.chunk_size
+            }
+        })
+        
         db = DatabaseManager()
         
         # Check database connection

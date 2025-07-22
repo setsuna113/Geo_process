@@ -35,7 +35,7 @@ echo "🎬 Creating tmux session: $SCRIPT_NAME"
 
 # Create tmux session with the main process
 tmux new-session -d -s "$SCRIPT_NAME" -c "$(pwd)" \
-    "$PYTHON_ENV run_richness_analysis.py"
+    "$PYTHON_ENV run_richness_analysis.py --memory-limit 8.0 --max-samples 500000 --sampling-strategy stratified"
 
 # Split window to create monitoring panes
 tmux split-window -h -t "$SCRIPT_NAME" -c "$(pwd)"

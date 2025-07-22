@@ -11,6 +11,7 @@ This script:
 
 import sys
 import logging
+import argparse
 from pathlib import Path
 from datetime import datetime
 
@@ -31,12 +32,89 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def parse_arguments():
+    """Parse command-line arguments for memory and processing control."""
+    parser = argparse.ArgumentParser(
+        description="Process richness datasets with memory-aware spatial analysis",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Memory control options
+    parser.add_argument('--max-samples', type=int, default=500000,
+                        help='Maximum samples for in-memory processing')
+    parser.add_argument('--sampling-strategy', choices=['random', 'stratified', 'grid'],
+                        default='stratified', help='Subsampling strategy for large datasets')
+    parser.add_argument('--memory-limit', type=float, default=8.0,
+                        help='Memory limit in GB')
+    parser.add_argument('--batch-processing', action='store_true',
+                        help='Use batch processing for very large datasets')
+    parser.add_argument('--chunk-size', type=int, default=50000,
+                        help='Chunk size for batch processing')
+    
+    # SOM parameters
+    parser.add_argument('--som-grid-size', type=int, nargs=2, default=[10, 10],
+                        help='SOM grid dimensions [width height]')
+    parser.add_argument('--som-iterations', type=int, default=1000,
+                        help='Number of SOM training iterations')
+    
+    # Processing options
+    parser.add_argument('--skip-merge', action='store_true',
+                        help='Skip raster merging step (use existing merged data)')
+    parser.add_argument('--output-dir', type=str, default='outputs/spatial_analysis',
+                        help='Output directory for results')
+    
+    args = parser.parse_args()
+    
+    # Validate inputs
+    if args.max_samples <= 0:
+        parser.error("--max-samples must be positive")
+    if args.memory_limit <= 0:
+        parser.error("--memory-limit must be positive")
+    if args.chunk_size <= 0:
+        parser.error("--chunk-size must be positive")
+    if args.som_grid_size[0] <= 0 or args.som_grid_size[1] <= 0:
+        parser.error("--som-grid-size dimensions must be positive")
+    if args.som_iterations <= 0:
+        parser.error("--som-iterations must be positive")
+    
+    return args
+
 def main():
     """Main processing pipeline."""
+    args = parse_arguments()
+    
     logger.info("🚀 Starting richness dataset processing pipeline")
+    logger.info(f"Memory limit: {args.memory_limit} GB")
+    logger.info(f"Max samples: {args.max_samples:,}")
+    logger.info(f"Sampling strategy: {args.sampling_strategy}")
     
     # Initialize configuration and database
     config = Config()
+    
+    # Ensure config object has proper structure
+    if not hasattr(config, 'config'):
+        config.config = {}
+    
+    # Update config with command-line arguments using safer nested updates
+    processing_config = config.config.setdefault('processing', {})
+    subsampling_config = processing_config.setdefault('subsampling', {})
+    subsampling_config.update({
+        'enabled': True,
+        'max_samples': args.max_samples,
+        'strategy': args.sampling_strategy,
+        'memory_limit_gb': args.memory_limit
+    })
+    
+    som_config = config.config.setdefault('som_analysis', {})
+    som_config.update({
+        'max_pixels_in_memory': min(args.max_samples, 1000000),
+        'use_memory_mapping': args.memory_limit <= 16.0,  # Use memory mapping for systems with <= 16GB
+        'batch_training': {
+            'enabled': args.batch_processing,
+            'batch_size': args.chunk_size
+        }
+    })
+    
     db = DatabaseManager()
     
     # Ensure database is ready

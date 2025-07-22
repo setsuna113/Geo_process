@@ -3,7 +3,6 @@
 Test database setup utilities for integration tests.
 """
 import psycopg2
-import subprocess
 import logging
 from typing import Dict, Any
 from src.config.config import Config
