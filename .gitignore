@@ -1,5 +1,6 @@
 gpkg_data/
 data/*.json
+data/
 test_output/
 
 # Python artifacts
