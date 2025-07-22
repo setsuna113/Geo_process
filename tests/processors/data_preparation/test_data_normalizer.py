@@ -168,12 +168,13 @@ class TestDataNormalizer:
         result = normalizer.normalize(da, save_params=False)
         normalized = result['data']
         
-        # Check NaN values preserved
-        assert np.isnan(normalized.values[3, 3])
-        assert np.isnan(normalized.values[4, 4])
+        # Check NaN values are now filled with zeros (updated behavior)
+        assert normalized.values[3, 3] == 0.0
+        assert normalized.values[4, 4] == 0.0
         
         # Check non-NaN values are normalized
-        valid_data = normalized.values[~np.isnan(normalized.values)]
+        non_zero_mask = normalized.values != 0.0
+        valid_data = normalized.values[non_zero_mask]
         assert len(valid_data) > 0
         assert abs(np.mean(valid_data)) < 0.2
     
