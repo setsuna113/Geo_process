@@ -9,11 +9,11 @@
 # =============================================================================
 paths:
   # CLUSTER PATHS (for your 1TB RAM cluster):
-  # data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
-  # logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
+  data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
+   #logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
   
   # LOCAL TESTING PATHS (comment out for cluster):
-  data_dir: "data/richness_maps"       # Local testing
+  #data_dir: "data/richness_maps"       # Local testing
   logs_dir: "logs"                     # Local testing
 
 # Data file names (found within data_dir)
@@ -28,7 +28,7 @@ processing:
   subsampling:
     enabled: false  # DISABLED for full dataset quality on high-memory system
     max_samples: 250000000  # Higher than your 224M samples
-    memory_limit_gb: 800    # Use most of your 1TB RAM
+    memory_limit_gb: 500    # Use most of your 1TB RAM
     strategy: 'random'
     min_samples_per_class: 1000
     spatial_block_size: 200
@@ -42,7 +42,7 @@ processing:
 # RASTER PROCESSING FOR HIGH-MEMORY SYSTEM
 # =============================================================================
 raster_processing:
-  memory_limit_mb: 800000  # 800GB in MB
+  memory_limit_mb: 500000  # 800GB in MB
   parallel_workers: 64     # Use multiple cores
   tile_size: 2000         # Larger tiles for efficiency
   cache_ttl_days: 30
@@ -89,7 +89,7 @@ som_analysis:
 # =============================================================================
 database:
   host: 'localhost'
-  port: 5432
+  port: 51051
   
   # CLUSTER DATABASE SETTINGS:
   # database: 'geo_cluster_db'       # Adjust database name as needed
