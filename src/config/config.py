@@ -34,10 +34,10 @@ class Config:
     def _is_test_mode(self) -> bool:
         """Detect if we're running in test mode."""
         import sys
+        # Only detect test mode for actual test frameworks, not production runs
         return (
             'pytest' in sys.modules or
-            'unittest' in sys.modules or
-            any('test_' in module for module in sys.modules)
+            'unittest' in sys.modules
         )
     
     def _apply_test_database_config(self):
