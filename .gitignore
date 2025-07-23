@@ -10,6 +10,7 @@ pytest.cache/
 *.pyo
 *.pyd
 *.npy
+*.log
 
 # VS Code
 .vscode/
