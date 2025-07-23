@@ -1,0 +1,217 @@
+# Geo Project Configuration
+# Optimized for high-memory cluster with 1TB RAM and 256 cores
+# 
+# FOR LOCAL TESTING: Comment out cluster paths and uncomment local paths
+# FOR CLUSTER: Use cluster paths as-is
+
+# =============================================================================
+# PATHS CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
+# =============================================================================
+paths:
+  # CLUSTER PATHS (for your 1TB RAM cluster):
+  # data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
+  # logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
+  
+  # LOCAL TESTING PATHS (comment out for cluster):
+  data_dir: "data/richness_maps"       # Local testing
+  logs_dir: "logs"                     # Local testing
+
+# Data file names (found within data_dir)
+data_files:
+  plants_richness: "daru-plants-richness.tif"
+  terrestrial_richness: "iucn-terrestrial-richness.tif"
+
+# =============================================================================
+# HIGH-MEMORY PROCESSING CONFIGURATION (1TB RAM)
+# =============================================================================
+processing:
+  subsampling:
+    enabled: false  # DISABLED for full dataset quality on high-memory system
+    max_samples: 250000000  # Higher than your 224M samples
+    memory_limit_gb: 800    # Use most of your 1TB RAM
+    strategy: 'random'
+    min_samples_per_class: 1000
+    spatial_block_size: 200
+  
+  # Optimized for 256-core system
+  max_workers: 64      # Conservative for shared cluster
+  batch_size: 50000    # Larger batches for efficiency
+  chunk_size: 100000   # Larger chunks for better throughput
+
+# =============================================================================
+# RASTER PROCESSING FOR HIGH-MEMORY SYSTEM
+# =============================================================================
+raster_processing:
+  memory_limit_mb: 800000  # 800GB in MB
+  parallel_workers: 64     # Use multiple cores
+  tile_size: 2000         # Larger tiles for efficiency
+  cache_ttl_days: 30
+  
+  lazy_loading:
+    chunk_size_mb: 1000   # Large chunks with abundant memory
+    prefetch_tiles: 10    # Prefetch more tiles
+  
+  resampling_methods:
+    default: 'bilinear'
+    categorical: 'nearest'
+    continuous: 'bilinear'
+  
+  compression:
+    method: 'lzw'
+    level: 6
+
+# =============================================================================
+# SOM ANALYSIS - OPTIMIZED FOR QUALITY ON HIGH-MEMORY SYSTEM
+# =============================================================================
+som_analysis:
+  max_pixels_in_memory: 250000000  # Handle full dataset in memory
+  memory_overhead_factor: 2.0      # Reduced overhead with abundant RAM
+  use_memory_mapping: false        # Keep everything in RAM for speed
+  
+  # High-quality SOM settings
+  default_grid_size: [12, 12]      # Larger grid for better resolution
+  iterations: 5000                 # More iterations for convergence
+  sigma: 1.5                       # Standard deviation for neighborhood
+  learning_rate: 0.5               # Learning rate
+  neighborhood_function: 'gaussian'
+  random_seed: 42
+  
+  subsample_ratio: 1.0             # Use full dataset when possible
+  min_samples: 50000               # Minimum samples even for small datasets
+  
+  batch_training:
+    enabled: false                 # Disabled with full memory available
+    batch_size: 100000
+    overlap_ratio: 0.1
+
+# =============================================================================
+# DATABASE CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
+# =============================================================================
+database:
+  host: 'localhost'
+  port: 5432
+  
+  # CLUSTER DATABASE SETTINGS:
+  # database: 'geo_cluster_db'       # Adjust database name as needed
+  # user: 'yl998'                    # Your cluster username
+  # password: 'your_password'        # Set your actual database password
+  
+  # LOCAL TESTING DATABASE SETTINGS (comment out for cluster):
+  database: 'geoprocess_db'         # Local testing database
+  user: 'jason'                     # Local testing user
+  password: '123456'                # Local testing password
+  
+  max_connections: 20               # More connections for parallel processing
+  connection_timeout: 30
+  retry_attempts: 3
+
+# Database schema mapping for flexibility
+database_schema_mapping:
+  raster_sources:
+    geometry_column: 'spatial_extent'
+    fallback_geometry_columns: ['bounds', 'geometry', 'geom', 'shape']
+    active_column: 'active'
+    status_column: 'processing_status'
+    metadata_column: 'metadata'
+  grid_cells:
+    geometry_column: 'geometry'
+    fallback_geometry_columns: ['geom', 'shape', 'bounds']
+    active_column: null
+    metadata_column: null
+
+# =============================================================================
+# GRID SYSTEMS CONFIGURATION
+# =============================================================================
+grids:
+  cubic:
+    resolutions: [1000, 5000, 10000, 25000]  # meters - added larger resolutions
+    crs: 'EPSG:3857'
+    default_resolution: 5000
+  hexagonal:
+    resolutions: [6, 7, 8, 9]  # H3 levels - added finer resolution
+    crs: 'EPSG:4326'
+    default_resolution: 8
+
+# =============================================================================
+# WORKING DIRECTORIES - ADJUST FOR YOUR CLUSTER
+# =============================================================================
+output_paths:
+  working_dir: "/scratch/yl998/geo_working"
+  results_dir: "/scratch/yl998/geo_results"
+  temp_dir: "/scratch/yl998/geo_temp"
+
+# =============================================================================
+# PROCESSING BOUNDS (GEOGRAPHIC REGIONS)
+# =============================================================================
+processing_bounds:
+  global: [-180, -90, 180, 90]
+  europe: [-25.0, 35.0, 50.0, 75.0]
+  north_america: [-170.0, 15.0, -50.0, 75.0]
+  south_america: [-85.0, -60.0, -30.0, 15.0]
+  africa: [-25.0, -40.0, 55.0, 40.0]
+  asia: [60.0, -15.0, 180.0, 75.0]
+  oceania: [110.0, -50.0, 180.0, -10.0]
+
+# =============================================================================
+# SPECIES AND FEATURE CONFIGURATION
+# =============================================================================
+species_filters:
+  min_occurrence_count: 5
+  exclude_uncertain_coordinates: true
+  coordinate_precision_threshold: 0.01
+  exclude_cultivated: true
+  exclude_fossil: false
+  max_year: 2024
+  exclude_future_dates: true
+
+features:
+  climate_variables: ['bio_1', 'bio_12']  # Temperature, precipitation
+  richness_types: ['present', 'absent', 'fossil']
+
+# =============================================================================
+# OUTPUT AND LOGGING CONFIGURATION
+# =============================================================================
+output_formats:
+  csv: true
+  parquet: true
+  geojson: false
+
+logging:
+  level: 'INFO'
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  # file path will use logs_dir from paths section
+
+# =============================================================================
+# DATA PREPARATION AND CLEANING
+# =============================================================================
+data_preparation:
+  validation:
+    check_crs: true
+    check_bounds: true
+    check_nodata: true
+    check_dtypes: true
+  
+  cleaning:
+    remove_duplicates: true
+    handle_missing_values: true
+    validate_geometries: true
+
+data_cleaning:
+  outlier_detection:
+    method: 'iqr'
+    threshold: 1.5
+  
+  coordinate_cleaning:
+    precision_threshold: 0.001
+    remove_zero_coordinates: true
+    validate_country_boundaries: false
+
+# =============================================================================
+# TESTING CONFIGURATION
+# =============================================================================
+testing:
+  use_test_database: true
+  test_database_name: 'geo_test_db'
+  cleanup_after_tests: true
+  small_dataset_size: 1000
+  integration_test_timeout: 300

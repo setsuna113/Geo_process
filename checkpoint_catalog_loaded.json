@@ -1,7 +1,7 @@
 {
   "stage": "catalog_loaded",
-  "timestamp": "2025-07-23T09:46:58.777381",
-  "elapsed_time": 0.19741415977478027,
+  "timestamp": "2025-07-23T09:50:30.904812",
+  "elapsed_time": 0.2447798252105713,
   "data": {
     "plants_name": "daru-plants-richness",
     "terrestrial_name": "iucn-terrestrial-richness"

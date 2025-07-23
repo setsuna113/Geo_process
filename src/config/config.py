@@ -61,10 +61,21 @@ class Config:
                 base[key] = value
     
     def _ensure_directories(self):
-        """Create necessary directories."""
+        """Create necessary directories if they don't exist and are accessible."""
         for path_key in ['data_dir', 'logs_dir']:
             path = self.settings['paths'][path_key]
-            path.mkdir(parents=True, exist_ok=True)
+            # Convert to Path object if it's a string (from YAML)
+            if isinstance(path, str):
+                path = Path(path)
+                self.settings['paths'][path_key] = path
+            
+            # Only try to create directories if we have permission
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+            except (PermissionError, FileNotFoundError):
+                # Skip directory creation if we don't have permission or parent doesn't exist
+                # This allows the config to load even if cluster paths don't exist locally
+                pass
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get configuration value using dot notation."""
@@ -97,6 +108,14 @@ class Config:
     @property
     def processing_bounds(self) -> Dict[str, Any]:
         return self.settings['processing_bounds']
+    
+    @property
+    def paths(self) -> Dict[str, Any]:
+        return self.settings['paths']
+    
+    @property
+    def processing(self) -> Dict[str, Any]:
+        return self.settings['processing']
     
     @property
     def species_filters(self) -> Dict[str, Any]:

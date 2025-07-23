@@ -38,10 +38,15 @@ except ImportError:
     print("⚠️  Install tqdm for better progress bars: pip install tqdm")
 
 # Setup enhanced logging
-def setup_logging():
+def setup_logging(config=None):
     """Setup comprehensive logging."""
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    # Use Config system for log directory
+    if config and hasattr(config, 'paths'):
+        log_dir = Path(config.paths.logs_dir)
+    else:
+        log_dir = Path("logs")
+    
+    log_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_file = log_dir / f"richness_analysis_{timestamp}.log"
@@ -180,7 +185,12 @@ def main():
     
     # Setup
     signal.signal(signal.SIGINT, signal_handler)
-    logger = setup_logging()
+    
+    # Load configuration first
+    config = Config()
+    
+    # Setup logging with config
+    logger = setup_logging(config)
     tracker = ProgressTracker(logger)
     
     logger.info("🚀 Starting ENHANCED richness dataset processing pipeline")
@@ -201,10 +211,7 @@ def main():
                 pass
     
     try:
-        # Initialize configuration and database
-        config = Config()
-        
-        # Ensure config object has proper structure
+        # Ensure config object has proper structure for command-line overrides
         if not hasattr(config, 'config'):
             config.config = {}
         
@@ -240,10 +247,15 @@ def main():
         if not tracker.has_checkpoint('catalog_loaded'):
             logger.info("📥 STAGE 1: Loading datasets into catalog...")
             
-            # Define dataset paths
-            data_dir = Path("data/richness_maps")
-            daru_path = data_dir / "daru-plants-richness.tif"
-            iucn_path = data_dir / "iucn-terrestrial-richness.tif"
+            # Define dataset paths using Config system
+            data_dir = Path(config.paths.data_dir)
+            data_files = config.get('data_files', {})
+            
+            daru_filename = data_files.get('plants_richness', 'daru-plants-richness.tif')
+            iucn_filename = data_files.get('terrestrial_richness', 'iucn-terrestrial-richness.tif')
+            
+            daru_path = data_dir / daru_filename
+            iucn_path = data_dir / iucn_filename
             
             # Verify files exist
             if not daru_path.exists() or not iucn_path.exists():
