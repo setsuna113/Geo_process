@@ -1,9 +1,9 @@
-name: geo
+name: geo1
 channels:
   - conda-forge
   - defaults
 dependencies:
-  - python = 3.12
+  - python
   - click
   - dask
   - fiona
