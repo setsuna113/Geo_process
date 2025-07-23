@@ -14,7 +14,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 from ..core.registry import component_registry
-from ..config import config
+from ..config import config as global_config
 from ..database.schema import schema
 from .memory_tracker import get_memory_tracker
 
@@ -113,6 +113,7 @@ class BaseProcessor(ABC):
                  memory_limit_mb: Optional[int] = None,
                  tile_size: Optional[int] = None,
                  supports_chunking: bool = True,
+                 config=None,
                  **kwargs):
         """
         Initialize enhanced base processor.
@@ -129,8 +130,10 @@ class BaseProcessor(ABC):
         self.batch_size = batch_size
         self.max_workers = max_workers or (psutil.cpu_count() or 4) - 1
         self.store_results = store_results
-        self.memory_limit_mb = memory_limit_mb or config.get('processors.memory_limit_mb', 1024)
-        self.tile_size = tile_size or config.get('processors.tile_size', 512)
+        # Use passed config if available, otherwise use global config
+        config_source = config if config is not None else global_config
+        self.memory_limit_mb = memory_limit_mb or (config_source.get('processors.memory_limit_mb', 1024) if config_source else 1024)
+        self.tile_size = tile_size or (config_source.get('processors.tile_size', 512) if config_source else 512)
         self.supports_chunking = supports_chunking
         
         # Legacy memory tracker for backward compatibility
@@ -142,6 +145,7 @@ class BaseProcessor(ABC):
         self._gdal_cache_usage = {'initial': 0, 'peak': 0}
         
         # Configuration
+        self._passed_config = config
         self.config = self._merge_config(kwargs)
         
         # Progress tracking
@@ -154,9 +158,12 @@ class BaseProcessor(ABC):
         self._enhanced_memory_tracker.add_pressure_callback(self._handle_memory_pressure)
         
     def _merge_config(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
-        """Merge kwargs with default config."""
+        """Merge kwargs with passed config or default config."""
         processor_name = self.__class__.__name__
-        default_config = config.get(f'processors.{processor_name}', {})
+        
+        # Use passed config if available, otherwise use global config
+        config_source = self._passed_config if self._passed_config is not None else global_config
+        default_config = config_source.get(f'processors.{processor_name}', {})
         return {**default_config, **kwargs}
     
     @contextmanager

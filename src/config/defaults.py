@@ -7,7 +7,7 @@ from pathlib import Path
 # Project path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 RAWDATA_DIR = PROJECT_ROOT / 'gpkg_data'
-DATA_DIR = PROJECT_ROOT / 'data'
+DATA_DIR = PROJECT_ROOT / 'data' / 'richness_maps'  # Point to richness_maps for testing
 LOGS_DIR = PROJECT_ROOT / 'logs'
 
 # Database configuration

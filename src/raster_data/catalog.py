@@ -101,7 +101,12 @@ class RasterCatalog:
             path=file_path,
             dataset_type=dataset_type,
             resolution_degrees=full_metadata['spatial_info']['pixel_size']['x'],
-            bounds=tuple(full_metadata['spatial_info']['extent'].values()),
+            bounds=(
+                full_metadata['spatial_info']['extent']['west'],   # minx
+                full_metadata['spatial_info']['extent']['south'],  # miny  
+                full_metadata['spatial_info']['extent']['east'],   # maxx
+                full_metadata['spatial_info']['extent']['north']   # maxy
+            ),
             data_type=full_metadata['data_info']['bands'][0]['data_type'],
             nodata_value=full_metadata['data_info']['bands'][0]['nodata_value'],
             file_size_mb=full_metadata['file_info']['size_mb'],

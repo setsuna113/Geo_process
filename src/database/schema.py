@@ -48,6 +48,8 @@ class DatabaseSchema:
                     DROP TABLE IF EXISTS species_ranges CASCADE;
                     DROP TABLE IF EXISTS grid_cells CASCADE;
                     DROP TABLE IF EXISTS grids CASCADE;
+                    -- Drop resampled dataset tables
+                    DROP TABLE IF EXISTS resampled_datasets CASCADE;
                 """)
             logger.warning("⚠️ Database schema dropped")
             return True
@@ -321,6 +323,79 @@ class DatabaseSchema:
             query += " ORDER BY cell_id, feature_type, feature_name"
             cursor.execute(query, params)
             return cursor.fetchall()
+    
+    # Resampled Dataset Operations (for resampling pipeline)
+    def store_resampled_dataset(self, name: str, source_path: str, target_resolution: float,
+                               target_crs: str, bounds: List[float], shape: Tuple[int, int],
+                               data_type: str, resampling_method: str, band_name: str,
+                               data_table_name: str, metadata: Dict) -> int:
+        """Store resampled dataset metadata."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO resampled_datasets 
+                (name, source_path, target_resolution, target_crs, bounds, 
+                 shape_height, shape_width, data_type, resampling_method, 
+                 band_name, data_table_name, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (
+                name, source_path, target_resolution, target_crs, bounds,
+                shape[0], shape[1], data_type, resampling_method, 
+                band_name, data_table_name, json.dumps(metadata)
+            ))
+            dataset_id = cursor.fetchone()['id']
+            logger.info(f"✅ Stored resampled dataset '{name}': {dataset_id}")
+            return dataset_id
+    
+    def get_resampled_datasets(self, filters: Optional[Dict] = None) -> List[Dict]:
+        """Retrieve resampled datasets with optional filters."""
+        with db.get_cursor() as cursor:
+            query = """
+                SELECT id, name, source_path, target_resolution, target_crs, 
+                       bounds, shape_height, shape_width, data_type, 
+                       resampling_method, band_name, data_table_name, 
+                       metadata, created_at
+                FROM resampled_datasets
+            """
+            params = []
+            
+            if filters:
+                conditions = []
+                if 'name' in filters:
+                    conditions.append("name = %s")
+                    params.append(filters['name'])
+                if 'data_type' in filters:
+                    conditions.append("data_type = %s")
+                    params.append(filters['data_type'])
+                if 'target_resolution' in filters:
+                    conditions.append("target_resolution = %s")
+                    params.append(filters['target_resolution'])
+                
+                if conditions:
+                    query += " WHERE " + " AND ".join(conditions)
+            
+            query += " ORDER BY created_at DESC"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+    
+    def create_resampled_data_table(self, table_name: str):
+        """Create table for storing resampled dataset values."""
+        with db.get_cursor() as cursor:
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    row_idx INTEGER NOT NULL,
+                    col_idx INTEGER NOT NULL,
+                    value FLOAT,
+                    PRIMARY KEY (row_idx, col_idx)
+                )
+            """)
+            logger.info(f"✅ Created resampled data table: {table_name}")
+    
+    def drop_resampled_data_table(self, table_name: str):
+        """Drop resampled data table."""
+        with db.get_cursor() as cursor:
+            cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+            logger.info(f"Dropped resampled data table: {table_name}")
     
     # Experiment and Job Tracking (for pipeline/ modules)
     def create_experiment(self, name: str, description: str, config: Dict) -> str:

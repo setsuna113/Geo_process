@@ -7,19 +7,52 @@
 # =============================================================================
 # PATHS CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
 # =============================================================================
-paths:
-  # CLUSTER PATHS (for your 1TB RAM cluster):
-  data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
-   #logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
-  
-  # LOCAL TESTING PATHS (comment out for cluster):
-  #data_dir: "data/richness_maps"       # Local testing
-  logs_dir: "logs"                     # Local testing
+# PATHS: Using defaults.py for local testing
+# paths:
+#   # For cluster deployment, uncomment and modify:
+#   data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
+#   logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
 
 # Data file names (found within data_dir)
 data_files:
   plants_richness: "daru-plants-richness.tif"
   terrestrial_richness: "iucn-terrestrial-richness.tif"
+
+# =============================================================================
+# RESAMPLING CONFIGURATION - NEW UNIFIED PIPELINE
+# =============================================================================
+resampling:
+  # Target resolution for all datasets (in degrees for geographic data)
+  target_resolution: 0.05  # ~5km at equator (adjust as needed)
+  target_crs: 'EPSG:4326'
+  
+  # Resampling strategy per data type
+  strategies:
+    richness_data: 'sum'          # Sum for count data (using existing SumAggregationStrategy)
+    continuous_data: 'bilinear'   # Bilinear for continuous data
+    categorical_data: 'majority'  # Majority for categories
+  
+  # Processing options
+  chunk_size: 1000
+  validate_output: true
+  preserve_sum: true  # Important for richness data
+  cache_resampled: true
+  engine: 'numpy'  # 'numpy' or 'gdal'
+
+# Multiple dataset definitions for unified processing
+datasets:
+  target_datasets:
+    - name: "plants-richness"
+      path_key: "plants_richness"  # References data_files section
+      data_type: "richness_data"
+      band_name: "plants_richness"
+      enabled: true
+      
+    - name: "terrestrial-richness" 
+      path_key: "terrestrial_richness"
+      data_type: "richness_data"
+      band_name: "terrestrial_richness"
+      enabled: true
 
 # =============================================================================
 # HIGH-MEMORY PROCESSING CONFIGURATION (1TB RAM)
@@ -89,17 +122,10 @@ som_analysis:
 # =============================================================================
 database:
   host: 'localhost'
-  port: 51051
-  
-  # CLUSTER DATABASE SETTINGS:
-  # database: 'geo_cluster_db'       # Adjust database name as needed
-  # user: 'yl998'                    # Your cluster username
-  # password: 'your_password'        # Set your actual database password
-  
-  # LOCAL TESTING DATABASE SETTINGS (comment out for cluster):
-  database: 'geoprocess_db'         # Local testing database
-  user: 'jason'                     # Local testing user
-  password: '123456'                # Local testing password
+  port: 51051  # Cluster database port
+  database: 'geo_cluster_db'       # Cluster database name
+  user: 'yl998'                    # Cluster username
+  password: 'your_password'        # Cluster password
   
   max_connections: 20               # More connections for parallel processing
   connection_timeout: 30

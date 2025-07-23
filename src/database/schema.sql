@@ -133,6 +133,30 @@ CREATE TABLE climate_data (
     UNIQUE(grid_id, cell_id, variable, source, resolution)
 );
 
+-- Resampled datasets table
+-- Stores metadata for resampled datasets (resampling pipeline)
+CREATE TABLE resampled_datasets (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    source_path TEXT NOT NULL,
+    target_resolution FLOAT NOT NULL,
+    target_crs VARCHAR(50) NOT NULL,
+    bounds FLOAT[] NOT NULL,  -- [minx, miny, maxx, maxy]
+    shape_height INTEGER NOT NULL,
+    shape_width INTEGER NOT NULL,
+    data_type VARCHAR(50) NOT NULL, -- 'richness_data', 'continuous_data', etc.
+    resampling_method VARCHAR(50) NOT NULL,
+    band_name VARCHAR(100) NOT NULL,
+    data_table_name VARCHAR(255),  -- Reference to actual data table
+    created_at TIMESTAMP DEFAULT NOW(),
+    metadata JSONB DEFAULT '{}'
+);
+
+-- Create index for efficient queries
+CREATE INDEX idx_resampled_datasets_name ON resampled_datasets(name);
+CREATE INDEX idx_resampled_datasets_type ON resampled_datasets(data_type);
+CREATE INDEX idx_resampled_datasets_resolution ON resampled_datasets(target_resolution);
+
 -- Experiments table
 -- Tracks experimental runs and configurations (pipeline/orchestrator.py)
 CREATE TABLE experiments (
