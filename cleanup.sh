@@ -3,8 +3,54 @@
 
 echo "🧹 Cleaning up database and outputs..."
 
-# Clean database entries
-/home/jason/anaconda3/envs/geo_py311/bin/python -c "
+# Auto-detect Python environment
+detect_python_env() {
+    # Try common conda environment paths
+    local possible_paths=(
+        "$HOME/anaconda3/envs/geo_py311/bin/python"
+        "$HOME/miniconda3/envs/geo_py311/bin/python" 
+        "$HOME/conda/envs/geo_py311/bin/python"
+        "/opt/anaconda3/envs/geo_py311/bin/python"
+        "/opt/miniconda3/envs/geo_py311/bin/python"
+    )
+    
+    # Try current conda environment if active
+    if [ ! -z "$CONDA_PREFIX" ] && [ -f "$CONDA_PREFIX/bin/python" ]; then
+        echo "$CONDA_PREFIX/bin/python"
+        return 0
+    fi
+    
+    # Try common paths
+    for path in "${possible_paths[@]}"; do
+        if [ -f "$path" ]; then
+            echo "$path"
+            return 0
+        fi
+    done
+    
+    # Fall back to system python if it has required packages
+    if command -v python3 &> /dev/null; then
+        if python3 -c "import sys; sys.path.insert(0, 'src'); from src.database.connection import DatabaseManager" 2>/dev/null; then
+            echo "python3"
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+PYTHON_ENV=$(detect_python_env)
+if [ $? -ne 0 ] || [ -z "$PYTHON_ENV" ]; then
+    echo "⚠️ Warning: Python environment with geo dependencies not found"
+    echo "   Database cleanup will be skipped"
+    PYTHON_ENV=""
+else
+    echo "✅ Python environment found: $PYTHON_ENV"
+fi
+
+# Clean database entries (only if Python environment is available)
+if [ ! -z "$PYTHON_ENV" ]; then
+    $PYTHON_ENV -c "
 import sys
 sys.path.insert(0, 'src')
 try:
@@ -28,6 +74,9 @@ try:
 except Exception as e:
     print(f'⚠️ Database cleanup error: {e}')
 "
+else
+    echo "⚠️ Skipping database cleanup (no Python environment)"
+fi
 
 # Clean outputs properly (handle empty directories and missing files)
 if [ -d "outputs/spatial_analysis" ]; then

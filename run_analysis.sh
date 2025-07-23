@@ -32,18 +32,72 @@ else
     echo "✅ tmux is available"
 fi
 
-# Check if Python environment is available
-PYTHON_ENV="/home/jason/anaconda3/envs/geo_py311/bin/python"
-if [ ! -f "$PYTHON_ENV" ]; then
-    echo "❌ Error: Python environment not found at $PYTHON_ENV"
-    echo "   Check your conda environment path"
+# Auto-detect Python environment
+detect_python_env() {
+    # Try common conda environment paths
+    local possible_paths=(
+        "$HOME/anaconda3/envs/geo_py311/bin/python"
+        "$HOME/miniconda3/envs/geo_py311/bin/python" 
+        "$HOME/conda/envs/geo_py311/bin/python"
+        "/opt/anaconda3/envs/geo_py311/bin/python"
+        "/opt/miniconda3/envs/geo_py311/bin/python"
+    )
+    
+    # Try current conda environment if active
+    if [ ! -z "$CONDA_PREFIX" ] && [ -f "$CONDA_PREFIX/bin/python" ]; then
+        echo "$CONDA_PREFIX/bin/python"
+        return 0
+    fi
+    
+    # Try common paths
+    for path in "${possible_paths[@]}"; do
+        if [ -f "$path" ]; then
+            echo "$path"
+            return 0
+        fi
+    done
+    
+    # Fall back to system python if it has required packages
+    if command -v python3 &> /dev/null; then
+        if python3 -c "import sys; sys.path.insert(0, 'src'); from src.database.connection import DatabaseManager" 2>/dev/null; then
+            echo "python3"
+            return 0
+        fi
+    fi
+    
+    return 1
+}
+
+PYTHON_ENV=$(detect_python_env)
+if [ $? -ne 0 ] || [ -z "$PYTHON_ENV" ]; then
+    echo "❌ Error: Python environment with geo dependencies not found"
+    echo "   Tried common conda environment paths and system python"
+    echo "   Please ensure you have:"
+    echo "   - A conda environment named 'geo_py311' with required packages, OR"
+    echo "   - System python3 with the geo project dependencies installed"
     exit 1
 else
-    echo "✅ Python environment found"
+    echo "✅ Python environment found: $PYTHON_ENV"
 fi
 
+# Read data directory from config.yml
+if [ ! -f "config.yml" ]; then
+    echo "❌ Error: config.yml not found in current directory"
+    exit 1
+fi
+
+# Extract data_dir from config.yml (handles both commented and uncommented lines)
+DATA_DIR=$(grep -E "^\s*data_dir:" config.yml | grep -v "^#" | head -1 | sed 's/.*data_dir:\s*["\x27]\?\([^"\x27]*\)["\x27]\?\s*#*.*/\1/' | xargs)
+
+if [ -z "$DATA_DIR" ]; then
+    echo "❌ Error: data_dir not found in config.yml"
+    echo "   Please ensure data_dir is properly configured"
+    exit 1
+fi
+
+echo "📁 Using data directory: $DATA_DIR"
+
 # Check if data files exist
-DATA_DIR="data/richness_maps"
 DARU_FILE="$DATA_DIR/daru-plants-richness.tif"
 IUCN_FILE="$DATA_DIR/iucn-terrestrial-richness.tif"
 
