@@ -62,6 +62,8 @@ def parse_arguments():
                         help='Skip raster merging step (use existing merged data)')
     parser.add_argument('--output-dir', type=str, default='outputs/spatial_analysis',
                         help='Output directory for results')
+    parser.add_argument('--spatial-subset', type=float, nargs=4, metavar=('XMIN', 'YMIN', 'XMAX', 'YMAX'),
+                        help='Process only spatial subset (longitude/latitude bounds)')
     
     args = parser.parse_args()
     
@@ -103,6 +105,24 @@ def main():
         'max_samples': args.max_samples,
         'strategy': args.sampling_strategy,
         'memory_limit_gb': args.memory_limit
+    })
+    
+    # Configure spatial analysis memory limits
+    spatial_analysis_config = config.config.setdefault('spatial_analysis', {})
+    spatial_analysis_config.update({
+        'batch_size': args.chunk_size,
+        'memory_limit_mb': int(args.memory_limit * 1024),  # Convert GB to MB
+        'normalize_data': True,
+        'save_results': True
+    })
+    
+    # Configure data preparation memory limits
+    data_prep_config = config.config.setdefault('data_preparation', {})
+    data_prep_config.update({
+        'memory_limit_gb': args.memory_limit,
+        'chunk_processing': args.batch_processing,
+        'chunk_size': args.chunk_size,
+        'use_memory_mapping': args.memory_limit <= 4.0  # Use memory mapping for low memory systems
     })
     
     som_config = config.config.setdefault('som_analysis', {})

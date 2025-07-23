@@ -30,7 +30,16 @@ class SOMAnalyzer(BaseAnalyzer):
     """
     
     def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
-        super().__init__(config, db_connection)
+        # Create memory-aware data processor for SOM
+        try:
+            from src.processors.spatial_analysis.data_processor import SpatialDataProcessor
+            data_processor = SpatialDataProcessor(config)
+        except ImportError:
+            logger.warning("SpatialDataProcessor not available, using fallback")
+            data_processor = None
+        
+        # Initialize with data processor injection for memory awareness
+        super().__init__(config, db_connection=db_connection, data_processor=data_processor)
 
         if MiniSom is None:
             raise ImportError("minisom is required for SOM analysis. Install with: pip install minisom")
@@ -208,7 +217,8 @@ class SOMAnalyzer(BaseAnalyzer):
                     except OSError:
                         logger.warning(f"Could not remove temporary file: {temp_file.name}")
                 
-                # Note: We don't restore data reference as it's not used after this point        else:
+                # Note: We don't restore data reference as it's not used after this point
+        else:
             # Train on full dataset
             logger.info(f"Training SOM on full dataset ({n_samples:,} samples)")
             som.train_random(data, params['iterations'])
@@ -362,16 +372,6 @@ class SOMAnalyzer(BaseAnalyzer):
         
         # Initialize SOM
         self._update_progress(2, 5, "Initializing SOM")
-        if MiniSom is None:
-
-            raise ImportError("minisom is required")
-
-        if MiniSom is None:
-
-
-            raise ImportError("minisom is required for SOM analysis")
-
-
         som = MiniSom(
             x=params['grid_size'][0],
             y=params['grid_size'][1],
@@ -480,12 +480,10 @@ class SOMAnalyzer(BaseAnalyzer):
                 'max': cluster_data.max(axis=0).tolist()
             }
         
-        # Global statistics
+        # Global statistics - use safe methods to avoid memory issues
         return {
             'n_clusters': n_clusters,
             'grid_size': params['grid_size'],
-            "quantization_error": float(som.quantization_error(data)),  # type: ignore[attr-defined]
-            "topographic_error": float(som.topographic_error(data)),  # type: ignore[attr-defined]
             'cluster_statistics': cluster_stats,
             'empty_neurons': self._count_empty_neurons(labels, params['grid_size']),
             'cluster_balance': self._calculate_cluster_balance(labels)

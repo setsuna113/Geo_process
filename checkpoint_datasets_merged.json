@@ -1,7 +1,7 @@
 {
   "stage": "datasets_merged",
-  "timestamp": "2025-07-22T22:40:09.650825",
-  "elapsed_time": 3.6064023971557617,
+  "timestamp": "2025-07-23T09:37:15.085840",
+  "elapsed_time": 3.4219844341278076,
   "data": {
     "shape": {
       "lon": 21600,
