@@ -37,7 +37,6 @@ class Config:
         return (
             'pytest' in sys.modules or
             'unittest' in sys.modules or
-            any('test' in arg.lower() for arg in sys.argv) or
             any('test_' in module for module in sys.modules)
         )
     

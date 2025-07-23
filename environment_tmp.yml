@@ -9,7 +9,7 @@ dependencies:
   - fiona
   - geopandas
   - gdal
-  - h3
+  - h3-py
   - libpysal
   - matplotlib
   - mgwr
