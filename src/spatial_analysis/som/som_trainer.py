@@ -159,34 +159,17 @@ class SOMAnalyzer(BaseAnalyzer):
         if needs_subsampling:
             logger.warning(f"Dataset too large ({n_samples:,} samples), using subsampling")
             
-            # Create spatial coordinates if not provided
-            if coordinates is None and data.ndim >= 2:
-                # Improved synthetic coordinate generation
-                logger.info("Generating synthetic spatial coordinates for stratified sampling")
-                # More robust synthetic coordinate generation
-                n_rows = int(np.sqrt(n_samples))
-                n_cols = int(np.ceil(n_samples / n_rows))
-                row_indices = np.repeat(np.arange(n_rows), n_cols)[:n_samples]
-                col_indices = np.tile(np.arange(n_cols), n_rows)[:n_samples]
-                coordinates = np.column_stack([col_indices, row_indices])
-            
-            # Memory mapping with proper scope management
-            original_data = data
-            mmap_data = None
-            temp_file = None
-            
-            try:
-                if self.use_memory_mapping and isinstance(data, np.ndarray):
-                    temp_file = tempfile.NamedTemporaryFile(delete=False)
-                    mmap_data = np.memmap(temp_file.name, dtype=data.dtype, 
-                                         mode='w+', shape=data.shape)
-                    mmap_data[:] = data
-                    data = mmap_data  # Use mmap for training
-                    del original_data  # Free original memory only after successful mmap
-                
-                # All data processing happens within try block
-                # Subsample for training
+            # First subsample without coordinates to avoid memory spike
+            if coordinates is None:
+                logger.info("Using random subsampling (no spatial coordinates provided)")
+                # Use random sampling to avoid creating huge coordinate arrays
+                train_data, sample_indices = self.subsampler.subsample_data(data, coordinates=None)
+            else:
+                # Use spatial coordinates if provided
                 train_data, sample_indices = self.subsampler.subsample_data(data, coordinates)
+            
+            # Memory mapping with proper scope management (not needed for subsampled data)
+            try:
                 
                 # Train on subsample
                 logger.info(f"Training SOM on {train_data.shape[0]:,} samples (subsampled from {n_samples:,})")
@@ -205,19 +188,8 @@ class SOMAnalyzer(BaseAnalyzer):
                 gc.collect()
                 
             finally:
-                # Proper cleanup of memory-mapped resources
-                if mmap_data is not None:
-                    try:
-                        del mmap_data  # Close the memmap
-                    except Exception as e:
-                        logger.warning(f"Error cleaning up memory map: {e}")
-                if temp_file is not None:
-                    try:
-                        os.unlink(temp_file.name)
-                    except OSError:
-                        logger.warning(f"Could not remove temporary file: {temp_file.name}")
-                
-                # Note: We don't restore data reference as it's not used after this point
+                # Cleanup - minimal since we're using subsampled data directly
+                pass
         else:
             # Train on full dataset
             logger.info(f"Training SOM on full dataset ({n_samples:,} samples)")
