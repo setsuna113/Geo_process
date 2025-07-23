@@ -1,0 +1,36 @@
+name: geo
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python = 3.11
+  - click
+  - dask
+  - fiona
+  - geopandas
+  - gdal
+  - h3
+  - libpysal
+  - matplotlib
+  - mgwr
+  - minisom
+  - numpy
+  - pandas
+  - psutil
+  - psycopg2
+  - pyproj
+  - pytest
+  - numpy
+  - PyYAML
+  - rasterio
+  - rioxarray
+  - scikit-learn
+  - scipy
+  - seaborn
+  - Shapely
+  - spopt
+  - tqdm
+  - xarray
+  - postgresql
+  - postgis
+  - pyright
