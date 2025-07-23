@@ -34,6 +34,15 @@ class Config:
     def _is_test_mode(self) -> bool:
         """Detect if we're running in test mode."""
         import sys
+        # Debug what's triggering test mode
+        pytest_present = 'pytest' in sys.modules
+        unittest_present = 'unittest' in sys.modules
+        test_modules = [m for m in sys.modules if 'test' in m.lower()]
+        
+        print(f"DEBUG: pytest_present={pytest_present}, unittest_present={unittest_present}")
+        print(f"DEBUG: test_modules={test_modules}")
+        print(f"DEBUG: sys.argv={sys.argv}")
+        
         # Only detect test mode for actual test frameworks, not production runs
         return (
             'pytest' in sys.modules or
