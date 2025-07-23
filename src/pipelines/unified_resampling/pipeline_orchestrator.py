@@ -6,6 +6,8 @@ from typing import Dict, Any, List, Optional
 from pathlib import Path
 from datetime import datetime
 import xarray as xr
+import json
+import numpy as np
 
 from src.config.config import Config
 from src.database.connection import DatabaseManager
@@ -18,6 +20,26 @@ from .resampling_workflow import ResamplingWorkflow
 from .validation_checks import ValidationChecks
 
 logger = logging.getLogger(__name__)
+
+
+def clean_nan_for_json(obj):
+    """Recursively clean NaN values from nested dictionaries and lists for JSON serialization."""
+    if isinstance(obj, dict):
+        return {key: clean_nan_for_json(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_nan_for_json(item) for item in obj]
+    elif isinstance(obj, (np.ndarray, np.generic)):
+        # Convert numpy arrays/scalars to Python types
+        if obj.ndim == 0:  # scalar
+            val = float(obj)
+            return None if np.isnan(val) or np.isinf(val) else val
+        else:  # array
+            cleaned = obj.tolist()
+            return clean_nan_for_json(cleaned)
+    elif isinstance(obj, float):
+        return None if np.isnan(obj) or np.isinf(obj) else obj
+    else:
+        return obj
 
 
 class UnifiedResamplingPipeline:
@@ -249,7 +271,7 @@ class UnifiedResamplingPipeline:
             },
             'som_analysis': {
                 'saved_path': str(saved_path),
-                'statistics': som_results.statistics if hasattr(som_results, 'statistics') else {}
+                'statistics': clean_nan_for_json(som_results.statistics) if hasattr(som_results, 'statistics') else {}
             },
             'pipeline_metadata': {
                 'completed_at': timestamp,
@@ -295,3 +317,82 @@ class UnifiedResamplingPipeline:
                     logger.warning(f"Failed to drop table {table_name}: {e}")
         
         logger.info("Cleanup completed")
+    
+    def _merge_resampled_datasets(self, resampled_info: List[ResampledDatasetInfo]) -> xr.Dataset:
+        """Merge resampled datasets from database into a single xarray Dataset."""
+        logger.info(f"Loading and merging {len(resampled_info)} resampled datasets from database...")
+        
+        # Initialize resampling processor to load data
+        from src.database.connection import db
+        processor = ResamplingProcessor(self.config, db)
+        data_vars = {}
+        coords = None
+        
+        for info in resampled_info:
+            logger.info(f"Loading resampled data for: {info.name}")
+            
+            # Load the actual array data from database
+            array_data = processor.load_resampled_data(info.name)
+            if array_data is None:
+                raise RuntimeError(f"Failed to load resampled data for {info.name}")
+            
+            logger.info(f"Loaded array shape: {array_data.shape}")
+            
+            # Create coordinates if not already created (use first dataset)
+            if coords is None:
+                # Extract spatial extent from the first dataset
+                bounds = info.bounds  # [west, south, east, north]
+                height, width = array_data.shape
+                
+                # Create coordinate arrays
+                x_coords = xr.DataArray(
+                    data=[(bounds[0] + (i + 0.5) * info.target_resolution) for i in range(width)],
+                    dims=['x'],
+                    attrs={'long_name': 'longitude', 'units': 'degrees_east'}
+                )
+                
+                y_coords = xr.DataArray(
+                    data=[(bounds[3] - (i + 0.5) * info.target_resolution) for i in range(height)],
+                    dims=['y'], 
+                    attrs={'long_name': 'latitude', 'units': 'degrees_north'}
+                )
+                
+                coords = {'x': x_coords, 'y': y_coords}
+                logger.info(f"Created coordinates: x={len(x_coords)}, y={len(y_coords)}")
+            
+            # Create DataArray for this band
+            data_array = xr.DataArray(
+                data=array_data,
+                dims=['y', 'x'],
+                coords=coords,
+                attrs={
+                    'long_name': f'{info.name} data',
+                    'source_path': info.source_path,
+                    'resampling_method': info.resampling_method,
+                    'target_resolution': info.target_resolution,
+                    'target_crs': info.target_crs
+                }
+            )
+            
+            # Use band_name as the variable name
+            data_vars[info.band_name] = data_array
+            logger.info(f"Added band '{info.band_name}' to merged dataset")
+        
+        # Create the merged dataset
+        merged_dataset = xr.Dataset(
+            data_vars=data_vars,
+            coords=coords,
+            attrs={
+                'title': 'Merged Resampled Biodiversity Data',
+                'target_resolution': resampled_info[0].target_resolution,
+                'target_crs': resampled_info[0].target_crs,
+                'created_by': 'unified_resampling_pipeline',
+                'created_at': datetime.now().isoformat()
+            }
+        )
+        
+        logger.info(f"✅ Successfully merged {len(data_vars)} bands into dataset")
+        logger.info(f"   Dataset shape: {dict(merged_dataset.sizes)}")
+        logger.info(f"   Bands: {list(merged_dataset.data_vars)}")
+        
+        return merged_dataset

@@ -57,6 +57,51 @@ SPECIES_CLASSIFICATION_DEFAULTS = {
     'valid_categories': ['plant', 'animal', 'fungi']
 }
 
+# Data files configuration (for test mode)
+DATA_FILES = {
+    'plants_richness': 'daru-plants-richness.tif',
+    'terrestrial_richness': 'iucn-terrestrial-richness.tif'
+}
+
+# Dataset definitions (for unified resampling pipeline)
+# Supports both legacy path_key and new direct path approaches
+DATASETS = {
+    'target_datasets': [
+        {
+            'name': 'plants-richness',
+            'path': str(DATA_DIR / 'daru-plants-richness.tif'),  # New: Direct path (preferred)
+            'path_key': 'plants_richness',  # Legacy: For backward compatibility
+            'data_type': 'richness_data',
+            'band_name': 'plants_richness',
+            'enabled': True
+        },
+        {
+            'name': 'terrestrial-richness', 
+            'path': str(DATA_DIR / 'iucn-terrestrial-richness.tif'),  # New: Direct path (preferred)
+            'path_key': 'terrestrial_richness',  # Legacy: For backward compatibility
+            'data_type': 'richness_data',
+            'band_name': 'terrestrial_richness',
+            'enabled': True
+        }
+    ]
+}
+
+# Resampling configuration for test mode
+RESAMPLING = {
+    'target_resolution': 0.05,
+    'target_crs': 'EPSG:4326',
+    'strategies': {
+        'richness_data': 'sum',
+        'continuous_data': 'bilinear',
+        'categorical_data': 'majority'
+    },
+    'chunk_size': 1000,
+    'validate_output': True,
+    'preserve_sum': True,
+    'cache_resampled': True,
+    'engine': 'numpy'
+}
+
 # Processing configuration
 PROCESSING = {
     'batch_size': 1000,

@@ -16,9 +16,11 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime
+import psutil
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
+# Add project root to path for imports (script is in src/pipelines/unified_resampling/scripts/)
+project_root = Path(__file__).parent.parent.parent.parent.parent
+sys.path.insert(0, str(project_root))
 
 from src.config.config import Config
 from src.database.connection import DatabaseManager
@@ -78,6 +80,8 @@ def parse_arguments():
                         help='Skip SOM analysis (only perform resampling and merging)')
     parser.add_argument('--cleanup-intermediate', action='store_true',
                         help='Clean up intermediate resampled data after completion')
+    parser.add_argument('--test-mode', action='store_true',
+                        help='Force test mode (use defaults.py, ignore config.yml)')
     
     # Experiment tracking
     parser.add_argument('--experiment-name', type=str, default=None,
@@ -161,6 +165,89 @@ def setup_progress_monitoring(pipeline, args):
     return None
 
 
+def pre_flight_checks(config: Config, args) -> bool:
+    """Comprehensive pre-flight checks with intelligent mode detection."""
+    print("🔍 Running pre-flight checks...")
+    
+    # 1. Mode detection and reporting
+    is_test_mode = config._is_test_mode()
+    if is_test_mode:
+        print("🧪 TEST MODE DETECTED")
+        print(f"   Database: localhost:{config.get('database.port')} (test)")
+        print(f"   Data directory: {config.get('paths.data_dir')} (defaults.py)")
+    else:
+        print("🏭 PRODUCTION MODE DETECTED")  
+        print(f"   Database: {config.get('database.host')}:{config.get('database.port')} (config.yml)")
+        print(f"   Data directory: {config.get('paths.data_dir')} (config.yml)")
+    
+    # 2. Dataset file validation (using individual paths)
+    datasets = config.get('datasets.target_datasets', [])
+    if not datasets:
+        print("❌ No target datasets configured")
+        return False
+    
+    missing_files = []
+    found_files = []
+    
+    for dataset in datasets:
+        if not dataset.get('enabled', True):
+            continue
+            
+        dataset_path = Path(dataset.get('path', ''))
+        dataset_name = dataset.get('name', 'unknown')
+        
+        if dataset_path.exists():
+            size = dataset_path.stat().st_size / (1024**2)  # MB
+            found_files.append(f"{dataset_name}: {dataset_path.name} ({size:.1f}MB)")
+        else:
+            missing_files.append(f"{dataset_name}: {dataset_path}")
+    
+    if found_files:
+        print("✅ Dataset files found:")
+        for file_info in found_files:
+            print(f"   - {file_info}")
+    
+    if missing_files:
+        print("❌ Missing dataset files:")
+        for file_info in missing_files:
+            print(f"   - {file_info}")
+        return False
+    
+    # 3. Database connectivity check
+    try:
+        print("🔍 Testing database connection...")
+        from src.database.connection import DatabaseManager
+        db = DatabaseManager()
+        if db.test_connection():
+            print(f"✅ Database connection successful")
+        else:
+            print("❌ Database connection failed")
+            return False
+    except Exception as e:
+        print(f"❌ Database error: {e}")
+        if is_test_mode:
+            print("💡 Start PostgreSQL: sudo systemctl start postgresql")
+        return False
+    
+    # 4. System resource validation
+    if args.dry_run:
+        print("🔍 Dry run mode - skipping resource checks")
+    else:
+        # Check available memory
+        import psutil
+        available_gb = psutil.virtual_memory().available / (1024**3)
+        required_gb = args.memory_limit
+        
+        print(f"🖥️  System memory: {available_gb:.1f}GB available")
+        if available_gb < required_gb:
+            print(f"⚠️  Warning: Requested {required_gb}GB but only {available_gb:.1f}GB available")
+        else:
+            print(f"✅ Memory check passed ({required_gb}GB requested)")
+    
+    print("✅ All pre-flight checks passed!")
+    return True
+
+
 def main():
     """Main processing pipeline with resampling integration."""
     args = parse_arguments()
@@ -171,17 +258,28 @@ def main():
     logger.info(f"Target resolution override: {args.target_resolution}")
     
     # Initialize configuration and database
+    # If --test-mode is specified, force test mode detection
+    if args.test_mode:
+        import sys
+        sys.modules['pytest'] = type(sys)('pytest')  # Force test mode
+        print("🧪 Test mode forced via --test-mode flag")
+    
     config = Config()
+    
+    # Run comprehensive pre-flight checks
+    if not pre_flight_checks(config, args):
+        logger.error("❌ Pre-flight checks failed. Exiting.")
+        return False
     
     # Apply command-line overrides to config
     if args.target_resolution is not None:
-        config.config.setdefault('resampling', {})['target_resolution'] = args.target_resolution
+        config.settings.setdefault('resampling', {})['target_resolution'] = args.target_resolution
     
     if args.resampling_engine is not None:
-        config.config.setdefault('resampling', {})['engine'] = args.resampling_engine
+        config.settings.setdefault('resampling', {})['engine'] = args.resampling_engine
     
     # Update processing configuration (inherited logic)
-    processing_config = config.config.setdefault('processing', {})
+    processing_config = config.settings.setdefault('processing', {})
     subsampling_config = processing_config.setdefault('subsampling', {})
     subsampling_config.update({
         'enabled': True,
@@ -191,7 +289,7 @@ def main():
     })
     
     # Update SOM configuration (inherited logic)
-    som_config = config.config.setdefault('som_analysis', {})
+    som_config = config.settings.setdefault('som_analysis', {})
     som_config.update({
         'max_pixels_in_memory': min(args.max_samples, 1000000),
         'use_memory_mapping': args.memory_limit <= 16.0,

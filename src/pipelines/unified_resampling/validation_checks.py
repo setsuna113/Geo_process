@@ -29,35 +29,15 @@ class ValidationChecks:
         Returns:
             Tuple of (is_valid, error_message)
         """
-        required_fields = ['name', 'path_key', 'data_type', 'band_name']
+        # Use the new dataset resolver for robust validation
+        from src.config.dataset_utils import DatasetPathResolver
         
-        # Check required fields
-        for field in required_fields:
-            if field not in dataset_config:
-                return False, f"Missing required field: {field}"
-        
-        # Validate data type
-        valid_data_types = ['richness_data', 'continuous_data', 'categorical_data']
-        data_type = dataset_config.get('data_type')
-        if data_type not in valid_data_types:
-            return False, f"Invalid data_type '{data_type}'. Must be one of: {valid_data_types}"
-        
-        # Check if path_key exists in data_files
-        path_key = dataset_config.get('path_key')
-        if path_key not in self.data_files:
-            return False, f"Path key '{path_key}' not found in data_files configuration"
-        
-        # Check if actual file exists
-        file_path = self.data_dir / self.data_files[path_key]
-        if not file_path.exists():
-            return False, f"Dataset file not found: {file_path}"
-        
-        # Validate band name (no special characters that could cause issues)
-        band_name = dataset_config.get('band_name', '')
-        if not band_name.replace('_', '').replace('-', '').isalnum():
-            return False, f"Band name '{band_name}' contains invalid characters. Use only letters, numbers, hyphens, and underscores."
-        
-        return True, None
+        try:
+            resolver = DatasetPathResolver(self.config)
+            normalized_config = resolver.validate_dataset_config(dataset_config)
+            return True, None
+        except ValueError as e:
+            return False, str(e)
     
     def validate_resampling_config(self) -> Tuple[bool, Optional[str]]:
         """

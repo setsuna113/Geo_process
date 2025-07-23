@@ -13,10 +13,8 @@
 #   data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
 #   logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
 
-# Data file names (found within data_dir)
-data_files:
-  plants_richness: "daru-plants-richness.tif"
-  terrestrial_richness: "iucn-terrestrial-richness.tif"
+# NOTE: Individual dataset paths are now specified in each dataset configuration below
+# This data_files section is deprecated but kept for backward compatibility
 
 # =============================================================================
 # RESAMPLING CONFIGURATION - NEW UNIFIED PIPELINE
@@ -40,19 +38,46 @@ resampling:
   engine: 'numpy'  # 'numpy' or 'gdal'
 
 # Multiple dataset definitions for unified processing
+# Each dataset now has its own path - no central data_dir needed!
 datasets:
   target_datasets:
     - name: "plants-richness"
-      path_key: "plants_richness"  # References data_files section
+      path: "/maps/mwd24/richness/daru-plants-richness.tif"  # Full cluster path
       data_type: "richness_data"
       band_name: "plants_richness"
       enabled: true
       
     - name: "terrestrial-richness" 
-      path_key: "terrestrial_richness"
+      path: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"  # Full cluster path
       data_type: "richness_data"
       band_name: "terrestrial_richness"
       enabled: true
+      
+    # EXAMPLE: Add 4-dataset configuration for cluster:
+    - name: "marine-richness"
+      path: "/maps/mwd24/marine/marine-richness.tif"  # Different directory
+      data_type: "richness_data"
+      band_name: "marine_richness"
+      enabled: false  # Set to true when ready
+      
+    - name: "freshwater-richness"
+      path: "/scratch/yl998/freshwater/freshwater-richness.tif"  # Another location
+      data_type: "richness_data" 
+      band_name: "freshwater_richness"
+      enabled: false  # Set to true when ready
+      
+    # SUPPORTS ANY NUMBER OF DATASETS:
+    # - name: "soil-biodiversity"
+    #   path: "/data/external/soil-biodiversity.tif"
+    #   data_type: "richness_data"
+    #   band_name: "soil_biodiversity" 
+    #   enabled: true
+    #
+    # - name: "climate-zones"
+    #   path: "/maps/climate/climate-zones.tif"
+    #   data_type: "categorical_data"  # Different data type
+    #   band_name: "climate_zones"
+    #   enabled: true
 
 # =============================================================================
 # HIGH-MEMORY PROCESSING CONFIGURATION (1TB RAM)

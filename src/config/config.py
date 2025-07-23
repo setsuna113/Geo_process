@@ -13,17 +13,21 @@ class Config:
         if self._is_test_mode():
             self._apply_test_database_config()
 
-        # Auto-discover config.yml if not specified
-        if config_file is None:
-            # Look for config.yml in project root
-            project_root = Path(__file__).parent.parent.parent
-            potential_config = project_root / 'config.yml'
-            if potential_config.exists():
-                config_file = potential_config
+        # Only load config.yml if NOT in test mode
+        if not self._is_test_mode():
+            # Auto-discover config.yml if not specified
+            if config_file is None:
+                # Look for config.yml in project root
+                project_root = Path(__file__).parent.parent.parent
+                potential_config = project_root / 'config.yml'
+                if potential_config.exists():
+                    config_file = potential_config
 
-        if config_file and config_file.exists():
-            # In test mode, don't override database config from YAML
-            self._load_yaml_config(config_file, preserve_test_db=self._is_test_mode())
+            if config_file and config_file.exists():
+                self._load_yaml_config(config_file, preserve_test_db=False)
+        else:
+            print("🧪 Test mode detected - using test database configuration (port 5432)")
+            print("🧪 Ignoring config.yml completely in test mode")
 
         self._ensure_directories()
     
@@ -66,6 +70,9 @@ class Config:
             'data_preparation': defaults.DATA_PREPARATION.copy(),
             'data_cleaning': defaults.DATA_CLEANING.copy(),
             'testing': defaults.TESTING.copy(),
+            'data_files': defaults.DATA_FILES.copy(),
+            'datasets': defaults.DATASETS.copy(),
+            'resampling': defaults.RESAMPLING.copy(),
             'paths': {
                 'project_root': defaults.PROJECT_ROOT,
                 'data_dir': defaults.DATA_DIR,

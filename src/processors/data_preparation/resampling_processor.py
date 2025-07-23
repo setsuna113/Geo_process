@@ -99,10 +99,19 @@ class ResamplingProcessor(BaseProcessor):
         Returns:
             ResampledDatasetInfo object with metadata
         """
-        dataset_name = dataset_config['name']
-        path_key = dataset_config['path_key']
-        data_type = dataset_config['data_type']
-        band_name = dataset_config['band_name']
+        # Use the new dataset resolver for robust path handling
+        from src.config.dataset_utils import DatasetPathResolver
+        
+        resolver = DatasetPathResolver(self.config)
+        try:
+            normalized_config = resolver.validate_dataset_config(dataset_config)
+        except ValueError as e:
+            raise ValueError(f"Invalid dataset configuration: {e}")
+        
+        dataset_name = normalized_config['name']
+        raster_path = Path(normalized_config['resolved_path'])
+        data_type = normalized_config['data_type']
+        band_name = normalized_config['band_name']
         
         logger.info(f"Resampling dataset: {dataset_name}")
         
@@ -113,14 +122,7 @@ class ResamplingProcessor(BaseProcessor):
         try:
             raster_entry = self.catalog.get_raster(dataset_name)
             if raster_entry is None:
-                # Try to add it to catalog first
-                data_files = self.config.get('data_files', {})
-                if path_key not in data_files:
-                    raise ValueError(f"Path key '{path_key}' not found in data_files config")
-                
-                data_dir = Path(self.config.get('paths.data_dir', 'data'))
-                raster_path = data_dir / data_files[path_key]
-                
+                # Path already resolved by DatasetPathResolver
                 if not raster_path.exists():
                     raise FileNotFoundError(f"Raster file not found: {raster_path}")
                 
@@ -377,11 +379,14 @@ class ResamplingProcessor(BaseProcessor):
         return item
     
     def validate_input(self, item: Any) -> Tuple[bool, Optional[str]]:
-        """Validate input item."""
-        if isinstance(item, dict):
-            required_keys = ['name', 'path_key', 'data_type', 'band_name']
-            missing = [key for key in required_keys if key not in item]
-            if missing:
-                return False, f"Missing required keys: {missing}"
+        """Validate input item using the new dataset resolver."""
+        if not isinstance(item, dict):
+            return False, "Item must be a dictionary"
+        
+        try:
+            from src.config.dataset_utils import DatasetPathResolver
+            resolver = DatasetPathResolver(self.config)
+            resolver.validate_dataset_config(item)
             return True, None
-        return False, "Item must be a dictionary"
+        except ValueError as e:
+            return False, str(e)

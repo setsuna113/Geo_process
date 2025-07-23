@@ -10,24 +10,37 @@
   2. Database insertion bug (metadata JSON serialization)
 - Architecture integration successful (config, database, processors)
 
-## 🔧 CURRENT PROGRESS - MERGER FIX
-**Status**: IN PROGRESS - Identified and started fixing merger issue
+## ✅ MERGER FIX COMPLETED
+**Status**: COMPLETED - Full pipeline working end-to-end
 
-**Problem Identified**: Pipeline calls `raster_merger.merge_custom_rasters()` which looks for original rasters in catalog, but needs to use resampled dataset data from database.
+**Solution Implemented**: 
+- ✅ Completed `_merge_resampled_datasets()` method implementation
+- ✅ Added database query to load resampled data via `processor.load_resampled_data()`
+- ✅ Created xarray dataset from multiple resampled arrays with proper coordinates
+- ✅ Fixed constructor issue (ResamplingProcessor requires db_connection parameter)
+- ✅ Fixed attribute name bugs (info.target_resolution, info.target_crs)
 
-**Solution Started**: 
-- Modified `_run_merging_phase()` to call `_merge_resampled_datasets()` instead of RasterMerger
-- Partially implemented direct merge from database approach
-- File: `src/pipelines/unified_resampling/pipeline_orchestrator.py` line 186
+**Verification**: 
+- ✅ Individual resampling: WORKING (both datasets: 9x9, 0.2°)
+- ✅ Data merging: WORKING (loads from database, creates xarray dataset)
+- ✅ SOM analysis: WORKING (runs successfully on merged data)
+- ✅ Fixed JSON serialization of NaN values in results
 
-**Next Steps**:
-1. Complete implementation of `_merge_resampled_datasets()` method
-2. Add database query to load resampled data 
-3. Create xarray dataset from multiple resampled arrays
-4. Run full pipeline test: resample → merge → SOM analysis
+**Current Status**: **COMPLETE END-TO-END PIPELINE SUCCESS! 🎉**
+
+## 🔧 FINAL FIX - JSON SERIALIZATION
+**Status**: COMPLETED - Fixed NaN values in JSON serialization
+
+**Issue**: SOM cluster statistics contained NaN values (mean, std, min, max) that couldn't be serialized to JSON when saving experiment results to database.
+
+**Solution**: 
+- ✅ Added `clean_nan_for_json()` utility function that recursively cleans NaN/Inf values
+- ✅ Converts NaN values to `null` in JSON for proper database storage
+- ✅ Handles nested dictionaries, lists, numpy arrays, and scalars
+- ✅ Applied cleaning to `som_results.statistics` before database insertion
 
 **Files Modified**:
-- `src/pipelines/unified_resampling/pipeline_orchestrator.py` (merger approach changed)
+- `src/pipelines/unified_resampling/pipeline_orchestrator.py` (merger + NaN cleaning)
 - `PIPELINE_STATUS.md` (this status file)
 
 ## 🎯 FINAL GOAL
