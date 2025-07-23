@@ -18,6 +18,16 @@ logger = logging.getLogger(__name__)
 class NumpyResampler(BaseResampler):
     """Pure NumPy/SciPy resampling engine."""
     
+    def __init__(self, config):
+        """Initialize NumPy resampler with configuration."""
+        super().__init__(config)
+        self.config = config
+        # Initialize attributes that may be accessed before validate_config is called
+        self.is_upsampling = False
+        self.scale_factor = 1.0
+        self._register_strategies()
+        
+    
     def _register_strategies(self):
         """Register resampling strategies."""
         self.strategies = {

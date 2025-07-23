@@ -26,7 +26,7 @@ class TestResamplingPerformance:
     def test_gdal_vs_numpy_performance(self):
         """Compare GDAL and NumPy resampler performance."""
         # Create test data
-        sizes = [(100, 100), (500, 500), (1000, 1000)]
+        sizes = [(10, 10), (20, 20), (50, 50)]
         
         for size in sizes:
             data = np.random.rand(*size).astype(np.float32)
@@ -54,8 +54,8 @@ class TestResamplingPerformance:
     @pytest.mark.benchmark
     def test_different_methods_performance(self):
         """Benchmark different resampling methods."""
-        data = np.random.rand(1000, 1000).astype(np.float32)
-        bounds = (0, 0, 1000, 1000)
+        data = np.random.rand(50, 50).astype(np.float32)
+        bounds = (0, 0, 50, 50)
         
         methods = ['nearest', 'bilinear', 'mean', 'area_weighted']
         

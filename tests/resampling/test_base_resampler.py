@@ -91,6 +91,14 @@ class TestResamplingResult:
 class ConcreteResampler(BaseResampler):
     """Concrete implementation for testing."""
     
+    def __init__(self, config):
+        super().__init__(config)
+        self.config = config
+        self.is_upsampling = False
+        self.scale_factor = 1.0
+        self._register_strategies()
+    
+
     def _register_strategies(self):
         self.strategies = {'test': None}
     
@@ -116,12 +124,13 @@ class TestBaseResampler:
             method='test'
         )
         resampler = ConcreteResampler(config)
+        resampler.validate_config()
         
         # Should not raise
         resampler.validate_config()
         
         assert resampler.is_upsampling is False
-        assert resampler.scale_factor == 0.1
+        assert abs(resampler.scale_factor - 0.1) < 1e-10
     
     def test_validate_config_invalid_resolution(self):
         """Test validation with invalid resolution."""
@@ -155,6 +164,7 @@ class TestBaseResampler:
             method='test'
         )
         resampler = ConcreteResampler(config)
+        resampler.validate_config()
         
         # Test exact division
         shape = resampler.calculate_output_shape((0, 0, 10, 10))
@@ -172,6 +182,7 @@ class TestBaseResampler:
             method='test'
         )
         resampler = ConcreteResampler(config)
+        resampler.validate_config()
         
         # Create mock mapping
         mapping = np.array([
@@ -202,6 +213,7 @@ class TestBaseResampler:
             dtype=np.dtype(np.uint8)
         )
         resampler = ConcreteResampler(config)
+        resampler.validate_config()
         
         # Test clipping
         data = np.array([-10, 0, 128, 300])

@@ -136,7 +136,8 @@ class BaseResampler(ABC):
         for target_idx in range(target_shape[0] * target_shape[1]):
             source_indices = mapping[mapping[:, 0] == target_idx, 1]
             if len(source_indices) > 0:
-                coverage.flat[target_idx] = len(source_indices) / (self.scale_factor ** 2) * 100
+                expected_pixels = int(1 / (self.scale_factor ** 2))
+                coverage.flat[target_idx] = len(source_indices) / expected_pixels * 100
         
         return coverage
     
