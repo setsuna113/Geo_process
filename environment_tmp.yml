@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python = 3.11
+  - python = 3.12
   - click
   - dask
   - fiona
@@ -34,3 +34,22 @@ dependencies:
   - postgresql
   - postgis
   - pyright
+  - affine
+  - bokeh
+  - bottleneck
+  - descartes
+  - geopy
+  - h5netcdf
+  - netcdf4
+  - networkx
+  - pulp
+  - pynio
+  - pyqt
+  - pysal
+  - rtree
+  - shapely
+  - spglm
+  - spreg
+  - sqlalchemy
+  - statsmodels
+  - yaml
