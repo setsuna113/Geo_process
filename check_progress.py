@@ -3,16 +3,30 @@
 
 import psycopg2
 import os
+import sys
+import yaml
 from datetime import datetime
+from pathlib import Path
+
+def load_config():
+    """Load configuration from config.yml."""
+    config_path = Path(__file__).parent / 'config.yml'
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    return {}
 
 def get_db_connection():
-    """Get database connection using environment variables or defaults."""
+    """Get database connection using config.yml settings."""
+    config = load_config()
+    db_config = config.get('database', {})
+    
     return psycopg2.connect(
-        host=os.getenv('DB_HOST', 'localhost'),
-        port=os.getenv('DB_PORT', 5432),
-        database=os.getenv('DB_NAME', 'geo_analysis'),
-        user=os.getenv('DB_USER', 'postgres'),
-        password=os.getenv('DB_PASSWORD', '')
+        host=db_config.get('host', 'localhost'),
+        port=db_config.get('port', 5432),
+        database=db_config.get('database', 'geo_analysis'),
+        user=db_config.get('user', 'postgres'),
+        password=db_config.get('password', '')
     )
 
 def main():
