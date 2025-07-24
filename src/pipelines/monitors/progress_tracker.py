@@ -2,10 +2,9 @@
 """Progress tracking for pipeline execution."""
 
 import logging
-import time
 from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
-from dataclasses import dataclass, field
+from datetime import datetime
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ class ProgressTracker:
         self.start_time: Optional[datetime] = None
         self.callbacks = []
     
-    def initialize(self, total_stages: int, total_operations: int = None):
+    def initialize(self, total_stages: int, total_operations: Optional[int] = None):
         """Initialize progress tracking."""
         self.total_stages = total_stages
         self.start_time = datetime.now()
@@ -53,8 +52,8 @@ class ProgressTracker:
         
         self._notify_callbacks()
     
-    def update_stage(self, stage_name: str, operations_completed: int = None, 
-                    progress_percent: float = None, message: str = None):
+    def update_stage(self, stage_name: str, operations_completed: Optional[int] = None, 
+                    progress_percent: Optional[float] = None, message: Optional[str] = None):
         """Update stage progress."""
         if stage_name not in self.stages:
             return

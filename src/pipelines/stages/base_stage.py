@@ -2,10 +2,13 @@
 """Base class for pipeline stages."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+
+# Import ProcessingConfig from config module
+from src.config.processing_config import ProcessingConfig
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,7 @@ class StageStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    PAUSED = "paused"
 
 
 @dataclass
@@ -25,9 +29,10 @@ class StageResult:
     success: bool
     data: Dict[str, Any]
     metrics: Dict[str, Any]
-    warnings: List[str] = []
+    warnings: List[str] = field(default_factory=list)
     execution_time: float = 0.0
     output_size: int = 0  # bytes
+    memory_peak_mb: float = 0.0  # Peak memory usage
     
     def __post_init__(self):
         if self.warnings is None:
@@ -36,7 +41,7 @@ class StageResult:
 
 class PipelineStage(ABC):
     """
-    Abstract base class for pipeline stages.
+    Abstract base class for pipeline stages with memory-aware processing.
     
     Each stage represents a discrete processing step with:
     - Dependencies on other stages
@@ -44,12 +49,16 @@ class PipelineStage(ABC):
     - Validation logic
     - Execution logic
     - Quality checks
+    - Memory-aware processing support
     """
     
     def __init__(self):
         self.status = StageStatus.PENDING
         self.error: Optional[str] = None
         self.result: Optional[StageResult] = None
+        self.processing_config: Optional[ProcessingConfig] = None
+        self._pause_requested = False
+        self._cancel_requested = False
     
     @property
     @abstractmethod
@@ -78,6 +87,11 @@ class PipelineStage(ABC):
         """Estimated number of operations for progress tracking."""
         return 100
     
+    @property
+    def supports_chunking(self) -> bool:
+        """Whether this stage supports chunked processing."""
+        return False
+    
     @abstractmethod
     def validate(self) -> Tuple[bool, List[str]]:
         """
@@ -101,6 +115,33 @@ class PipelineStage(ABC):
         """
         pass
     
+    def set_processing_config(self, config: ProcessingConfig):
+        """Set memory-aware processing configuration."""
+        self.processing_config = config
+    
+    def pause(self):
+        """Request pause of stage execution."""
+        self._pause_requested = True
+        self.status = StageStatus.PAUSED
+    
+    def resume(self):
+        """Resume stage execution."""
+        self._pause_requested = False
+        if self.status == StageStatus.PAUSED:
+            self.status = StageStatus.RUNNING
+    
+    def cancel(self):
+        """Cancel stage execution."""
+        self._cancel_requested = True
+    
+    def is_paused(self) -> bool:
+        """Check if stage is paused."""
+        return self._pause_requested
+    
+    def is_cancelled(self) -> bool:
+        """Check if stage is cancelled."""
+        return self._cancel_requested
+    
     def pre_execute(self, context):
         """Hook called before execution."""
         pass
@@ -116,3 +157,15 @@ class PipelineStage(ABC):
     def cleanup(self, context):
         """Cleanup resources used by this stage."""
         pass
+    
+    def get_checkpoint_data(self) -> Dict[str, Any]:
+        """Get data for checkpointing stage state."""
+        return {
+            'status': self.status.value,
+            'error': self.error
+        }
+    
+    def restore_from_checkpoint(self, checkpoint_data: Dict[str, Any]):
+        """Restore stage state from checkpoint."""
+        self.status = StageStatus(checkpoint_data.get('status', 'pending'))
+        self.error = checkpoint_data.get('error')

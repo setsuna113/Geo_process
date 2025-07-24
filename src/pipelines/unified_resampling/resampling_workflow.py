@@ -1,11 +1,9 @@
+from typing import Dict, Any, Optional, Callable
 # src/pipelines/unified_resampling/resampling_workflow.py
 """Workflow management for resampling operations."""
 
 import logging
-from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
-from pathlib import Path
-import time
 
 from src.config.config import Config
 
@@ -49,7 +47,7 @@ class ResamplingWorkflow:
         self.progress_callbacks.append(callback)
     
     def update_progress(self, step_name: str, step_progress: float = 100.0, 
-                       status_message: str = None):
+                       status_message: Optional[str] = None):
         """Update workflow progress."""
         if step_progress >= 100.0:
             self.steps_completed += 1
@@ -84,7 +82,7 @@ class ResamplingWorkflow:
         elif status_message:
             logger.info(f"🔄 {step_name}: {status_message} ({step_progress:.1f}%)")
     
-    def log_error(self, step_name: str, error_message: str, exception: Exception = None):
+    def log_error(self, step_name: str, error_message: str, exception: Optional[Exception] = None):
         """Log an error in the workflow."""
         error_info = {
             'step': step_name,
@@ -174,7 +172,7 @@ class ResamplingWorkflow:
         """Create a progress tracker for a specific dataset."""
         return DatasetProgressTracker(self, dataset_name, total_operations)
     
-    def finalize_workflow(self, success: bool = True, final_message: str = None):
+    def finalize_workflow(self, success: bool = True, final_message: Optional[str] = None):
         """Finalize the workflow."""
         end_time = datetime.now()
         total_duration = end_time - self.start_time if self.start_time else None
@@ -211,7 +209,7 @@ class DatasetProgressTracker:
         self.total_operations = total_operations
         self.completed_operations = 0
     
-    def update(self, operations_completed: int = None, message: str = None):
+    def update(self, operations_completed: Optional[int] = None, message: Optional[str] = None):
         """Update progress for this dataset."""
         if operations_completed is not None:
             self.completed_operations = operations_completed
@@ -228,7 +226,7 @@ class DatasetProgressTracker:
             status_message=status_message
         )
     
-    def complete(self, message: str = None):
+    def complete(self, message: Optional[str] = None):
         """Mark dataset processing as complete."""
         final_message = message or f"Completed {self.dataset_name}"
         self.workflow.update_progress(
@@ -241,7 +239,7 @@ class DatasetProgressTracker:
         self.workflow.workflow_state['completed_datasets'] = \
             self.workflow.workflow_state.get('completed_datasets', 0) + 1
     
-    def error(self, error_message: str, exception: Exception = None):
+    def error(self, error_message: str, exception: Optional[Exception] = None):
         """Log an error for this dataset."""
         self.workflow.log_error(
             step_name=f"Dataset: {self.dataset_name}",

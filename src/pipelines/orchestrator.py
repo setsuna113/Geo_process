@@ -3,7 +3,7 @@
 
 import logging
 import time
-from typing import Dict, Any, List, Optional, Type
+from typing import Dict, Any, List, Optional, Type, Tuple
 from datetime import datetime
 from pathlib import Path
 import json
@@ -15,6 +15,7 @@ import psutil
 
 from src.config.config import Config
 from src.database.connection import DatabaseManager
+from src.pipelines.stages.base_stage import ProcessingConfig
 from src.pipelines.stages.base_stage import PipelineStage, StageStatus, StageResult
 from src.pipelines.monitors.memory_monitor import MemoryMonitor
 from src.pipelines.monitors.progress_tracker import ProgressTracker
@@ -174,7 +175,7 @@ class PipelineOrchestrator:
             
             # Check for existing checkpoint
             if resume_from_checkpoint:
-                checkpoint = self.checkpoint_manager.load_latest(self.context.experiment_id)
+                checkpoint = self.checkpoint_manager.load_latest(self.context.experiment_id if self.context else "")
                 if checkpoint:
                     logger.info(f"Resuming from checkpoint: {checkpoint['stage']}")
                     self._restore_from_checkpoint(checkpoint)
@@ -287,14 +288,19 @@ class PipelineOrchestrator:
     
     def _execute_stage(self, stage: PipelineStage, 
                       completed_stages: set) -> StageResult:
-        """Execute a single pipeline stage."""
+        """Execute a single pipeline stage with enhanced memory management."""
         logger.info(f"Executing stage: {stage.name}")
         
         # Update progress
         self.progress_tracker.start_stage(stage.name)
         
-        # Pre-execution checks
+        # Pre-execution checks with memory awareness
         self._pre_stage_checks(stage)
+        
+        # Configure stage for memory-aware processing if supported
+        if stage.supports_chunking:
+            processing_config = self._create_processing_config(stage)
+            stage.set_processing_config(processing_config)
         
         try:
             # Check dependencies
@@ -302,11 +308,18 @@ class PipelineOrchestrator:
                 if dep not in completed_stages:
                     raise RuntimeError(f"Dependency '{dep}' not completed")
             
+            # Set up progress callback for stage
+            if self.context:
+                self.context.set('progress_callback', 
+                    lambda info: self._handle_stage_progress(stage.name, info))
+            
             # Execute stage
             stage.status = StageStatus.RUNNING
             start_time = time.time()
             
-            result = stage.execute(self.context)
+            # Monitor memory during execution
+            with self._memory_monitoring_context(stage):
+                result = stage.execute(self.context)
             
             execution_time = time.time() - start_time
             stage.status = StageStatus.COMPLETED
@@ -316,7 +329,7 @@ class PipelineOrchestrator:
             
             # Save checkpoint
             self.checkpoint_manager.save_checkpoint(
-                experiment_id=self.context.experiment_id,
+                experiment_id=self.context.experiment_id if self.context else "",
                 stage_name=stage.name,
                 context=self.context,
                 stage_results={stage.name: result}
@@ -326,6 +339,29 @@ class PipelineOrchestrator:
             self.progress_tracker.complete_stage(stage.name)
             
             return result
+            
+        except MemoryError as e:
+            # Special handling for memory errors
+            logger.error(f"Memory error in stage '{stage.name}': {e}")
+            
+            # Try to recover by enabling chunking
+            if stage.supports_chunking and not getattr(stage, '_retry_with_chunking', False):
+                logger.info("Retrying with chunked processing enabled")
+                setattr(stage, "_retry_with_chunking", True)
+                
+                # Force chunking and retry
+                if self.context:
+                    self.context.config.settings.setdefault('resampling', {})['force_chunking'] = True
+                
+                # Clean up and retry
+                self._handle_memory_pressure()
+                return self._execute_stage(stage, completed_stages)
+            
+            # If already tried chunking, fail
+            stage.status = StageStatus.FAILED
+            stage.error = str(e)
+            self.progress_tracker.fail_stage(stage.name, str(e))
+            raise
             
         except Exception as e:
             stage.status = StageStatus.FAILED
@@ -339,6 +375,106 @@ class PipelineOrchestrator:
             self.quality_checker.check_stage_failure(stage, e, self.context)
             
             raise
+
+    def _create_processing_config(self, stage: PipelineStage) -> ProcessingConfig:
+        """Create processing configuration for memory-aware stages."""
+        config = self.config
+        
+        # Get memory limit from config or system
+        memory_limit_mb = config.get('pipeline.memory_limit_gb', 4.0) * 1024
+        
+        # Adjust based on current memory pressure
+        memory_status = self.memory_monitor.get_status()
+        if memory_status['pressure'] == 'warning':
+            memory_limit_mb *= 0.7  # Reduce limit if under pressure
+        elif memory_status['pressure'] == 'critical':
+            memory_limit_mb *= 0.5  # Significantly reduce if critical
+        
+        return ProcessingConfig(
+            chunk_size=config.get('processing.chunk_size', 1000),
+            memory_limit_mb=memory_limit_mb,
+            enable_chunking=config.get('processing.enable_chunking', True),
+            checkpoint_interval=config.get('processing.checkpoint_interval', 10)
+        )
+    
+    def _memory_monitoring_context(self, stage: PipelineStage):
+        """Context manager for memory monitoring during stage execution."""
+        class MemoryMonitoringContext:
+            def __init__(self, orchestrator, stage):
+                self.orchestrator = orchestrator
+                self.stage = stage
+                self.start_memory = None
+            
+            def __enter__(self):
+                self.start_memory = psutil.Process().memory_info().rss / 1024 / 1024
+                return self
+            
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                end_memory = psutil.Process().memory_info().rss / 1024 / 1024
+                memory_increase = end_memory - self.start_memory
+                
+                if memory_increase > 1024:  # More than 1GB increase
+                    logger.warning(
+                        f"Stage '{self.stage.name}' increased memory by {memory_increase:.0f}MB"
+                    )
+                
+                # Trigger cleanup if memory is high
+                if end_memory > self.orchestrator.config.get('pipeline.memory_limit_gb', 4.0) * 1024 * 0.8:
+                    self.orchestrator._handle_memory_pressure()
+        
+        return MemoryMonitoringContext(self, stage)
+    
+    def _handle_stage_progress(self, stage_name: str, progress_info: Dict[str, Any]):
+        """Handle progress updates from stages."""
+        # Update progress tracker with detailed info
+        if 'progress_percent' in progress_info:
+            self.progress_tracker.update_stage(
+                stage_name, 
+                progress_percent=progress_info['progress_percent']
+            )
+        
+        # Emit progress event
+        self.event_queue.put({
+            'type': 'stage_progress',
+            'stage': stage_name,
+            'progress': progress_info
+        })
+        
+        # Log significant progress
+        if progress_info.get('message'):
+            logger.info(f"{stage_name}: {progress_info['message']}")
+    
+    def _handle_memory_pressure(self):
+        """Enhanced memory pressure handling."""
+        # Trigger garbage collection
+        import gc
+        gc.collect()
+        
+        # Clear caches if implemented
+        if self.context and hasattr(self.context, 'clear_caches'):
+            self.context.clear_caches()  # type: ignore
+        
+        # Force garbage collection of unreferenced objects
+        gc.collect(2)  # Full collection
+        
+        # Log memory status
+        memory_status = self.memory_monitor.get_status()
+        logger.info(f"Memory cleanup completed. Current usage: {memory_status['current_usage_gb']:.1f}GB")
+        
+        # Pause pipeline if still critical
+        if memory_status['pressure'] == 'critical':
+            logger.error("Memory pressure still critical after cleanup")
+            
+            # Try to free more memory by clearing any stage-specific caches
+            for stage in self.stages:
+                if hasattr(stage, 'cleanup'):
+                    stage.cleanup(self.context)
+            
+            # Final check
+            memory_status = self.memory_monitor.get_status()
+            if memory_status['pressure'] == 'critical':
+                self.pause_pipeline()
+                raise MemoryError("Critical memory pressure - pipeline paused")
     
     def _execute_parallel_stages(self, stages: List[PipelineStage], 
                                 completed_stages: set) -> Dict[str, StageResult]:
@@ -388,7 +524,7 @@ class PipelineOrchestrator:
         
         # Disk space check
         if stage.disk_requirements:
-            free_space = psutil.disk_usage(self.context.output_dir).free / (1024**3)
+            free_space = psutil.disk_usage(str(self.context.output_dir) if self.context else ".").free / (1024**3)
             if free_space < stage.disk_requirements:
                 raise IOError(
                     f"Insufficient disk space for stage '{stage.name}': "
@@ -407,6 +543,7 @@ class PipelineOrchestrator:
         if quality_report.has_critical_issues():
             raise ValueError(f"Stage '{stage.name}' failed quality checks: {quality_report}")
         
+        if not self.context: return
         # Update context with quality metrics
         self.context.quality_metrics[stage.name] = quality_report.to_dict()
         
@@ -445,11 +582,12 @@ class PipelineOrchestrator:
             
             for _ in range(level_size):
                 stage_name = queue.popleft()
-                stage = self.stage_registry[stage_name]
+                stage_key = stage_name.name if hasattr(stage_name, "name") else stage_name
+                stage = self.stage_registry[str(stage_key)]
                 current_level.append(stage)
                 
                 # Update in-degrees
-                for dependent in adjacency[stage_name]:
+                for dependent in adjacency[stage_key]:
                     in_degree[dependent] -= 1
                     if in_degree[dependent] == 0:
                         queue.append(dependent)
@@ -535,25 +673,10 @@ class PipelineOrchestrator:
             logger.warning(f"Memory warning: {event['message']}")
         elif event_type == 'quality_issue':
             logger.warning(f"Quality issue detected: {event['message']}")
-    
-    def _handle_memory_pressure(self):
-        """Handle critical memory pressure."""
-        # Trigger garbage collection
-        import gc
-        gc.collect()
         
-        # Clear caches if implemented
-        if hasattr(self.context, 'clear_caches'):
-            self.context.clear_caches()
-        
-        # Pause pipeline if still critical
-        memory_status = self.memory_monitor.get_status()
-        if memory_status['pressure'] == 'critical':
-            logger.error("Memory pressure still critical after cleanup")
-            self.pause_pipeline()
-    
     def _restore_from_checkpoint(self, checkpoint: Dict[str, Any]):
         """Restore pipeline state from checkpoint."""
+        if not self.context: return
         # Restore context
         self.context.shared_data.update(checkpoint.get('shared_data', {}))
         self.context.metadata.update(checkpoint.get('metadata', {}))
@@ -573,7 +696,7 @@ class PipelineOrchestrator:
         
         if recovery_strategy == 'retry':
             # Retry from last checkpoint
-            checkpoint = self.checkpoint_manager.load_latest(self.context.experiment_id)
+            checkpoint = self.checkpoint_manager.load_latest(self.context.experiment_id if self.context else "")
             if checkpoint:
                 self._restore_from_checkpoint(checkpoint)
                 return self._execute_pipeline()
@@ -593,33 +716,33 @@ class PipelineOrchestrator:
         report = self._generate_execution_report(results)
         
         # Save report
-        report_path = self.context.output_dir / 'pipeline_report.json'
+        report_path = self.context.output_dir if self.context else Path(".") / 'pipeline_report.json'
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         
         # Update experiment status
         from src.database.schema import schema
         schema.update_experiment_status(
-            self.context.experiment_id,
+            self.context.experiment_id if self.context else "",
             'completed',
             report
         )
         
         # Cleanup checkpoints if successful
         if self.config.get('pipeline.cleanup_checkpoints_on_success', True):
-            self.checkpoint_manager.cleanup_checkpoints(self.context.experiment_id)
+            self.checkpoint_manager.cleanup_checkpoints(self.context.experiment_id if self.context else "")
         
         logger.info(f"Pipeline completed successfully. Report saved to {report_path}")
     
     def _generate_execution_report(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive execution report."""
         return {
-            'experiment_id': self.context.experiment_id,
+            'experiment_id': self.context.experiment_id if self.context else "",
             'status': self.status.value,
-            'execution_time': (datetime.now() - self.context.metadata['start_time']).total_seconds(),
+            'execution_time': (datetime.now() - (self.context.metadata if self.context else {}).get("start_time", datetime.now())).total_seconds(),
             'stages_completed': len([s for s in self.stages if s.status == StageStatus.COMPLETED]),
             'total_stages': len(self.stages),
-            'quality_metrics': self.context.quality_metrics,
+            'quality_metrics': self.context.quality_metrics if self.context else {},
             'memory_stats': self.memory_monitor.get_summary(),
             'stage_results': {
                 stage_name: {
@@ -629,7 +752,7 @@ class PipelineOrchestrator:
                 }
                 for stage_name, result in results.items()
             },
-            'metadata': self.context.metadata
+            'metadata': self.context.metadata if self.context else {}
         }
     
     def pause_pipeline(self):
@@ -654,7 +777,7 @@ class PipelineOrchestrator:
         return {
             'status': self.status.value,
             'progress': self.progress_tracker.get_progress(),
-            'current_stage': self.get_current_stage().name if self.get_current_stage() else None,
+            'current_stage': getattr(self.get_current_stage(), "name", None) if self.get_current_stage() else None,
             'memory_usage': self.memory_monitor.get_status(),
             'quality_scores': self.context.quality_metrics if self.context else {}
         }

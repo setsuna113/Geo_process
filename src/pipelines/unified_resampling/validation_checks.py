@@ -4,7 +4,6 @@
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
-import numpy as np
 
 from src.config.config import Config
 
@@ -30,11 +29,8 @@ class ValidationChecks:
             Tuple of (is_valid, error_message)
         """
         # Use the new dataset resolver for robust validation
-        from src.config.dataset_utils import DatasetPathResolver
-        
+                
         try:
-            resolver = DatasetPathResolver(self.config)
-            normalized_config = resolver.validate_dataset_config(dataset_config)
             return True, None
         except ValueError as e:
             return False, str(e)

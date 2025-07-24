@@ -3,10 +3,8 @@
 
 import logging
 from typing import Dict, Any, List, Optional
-from pathlib import Path
 from datetime import datetime
 import xarray as xr
-import json
 import numpy as np
 
 from src.config.config import Config
@@ -76,7 +74,7 @@ class UnifiedResamplingPipeline:
         logger.info("UnifiedResamplingPipeline initialized")
     
     def run_complete_pipeline(self, experiment_name: str, 
-                             description: str = None,
+                             description: Optional[str] = None,
                              skip_existing: bool = True) -> Dict[str, Any]:
         """
         Run the complete resampling pipeline.
@@ -123,11 +121,11 @@ class UnifiedResamplingPipeline:
                 self._update_experiment_status('failed', error_message=str(e))
             raise
     
-    def _create_experiment(self, name: str, description: str = None) -> str:
+    def _create_experiment(self, name: str, description: Optional[str] = None) -> str:
         """Create experiment record."""
         config_dict = {
             'pipeline_type': 'unified_resampling',
-            'target_resolution': self.config.get('resampling.target_resolution'),
+            'target_resolution': self.config.get('resampling.target_resolution', 'unknown'),
             'datasets': self.config.get('datasets.target_datasets', []),
             'resampling_strategies': self.config.get('resampling.strategies', {}),
             'som_config': self.config.get('som_analysis', {}),
@@ -242,7 +240,7 @@ class UnifiedResamplingPipeline:
         
         return som_results
     
-    def _finalize_results(self, som_results: Dict[str, Any]) -> Dict[str, Any]:
+    def _finalize_results(self, som_results: Any) -> Dict[str, Any]:
         """Finalize and save results."""
         logger.info("Finalizing results...")
         
@@ -275,7 +273,7 @@ class UnifiedResamplingPipeline:
             },
             'pipeline_metadata': {
                 'completed_at': timestamp,
-                'target_resolution': self.config.get('resampling.target_resolution'),
+                'target_resolution': self.config.get('resampling.target_resolution', 'unknown'),
                 'total_datasets_processed': len(self.resampled_datasets)
             }
         }
@@ -283,8 +281,8 @@ class UnifiedResamplingPipeline:
         logger.info(f"✅ Results saved to: {saved_path}")
         return final_results
     
-    def _update_experiment_status(self, status: str, results: Dict[str, Any] = None, 
-                                 error_message: str = None):
+    def _update_experiment_status(self, status: str, results: Optional[Dict[str, Any]] = None, 
+                                 error_message: Optional[str] = None):
         """Update experiment status in database."""
         if self.experiment_id:
             schema.update_experiment_status(

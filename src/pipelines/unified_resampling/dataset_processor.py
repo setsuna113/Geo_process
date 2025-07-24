@@ -1,11 +1,8 @@
+import logging
 # src/pipelines/unified_resampling/dataset_processor.py
 """Dataset-specific processing utilities for resampling pipeline."""
 
-import logging
-from typing import Dict, Any, List, Optional, Tuple
-from pathlib import Path
-import numpy as np
-import xarray as xr
+from typing import List, Tuple, Dict, Any, List, Optional, Tuple
 
 from src.config.config import Config
 from src.database.connection import DatabaseManager
@@ -150,9 +147,9 @@ class DatasetProcessor:
             return False, f"Duplicate band names: {duplicates}"
         
         # Check spatial compatibility (bounds overlap)
-        bounds_list = [info.get('bounds') for info in datasets_info if info.get('bounds')]
-        if bounds_list:
-            overlap_bounds = self._calculate_bounds_overlap(bounds_list)
+        valid_bounds = [info['bounds'] for info in datasets_info if 'bounds' in info and info['bounds'] is not None]
+        if valid_bounds:
+            overlap_bounds = self._calculate_bounds_overlap(valid_bounds)
             if overlap_bounds is None:
                 return False, "Datasets have no spatial overlap"
         
@@ -196,7 +193,6 @@ class DatasetProcessor:
         estimated_height = int((typical_global_bounds[3] - typical_global_bounds[1]) / target_resolution)
         
         estimated_pixels_per_dataset = estimated_width * estimated_height
-        total_estimated_pixels = estimated_pixels_per_dataset * total_datasets
         
         # Memory estimates (rough calculations)
         bytes_per_pixel = 4  # float32

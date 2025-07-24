@@ -1,9 +1,9 @@
-# src/pipelines/stages/export_stage.py (Updated)
+# src/pipelines/stages/export_stage.py
 """Export stage for pipeline results."""
 
 from typing import List, Tuple
 import logging
-from pathlib import Path
+from datetime import datetime
 
 from .base_stage import PipelineStage, StageResult
 from src.processors.exporters.csv_exporter import CSVExporter, ExportConfig
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExportStage(PipelineStage):
-    """Stage for exporting results to CSV."""
+    """Stage for exporting merged data to CSV."""
     
     @property
     def name(self) -> str:
@@ -20,7 +20,8 @@ class ExportStage(PipelineStage):
     
     @property
     def dependencies(self) -> List[str]:
-        return ["merge", "analysis"]  # After merge and analysis
+        # Export happens after merge, BEFORE analysis
+        return ["merge"]
     
     @property
     def memory_requirements(self) -> float:
@@ -40,7 +41,7 @@ class ExportStage(PipelineStage):
             
             # Determine output path
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_filename = f"resampled_data_{context.experiment_id}_{timestamp}.csv"
+            output_filename = f"merged_data_{context.experiment_id}_{timestamp}.csv"
             output_path = context.output_dir / output_filename
             
             # Configure export
@@ -64,6 +65,9 @@ class ExportStage(PipelineStage):
             if not exporter.validate_export(exported_file):
                 raise RuntimeError("Export validation failed")
             
+            # Store exported file path in context for analysis stage
+            context.set('exported_csv_path', str(exported_file))
+            
             # Get export statistics
             stats = exporter.get_export_stats()
             
@@ -75,9 +79,6 @@ class ExportStage(PipelineStage):
                 'output_path': str(exported_file)
             }
             
-            # Also export analysis results summary
-            self._export_analysis_summary(context, exporter)
-            
             return StageResult(
                 success=True,
                 data={'exported_file': str(exported_file)},
@@ -87,15 +88,3 @@ class ExportStage(PipelineStage):
         except Exception as e:
             logger.error(f"Export stage failed: {e}")
             raise
-    
-    def _export_analysis_summary(self, context, exporter):
-        """Export analysis results summary."""
-        som_results = context.get('som_results')
-        if not som_results:
-            return
-        
-        # Create summary CSV with analysis results
-        summary_path = context.output_dir / f"analysis_summary_{context.experiment_id}.csv"
-        
-        # This could be extended to export cluster assignments, etc.
-        logger.info(f"Analysis summary would be exported to: {summary_path}")
