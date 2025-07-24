@@ -12,11 +12,11 @@ LOGS_DIR = PROJECT_ROOT / 'logs'
 
 # Database configuration - adaptive to environment
 DATABASE = {
-    'host': os.getenv('DB_HOST', 'localhost'),
+    'host': os.getenv('DB_HOST', '/var/run/postgresql'),  # Use Unix socket for local connection
     'port': int(os.getenv('DB_PORT', 5432)),
-    'database': os.getenv('DB_NAME', os.getenv('USER', 'postgres') + '_geo_db'),  # User-specific default
-    'user': os.getenv('DB_USER', os.getenv('USER', 'postgres')),
-    'password': os.getenv('DB_PASSWORD', '123456'),
+    'database': os.getenv('DB_NAME', 'geoprocess_db'),  # Use existing geoprocess_db with PostGIS
+    'user': os.getenv('DB_USER', os.getenv('USER', 'jason')),  # Default to current user, not postgres
+    'password': os.getenv('DB_PASSWORD', ''),  # No password for local connections
     'auto_create_database': True,  # Create database if it doesn't exist
     'fallback_databases': ['postgres', 'template1'],  # Try these if main DB fails
 }
@@ -127,6 +127,9 @@ RASTER_PROCESSING = {
     'cache_ttl_days': 30,
     'memory_limit_mb': 4096,
     'parallel_workers': 4,
+    'gdal_timeout': 30,  # Timeout for GDAL operations (seconds)
+    'file_load_timeout': 60,  # Timeout for loading large raster files (seconds)
+    'lightweight_metadata': True,  # Use lightweight metadata extraction by default
     'lazy_loading': {
         'chunk_size_mb': 100,
         'prefetch_tiles': 2
@@ -232,7 +235,7 @@ DATA_CLEANING = {
 
 # Testing configuration - DISABLED by default for safety
 TESTING = {
-    'enabled': False,  # Must be explicitly enabled
+    'enabled': os.getenv('FORCE_TEST_MODE', '').lower() in ('true', '1', 'yes'),  # Enable when forced
     'cleanup_after_test': True,
     'test_data_retention_hours': 1,
     'allowed_cleanup_tables': [

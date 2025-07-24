@@ -2,7 +2,7 @@
 """Processor for resampling datasets to uniform resolution."""
 
 import logging
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, Optional, Tuple, Union, Callable
 from pathlib import Path
 import numpy as np
 import xarray as xr
@@ -89,12 +89,14 @@ class ResamplingProcessor(BaseProcessor):
         # Assume square pixels for simplification
         return abs(maxx - minx) / 1000  # Rough estimate
     
-    def resample_dataset(self, dataset_config: dict) -> ResampledDatasetInfo:
+    def resample_dataset(self, dataset_config: dict, 
+                        progress_callback: Optional[Callable[[str, float], None]] = None) -> ResampledDatasetInfo:
         """
         Resample single dataset and store in database.
         
         Args:
             dataset_config: Dataset configuration dict with name, path_key, data_type, etc.
+            progress_callback: Optional callback for progress reporting
             
         Returns:
             ResampledDatasetInfo object with metadata
@@ -114,11 +116,13 @@ class ResamplingProcessor(BaseProcessor):
         band_name = normalized_config['band_name']
         
         logger.info(f"Resampling dataset: {dataset_name}")
+        if progress_callback:
+            progress_callback(f"Starting {dataset_name}", 5)
         
         # Get resampling method for this data type
         method = self.strategies.get(data_type, 'bilinear')
         
-        # Load source raster from catalog
+        # Load source raster from catalog using lightweight registration
         try:
             raster_entry = self.catalog.get_raster(dataset_name)
             if raster_entry is None:
@@ -126,20 +130,32 @@ class ResamplingProcessor(BaseProcessor):
                 if not raster_path.exists():
                     raise FileNotFoundError(f"Raster file not found: {raster_path}")
                 
-                # Add to catalog
-                raster_entry = self.catalog.add_raster(
+                logger.info(f"Registering {dataset_name} with lightweight metadata extraction...")
+                if progress_callback:
+                    progress_callback(f"Registering {dataset_name}", 10)
+                
+                # Use lightweight registration to avoid GDAL hang
+                raster_entry = self.catalog.add_raster_lightweight(
                     raster_path,
                     dataset_type=data_type,
-                    validate=True
+                    validate=False,  # Skip validation to avoid additional GDAL operations
+                    progress_callback=lambda msg, pct: progress_callback(f"Metadata: {msg}", 10 + pct*0.1) if progress_callback else None
                 )
-                logger.info(f"Added {dataset_name} to catalog")
+                logger.info(f"✅ Registered {dataset_name} with lightweight metadata")
         
         except Exception as e:
             logger.error(f"Failed to load raster {dataset_name}: {e}")
             raise
         
-        # Load raster data
-        source_data = self._load_raster_data(raster_entry.path)
+        # Load raster data with progress reporting
+        if progress_callback:
+            progress_callback(f"Loading data from {dataset_name}", 25)
+        
+        source_data = self._load_raster_data_with_timeout(
+            raster_entry.path,
+            timeout_seconds=self.config.get('raster_processing.gdal_timeout', 60),
+            progress_callback=lambda msg, pct: progress_callback(f"Loading: {msg}", 25 + pct*0.2) if progress_callback else None
+        )
         source_bounds = raster_entry.bounds
         
         # Create resampler
@@ -309,6 +325,54 @@ class ResamplingProcessor(BaseProcessor):
             da = da.rename({'x': 'lon', 'y': 'lat'})
         
         return da
+    
+    def _load_raster_data_with_timeout(self, raster_path: Path, 
+                                      timeout_seconds: int = 60,
+                                      progress_callback: Optional[Callable[[str, float], None]] = None) -> xr.DataArray:
+        """Load raster data with timeout protection and progress reporting."""
+        import rioxarray
+        from src.raster_data.loaders.lightweight_metadata import gdal_timeout, TimeoutError
+        
+        logger.info(f"Loading raster data from {raster_path.name} with {timeout_seconds}s timeout")
+        
+        if progress_callback:
+            progress_callback("Opening file", 10)
+        
+        try:
+            with gdal_timeout(timeout_seconds):
+                # Use rioxarray for better CRS handling with chunking for large files
+                da = rioxarray.open_rasterio(
+                    raster_path, 
+                    chunks={'x': 1000, 'y': 1000},
+                    cache=False  # Disable caching for large files
+                )
+                
+                if progress_callback:
+                    progress_callback("Processing bands", 50)
+                
+                # Handle multi-band case
+                if 'band' in da.dims:
+                    da = da.sel(band=1)
+                
+                if progress_callback:
+                    progress_callback("Renaming coordinates", 80)
+                
+                # Rename to standard coordinates
+                if 'x' in da.dims:
+                    da = da.rename({'x': 'lon', 'y': 'lat'})
+                
+                if progress_callback:
+                    progress_callback("Data loaded successfully", 100)
+                
+                logger.info(f"✅ Successfully loaded raster data: shape={da.shape}")
+                return da
+                
+        except TimeoutError as e:
+            logger.error(f"❌ Timeout loading raster data from {raster_path}: {e}")
+            raise RuntimeError(f"Raster loading timed out after {timeout_seconds}s: {raster_path}")
+        except Exception as e:
+            logger.error(f"❌ Error loading raster data from {raster_path}: {e}")
+            raise RuntimeError(f"Failed to load raster data: {e}")
     
     def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: np.ndarray):
         """Store resampled dataset metadata and data in database."""

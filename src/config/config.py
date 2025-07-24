@@ -65,12 +65,18 @@ class Config:
         """Apply test-safe database configuration."""
         import os
         test_user = os.getenv('USER', 'testuser')
+        
+        # Respect explicit DB_NAME if set, otherwise use test database
+        db_name = os.getenv('DB_NAME')
+        if not db_name:
+            db_name = f'{test_user}_geo_test_db'  # User-specific test database
+        
         self.settings['database'] = {
-            'host': 'localhost',
+            'host': os.getenv('DB_HOST', '/var/run/postgresql'),  # Use Unix socket for local connection
             'port': 5432,  # Standard PostgreSQL port for testing
-            'database': f'{test_user}_geo_test_db',  # User-specific test database
-            'user': test_user,
-            'password': os.getenv('TEST_DB_PASSWORD', '123456'),
+            'database': db_name,
+            'user': os.getenv('DB_USER', test_user),
+            'password': os.getenv('DB_PASSWORD', ''),
             'max_connections': 5,
             'connection_timeout': 10,
             'retry_attempts': 3,

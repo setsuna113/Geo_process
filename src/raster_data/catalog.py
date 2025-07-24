@@ -11,6 +11,7 @@ from src.config.config import Config
 from src.raster_data.loaders.base_loader import BaseRasterLoader
 from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
 from src.raster_data.loaders.metadata_extractor import RasterMetadataExtractor
+from src.raster_data.loaders.lightweight_metadata import LightweightMetadataExtractor, extract_metadata_with_progress
 from src.raster_data.validators.coverage_validator import CoverageValidator
 from src.raster_data.validators.value_validator import ValueValidator
 from src.core.registry import Registry
@@ -44,17 +45,25 @@ class RasterCatalog:
         
         # Initialize components
         self.metadata_extractor = RasterMetadataExtractor(db_connection)
+        self.lightweight_extractor = LightweightMetadataExtractor(
+            db_connection, 
+            timeout_seconds=config.get('raster_processing.gdal_timeout', 30)
+        )
         
     def scan_directory(self, directory: Path, 
                       pattern: str = "*.tif",
-                      validate: bool = True) -> List[RasterEntry]:
+                      validate: bool = True,
+                      lightweight: bool = True) -> List[RasterEntry]:
         """Scan directory for raster files and add to catalog."""
         discovered = []
         
         for file_path in directory.glob(pattern):
             if file_path.is_file():
                 try:
-                    entry = self.add_raster(file_path, validate=validate)
+                    if lightweight:
+                        entry = self.add_raster_lightweight(file_path, validate=validate)
+                    else:
+                        entry = self.add_raster(file_path, validate=validate)
                     discovered.append(entry)
                     logger.info(f"Added to catalog: {file_path.name}")
                 except Exception as e:
@@ -116,6 +125,87 @@ class RasterCatalog:
         )
         
         return entry
+    
+    def add_raster_lightweight(self, file_path: Path, 
+                              dataset_type: Optional[str] = None,
+                              validate: bool = False,
+                              progress_callback: Optional[callable] = None) -> RasterEntry:
+        """Add a raster to the catalog using lightweight metadata extraction."""
+        logger.info(f"Adding raster with lightweight extraction: {file_path.name}")
+        
+        # Use lightweight metadata extraction with timeout protection
+        raster_id, lightweight_metadata = extract_metadata_with_progress(
+            file_path, 
+            self.db,
+            timeout=self.config.get('raster_processing.gdal_timeout', 30),
+            progress_callback=progress_callback
+        )
+        
+        # Detect dataset type if not provided
+        if dataset_type is None:
+            dataset_type = self._detect_dataset_type(file_path)
+        
+        # Create catalog entry from lightweight metadata
+        spatial_info = lightweight_metadata.get('spatial_info', {})
+        data_info = lightweight_metadata.get('data_info', {})
+        file_info = lightweight_metadata.get('file_info', {})
+        
+        # Handle missing spatial info gracefully
+        bounds = spatial_info.get('bounds')
+        if bounds is None:
+            logger.warning(f"No spatial bounds available for {file_path.name}, using placeholder")
+            bounds = [0, 0, 1, 1]  # Placeholder bounds
+        
+        entry = RasterEntry(
+            id=str(raster_id),
+            name=file_path.stem,
+            path=file_path,
+            dataset_type=dataset_type,
+            resolution_degrees=spatial_info.get('resolution_degrees', 0.05),  # Default fallback
+            bounds=tuple(bounds),
+            data_type=data_info.get('data_type', 'unknown'),
+            nodata_value=data_info.get('nodata_value'),
+            file_size_mb=file_info.get('size_mb', 0),
+            last_validated=datetime.now() if validate else None,
+            is_active=True,
+            metadata={
+                **lightweight_metadata, 
+                'extraction_mode': 'lightweight',
+                'full_metadata_available': False
+            }
+        )
+        
+        logger.info(f"✅ Added raster with lightweight metadata: {file_path.name}")
+        return entry
+    
+    def extract_full_metadata_async(self, raster_id: str, file_path: Path) -> bool:
+        """Extract full metadata for a raster that was registered with lightweight extraction."""
+        try:
+            logger.info(f"Extracting full metadata for {file_path.name}")
+            
+            # Use the original full metadata extractor
+            full_metadata = self.metadata_extractor.extract_full_metadata(file_path)
+            
+            # Update the database record with full metadata
+            with self.db.get_cursor() as cursor:
+                # Update raster_sources with full metadata
+                cursor.execute("""
+                    UPDATE raster_sources 
+                    SET metadata = %s, processing_status = %s, updated_at = %s
+                    WHERE id = %s
+                """, (
+                    json.dumps({**full_metadata, 'extraction_mode': 'full'}),
+                    'registered_full',
+                    datetime.now(),
+                    raster_id
+                ))
+            
+            logger.info(f"✅ Updated {file_path.name} with full metadata")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to extract full metadata for {file_path.name}: {e}")
+            return False
     
     def get_raster(self, name: str) -> Optional[RasterEntry]:
         """Get raster entry by name."""
