@@ -337,7 +337,7 @@ def main():
                 logger.info("🔧 Creating missing database schema...")
                 try:
                     from src.database.schema import DatabaseSchema
-                    schema = DatabaseSchema(db)
+                    schema = DatabaseSchema()
                     schema.create_all_tables()
                     logger.info("✅ Database schema created successfully")
                     # Re-validate after schema creation
