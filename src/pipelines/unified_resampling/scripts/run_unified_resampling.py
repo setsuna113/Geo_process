@@ -330,11 +330,27 @@ def main():
             logger.error(f"Datasets configuration invalid: {error_msg}")
             return False
         
-        # Validate database
+        # Validate database and create schema if needed
         is_valid, error_msg = validator.validate_database_connection(db)
         if not is_valid:
-            logger.error(f"Database validation failed: {error_msg}")
-            return False
+            if "does not exist" in error_msg:
+                logger.info("🔧 Creating missing database schema...")
+                try:
+                    from src.database.schema import DatabaseSchema
+                    schema = DatabaseSchema(db)
+                    schema.create_all_tables()
+                    logger.info("✅ Database schema created successfully")
+                    # Re-validate after schema creation
+                    is_valid, error_msg = validator.validate_database_connection(db)
+                    if not is_valid:
+                        logger.error(f"Database validation still failed after schema creation: {error_msg}")
+                        return False
+                except Exception as e:
+                    logger.error(f"Failed to create database schema: {e}")
+                    return False
+            else:
+                logger.error(f"Database validation failed: {error_msg}")
+                return False
         
         # System requirements check
         requirements_met, warnings = validator.validate_system_requirements()
