@@ -162,21 +162,29 @@ class ValidationChecks:
         except Exception as e:
             warnings.append(f"Disk space check failed: {e}")
         
-        # Check data files accessibility
-        for path_key, filename in self.data_files.items():
-            file_path = self.data_dir / filename
-            if not file_path.exists():
-                critical_errors.append(f"Data file not found: {file_path}")
-            elif not file_path.is_file():
-                critical_errors.append(f"Data path is not a file: {file_path}")
-            else:
-                try:
-                    # Try to get basic file info
-                    file_size_mb = file_path.stat().st_size / (1024**2)
-                    if file_size_mb < 1:
-                        warnings.append(f"Small data file ({file_size_mb:.1f}MB): {file_path}")
-                except Exception as e:
-                    warnings.append(f"Cannot access file stats for {file_path}: {e}")
+        # Check dataset files accessibility using new dataset resolver
+        try:
+            from src.config.dataset_utils import DatasetPathResolver
+            resolver = DatasetPathResolver(self.config)
+            enabled_datasets = resolver.get_enabled_datasets()
+            
+            for dataset in enabled_datasets:
+                file_path = Path(dataset['resolved_path'])
+                if not file_path.exists():
+                    critical_errors.append(f"Dataset file not found: {file_path}")
+                elif not file_path.is_file():
+                    critical_errors.append(f"Dataset path is not a file: {file_path}")
+                else:
+                    try:
+                        # Try to get basic file info
+                        file_size_mb = file_path.stat().st_size / (1024**2)
+                        if file_size_mb < 1:
+                            warnings.append(f"Small dataset file ({file_size_mb:.1f}MB): {file_path}")
+                    except Exception as e:
+                        warnings.append(f"Cannot access file stats for {file_path}: {e}")
+                        
+        except Exception as e:
+            critical_errors.append(f"Dataset validation failed: {e}")
         
         # Return results
         all_requirements_met = len(critical_errors) == 0
