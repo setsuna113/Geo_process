@@ -107,14 +107,19 @@ class BaseProcessor(ABC):
     """
     
     def __init__(self, 
-                 batch_size: int = 1000,
-                 max_workers: Optional[int] = None,
-                 store_results: bool = True,
-                 memory_limit_mb: Optional[int] = None,
-                 tile_size: Optional[int] = None,
-                 supports_chunking: bool = True,
-                 config=None,
-                 **kwargs):
+                    batch_size: int = 1000,
+                    max_workers: Optional[int] = None,
+                    store_results: bool = True,
+                    memory_limit_mb: Optional[int] = None,
+                    tile_size: Optional[int] = None,
+                    supports_chunking: bool = True,
+                    config=None,
+                    # New parameters
+                    enable_progress: bool = True,
+                    enable_checkpoints: bool = True,
+                    checkpoint_interval: int = 100,
+                    timeout_seconds: Optional[float] = None,
+                    **kwargs):
         """
         Initialize enhanced base processor.
         
@@ -125,12 +130,16 @@ class BaseProcessor(ABC):
             memory_limit_mb: Memory limit from processor config
             tile_size: Tile size for tile-based processing
             supports_chunking: Whether processor supports chunking
+            enable_progress: Enable progress tracking
+            enable_checkpoints: Enable checkpoint support
+            checkpoint_interval: Items between checkpoints
+            timeout_seconds: Processing timeout
             **kwargs: Additional processor-specific parameters
         """
+        # Existing initialization
         self.batch_size = batch_size
         self.max_workers = max_workers or (psutil.cpu_count() or 4) - 1
         self.store_results = store_results
-        # Use passed config if available, otherwise use global config
         config_source = config if config is not None else global_config
         self.memory_limit_mb = memory_limit_mb or (config_source.get('processors.memory_limit_mb', 1024) if config_source else 1024)
         self.tile_size = tile_size or (config_source.get('processors.tile_size', 512) if config_source else 512)
@@ -156,6 +165,34 @@ class BaseProcessor(ABC):
         
         # Memory pressure handling
         self._enhanced_memory_tracker.add_pressure_callback(self._handle_memory_pressure)
+        
+        # NEW: Progress management
+        self.enable_progress = enable_progress
+        self._progress_manager = get_progress_manager() if enable_progress else None
+        self._event_bus = get_event_bus() if enable_progress else None
+        self._progress_node_id: Optional[str] = None
+        
+        # NEW: Checkpoint management
+        self.enable_checkpoints = enable_checkpoints
+        self.checkpoint_interval = checkpoint_interval
+        self._checkpoint_manager = get_checkpoint_manager() if enable_checkpoints else None
+        self._last_checkpoint_items = 0
+        self._checkpoint_data: Dict[str, Any] = {}
+        
+        # NEW: Signal handling
+        self._signal_handler = get_signal_handler()
+        self._processing_lock = threading.Lock()
+        self._is_processing = False
+        self._should_stop = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()  # Not paused by default
+        
+        # NEW: Timeout support
+        self.timeout_seconds = timeout_seconds
+        self._timeout_timer: Optional[threading.Timer] = None
+        
+        # Register signal handlers
+        self._register_signal_handlers()
         
     def _merge_config(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """Merge kwargs with passed config or default config."""
@@ -242,7 +279,185 @@ class BaseProcessor(ABC):
             'within_limits': prediction.predicted_peak_mb <= self.memory_limit_mb,
             'warnings': prediction.warnings
         }
+
+    def start_progress(self, operation_name: str, total_items: int) -> None:
+        """Start progress tracking for an operation."""
+        if not self.enable_progress or not self._progress_manager:
+            return
         
+        # Create progress node
+        self._progress_node_id = f"{self.__class__.__name__}_{operation_name}_{int(time.time())}"
+        self._progress_manager.create_step(
+            self._progress_node_id,
+            parent=self._job_id or "default",
+            total_substeps=total_items,
+            metadata={'operation': operation_name}
+        )
+        self._progress_manager.start(self._progress_node_id)
+        
+        # Publish start event
+        if self._event_bus:
+            event = create_processing_progress(
+                operation_name=operation_name,
+                processed=0,
+                total=total_items,
+                source=self.__class__.__name__,
+                node_id=self._progress_node_id
+            )
+            event.event_type = EventType.PROCESSING_START
+            self._event_bus.publish(event)
+    
+    def update_progress(self, items_processed: int, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Update progress for current operation."""
+        if not self.enable_progress or not self._progress_manager or not self._progress_node_id:
+            return
+        
+        self._progress_manager.update(
+            self._progress_node_id,
+            completed_units=items_processed,
+            metadata=metadata
+        )
+        
+        # Publish progress event
+        if self._event_bus:
+            event = create_processing_progress(
+                operation_name=self._progress_node_id,
+                processed=items_processed,
+                total=100,  # Will be overridden by node data
+                source=self.__class__.__name__,
+                node_id=self._progress_node_id
+            )
+            self._event_bus.publish(event)
+        
+        # Call legacy progress callback if set
+        if self._progress_callback:
+            progress_data = self._progress_manager.get_progress(self._progress_node_id)
+            self._progress_callback(progress_data['progress_percent'])
+    
+    def complete_progress(self, status: str = "completed", metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Complete progress tracking for current operation."""
+        if not self.enable_progress or not self._progress_manager or not self._progress_node_id:
+            return
+        
+        self._progress_manager.complete(self._progress_node_id, status, metadata)
+        
+        # Publish complete event
+        if self._event_bus:
+            event_type = EventType.PROCESSING_COMPLETE if status == "completed" else EventType.PROCESSING_ERROR
+            event = create_processing_progress(
+                operation_name=self._progress_node_id,
+                processed=100,
+                total=100,
+                source=self.__class__.__name__,
+                node_id=self._progress_node_id
+            )
+            event.event_type = event_type
+            self._event_bus.publish(event)
+        
+        self._progress_node_id = None
+
+    # NEW: Checkpoint methods
+    
+    def save_checkpoint(self, checkpoint_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> str:
+        """Save processing checkpoint."""
+        if not self.enable_checkpoints or not self._checkpoint_manager:
+            return ""
+        
+        checkpoint_id = checkpoint_id or f"{self.__class__.__name__}_{int(time.time())}"
+        
+        # Prepare checkpoint data
+        checkpoint_data = {
+            'processor_state': {
+                'class': self.__class__.__name__,
+                'config': self.config,
+                'items_processed': self._last_checkpoint_items,
+                'progress_node_id': self._progress_node_id
+            }
+        }
+        
+        # Add custom data
+        if data:
+            checkpoint_data.update(data)
+        
+        # Add stored checkpoint data
+        checkpoint_data.update(self._checkpoint_data)
+        
+        # Save checkpoint
+        path = self._checkpoint_manager.save_checkpoint(
+            checkpoint_id=checkpoint_id,
+            data=checkpoint_data,
+            level="step",
+            metadata={'processor': self.__class__.__name__}
+        )
+        
+        logger.info(f"Saved checkpoint: {checkpoint_id}")
+        return path
+    
+    def load_checkpoint(self, checkpoint_id: str) -> Dict[str, Any]:
+        """Load processing checkpoint."""
+        if not self.enable_checkpoints or not self._checkpoint_manager:
+            return {}
+        
+        data = self._checkpoint_manager.load_checkpoint(checkpoint_id)
+        
+        # Restore processor state
+        if 'processor_state' in data:
+            state = data['processor_state']
+            self._last_checkpoint_items = state.get('items_processed', 0)
+            self._progress_node_id = state.get('progress_node_id')
+        
+        logger.info(f"Loaded checkpoint: {checkpoint_id}")
+        return data
+    
+    def should_checkpoint(self, items_processed: int) -> bool:
+        """Check if checkpoint should be saved."""
+        if not self.enable_checkpoints:
+            return False
+        
+        return (items_processed - self._last_checkpoint_items) >= self.checkpoint_interval
+    
+    # NEW: Signal handling methods
+    
+    def _register_signal_handlers(self) -> None:
+        """Register signal handlers for graceful shutdown."""
+        self._signal_handler.register_handler('processor', self._handle_processor_signal)
+    
+    def _handle_processor_signal(self, sig: signal.Signals) -> None:
+        """Handle signals for this processor."""
+        if sig in [signal.SIGTERM, signal.SIGINT]:
+            logger.info(f"Received {sig.name}, initiating graceful shutdown")
+            self._initiate_graceful_shutdown()
+        elif sig == signal.SIGUSR1:
+            # Pause processing
+            logger.info("Pausing processing")
+            self._pause_event.clear()
+        elif sig == signal.SIGUSR2:
+            # Resume processing
+            logger.info("Resuming processing")
+            self._pause_event.set()
+    
+    def _initiate_graceful_shutdown(self) -> None:
+        """Initiate graceful shutdown."""
+        self._should_stop.set()
+        
+        # Save checkpoint before shutting down
+        if self._is_processing and self.enable_checkpoints:
+            try:
+                self.save_checkpoint(checkpoint_id=f"shutdown_{int(time.time())}")
+            except Exception as e:
+                logger.error(f"Failed to save shutdown checkpoint: {e}")
+        
+        # Complete progress tracking
+        if self._progress_node_id:
+            self.complete_progress(status="cancelled", metadata={'reason': 'shutdown'})
+    
+    def _check_timeout(self) -> None:
+        """Check if processing has timed out."""
+        if self.timeout_seconds and self._is_processing:
+            logger.error(f"Processing timeout after {self.timeout_seconds} seconds")
+            self._should_stop.set()
+            self.complete_progress(status="failed", metadata={'reason': 'timeout'})
+
     def set_processing_region(self, bounds: Tuple[float, float, float, float]) -> None:
         """
         Set specific region for partial processing.
@@ -453,44 +668,20 @@ class BaseProcessor(ABC):
     
     @abstractmethod
     def validate_input(self, item: Any) -> Tuple[bool, Optional[str]]:
-        """
-        Validate input item.
-        
-        Args:
-            item: Item to validate
-            
-        Returns:
-            Tuple of (is_valid, error_message)
-        """
+        """Validate input item."""
         pass
-    
+
     def preprocess_batch(self, items: List[Any]) -> List[Any]:
-        """
-        Preprocess a batch of items (optional override).
-        
-        Args:
-            items: Items to preprocess
-            
-        Returns:
-            Preprocessed items
-        """
+        """Preprocess a batch of items (optional override)."""
         return items
     
     def postprocess_batch(self, results: List[Any]) -> List[Any]:
-        """
-        Postprocess batch results (optional override).
-        
-        Args:
-            results: Results to postprocess
-            
-        Returns:
-            Postprocessed results
-        """
+        """Postprocess batch results (optional override)."""
         return results
     
     def process_batch(self, items: List[Any]) -> ProcessingResult:
         """
-        Process a batch of items with full tracking.
+        Enhanced process_batch with checkpoint and cancellation support.
         
         Args:
             items: Items to process
@@ -498,91 +689,165 @@ class BaseProcessor(ABC):
         Returns:
             ProcessingResult with details
         """
-        start_time = time.time()
-        processed_items = []
-        failed_items = []
-        errors = []
+        # Check if we should stop
+        if self._should_stop.is_set():
+            return ProcessingResult(
+                success=False,
+                items_processed=0,
+                items_failed=len(items),
+                elapsed_time=0,
+                memory_used_mb=0,
+                errors=[{'error': 'Processing cancelled'}]
+            )
         
-        with self.track_memory(f"Batch processing ({len(items)} items)"):
-            # Validate inputs
-            valid_items = []
-            for i, item in enumerate(items):
-                is_valid, error_msg = self.validate_input(item)
-                if is_valid:
-                    valid_items.append(item)
-                else:
-                    failed_items.append(item)
-                    errors.append({
-                        'index': i,
-                        'error': error_msg or 'Validation failed',
-                        'item': str(item)[:100]  # Truncate for logging
-                    })
+        # Wait if paused
+        self._pause_event.wait()
+        
+        with self._processing_lock:
+            self._is_processing = True
             
-            if not valid_items:
-                return ProcessingResult(
-                    success=False,
-                    items_processed=0,
-                    items_failed=len(items),
-                    elapsed_time=time.time() - start_time,
-                    memory_used_mb=0,
-                    errors=errors
-                )
+            # Start timeout timer if configured
+            if self.timeout_seconds:
+                self._timeout_timer = threading.Timer(self.timeout_seconds, self._check_timeout)
+                self._timeout_timer.start()
             
-            # Preprocess
-            valid_items = self.preprocess_batch(valid_items)
-            
-            # Process items
-            for item in valid_items:
-                try:
-                    result = self.process_single(item)
-                    if result is not None:
-                        processed_items.append(result)
-                    else:
-                        failed_items.append(item)
-                        
-                except Exception as e:
-                    failed_items.append(item)
-                    errors.append({
-                        'error': str(e),
-                        'item': str(item)[:100]
-                    })
-                    logger.error(f"Processing error: {e}")
-            
-            # Postprocess
-            if processed_items:
-                processed_items = self.postprocess_batch(processed_items)
+            try:
+                # Original process_batch implementation with enhancements
+                start_time = time.time()
+                processed_items = []
+                failed_items = []
+                errors = []
                 
-                # Store results if configured
-                if self.store_results:
-                    self._store_results(processed_items)
-        
-        # Get memory summary
-        memory_summary = self.memory_tracker.get_summary()
-        
-        return ProcessingResult(
-            success=len(processed_items) > 0,
-            items_processed=len(processed_items),
-            items_failed=len(failed_items),
-            elapsed_time=time.time() - start_time,
-            memory_used_mb=memory_summary.get('total_mb', 0),
-            results=processed_items if not self.store_results else None,
-            errors=errors if errors else None,
-            metadata={'memory_details': memory_summary}
-        )
-    
+                with self.track_memory(f"Batch processing ({len(items)} items)"):
+                    # Validate inputs
+                    valid_items = []
+                    for i, item in enumerate(items):
+                        # Check cancellation
+                        if self._should_stop.is_set():
+                            break
+                        
+                        is_valid, error_msg = self.validate_input(item)
+                        if is_valid:
+                            valid_items.append(item)
+                        else:
+                            failed_items.append(item)
+                            errors.append({
+                                'index': i,
+                                'error': error_msg or 'Validation failed',
+                                'item': str(item)[:100]
+                            })
+                    
+                    if not valid_items:
+                        return ProcessingResult(
+                            success=False,
+                            items_processed=0,
+                            items_failed=len(items),
+                            elapsed_time=time.time() - start_time,
+                            memory_used_mb=0,
+                            errors=errors
+                        )
+                    
+                    # Preprocess
+                    valid_items = self.preprocess_batch(valid_items)
+                    
+                    # Process items
+                    for i, item in enumerate(valid_items):
+                        # Check cancellation and pause
+                        if self._should_stop.is_set():
+                            break
+                        self._pause_event.wait()
+                        
+                        try:
+                            result = self.process_single(item)
+                            if result is not None:
+                                processed_items.append(result)
+                            else:
+                                failed_items.append(item)
+                            
+                            # Update progress
+                            self.update_progress(len(processed_items))
+                            
+                            # Check if should checkpoint
+                            if self.should_checkpoint(len(processed_items)):
+                                self._checkpoint_data['processed_items'] = processed_items
+                                self._checkpoint_data['failed_items'] = failed_items
+                                self.save_checkpoint()
+                                self._last_checkpoint_items = len(processed_items)
+                                
+                        except Exception as e:
+                            failed_items.append(item)
+                            errors.append({
+                                'error': str(e),
+                                'item': str(item)[:100]
+                            })
+                            logger.error(f"Processing error: {e}")
+                            
+                            # Save state on error if configured
+                            if self.enable_checkpoints:
+                                try:
+                                    self._checkpoint_data['error'] = str(e)
+                                    self._checkpoint_data['processed_items'] = processed_items
+                                    self._checkpoint_data['failed_items'] = failed_items
+                                    self.save_checkpoint(checkpoint_id=f"error_{int(time.time())}")
+                                except Exception as cp_error:
+                                    logger.error(f"Failed to save error checkpoint: {cp_error}")
+                    
+                    # Postprocess
+                    if processed_items:
+                        processed_items = self.postprocess_batch(processed_items)
+                        
+                        # Store results if configured
+                        if self.store_results:
+                            self._store_results(processed_items)
+                
+                # Get memory summary
+                memory_summary = self.memory_tracker.get_summary()
+                
+                return ProcessingResult(
+                    success=len(processed_items) > 0,
+                    items_processed=len(processed_items),
+                    items_failed=len(failed_items),
+                    elapsed_time=time.time() - start_time,
+                    memory_used_mb=memory_summary.get('total_mb', 0),
+                    results=processed_items if not self.store_results else None,
+                    errors=errors if errors else None,
+                    metadata={'memory_details': memory_summary}
+                )
+                
+            finally:
+                self._is_processing = False
+                
+                # Cancel timeout timer
+                if self._timeout_timer:
+                    self._timeout_timer.cancel()
+                    self._timeout_timer = None
+
     def process_iterator(self, 
                         iterator: Iterator[Any],
-                        total: Optional[int] = None) -> ProcessingResult:
+                        total: Optional[int] = None,
+                        resume_from_checkpoint: Optional[str] = None) -> ProcessingResult:
         """
-        Process items from an iterator with batching.
+        Enhanced process_iterator with resume support.
         
         Args:
             iterator: Iterator of items
             total: Total number of items (for progress)
+            resume_from_checkpoint: Checkpoint ID to resume from
             
         Returns:
             Combined ProcessingResult
         """
+        # Start progress tracking
+        if total:
+            self.start_progress(f"Iterator processing", total)
+        
+        # Resume from checkpoint if provided
+        skip_items = 0
+        if resume_from_checkpoint and self.enable_checkpoints:
+            checkpoint_data = self.load_checkpoint(resume_from_checkpoint)
+            skip_items = checkpoint_data.get('processor_state', {}).get('items_processed', 0)
+            logger.info(f"Resuming from checkpoint, skipping {skip_items} items")
+        
         total_processed = 0
         total_failed = 0
         all_errors = []
@@ -591,46 +856,61 @@ class BaseProcessor(ABC):
         
         batch = []
         batch_num = 0
+        items_seen = 0
         
-        for item in iterator:
-            batch.append(item)
-            
-            if len(batch) >= self.batch_size:
-                batch_num += 1
-                logger.info(f"Processing batch {batch_num}")
+        try:
+            for item in iterator:
+                # Skip items if resuming
+                if items_seen < skip_items:
+                    items_seen += 1
+                    continue
                 
+                # Check cancellation
+                if self._should_stop.is_set():
+                    break
+                
+                batch.append(item)
+                
+                if len(batch) >= self.batch_size:
+                    batch_num += 1
+                    logger.info(f"Processing batch {batch_num}")
+                    
+                    result = self.process_batch(batch)
+                    total_processed += result.items_processed
+                    total_failed += result.items_failed
+                    total_time += result.elapsed_time
+                    total_memory += result.memory_used_mb
+                    
+                    if result.errors:
+                        all_errors.extend(result.errors)
+                    
+                    batch = []
+            
+            # Process remaining items
+            if batch and not self._should_stop.is_set():
                 result = self.process_batch(batch)
                 total_processed += result.items_processed
                 total_failed += result.items_failed
                 total_time += result.elapsed_time
                 total_memory += result.memory_used_mb
-                
-                if result.errors:
-                    all_errors.extend(result.errors)
-                
-                # Update progress
-                if self._progress_callback and total:
-                    progress = (total_processed + total_failed) / total * 100
-                    self._progress_callback(progress)
-                
-                batch = []
-        
-        # Process remaining items
-        if batch:
-            result = self.process_batch(batch)
-            total_processed += result.items_processed
-            total_failed += result.items_failed
-            total_time += result.elapsed_time
-            total_memory += result.memory_used_mb
             
-        return ProcessingResult(
-            success=total_processed > 0,
-            items_processed=total_processed,
-            items_failed=total_failed,
-            elapsed_time=total_time,
-            memory_used_mb=total_memory,
-            errors=all_errors if all_errors else None
-        )
+            # Complete progress
+            status = "completed" if not self._should_stop.is_set() else "cancelled"
+            self.complete_progress(status=status)
+            
+            return ProcessingResult(
+                success=total_processed > 0,
+                items_processed=total_processed,
+                items_failed=total_failed,
+                elapsed_time=total_time,
+                memory_used_mb=total_memory,
+                errors=all_errors if all_errors else None
+            )
+            
+        except Exception as e:
+            logger.error(f"Iterator processing failed: {e}")
+            self.complete_progress(status="failed", metadata={'error': str(e)})
+            raise
     
     def _store_results(self, results: List[Any]):
         """Store results in database (override in subclasses)."""

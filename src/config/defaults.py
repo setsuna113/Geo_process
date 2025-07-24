@@ -1,5 +1,5 @@
 # src/config/defaults.py
-"""Default configuration values"""
+"""Default configuration values with progress and checkpoint settings"""
 
 import os
 from pathlib import Path
@@ -37,6 +37,216 @@ DATABASE_SCHEMA_MAPPING = {
         'metadata_column': None
     },
     # Add other tables as needed
+}
+
+# Progress monitoring configuration
+PROGRESS_MONITORING = {
+    'enabled': True,
+    'reporting_interval_seconds': 1.0,  # Minimum time between progress updates
+    'console_output': True,
+    'database_logging': True,
+    'file_logging': True,
+    'event_queue_size': 10000,
+    'hierarchical_tracking': {
+        'pipeline': {
+            'report_frequency': 5.0,  # Report every 5 seconds
+            'minimum_change_percent': 1.0  # Report if change > 1%
+        },
+        'phase': {
+            'report_frequency': 2.0,
+            'minimum_change_percent': 0.5
+        },
+        'step': {
+            'report_frequency': 1.0,
+            'minimum_change_percent': 0.1
+        },
+        'substep': {
+            'report_frequency': 0.5,
+            'minimum_change_percent': 0.01
+        }
+    },
+    'memory_reporting': {
+        'enabled': True,
+        'interval_seconds': 10.0,
+        'threshold_mb': 100  # Report if memory change > 100MB
+    }
+}
+
+# Checkpoint configuration
+CHECKPOINTING = {
+    'enabled': True,
+    'checkpoint_dir': PROJECT_ROOT / 'checkpoints',
+    'compression': 'gzip',  # 'gzip', 'lz4', or None
+    'intervals': {
+        'time_based': 300,  # Checkpoint every 5 minutes
+        'item_based': 10000,  # Checkpoint every 10k items
+        'memory_based_mb': 1024,  # Checkpoint if memory usage > 1GB
+        'percentage_based': 10  # Checkpoint every 10% progress
+    },
+    'retention': {
+        'max_checkpoints': 100,
+        'max_age_days': 7,
+        'min_keep_per_level': {
+            'pipeline': 5,
+            'phase': 3,
+            'step': 2,
+            'substep': 1
+        }
+    },
+    'validation': {
+        'checksum_algorithm': 'sha256',
+        'verify_on_load': True,
+        'corruption_recovery': True
+    },
+    'database_backup': {
+        'enabled': True,
+        'include_data_tables': False,  # Only metadata by default
+        'compress_backup': True
+    }
+}
+
+# Timeout settings for various operations
+TIMEOUTS = {
+    'database_connection': 30,  # seconds
+    'database_query': 300,  # 5 minutes for large queries
+    'file_operations': {
+        'read': 60,
+        'write': 120,
+        'delete': 30
+    },
+    'gdal_operations': 300,  # 5 minutes for GDAL operations
+    'resampling_operations': 600,  # 10 minutes for resampling
+    'processing_operations': {
+        'default': 3600,  # 1 hour default
+        'species_intersection': 7200,  # 2 hours
+        'feature_extraction': 3600,
+        'data_export': 1800  # 30 minutes
+    },
+    'network_operations': {
+        'download': 300,
+        'upload': 600
+    },
+    'checkpoint_operations': {
+        'save': 60,
+        'load': 120,
+        'validate': 30
+    }
+}
+
+# Process management configuration
+PROCESS_MANAGEMENT = {
+    'signals': {
+        'graceful_shutdown': ['SIGTERM', 'SIGINT'],  # Signals for graceful shutdown
+        'pause_processing': 'SIGUSR1',  # Signal to pause
+        'resume_processing': 'SIGUSR2',  # Signal to resume
+        'report_progress': 'SIGUSR1',  # Also report on SIGUSR1
+        'checkpoint_now': 'SIGHUP'  # Force checkpoint
+    },
+    'graceful_shutdown': {
+        'timeout_seconds': 30,  # Max time to wait for graceful shutdown
+        'save_checkpoint': True,
+        'complete_current_batch': True,
+        'drain_queues': True
+    },
+    'daemon_mode': {
+        'enabled': False,
+        'pid_file': '/var/run/biodiversity/pipeline.pid',
+        'log_file': LOGS_DIR / 'daemon.log',
+        'working_dir': PROJECT_ROOT,
+        'umask': 0o022
+    },
+    'health_monitoring': {
+        'enabled': True,
+        'check_interval_seconds': 60,
+        'max_memory_mb': 8192,  # Restart if exceeds
+        'max_cpu_percent': 90,  # Alert if exceeds
+        'heartbeat_interval': 30,
+        'auto_restart': {
+            'enabled': True,
+            'max_restarts': 3,
+            'restart_delay_seconds': 10,
+            'backoff_multiplier': 2.0
+        }
+    },
+    'resource_limits': {
+        'max_open_files': 1024,
+        'max_threads': 100,
+        'max_memory_mb': 8192,
+        'nice_level': 10  # Lower priority
+    }
+}
+
+# Memory management configuration
+MEMORY_MANAGEMENT = {
+    'monitoring': {
+        'enabled': True,
+        'interval_seconds': 5.0,
+        'history_size': 1000
+    },
+    'pressure_thresholds': {
+        'warning': 70.0,  # % of system memory
+        'high': 85.0,
+        'critical': 95.0
+    },
+    'pressure_responses': {
+        'warning': {
+            'log_warning': True,
+            'reduce_batch_size': False,
+            'force_gc': False
+        },
+        'high': {
+            'log_warning': True,
+            'reduce_batch_size': True,
+            'force_gc': True,
+            'clear_caches': True,
+            'checkpoint': True
+        },
+        'critical': {
+            'log_error': True,
+            'pause_processing': True,
+            'emergency_gc': True,
+            'dump_memory_profile': True,
+            'checkpoint_and_exit': True
+        }
+    },
+    'allocation_tracking': {
+        'enabled': True,
+        'track_large_allocations_mb': 10,
+        'report_top_allocations': 10
+    },
+    'cache_management': {
+        'max_cache_size_mb': 1024,
+        'eviction_policy': 'lru',  # least recently used
+        'gc_threshold_mb': 512
+    }
+}
+
+# Enhanced processing configuration
+PROCESSING = {
+    'batch_size': 1000,
+    'max_workers': 4,
+    'chunk_size': 10000,
+    'memory_limit_mb': 4096,
+    'enable_progress': True,
+    'enable_checkpoints': True,
+    'checkpoint_interval': 1000,  # Items between checkpoints
+    'supports_chunking': True,
+    'processing_strategy': {
+        'small_datasets_mb': 100,  # Process in memory
+        'medium_datasets_mb': 1024,  # Use chunking
+        'large_datasets_mb': 10240,  # Use streaming
+        'strategy_selection': 'auto'  # auto, memory, chunked, streaming
+    },
+    # Memory-aware subsampling configuration
+    'subsampling': {
+        'enabled': True,
+        'max_samples': 500000,  # Maximum samples for in-memory processing
+        'strategy': 'stratified',  # 'random', 'stratified', 'grid'
+        'random_seed': 42,
+        'spatial_block_size': 100,  # For stratified sampling
+        'min_samples_per_class': 100,  # For balanced sampling
+        'memory_limit_gb': 8.0  # Trigger subsampling if data exceeds this
+    }
 }
 
 # Grid configurations
@@ -102,23 +312,6 @@ RESAMPLING = {
     'preserve_sum': True,
     'cache_resampled': True,
     'engine': 'numpy'
-}
-
-# Processing configuration
-PROCESSING = {
-    'batch_size': 1000,
-    'max_workers': 4,
-    'chunk_size': 10000,
-    # Memory-aware subsampling configuration
-    'subsampling': {
-        'enabled': True,
-        'max_samples': 500000,  # Maximum samples for in-memory processing
-        'strategy': 'stratified',  # 'random', 'stratified', 'grid'
-        'random_seed': 42,
-        'spatial_block_size': 100,  # For stratified sampling
-        'min_samples_per_class': 100,  # For balanced sampling
-        'memory_limit_gb': 8.0  # Trigger subsampling if data exceeds this
-    }
 }
 
 # Raster processing configuration
@@ -245,8 +438,10 @@ TESTING = {
         'species_grid_intersections',
         'climate_data',
         'resampling_cache',
-        'processing_queue'
-        # Note: NOT including core tables like grids, grid_cells, species_ranges
+        'processing_queue',
+        'pipeline_checkpoints',  # New
+        'processing_steps',  # New
+        'file_processing_status'  # New
     ],
     'safety_checks': {
         'require_pytest_environment': True,

@@ -945,6 +945,277 @@ class DatabaseSchema:
                 return cursor.rowcount > 0
         
         return False
+    
+    # Checkpoint Operations
+    def create_checkpoint(self, checkpoint_id: str, level: str, parent_id: Optional[str],
+                         processor_name: str, data_summary: Dict[str, Any],
+                         file_path: str, file_size_bytes: int,
+                         compression_type: Optional[str] = None) -> str:
+        """Create a checkpoint record."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO pipeline_checkpoints 
+                (checkpoint_id, level, parent_id, processor_name, data_summary,
+                 file_path, file_size_bytes, compression_type, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'created')
+                RETURNING id
+            """, (
+                checkpoint_id, level, parent_id, processor_name, 
+                json.dumps(data_summary), file_path, file_size_bytes, 
+                compression_type
+            ))
+            return cursor.fetchone()['id']
+    
+    def update_checkpoint_status(self, checkpoint_id: str, status: str,
+                               validation_checksum: Optional[str] = None,
+                               validation_result: Optional[Dict] = None,
+                               error_message: Optional[str] = None):
+        """Update checkpoint status and validation info."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                UPDATE pipeline_checkpoints 
+                SET status = %s, validation_checksum = %s, validation_result = %s,
+                    error_message = %s, updated_at = CURRENT_TIMESTAMP
+                WHERE checkpoint_id = %s
+            """, (
+                status, validation_checksum, json.dumps(validation_result or {}),
+                error_message, checkpoint_id
+            ))
+    
+    def get_checkpoint(self, checkpoint_id: str) -> Optional[Dict[str, Any]]:
+        """Get checkpoint by ID."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT * FROM pipeline_checkpoints 
+                WHERE checkpoint_id = %s
+            """, (checkpoint_id,))
+            return cursor.fetchone()
+    
+    def get_latest_checkpoint(self, processor_name: str, level: str) -> Optional[Dict[str, Any]]:
+        """Get latest checkpoint for a processor at a specific level."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT * FROM pipeline_checkpoints 
+                WHERE processor_name = %s AND level = %s AND status = 'valid'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """, (processor_name, level))
+            return cursor.fetchone()
+    
+    def list_checkpoints(self, processor_name: Optional[str] = None,
+                        level: Optional[str] = None,
+                        parent_id: Optional[str] = None,
+                        status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List checkpoints with optional filtering."""
+        with db.get_cursor() as cursor:
+            query = "SELECT * FROM pipeline_checkpoints WHERE 1=1"
+            params = []
+            
+            if processor_name:
+                query += " AND processor_name = %s"
+                params.append(processor_name)
+            if level:
+                query += " AND level = %s"
+                params.append(level)
+            if parent_id:
+                query += " AND parent_id = %s"
+                params.append(parent_id)
+            if status:
+                query += " AND status = %s"
+                params.append(status)
+            
+            query += " ORDER BY created_at DESC"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+    
+    def cleanup_old_checkpoints(self, days_old: int, keep_minimum: Dict[str, int]) -> int:
+        """Clean up old checkpoints while preserving minimum counts per level."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                WITH ranked_checkpoints AS (
+                    SELECT id, level, created_at,
+                           ROW_NUMBER() OVER (PARTITION BY level ORDER BY created_at DESC) as rn
+                    FROM pipeline_checkpoints
+                    WHERE status = 'valid'
+                )
+                DELETE FROM pipeline_checkpoints
+                WHERE id IN (
+                    SELECT id FROM ranked_checkpoints
+                    WHERE created_at < NOW() - INTERVAL %s
+                    AND (
+                        (level = 'pipeline' AND rn > %s) OR
+                        (level = 'phase' AND rn > %s) OR
+                        (level = 'step' AND rn > %s) OR
+                        (level = 'substep' AND rn > %s)
+                    )
+                )
+            """, (
+                f'{days_old} days',
+                keep_minimum.get('pipeline', 5),
+                keep_minimum.get('phase', 3),
+                keep_minimum.get('step', 2),
+                keep_minimum.get('substep', 1)
+            ))
+            return cursor.rowcount
+    
+    # Processing Steps Operations
+    def create_processing_step(self, step_name: str, processor_name: str,
+                             parent_job_id: str, total_items: int,
+                             parameters: Optional[Dict] = None) -> str:
+        """Create a processing step record."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO processing_steps 
+                (step_name, processor_name, parent_job_id, total_items,
+                 parameters, status)
+                VALUES (%s, %s, %s, %s, %s, 'pending')
+                RETURNING id
+            """, (
+                step_name, processor_name, parent_job_id, total_items,
+                json.dumps(parameters or {})
+            ))
+            return cursor.fetchone()['id']
+    
+    def update_processing_step(self, step_id: str, processed_items: int,
+                             failed_items: int = 0, status: Optional[str] = None,
+                             error_messages: Optional[List[str]] = None,
+                             checkpoint_id: Optional[str] = None):
+        """Update processing step progress."""
+        with db.get_cursor() as cursor:
+            updates = ["processed_items = %s", "failed_items = %s"]
+            params = [processed_items, failed_items]
+            
+            if status:
+                updates.append("status = %s")
+                params.append(status)
+                if status == 'running' and processed_items == 0:
+                    updates.append("started_at = CURRENT_TIMESTAMP")
+                elif status in ['completed', 'failed']:
+                    updates.append("completed_at = CURRENT_TIMESTAMP")
+            
+            if error_messages:
+                updates.append("error_messages = array_cat(error_messages, %s)")
+                params.append(error_messages)
+            
+            if checkpoint_id:
+                updates.append("last_checkpoint_id = %s")
+                params.append(checkpoint_id)
+            
+            params.append(step_id)
+            
+            cursor.execute(f"""
+                UPDATE processing_steps 
+                SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, params)
+    
+    def get_processing_steps(self, parent_job_id: str) -> List[Dict[str, Any]]:
+        """Get all processing steps for a job."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT * FROM processing_steps 
+                WHERE parent_job_id = %s
+                ORDER BY created_at
+            """, (parent_job_id,))
+            return cursor.fetchall()
+    
+    # File Processing Status Operations
+    def create_file_processing_status(self, file_path: str, file_type: str,
+                                    file_size_bytes: int, processor_name: str,
+                                    parent_job_id: Optional[str] = None) -> str:
+        """Create file processing status record."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO file_processing_status 
+                (file_path, file_type, file_size_bytes, processor_name,
+                 parent_job_id, status)
+                VALUES (%s, %s, %s, %s, %s, 'pending')
+                RETURNING id
+            """, (
+                file_path, file_type, file_size_bytes, processor_name,
+                parent_job_id
+            ))
+            return cursor.fetchone()['id']
+    
+    def update_file_processing_status(self, file_id: str, status: str,
+                                    bytes_processed: Optional[int] = None,
+                                    chunks_completed: Optional[int] = None,
+                                    total_chunks: Optional[int] = None,
+                                    checkpoint_id: Optional[str] = None,
+                                    error_message: Optional[str] = None):
+        """Update file processing status."""
+        with db.get_cursor() as cursor:
+            updates = ["status = %s"]
+            params = [status]
+            
+            if bytes_processed is not None:
+                updates.append("bytes_processed = %s")
+                params.append(bytes_processed)
+            
+            if chunks_completed is not None:
+                updates.append("chunks_completed = %s")
+                params.append(chunks_completed)
+            
+            if total_chunks is not None:
+                updates.append("total_chunks = %s")
+                params.append(total_chunks)
+            
+            if checkpoint_id:
+                updates.append("last_checkpoint_id = %s")
+                params.append(checkpoint_id)
+            
+            if error_message:
+                updates.append("error_message = %s")
+                params.append(error_message)
+            
+            if status == 'processing' and chunks_completed == 0:
+                updates.append("started_at = CURRENT_TIMESTAMP")
+            elif status in ['completed', 'failed']:
+                updates.append("completed_at = CURRENT_TIMESTAMP")
+            
+            params.append(file_id)
+            
+            cursor.execute(f"""
+                UPDATE file_processing_status 
+                SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, params)
+    
+    def get_file_processing_status(self, file_path: Optional[str] = None,
+                                 parent_job_id: Optional[str] = None,
+                                 status: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get file processing status with optional filtering."""
+        with db.get_cursor() as cursor:
+            query = "SELECT * FROM file_processing_status WHERE 1=1"
+            params = []
+            
+            if file_path:
+                query += " AND file_path = %s"
+                params.append(file_path)
+            
+            if parent_job_id:
+                query += " AND parent_job_id = %s"
+                params.append(parent_job_id)
+            
+            if status:
+                query += " AND status = %s"
+                params.append(status)
+            
+            query += " ORDER BY created_at DESC"
+            cursor.execute(query, params)
+            return cursor.fetchall()
+    
+    def get_resumable_files(self, processor_name: str) -> List[Dict[str, Any]]:
+        """Get files that can be resumed from checkpoints."""
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT * FROM file_processing_status 
+                WHERE processor_name = %s 
+                AND status IN ('processing', 'failed')
+                AND last_checkpoint_id IS NOT NULL
+                ORDER BY updated_at DESC
+            """, (processor_name,))
+            return cursor.fetchall()
 
 # Global schema instance
 schema = DatabaseSchema()

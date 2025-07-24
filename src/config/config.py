@@ -1,3 +1,5 @@
+# Update src/config/config.py to include new configuration sections
+
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -103,6 +105,12 @@ class Config:
             'data_files': defaults.DATA_FILES.copy(),
             'datasets': defaults.DATASETS.copy(),
             'resampling': defaults.RESAMPLING.copy(),
+            # New configuration sections
+            'progress_monitoring': defaults.PROGRESS_MONITORING.copy(),
+            'checkpointing': defaults.CHECKPOINTING.copy(),
+            'timeouts': defaults.TIMEOUTS.copy(),
+            'process_management': defaults.PROCESS_MANAGEMENT.copy(),
+            'memory_management': defaults.MEMORY_MANAGEMENT.copy(),
             'paths': {
                 'project_root': defaults.PROJECT_ROOT,
                 'data_dir': defaults.DATA_DIR,
@@ -142,12 +150,17 @@ class Config:
     
     def _ensure_directories(self):
         """Create necessary directories if they don't exist and are accessible."""
-        for path_key in ['data_dir', 'logs_dir']:
-            path = self.settings['paths'][path_key]
+        # Ensure all configured directories exist
+        directories = [
+            self.settings['paths']['data_dir'],
+            self.settings['paths']['logs_dir'],
+            self.settings.get('checkpointing', {}).get('checkpoint_dir', Path('checkpoints'))
+        ]
+        
+        for path in directories:
             # Convert to Path object if it's a string (from YAML)
             if isinstance(path, str):
                 path = Path(path)
-                self.settings['paths'][path_key] = path
             
             # Only try to create directories if we have permission
             try:
@@ -169,6 +182,28 @@ class Config:
                 return default
         return value
     
+    # New property accessors for enhanced configuration
+    @property
+    def progress_monitoring(self) -> Dict[str, Any]:
+        return self.settings.get('progress_monitoring', {})
+    
+    @property
+    def checkpointing(self) -> Dict[str, Any]:
+        return self.settings.get('checkpointing', {})
+    
+    @property
+    def timeouts(self) -> Dict[str, Any]:
+        return self.settings.get('timeouts', {})
+    
+    @property
+    def process_management(self) -> Dict[str, Any]:
+        return self.settings.get('process_management', {})
+    
+    @property
+    def memory_management(self) -> Dict[str, Any]:
+        return self.settings.get('memory_management', {})
+    
+    # Existing property accessors
     @property
     def database(self) -> Dict[str, Any]:
         return self.settings['database']

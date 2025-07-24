@@ -1,29 +1,64 @@
 #!/bin/bash
-# Unified resampling pipeline launcher - Minimal wrapper
-# All validation and logic is handled by the Python script
+# scripts/production/run_unified_resampling.sh
+# Production launcher with process control support
 
-echo "🚀 Unified Resampling Pipeline - Smart Launcher"
-echo "==============================================="
+echo "🚀 Unified Resampling Pipeline - Production Launcher"
+echo "=================================================="
 
 # Get script directory and find project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Find project root (look for src directory)
-if [ -d "$SCRIPT_DIR/../../src" ]; then
-    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-elif [ -d "$SCRIPT_DIR/src" ]; then
-    PROJECT_ROOT="$SCRIPT_DIR"
-else
-    echo "❌ Error: Cannot find project root with src/ directory"
-    exit 1
-fi
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$PROJECT_ROOT"
 echo "📍 Project root: $PROJECT_ROOT"
 
-# Check if we're in the right directory
-if [ ! -f "src/pipelines/unified_resampling/scripts/run_unified_resampling.py" ]; then
-    echo "❌ Error: Unified resampling script not found. Are you in the right directory?"
+# Default values
+DAEMON_MODE=false
+PROCESS_NAME=""
+RESUME_MODE=false
+EXPERIMENT_NAME=""
+SIGNAL_FORWARD=""
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --daemon)
+            DAEMON_MODE=true
+            shift
+            ;;
+        --process-name)
+            PROCESS_NAME="$2"
+            shift 2
+            ;;
+        --resume)
+            RESUME_MODE=true
+            shift
+            ;;
+        --experiment-name)
+            EXPERIMENT_NAME="$2"
+            shift 2
+            ;;
+        --signal)
+            SIGNAL_FORWARD="$2"
+            shift 2
+            ;;
+        *)
+            # Pass through other arguments
+            PASS_THROUGH_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Auto-generate process name if not provided
+if [ -z "$PROCESS_NAME" ]; then
+    PROCESS_NAME="unified_resampling_$(date +%Y%m%d_%H%M%S)"
+fi
+
+# Check if process manager exists
+PROCESS_MANAGER="$PROJECT_ROOT/scripts/process_manager.py"
+if [ ! -f "$PROCESS_MANAGER" ]; then
+    echo "❌ Error: Process manager not found at $PROCESS_MANAGER"
     exit 1
 fi
 
@@ -31,7 +66,7 @@ fi
 detect_python_env() {
     local possible_paths=(
         "$HOME/anaconda3/envs/geo_py311/bin/python"
-        "$HOME/miniconda3/envs/geo_py311/bin/python" 
+        "$HOME/miniconda3/envs/geo_py311/bin/python"
         "$HOME/conda/envs/geo_py311/bin/python"
         "/opt/anaconda3/envs/geo_py311/bin/python"
         "/opt/miniconda3/envs/geo_py311/bin/python"
@@ -51,12 +86,10 @@ detect_python_env() {
         fi
     done
     
-    # Fall back to system python if it has required packages
+    # Fall back to system python
     if command -v python3 &> /dev/null; then
-        if python3 -c "import sys; sys.path.insert(0, 'src'); from src.config.config import Config" 2>/dev/null; then
-            echo "python3"
-            return 0
-        fi
+        echo "python3"
+        return 0
     fi
     
     return 1
@@ -64,54 +97,126 @@ detect_python_env() {
 
 PYTHON_ENV=$(detect_python_env)
 if [ $? -ne 0 ] || [ -z "$PYTHON_ENV" ]; then
-    echo "❌ Error: Python environment with required dependencies not found"
-    echo "   Please ensure you have:"
-    echo "   - A conda environment named 'geo_py311' with required packages, OR"
-    echo "   - System python3 with the unified resampling dependencies installed"
+    echo "❌ Error: Python environment not found"
     exit 1
+fi
+
+echo "✅ Python environment: $PYTHON_ENV"
+echo "📝 Process name: $PROCESS_NAME"
+
+# Handle signal forwarding
+if [ ! -z "$SIGNAL_FORWARD" ]; then
+    case $SIGNAL_FORWARD in
+        pause)
+            echo "⏸️  Pausing process: $PROCESS_NAME"
+            exec $PYTHON_ENV "$PROCESS_MANAGER" pause "$PROCESS_NAME"
+            ;;
+        resume)
+            echo "▶️  Resuming process: $PROCESS_NAME"
+            exec $PYTHON_ENV "$PROCESS_MANAGER" resume "$PROCESS_NAME"
+            ;;
+        stop)
+            echo "⏹️  Stopping process: $PROCESS_NAME"
+            exec $PYTHON_ENV "$PROCESS_MANAGER" stop "$PROCESS_NAME"
+            ;;
+        status)
+            echo "📊 Process status: $PROCESS_NAME"
+            exec $PYTHON_ENV "$PROCESS_MANAGER" status "$PROCESS_NAME"
+            ;;
+        *)
+            echo "❌ Unknown signal: $SIGNAL_FORWARD"
+            exit 1
+            ;;
+    esac
+fi
+
+# Build start command
+START_CMD=("$PYTHON_ENV" "$PROCESS_MANAGER" "start" "--name" "$PROCESS_NAME")
+
+if [ "$DAEMON_MODE" = true ]; then
+    START_CMD+=("--daemon")
+    echo "🌙 Running in daemon mode"
+fi
+
+if [ "$RESUME_MODE" = true ]; then
+    START_CMD+=("--resume")
+    echo "♻️  Resume mode enabled"
+fi
+
+if [ ! -z "$EXPERIMENT_NAME" ]; then
+    START_CMD+=("--experiment-name" "$EXPERIMENT_NAME")
+fi
+
+# Add pass-through arguments
+if [ ${#PASS_THROUGH_ARGS[@]} -gt 0 ]; then
+    START_CMD+=("${PASS_THROUGH_ARGS[@]}")
+fi
+
+# Show what we're executing
+echo ""
+echo "🎬 Starting pipeline with process controller..."
+echo "Command: ${START_CMD[@]}"
+echo ""
+
+# Function to handle signals
+handle_signal() {
+    local sig=$1
+    echo ""
+    echo "Received signal: $sig"
+    
+    case $sig in
+        INT|TERM)
+            echo "Forwarding shutdown signal to process..."
+            $PYTHON_ENV "$PROCESS_MANAGER" stop "$PROCESS_NAME" --timeout 30
+            exit 0
+            ;;
+        USR1)
+            echo "Forwarding pause signal to process..."
+            $PYTHON_ENV "$PROCESS_MANAGER" pause "$PROCESS_NAME"
+            ;;
+        USR2)
+            echo "Forwarding resume signal to process..."
+            $PYTHON_ENV "$PROCESS_MANAGER" resume "$PROCESS_NAME"
+            ;;
+    esac
+}
+
+# Set up signal handlers
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
+trap 'handle_signal USR1' USR1
+trap 'handle_signal USR2' USR2
+
+# Execute the pipeline
+if [ "$DAEMON_MODE" = true ]; then
+    # Start and detach
+    "${START_CMD[@]}"
+    echo ""
+    echo "✅ Pipeline started in daemon mode"
+    echo ""
+    echo "📋 Useful commands:"
+    echo "  Status:  $0 --process-name $PROCESS_NAME --signal status"
+    echo "  Logs:    $PYTHON_ENV $PROCESS_MANAGER logs $PROCESS_NAME -f"
+    echo "  Pause:   $0 --process-name $PROCESS_NAME --signal pause"
+    echo "  Resume:  $0 --process-name $PROCESS_NAME --signal resume"
+    echo "  Stop:    $0 --process-name $PROCESS_NAME --signal stop"
 else
-    echo "✅ Python environment found: $PYTHON_ENV"
-fi
-
-echo ""
-echo "🎬 The Python script will handle:"
-echo "   - Automatic test/production mode detection"
-echo "   - Configuration validation (defaults.py + config.yml)"
-echo "   - Data file validation"
-echo "   - Database connectivity check"
-echo "   - System resource validation"
-echo "   - All pipeline execution"
-echo ""
-
-# Show usage if no arguments provided
-if [ $# -eq 0 ]; then
-    echo "📚 Usage Examples:"
-    echo ""
-    echo "  # Small test run (auto-detects test mode):"
-    echo "  $0 --target-resolution 0.2 --max-samples 10000 --som-grid-size 4 4 --som-iterations 100"
-    echo ""
-    echo "  # Production run with custom settings:"
-    echo "  $0 --target-resolution 0.05 --max-samples 500000 --experiment-name my_experiment"
-    echo ""
-    echo "  # Dry run to validate configuration:"
-    echo "  $0 --dry-run --validate-inputs"
-    echo ""
-    echo "  # See all options:"
-    echo "  $0 --help"
-    echo ""
-    read -p "Continue with default small test parameters? (y/N): " -n 1 -r
-    echo ""
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        set -- --target-resolution 0.2 --max-samples 10000 --som-grid-size 4 4 --som-iterations 100 --experiment-name "interactive_test"
+    # Run in foreground
+    "${START_CMD[@]}" &
+    PIPELINE_PID=$!
+    
+    echo "Pipeline PID: $PIPELINE_PID"
+    echo "Press Ctrl+C to stop gracefully"
+    
+    # Wait for pipeline to complete or be interrupted
+    wait $PIPELINE_PID
+    EXIT_CODE=$?
+    
+    if [ $EXIT_CODE -eq 0 ]; then
+        echo "✅ Pipeline completed successfully"
     else
-        echo "📋 Cancelled. Run with specific parameters or --help for options."
-        exit 0
+        echo "❌ Pipeline exited with code: $EXIT_CODE"
     fi
+    
+    exit $EXIT_CODE
 fi
-
-echo "🎬 Executing pipeline..."
-echo "Command: $PYTHON_ENV src/pipelines/unified_resampling/scripts/run_unified_resampling.py $@"
-echo ""
-
-# Execute the pipeline - let Python handle everything
-exec $PYTHON_ENV src/pipelines/unified_resampling/scripts/run_unified_resampling.py "$@"
