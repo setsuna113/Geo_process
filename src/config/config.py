@@ -13,49 +13,69 @@ class Config:
         if self._is_test_mode():
             self._apply_test_database_config()
 
-        # Only load config.yml if NOT in test mode
+        # Load config.yml unless explicitly in test mode
         if not self._is_test_mode():
-            # Auto-discover config.yml if not specified
+            # Auto-discover config.yml with comprehensive fallback
             if config_file is None:
-                # Look for config.yml in project root
-                project_root = Path(__file__).parent.parent.parent
-                potential_config = project_root / 'config.yml'
-                if potential_config.exists():
-                    config_file = potential_config
+                config_file = self._find_config_file()
 
             if config_file and config_file.exists():
-                self._load_yaml_config(config_file, preserve_test_db=False)
+                try:
+                    self._load_yaml_config(config_file, preserve_test_db=False)
+                    print(f"✅ Loaded configuration from {config_file}")
+                except Exception as e:
+                    print(f"⚠️  Config file loading failed: {e} - using defaults")
+            else:
+                print("ℹ️  No config.yml found - using defaults only")
         else:
             print("🧪 Test mode detected - using test database configuration (port 5432)")
             print("🧪 Ignoring config.yml completely in test mode")
 
         self._ensure_directories()
     
+    def _find_config_file(self) -> Optional[Path]:
+        """Find config.yml with multiple fallback locations."""
+        project_root = Path(__file__).parent.parent.parent
+        
+        potential_locations = [
+            project_root / 'config.yml',
+            project_root / 'config' / 'config.yml', 
+            Path.cwd() / 'config.yml',
+            Path.home() / '.geo' / 'config.yml',
+        ]
+        
+        for location in potential_locations:
+            if location.exists() and location.is_file():
+                return location
+                
+        return None
+    
     def _is_test_mode(self) -> bool:
-        """Detect if we're running in test mode."""
-        import sys
+        """Detect if we're running in test mode - ONLY for actual testing."""
         import os
         
-        # Only detect test mode if we're actually running tests
-        # Check for pytest specifically or if we're in a test environment
+        # STRICT test mode detection - only if explicitly set
+        # Never auto-detect to avoid production failures
         return (
-            'pytest' in sys.modules or
-            os.environ.get('RUNNING_TESTS', 'false').lower() == 'true' or
-            any(arg.startswith('--test') for arg in sys.argv) or
-            'test_' in sys.argv[0] if sys.argv else False
+            os.environ.get('FORCE_TEST_MODE', 'false').lower() == 'true' or
+            os.environ.get('PYTEST_CURRENT_TEST') is not None
         )
     
     def _apply_test_database_config(self):
         """Apply test-safe database configuration."""
+        import os
+        test_user = os.getenv('USER', 'testuser')
         self.settings['database'] = {
             'host': 'localhost',
             'port': 5432,  # Standard PostgreSQL port for testing
-            'database': 'geoprocess_db',  # Use existing database for tests
-            'user': 'jason',
-            'password': '123456',
+            'database': f'{test_user}_geo_test_db',  # User-specific test database
+            'user': test_user,
+            'password': os.getenv('TEST_DB_PASSWORD', '123456'),
             'max_connections': 5,
             'connection_timeout': 10,
-            'retry_attempts': 3
+            'retry_attempts': 3,
+            'auto_create_database': True,
+            'fallback_databases': ['postgres', 'template1']
         }
         print("🧪 Test mode detected - using test database configuration (port 5432)")
     

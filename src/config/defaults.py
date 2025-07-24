@@ -10,13 +10,15 @@ RAWDATA_DIR = PROJECT_ROOT / 'gpkg_data'
 DATA_DIR = PROJECT_ROOT / 'data' / 'richness_maps'  # Point to richness_maps for testing
 LOGS_DIR = PROJECT_ROOT / 'logs'
 
-# Database configuration
+# Database configuration - adaptive to environment
 DATABASE = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 5432)),
-    'database': os.getenv('DB_NAME', 'geoprocess_db'),
-    'user': os.getenv('DB_USER', os.getenv('USER')),
+    'database': os.getenv('DB_NAME', os.getenv('USER', 'postgres') + '_geo_db'),  # User-specific default
+    'user': os.getenv('DB_USER', os.getenv('USER', 'postgres')),
     'password': os.getenv('DB_PASSWORD', '123456'),
+    'auto_create_database': True,  # Create database if it doesn't exist
+    'fallback_databases': ['postgres', 'template1'],  # Try these if main DB fails
 }
 
 # Database schema mapping - allows flexibility across different database designs
