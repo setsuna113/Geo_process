@@ -38,110 +38,122 @@ def main():
         print("ANALYSIS PROGRESS CHECK")
         print("=" * 60)
         
-        # Check experiments
-        print("\n📊 EXPERIMENTS:")
+        # First, check what tables exist
+        print("\n📋 DATABASE TABLES:")
         cursor.execute("""
-            SELECT id, name, status, created_at, completed_at, 
-                   EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - created_at))/3600 as hours_elapsed
-            FROM experiments 
-            ORDER BY created_at DESC 
-            LIMIT 10
+            SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            ORDER BY table_name
         """)
-        experiments = cursor.fetchall()
+        tables = cursor.fetchall()
+        table_names = [t[0] for t in tables]
+        print(f"  Available tables: {', '.join(table_names)}")
         
-        if experiments:
-            for exp in experiments:
-                status_icon = "✅" if exp[2] == 'completed' else "🔄" if exp[2] == 'running' else "❌"
-                print(f"  {status_icon} {exp[1]} ({exp[2]}) - {exp[5]:.1f}h")
+        # Check experiments table structure
+        if 'experiments' in table_names:
+            print("\n📊 EXPERIMENTS:")
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'experiments' AND table_schema = 'public'
+                ORDER BY ordinal_position
+            """)
+            exp_columns = [c[0] for c in cursor.fetchall()]
+            print(f"  Columns: {', '.join(exp_columns)}")
+            
+            # Build query based on available columns
+            select_cols = ['id', 'name']
+            if 'status' in exp_columns:
+                select_cols.append('status')
+            if 'created_by' in exp_columns:
+                select_cols.append('created_by')
+            
+            cursor.execute(f"SELECT {', '.join(select_cols)} FROM experiments LIMIT 10")
+            experiments = cursor.fetchall()
+            
+            if experiments:
+                for exp in experiments:
+                    status = exp[2] if len(exp) > 2 else 'unknown'
+                    status_icon = "✅" if status == 'completed' else "🔄" if status == 'running' else "❓"
+                    print(f"  {status_icon} {exp[1]} ({status})")
+            else:
+                print("  No experiments found")
         else:
-            print("  No experiments found")
+            print("\n📊 EXPERIMENTS: Table not found")
         
         # Check processing jobs
-        print("\n⚙️ PROCESSING JOBS:")
-        cursor.execute("""
-            SELECT job_name, job_type, status, progress_percent, 
-                   started_at, completed_at,
-                   EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - COALESCE(started_at, created_at)))/3600 as hours_elapsed
-            FROM processing_jobs 
-            ORDER BY created_at DESC 
-            LIMIT 20
-        """)
-        jobs = cursor.fetchall()
-        
-        if jobs:
-            for job in jobs:
-                status_icon = "✅" if job[2] == 'completed' else "🔄" if job[2] == 'running' else "❌"
-                progress = job[3] or 0
-                elapsed = job[6] or 0
-                print(f"  {status_icon} {job[0]} ({job[1]}) - {progress:.1f}% - {elapsed:.1f}h")
+        if 'processing_jobs' in table_names:
+            print("\n⚙️ PROCESSING JOBS:")
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'processing_jobs' AND table_schema = 'public'
+                ORDER BY ordinal_position
+            """)
+            job_columns = [c[0] for c in cursor.fetchall()]
+            print(f"  Columns: {', '.join(job_columns)}")
+            
+            # Build safe query
+            select_cols = []
+            if 'job_name' in job_columns:
+                select_cols.append('job_name')
+            if 'job_type' in job_columns:
+                select_cols.append('job_type')
+            if 'status' in job_columns:
+                select_cols.append('status')
+            if 'progress_percent' in job_columns:
+                select_cols.append('progress_percent')
+            
+            if select_cols:
+                cursor.execute(f"SELECT {', '.join(select_cols)} FROM processing_jobs LIMIT 20")
+                jobs = cursor.fetchall()
+                
+                if jobs:
+                    for job in jobs:
+                        job_name = job[0] if len(job) > 0 else 'unknown'
+                        job_type = job[1] if len(job) > 1 else 'unknown'
+                        status = job[2] if len(job) > 2 else 'unknown'
+                        progress = job[3] if len(job) > 3 else 0
+                        status_icon = "✅" if status == 'completed' else "🔄" if status == 'running' else "❓"
+                        print(f"  {status_icon} {job_name} ({job_type}) - {progress or 0:.1f}%")
+                else:
+                    print("  No processing jobs found")
+            else:
+                print("  No recognizable columns in processing_jobs")
         else:
-            print("  No processing jobs found")
+            print("\n⚙️ PROCESSING JOBS: Table not found")
         
-        # Check raster sources
-        print("\n🗺️ RASTER SOURCES:")
-        cursor.execute("""
-            SELECT source_name, processing_status, COUNT(*) as count
-            FROM raster_sources 
-            GROUP BY source_name, processing_status
-            ORDER BY source_name, processing_status
-        """)
-        raster_sources = cursor.fetchall()
-        
-        if raster_sources:
-            for source in raster_sources:
-                status = source[1] or 'pending'
-                print(f"  📁 {source[0]}: {status} ({source[2]} files)")
-        else:
-            print("  No raster sources found")
-        
-        # Check resampling cache (indicates resampling progress)
-        print("\n🔄 RESAMPLING CACHE:")
-        cursor.execute("""
-            SELECT COUNT(*) as cached_tiles, 
-                   COUNT(DISTINCT source_raster_id) as unique_rasters,
-                   MAX(created_at) as last_cached
-            FROM resampling_cache
-        """)
-        cache_info = cursor.fetchone()
-        
-        if cache_info and cache_info[0] > 0:
-            print(f"  📦 {cache_info[0]} cached tiles from {cache_info[1]} rasters")
-            print(f"  🕒 Last cached: {cache_info[2]}")
-        else:
-            print("  No resampling cache entries")
-        
-        # Check grid cells (indicates grid processing)
-        print("\n🌐 GRID PROCESSING:")
-        cursor.execute("""
-            SELECT gd.grid_name, gd.resolution_km, COUNT(gc.id) as cell_count
-            FROM grid_definitions gd
-            LEFT JOIN grid_cells gc ON gd.id = gc.grid_definition_id
-            GROUP BY gd.grid_name, gd.resolution_km
-            ORDER BY gd.grid_name, gd.resolution_km
-        """)
-        grids = cursor.fetchall()
-        
-        if grids:
-            for grid in grids:
-                print(f"  🌐 {grid[0]} ({grid[1]}km): {grid[2]} cells")
-        else:
-            print("  No grids found")
-        
-        # Check features (indicates analysis progress)
-        print("\n📈 FEATURES:")
-        cursor.execute("""
-            SELECT feature_name, COUNT(*) as count, MAX(created_at) as last_created
-            FROM features 
-            GROUP BY feature_name
-            ORDER BY feature_name
-        """)
-        features = cursor.fetchall()
-        
-        if features:
-            for feature in features:
-                print(f"  📊 {feature[0]}: {feature[1]} entries (last: {feature[2]})")
-        else:
-            print("  No features computed yet")
+        # Check each table safely
+        for table_name in ['raster_sources', 'resampling_cache', 'grid_definitions', 'grid_cells', 'features']:
+            if table_name in table_names:
+                print(f"\n📊 {table_name.upper().replace('_', ' ')}:")
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                    count = cursor.fetchone()[0]
+                    print(f"  📈 {count} entries")
+                    
+                    # Get recent entries if table has data
+                    if count > 0:
+                        cursor.execute(f"SELECT * FROM {table_name} LIMIT 3")
+                        sample_rows = cursor.fetchall()
+                        if sample_rows:
+                            print(f"  📋 Sample entries: {len(sample_rows)} rows")
+                        
+                        # Special handling for some tables
+                        if table_name == 'resampling_cache':
+                            cursor.execute("SELECT COUNT(DISTINCT source_raster_id) FROM resampling_cache")
+                            unique_rasters = cursor.fetchone()[0]
+                            print(f"  🗺️ Covers {unique_rasters} unique rasters")
+                            
+                        elif table_name == 'raster_sources':
+                            cursor.execute("SELECT DISTINCT processing_status FROM raster_sources WHERE processing_status IS NOT NULL")
+                            statuses = cursor.fetchall()
+                            if statuses:
+                                status_list = [s[0] for s in statuses]
+                                print(f"  🔄 Statuses: {', '.join(status_list)}")
+                                
+                except Exception as e:
+                    print(f"  ❌ Error querying {table_name}: {e}")
+            else:
+                print(f"\n📊 {table_name.upper().replace('_', ' ')}: Table not found")
         
         print("\n" + "=" * 60)
         
