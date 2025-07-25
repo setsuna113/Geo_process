@@ -25,10 +25,11 @@ class MergeStage(PipelineStage):
     
     @property
     def memory_requirements(self) -> float:
-        # Dynamic based on number of datasets
+        # Dynamic based on processing config and chunking capability
         if self.processing_config and self.processing_config.enable_chunking:
-            return 4.0  # GB - chunked mode
-        return 16.0  # GB - full mode
+            # Use memory limit from processing config for chunked mode
+            return self.processing_config.memory_limit_mb / 1024.0  # Convert MB to GB
+        return 4.0  # GB - conservative fallback for test mode
     
     @property
     def supports_chunking(self) -> bool:

@@ -2,7 +2,7 @@
 """Configuration classes for memory-aware processing."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any, Tuple
 
 
 @dataclass

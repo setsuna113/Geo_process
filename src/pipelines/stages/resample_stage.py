@@ -60,6 +60,7 @@ class ResampleStage(PipelineStage):
                 'total_datasets': len(loaded_datasets),
                 'resampled_successfully': 0,
                 'skipped_existing': 0,
+                'passthrough_datasets': 0,
                 'total_pixels_processed': 0
             }
             
@@ -67,35 +68,58 @@ class ResampleStage(PipelineStage):
                 try:
                     dataset_config = dataset_info['config']
                     
-                    # Check if already resampled
+                    # Check if already resampled (including passthrough datasets)
                     existing = processor.get_resampled_dataset(dataset_config['name'])
                     target_resolution = context.config.get('resampling.target_resolution')
+                    tolerance = context.config.get('resampling.resolution_tolerance', 0.001)
                     
-                    if existing and existing.target_resolution == target_resolution:
-                        logger.info(f"Using existing resampled dataset: {dataset_config['name']}")
-                        resampled_datasets.append(existing)
-                        metrics['skipped_existing'] += 1
+                    if existing:
+                        # Check if resolution matches target (for both resampled and passthrough)
+                        res_matches = abs(existing.target_resolution - target_resolution) <= tolerance
+                        
+                        if res_matches:
+                            is_passthrough = existing.metadata.get('passthrough', False)
+                            dataset_type = "passthrough" if is_passthrough else "resampled"
+                            logger.info(f"✓ Using existing {dataset_type} dataset: {dataset_config['name']}")
+                            logger.info(f"  Resolution: {existing.target_resolution:.6f}° (matches target)")
+                            
+                            resampled_datasets.append(existing)
+                            metrics['skipped_existing'] += 1
+                            continue
+                        else:
+                            logger.info(f"Existing dataset {dataset_config['name']} has different resolution, reprocessing")
+                    
+                    # Resample dataset (this will handle skip-resampling automatically)
+                    logger.info(f"Processing dataset: {dataset_config['name']}")
+                    resampled_info = processor.resample_dataset(dataset_config)
+                    resampled_datasets.append(resampled_info)
+                    
+                    # Track whether it was actually resampled or skipped via passthrough
+                    if resampled_info.metadata.get('passthrough', False):
+                        logger.info(f"✓ Skipped resampling via passthrough for: {dataset_config['name']}")
+                        metrics['passthrough_datasets'] += 1
                     else:
-                        # Resample dataset
-                        logger.info(f"Resampling dataset: {dataset_config['name']}")
-                        resampled_info = processor.resample_dataset(dataset_config)
-                        resampled_datasets.append(resampled_info)
+                        logger.info(f"✓ Successfully resampled: {dataset_config['name']}")
                         metrics['resampled_successfully'] += 1
                         metrics['total_pixels_processed'] += resampled_info.shape[0] * resampled_info.shape[1]
                     
                 except Exception as e:
-                    logger.error(f"Failed to resample {dataset_config.get('name')}: {e}")
+                    logger.error(f"Failed to process {dataset_config.get('name')}: {e}")
                     continue
             
             # Store results in context
             context.set('resampled_datasets', resampled_datasets)
             
+            # Calculate success
+            total_processed = metrics['resampled_successfully'] + metrics['skipped_existing'] + metrics['passthrough_datasets']
+            success = len(resampled_datasets) > 0
+            warnings = [] if total_processed == metrics['total_datasets'] else [f"Some datasets failed to process"]
+            
             return StageResult(
-                success=True,
+                success=success,
                 data={'resampled_datasets': resampled_datasets},
                 metrics=metrics,
-                warnings=[] if metrics['resampled_successfully'] + metrics['skipped_existing'] == metrics['total_datasets']
-                        else [f"Some datasets failed to resample"]
+                warnings=warnings
             )
             
         except Exception as e:

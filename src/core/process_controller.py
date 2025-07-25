@@ -14,8 +14,11 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
 import json
-import daemon
-import daemon.pidfile
+try:
+    import daemon
+    import daemon.pidfile
+except ImportError:
+    daemon = None
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +50,8 @@ class ProcessController:
     """
     
     def __init__(self, 
-                 pid_dir: Path = Path("/var/run/biodiversity"),
-                 log_dir: Path = Path("/var/log/biodiversity"),
+                 pid_dir: Optional[Path] = None,
+                 log_dir: Optional[Path] = None,
                  max_log_size_mb: float = 100,
                  max_log_files: int = 5):
         """
@@ -60,6 +63,23 @@ class ProcessController:
             max_log_size_mb: Maximum log file size before rotation
             max_log_files: Maximum number of rotated log files
         """
+        import tempfile
+        
+        # Set default directories based on environment
+        is_test_mode = os.getenv('FORCE_TEST_MODE', '').lower() in ('true', '1', 'yes') or 'pytest' in sys.modules
+        
+        if pid_dir is None:
+            if is_test_mode:
+                pid_dir = Path(tempfile.gettempdir()) / "biodiversity_test" / "pid"
+            else:
+                pid_dir = Path("/var/run/biodiversity")
+        
+        if log_dir is None:
+            if is_test_mode:
+                log_dir = Path(tempfile.gettempdir()) / "biodiversity_test" / "logs"
+            else:
+                log_dir = Path("/var/log/biodiversity")
+        
         self.pid_dir = pid_dir
         self.log_dir = log_dir
         self.max_log_size_mb = max_log_size_mb
@@ -89,6 +109,7 @@ class ProcessController:
                      command: List[str],
                      daemon_mode: bool = False,
                      auto_restart: bool = True,
+                     max_restarts: Optional[int] = None,
                      env: Optional[Dict[str, str]] = None,
                      working_dir: Optional[Path] = None) -> int:
         """
@@ -228,6 +249,19 @@ class ProcessController:
                 self._update_process_info(name)
             
             return list(self._processes.values())
+    
+    def detect_orphaned_processes(self) -> List[str]:
+        """Detect orphaned processes that are no longer running."""
+        orphaned = []
+        with self._process_lock:
+            for name, info in self._processes.items():
+                try:
+                    process = psutil.Process(info.pid)
+                    if not process.is_running():
+                        orphaned.append(name)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    orphaned.append(name)
+        return orphaned
     
     def tail_log(self, name: str, lines: int = 100) -> List[str]:
         """

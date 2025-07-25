@@ -36,10 +36,78 @@ class PipelineCLI:
     
     def start(self, args):
         """Start a pipeline process."""
-        # Build command
+        # Build command - run the pipeline orchestrator directly
         command = [
             sys.executable,
-            str(project_root / "src/pipelines/unified_resampling/scripts/run_unified_resampling.py")
+            "-c",
+            f"""
+import sys
+import os
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()))
+
+# Preserve environment variables
+if os.getenv('FORCE_TEST_MODE'):
+    os.environ['FORCE_TEST_MODE'] = os.getenv('FORCE_TEST_MODE')
+if os.getenv('DB_NAME'):
+    os.environ['DB_NAME'] = os.getenv('DB_NAME')
+
+from src.pipelines.orchestrator import PipelineOrchestrator
+from src.pipelines.stages.load_stage import DataLoadStage
+from src.pipelines.stages.resample_stage import ResampleStage
+from src.pipelines.stages.merge_stage import MergeStage
+from src.pipelines.stages.export_stage import ExportStage
+from src.pipelines.stages.analysis_stage import AnalysisStage
+from src.config.config import Config
+from src.database.connection import DatabaseManager
+
+config = Config()
+db = DatabaseManager()
+
+# Create pipeline orchestrator
+orchestrator = PipelineOrchestrator(config, db)
+
+# Configure pipeline stages
+analysis_method = '{args.analysis_method or "som"}'
+stages = [
+    DataLoadStage,
+    ResampleStage, 
+    MergeStage,
+    ExportStage,
+    lambda: AnalysisStage(analysis_method)  # Use specified analysis method
+]
+
+# Instantiate stages (handle lambda for AnalysisStage)
+stage_instances = []
+for stage_class in stages:
+    if callable(stage_class) and not isinstance(stage_class, type):
+        # Handle lambda case
+        stage_instances.append(stage_class())
+    else:
+        # Handle normal class case
+        stage_instances.append(stage_class())
+
+for stage in stage_instances:
+    orchestrator.register_stage(stage)
+
+# Get experiment name from args or default
+experiment_name = '{args.experiment_name or "production_test"}'
+description = 'Production pipeline with skip-resampling functionality'
+
+print(f'🚀 Starting pipeline: {{experiment_name}}')
+print(f'Skip resampling enabled: {{config.get("resampling.allow_skip_resampling")}}')
+print(f'Target resolution: {{config.get("resampling.target_resolution")}}°')
+
+# Run complete pipeline
+results = orchestrator.run_pipeline(
+    experiment_name=experiment_name,
+    description=description,
+    resume_from_checkpoint=True
+)
+
+print('✅ Pipeline completed successfully!')
+print(f'📊 Pipeline results: {{len(results.get("stages_completed", []))}} stages completed')
+"""
         ]
         
         # Add arguments

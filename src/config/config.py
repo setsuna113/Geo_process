@@ -111,12 +111,9 @@ class Config:
             'timeouts': defaults.TIMEOUTS.copy(),
             'process_management': defaults.PROCESS_MANAGEMENT.copy(),
             'memory_management': defaults.MEMORY_MANAGEMENT.copy(),
-            'paths': {
-                'project_root': defaults.PROJECT_ROOT,
-                'data_dir': defaults.DATA_DIR,
-                'rawdata_dir': defaults.RAWDATA_DIR,
-                'logs_dir': defaults.LOGS_DIR,
-            }
+            'paths': defaults.PATHS.copy(),
+            'pipeline': defaults.PIPELINE.copy(),
+            'processing': defaults.PROCESSING.copy()
         }
     
     def _load_yaml_config(self, config_file: Path, preserve_test_db: bool = False):

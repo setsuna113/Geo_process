@@ -397,6 +397,111 @@ class DatabaseSchema:
             cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
             logger.info(f"Dropped resampled data table: {table_name}")
     
+    def get_passthrough_datasets(self, target_resolution: float, tolerance: float = 0.001) -> List[Dict]:
+        """
+        Query datasets marked as passthrough for given resolution.
+        
+        Args:
+            target_resolution: Target resolution to match
+            tolerance: Tolerance for resolution comparison
+            
+        Returns:
+            List of passthrough dataset info
+        """
+        with db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT id, name, source_path, target_resolution, target_crs, 
+                       bounds, shape_height, shape_width, data_type, 
+                       resampling_method, band_name, data_table_name, 
+                       metadata, created_at
+                FROM resampled_datasets
+                WHERE metadata->>'passthrough' = 'true'
+                  AND ABS(target_resolution - %s) <= %s
+                ORDER BY created_at DESC
+            """, (target_resolution, tolerance))
+            
+            results = cursor.fetchall()
+            logger.info(f"Found {len(results)} passthrough datasets matching resolution {target_resolution}±{tolerance}")
+            return results
+    
+    def get_dataset_by_type(self, passthrough_only: bool = False, resampled_only: bool = False) -> List[Dict]:
+        """
+        Get datasets filtered by type (passthrough vs resampled).
+        
+        Args:
+            passthrough_only: Return only passthrough datasets
+            resampled_only: Return only resampled datasets
+            
+        Returns:
+            List of filtered dataset info
+        """
+        if passthrough_only and resampled_only:
+            raise ValueError("Cannot specify both passthrough_only and resampled_only")
+        
+        with db.get_cursor() as cursor:
+            query = """
+                SELECT id, name, source_path, target_resolution, target_crs, 
+                       bounds, shape_height, shape_width, data_type, 
+                       resampling_method, band_name, data_table_name, 
+                       metadata, created_at
+                FROM resampled_datasets
+            """
+            
+            if passthrough_only:
+                query += " WHERE metadata->>'passthrough' = 'true'"
+            elif resampled_only:
+                query += " WHERE COALESCE(metadata->>'passthrough', 'false') = 'false'"
+            
+            query += " ORDER BY created_at DESC"
+            cursor.execute(query)
+            
+            results = cursor.fetchall()
+            dataset_type = "passthrough" if passthrough_only else "resampled" if resampled_only else "all"
+            logger.info(f"Found {len(results)} {dataset_type} datasets")
+            return results
+    
+    def update_dataset_metadata(self, dataset_name: str, additional_metadata: Dict[str, Any]) -> bool:
+        """
+        Update metadata for a dataset.
+        
+        Args:
+            dataset_name: Name of the dataset
+            additional_metadata: Additional metadata to merge
+            
+        Returns:
+            True if updated successfully
+        """
+        try:
+            with db.get_cursor() as cursor:
+                # Get existing metadata
+                cursor.execute("""
+                    SELECT metadata FROM resampled_datasets WHERE name = %s
+                """, (dataset_name,))
+                
+                result = cursor.fetchone()
+                if not result:
+                    logger.warning(f"Dataset {dataset_name} not found for metadata update")
+                    return False
+                
+                existing_metadata = result['metadata'] or {}
+                
+                # Merge metadata
+                updated_metadata = {**existing_metadata, **additional_metadata}
+                
+                # Update in database
+                cursor.execute("""
+                    UPDATE resampled_datasets 
+                    SET metadata = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE name = %s
+                """, (json.dumps(updated_metadata), dataset_name))
+                
+                logger.info(f"✅ Updated metadata for dataset: {dataset_name}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to update metadata for {dataset_name}: {e}")
+            return False
+    
     # Experiment and Job Tracking (for pipeline/ modules)
     def create_experiment(self, name: str, description: str, config: Dict) -> str:
         """Create new experiment."""

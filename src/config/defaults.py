@@ -10,6 +10,54 @@ RAWDATA_DIR = PROJECT_ROOT / 'gpkg_data'
 DATA_DIR = PROJECT_ROOT / 'data' / 'richness_maps'  # Point to richness_maps for testing
 LOGS_DIR = PROJECT_ROOT / 'logs'
 
+# Path configuration for pipeline components
+PATHS = {
+    'project_root': str(PROJECT_ROOT),
+    'data_dir': str(DATA_DIR),
+    'rawdata_dir': str(RAWDATA_DIR),
+    'logs_dir': str(LOGS_DIR),
+    'checkpoint_dir': str(PROJECT_ROOT / 'checkpoints'),
+    'output_dir': str(PROJECT_ROOT / 'outputs'),
+    'temp_dir': str(PROJECT_ROOT / 'temp')
+}
+
+# Pipeline configuration - test mode defaults (production overrides via config.yml)
+PIPELINE = {
+    'memory_limit_gb': 4.0,  # Conservative test mode limit
+    'enable_memory_monitoring': True,
+    'memory_check_interval': 5.0,  # seconds
+    'auto_adjust_chunk_size': True
+}
+
+# Enhanced processing configuration - test mode defaults (production overrides via config.yml)
+PROCESSING = {
+    'batch_size': 500,  # Smaller for test mode
+    'max_workers': 2,   # Fewer workers for test mode
+    'chunk_size': 1000,  # Smaller chunks for test mode
+    'memory_limit_mb': 2048,  # 2GB limit for test mode
+    'enable_progress': True,
+    'enable_checkpoints': True,
+    'checkpoint_interval': 50,  # More frequent checkpoints in test
+    'supports_chunking': True,
+    'enable_chunking': True,  # Enable chunked processing by default
+    'processing_strategy': {
+        'small_datasets_mb': 50,   # Smaller thresholds for test mode
+        'medium_datasets_mb': 200,  # Use chunking earlier
+        'large_datasets_mb': 1024,  # Use streaming earlier
+        'strategy_selection': 'auto'  # auto, memory, chunked, streaming
+    },
+    # Memory-aware subsampling configuration
+    'subsampling': {
+        'enabled': True,
+        'max_samples': 50000,  # Much smaller for test mode
+        'strategy': 'stratified',  # 'random', 'stratified', 'grid'
+        'random_seed': 42,
+        'spatial_block_size': 50,  # Smaller blocks for test
+        'min_samples_per_class': 50,  # Smaller minimum
+        'memory_limit_gb': 2.0  # Trigger subsampling earlier in test mode
+    }
+}
+
 # Database configuration - adaptive to environment
 DATABASE = {
     'host': os.getenv('DB_HOST', '/var/run/postgresql'),  # Use Unix socket for local connection
@@ -221,33 +269,7 @@ MEMORY_MANAGEMENT = {
     }
 }
 
-# Enhanced processing configuration
-PROCESSING = {
-    'batch_size': 1000,
-    'max_workers': 4,
-    'chunk_size': 10000,
-    'memory_limit_mb': 4096,
-    'enable_progress': True,
-    'enable_checkpoints': True,
-    'checkpoint_interval': 1000,  # Items between checkpoints
-    'supports_chunking': True,
-    'processing_strategy': {
-        'small_datasets_mb': 100,  # Process in memory
-        'medium_datasets_mb': 1024,  # Use chunking
-        'large_datasets_mb': 10240,  # Use streaming
-        'strategy_selection': 'auto'  # auto, memory, chunked, streaming
-    },
-    # Memory-aware subsampling configuration
-    'subsampling': {
-        'enabled': True,
-        'max_samples': 500000,  # Maximum samples for in-memory processing
-        'strategy': 'stratified',  # 'random', 'stratified', 'grid'
-        'random_seed': 42,
-        'spatial_block_size': 100,  # For stratified sampling
-        'min_samples_per_class': 100,  # For balanced sampling
-        'memory_limit_gb': 8.0  # Trigger subsampling if data exceeds this
-    }
-}
+# Note: PROCESSING configuration moved to top of file near PIPELINE config
 
 # Grid configurations
 GRIDS = {
@@ -300,8 +322,10 @@ DATASETS = {
 
 # Resampling configuration for test mode
 RESAMPLING = {
-    'target_resolution': 0.05,
+    'target_resolution': 0.016667,  # Exactly match test data resolution
     'target_crs': 'EPSG:4326',
+    'allow_skip_resampling': True,  # Skip resampling when source resolution matches target
+    'resolution_tolerance': 0.000001,  # Very tight tolerance for precision match
     'strategies': {
         'richness_data': 'sum',
         'continuous_data': 'bilinear',
@@ -355,6 +379,7 @@ OUTPUT_FORMATS = {
 # Processing bounds configuration with regional presets
 PROCESSING_BOUNDS = {
     'global': [-180, -90, 180, 90],
+    'test_tiny': [0.0, 0.0, 1.0, 1.0],  # Tiny 1x1 degree subset for quick testing
     'europe': [-25.0, 35.0, 50.0, 75.0],
     'north_america': [-170.0, 15.0, -50.0, 75.0],
     'south_america': [-85.0, -60.0, -30.0, 15.0],
@@ -399,17 +424,21 @@ LOGGING = {
 
 # SOM-specific analysis configuration
 SOM_ANALYSIS = {
-    'max_pixels_in_memory': 1000000,  # 1M pixels max
-    'chunk_overlap': 10,  # Overlap between chunks for continuity
-    'subsample_ratio': 0.1,  # Default 10% sampling for very large datasets
-    'min_samples': 10000,  # Minimum samples even for small datasets
+    'max_pixels_in_memory': 10000,  # Very small for quick testing
+    'chunk_overlap': 5,  # Minimal overlap
+    'subsample_ratio': 0.01,  # Heavy subsampling for speed
+    'min_samples': 100,  # Very few samples for quick testing
     'use_memory_mapping': True,  # Use memmap for large arrays
     'batch_training': {
-        'enabled': True,
-        'batch_size': 50000,
-        'epochs_per_batch': 5
+        'enabled': False,  # Disable for quick testing
+        'batch_size': 1000,
+        'epochs_per_batch': 1
     },
-    'memory_overhead_factor': 3.0  # SOM requires 3x memory (data + weights + calculations)
+    'memory_overhead_factor': 2.0,  # Reduced overhead
+    'default_grid_size': [3, 3],  # Very small SOM grid
+    'iterations': 10,  # Very few iterations for speed
+    'sigma': 1.0,
+    'learning_rate': 0.5
 }
 
 # Data preparation configuration

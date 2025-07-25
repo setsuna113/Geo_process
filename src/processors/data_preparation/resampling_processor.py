@@ -2,14 +2,14 @@
 """Enhanced processor for resampling datasets with chunked loading and progress support."""
 
 import logging
-from typing import Dict, Any, List, Optional, Tuple, Union, Callable, Iterator
+from typing import Dict, Any, List, Optional, Tuple, Union, Callable
 from pathlib import Path
 import numpy as np
 import xarray as xr
 from dataclasses import dataclass
 from datetime import datetime
 import json
-import psutil
+import time
 
 from src.config.config import Config
 from src.base.processor import BaseProcessor
@@ -212,6 +212,33 @@ class ResamplingProcessor(BaseProcessor):
             raster_entry = self._get_or_register_raster(
                 dataset_name, raster_path, data_type, progress_callback
             )
+            
+            # Check if skip-resampling is enabled and resolution matches
+            if self.config.get('resampling.allow_skip_resampling', False):
+                if self._check_resolution_match(raster_entry):
+                    logger.info(f"🚀 Skipping resampling for {dataset_name} - resolution matches target")
+                    
+                    if progress_callback:
+                        progress_callback(f"Skipping resampling (resolution match)", 50)
+                    
+                    # Create passthrough dataset info
+                    passthrough_info = self._create_passthrough_dataset_info(raster_entry, normalized_config)
+                    
+                    if progress_callback:
+                        progress_callback(f"Storing passthrough metadata", 90)
+                    
+                    # Store metadata (no actual data processing needed)
+                    self._store_resampled_dataset(passthrough_info, None)  # Pass None for data
+                    
+                    if progress_callback:
+                        progress_callback(f"Completed {dataset_name} (skipped)", 100)
+                    
+                    logger.info(f"✅ Skip-resampling completed for {dataset_name}")
+                    return passthrough_info
+                else:
+                    logger.info(f"Resolution does not match for {dataset_name}, proceeding with resampling")
+            else:
+                logger.debug(f"Skip-resampling disabled for {dataset_name}")
             
             # Estimate memory requirements
             estimated_memory = self._estimate_memory_requirements(raster_entry)
@@ -533,9 +560,131 @@ class ResamplingProcessor(BaseProcessor):
         except Exception as e:
             raise RuntimeError(f"Failed to load raster data: {e}")
     
-    def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: np.ndarray):
+    def _check_resolution_match(self, raster_entry: RasterEntry) -> bool:
+        """
+        Check if raster resolution matches target resolution within tolerance.
+        
+        Args:
+            raster_entry: Raster catalog entry with resolution information
+            
+        Returns:
+            True if resolution matches within tolerance, False otherwise
+        """
+        if not raster_entry.resolution_degrees:
+            logger.warning(f"No resolution information for {raster_entry.name}, cannot skip resampling")
+            return False
+        
+        source_resolution = abs(float(raster_entry.resolution_degrees))
+        target_resolution = abs(float(self.target_resolution))
+        tolerance = self.config.get('resampling.resolution_tolerance', 0.001)
+        
+        resolution_diff = abs(source_resolution - target_resolution)
+        matches = resolution_diff <= tolerance
+        
+        logger.info(f"Resolution check for {raster_entry.name}:")
+        logger.info(f"  Source: {source_resolution:.6f}°, Target: {target_resolution:.6f}°")
+        logger.info(f"  Difference: {resolution_diff:.6f}°, Tolerance: {tolerance:.6f}°")
+        logger.info(f"  Match: {'✓' if matches else '✗'}")
+        
+        return matches
+    
+    def _create_passthrough_dataset_info(self, raster_entry: RasterEntry, dataset_config: dict) -> ResampledDatasetInfo:
+        """
+        Create ResampledDatasetInfo for passthrough dataset (no actual resampling).
+        
+        Args:
+            raster_entry: Raster catalog entry
+            dataset_config: Dataset configuration
+            
+        Returns:
+            ResampledDatasetInfo with passthrough metadata
+        """
+        logger.info(f"Creating passthrough dataset info for {raster_entry.name}")
+        
+        # Use actual source resolution instead of target
+        actual_resolution = abs(float(raster_entry.resolution_degrees))
+        
+        # Create metadata with passthrough information
+        passthrough_metadata = {
+            'source_resolution': actual_resolution,
+            'target_resolution': self.target_resolution,
+            'passthrough': True,
+            'skip_reason': 'resolution_match',
+            'resolution_difference': abs(actual_resolution - self.target_resolution),
+            'resolution_tolerance': self.config.get('resampling.resolution_tolerance', 0.001),
+            'engine': self.engine_type,
+            'chunked_processing': False,  # No processing needed
+            'resampled_at': datetime.now().isoformat(),
+            'processing_skipped': True
+        }
+        
+        # Calculate expected shape based on bounds and actual resolution
+        bounds = raster_entry.bounds
+        width = int(np.ceil((bounds[2] - bounds[0]) / actual_resolution))
+        height = int(np.ceil((bounds[3] - bounds[1]) / actual_resolution))
+        
+        passthrough_info = ResampledDatasetInfo(
+            name=dataset_config['name'],
+            source_path=raster_entry.path,
+            target_resolution=actual_resolution,  # Use actual resolution
+            target_crs=self.target_crs,
+            bounds=bounds,
+            shape=(height, width),
+            data_type=dataset_config['data_type'],
+            resampling_method='passthrough',  # Special method name
+            band_name=dataset_config['band_name'],
+            metadata=passthrough_metadata
+        )
+        
+        logger.info(f"✅ Created passthrough dataset info: {passthrough_info.name}")
+        logger.info(f"   Resolution: {actual_resolution:.6f}° (source), Shape: {passthrough_info.shape}")
+        
+        return passthrough_info
+
+    def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: Optional[np.ndarray]):
         """Store resampled dataset in database."""
-        # Implementation remains the same as before
+        # Handle passthrough datasets differently
+        if info.metadata.get('passthrough', False):
+            logger.info(f"Storing passthrough dataset metadata for {info.name}")
+            try:
+                with self.db.get_connection() as conn:
+                    cur = conn.cursor()
+                    
+                    # Store only metadata for passthrough datasets
+                    # The data remains in the original file
+                    cur.execute("""
+                        INSERT INTO resampled_datasets 
+                        (name, source_path, target_resolution, target_crs, bounds, 
+                         shape_height, shape_width, data_type, resampling_method, 
+                         band_name, data_table_name, metadata)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        info.name,
+                        str(info.source_path),
+                        info.target_resolution,
+                        info.target_crs,
+                        list(info.bounds),
+                        info.shape[0],
+                        info.shape[1],
+                        info.data_type,
+                        info.resampling_method,
+                        info.band_name,
+                        f"passthrough_{info.name.replace('-', '_')}",  # Special table name
+                        json.dumps(info.metadata)
+                    ))
+                    
+                    conn.commit()
+                    logger.info(f"✅ Stored passthrough dataset metadata: {info.name}")
+                    
+            except Exception as e:
+                logger.error(f"Failed to store passthrough dataset metadata: {e}")
+                raise
+            return
+        
+        # Original implementation for resampled datasets
+        if data is None:
+            raise ValueError(f"Data cannot be None for non-passthrough dataset {info.name}")
+        
         try:
             with self.db.get_connection() as conn:
                 cur = conn.cursor()
@@ -606,6 +755,141 @@ class ResamplingProcessor(BaseProcessor):
             return self.resample_dataset(item)
         return item
     
+    def load_passthrough_data(self, info: ResampledDatasetInfo) -> Optional[np.ndarray]:
+        """
+        Load data directly from original file for passthrough datasets.
+        
+        Args:
+            info: ResampledDatasetInfo for passthrough dataset
+            
+        Returns:
+            Loaded numpy array or None if failed
+        """
+        if not info.metadata.get('passthrough', False):
+            raise ValueError(f"Dataset {info.name} is not a passthrough dataset")
+        
+        logger.info(f"Loading passthrough data from: {info.source_path}")
+        
+        try:
+            # Load data with timeout protection 
+            data_array = self._load_raster_data_with_timeout(
+                info.source_path,
+                timeout_seconds=self.config.get('raster_processing.gdal_timeout', 60)
+            )
+            
+            # Convert xarray to numpy array
+            if hasattr(data_array, 'values'):
+                array_data = data_array.values
+            else:
+                array_data = np.array(data_array)
+            
+            # Ensure 2D array
+            if array_data.ndim == 3 and array_data.shape[0] == 1:
+                array_data = array_data[0]
+            elif array_data.ndim != 2:
+                raise ValueError(f"Expected 2D data, got {array_data.ndim}D")
+            
+            logger.info(f"✅ Loaded passthrough data: {array_data.shape}")
+            return array_data
+            
+        except Exception as e:
+            logger.error(f"Failed to load passthrough data for {info.name}: {e}")
+            return None
+
+    def get_resampled_dataset(self, dataset_name: str) -> Optional[ResampledDatasetInfo]:
+        """
+        Get existing resampled dataset (including passthrough datasets).
+        
+        Args:
+            dataset_name: Name of the dataset to retrieve
+            
+        Returns:
+            ResampledDatasetInfo if found, None otherwise
+        """
+        try:
+            from src.database.schema import schema
+            
+            # Query for the dataset
+            datasets = schema.get_resampled_datasets({'name': dataset_name})
+            
+            if not datasets:
+                return None
+            
+            # Take the most recent one
+            dataset_row = datasets[0]
+            
+            # Convert to ResampledDatasetInfo
+            resampled_info = ResampledDatasetInfo(
+                name=dataset_row['name'],
+                source_path=Path(dataset_row['source_path']),
+                target_resolution=float(dataset_row['target_resolution']),
+                target_crs=dataset_row['target_crs'],
+                bounds=tuple(dataset_row['bounds']),
+                shape=(int(dataset_row['shape_height']), int(dataset_row['shape_width'])),
+                data_type=dataset_row['data_type'],
+                resampling_method=dataset_row['resampling_method'],
+                band_name=dataset_row['band_name'],
+                metadata=dataset_row['metadata'] or {}
+            )
+            
+            logger.info(f"Found existing dataset: {dataset_name} ({'passthrough' if resampled_info.metadata.get('passthrough') else 'resampled'})")
+            return resampled_info
+            
+        except Exception as e:
+            logger.error(f"Failed to retrieve dataset {dataset_name}: {e}")
+            return None
+
+    def load_resampled_data(self, dataset_name: str) -> Optional[np.ndarray]:
+        """
+        Load resampled data from database.
+        
+        Args:
+            dataset_name: Name of the dataset
+            
+        Returns:
+            Numpy array or None if failed
+        """
+        try:
+            from src.database.schema import schema
+            
+            # Get dataset info
+            datasets = schema.get_resampled_datasets({'name': dataset_name})
+            if not datasets:
+                logger.error(f"Dataset {dataset_name} not found")
+                return None
+            
+            dataset_info = datasets[0]
+            table_name = dataset_info['data_table_name']
+            shape = (dataset_info['shape_height'], dataset_info['shape_width'])
+            
+            # Load data from table
+            with self.db.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(f"""
+                    SELECT row_idx, col_idx, value 
+                    FROM {table_name} 
+                    ORDER BY row_idx, col_idx
+                """)
+                
+                rows = cur.fetchall()
+                
+                if not rows:
+                    logger.warning(f"No data found in table {table_name}")
+                    return np.full(shape, np.nan, dtype=np.float32)
+                
+                # Create array
+                array_data = np.full(shape, np.nan, dtype=np.float32)
+                
+                for row in rows:
+                    array_data[row[0], row[1]] = row[2]
+                
+                logger.info(f"✅ Loaded resampled data: {dataset_name}, shape: {shape}")
+                return array_data
+                
+        except Exception as e:
+            logger.error(f"Failed to load resampled data for {dataset_name}: {e}")
+            return None
+
     def validate_input(self, item: Any) -> Tuple[bool, Optional[str]]:
         """Validate input item."""
         if not isinstance(item, dict):

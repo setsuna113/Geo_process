@@ -383,6 +383,10 @@ class ProgressManager:
             
             self._record_history("create", node_id, {"level": level, "parent": parent})
             
+            # Emit creation event both for specific level and generic created
+            self._emit_event(level, node_id)  # 'pipeline', 'phase', 'step'
+            self._emit_event("created", node_id)  # Generic creation event
+            
             return node_id
     
     def _get_node_progress(self, node_id: str) -> Dict[str, Any]:

@@ -2,7 +2,7 @@
 """Enhanced raster merger with progress tracking and checkpoint support."""
 
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 from pathlib import Path
 import numpy as np
 import xarray as xr

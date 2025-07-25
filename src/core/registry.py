@@ -32,6 +32,7 @@ class ComponentMetadata:
     supports_tiles: bool = False
     supports_streaming: bool = False
     supports_memory_mapping: bool = False
+    supports_skip_resampling: bool = False  # New capability
     
     # Format support
     supported_formats: Set[str] = field(default_factory=set)

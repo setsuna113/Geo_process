@@ -17,6 +17,11 @@ import gzip
 logger = logging.getLogger(__name__)
 
 
+class CheckpointCorruptedError(Exception):
+    """Raised when a checkpoint is corrupted or invalid."""
+    pass
+
+
 @dataclass
 class CheckpointMetadata:
     """Metadata for a checkpoint."""
@@ -28,12 +33,20 @@ class CheckpointMetadata:
     data_files: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
     checksum: Optional[str] = None
+    validation_checksum: Optional[str] = None
     compressed: bool = False
+    compression_type: Optional[str] = None
     size_bytes: int = 0
+    file_path: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return asdict(self)
+    
+    @property
+    def file_size_bytes(self) -> int:
+        """Alias for size_bytes for backward compatibility."""
+        return self.size_bytes
 
 
 class CheckpointManager:
@@ -137,7 +150,8 @@ class CheckpointManager:
                 level=level,
                 parent_id=parent_id,
                 metadata=metadata or {},
-                compressed=compress
+                compressed=compress,
+                compression_type='gzip' if compress else None
             )
             
             # Save data files
@@ -169,6 +183,7 @@ class CheckpointManager:
             
             checkpoint_meta.data_files = data_files
             checkpoint_meta.size_bytes = total_size
+            checkpoint_meta.file_path = str(checkpoint_path)
             
             # Calculate checksum
             checkpoint_meta.checksum = self._calculate_checksum(checkpoint_path)
@@ -269,13 +284,17 @@ class CheckpointManager:
     
     def list_checkpoints(self, 
                         level: Optional[str] = None,
-                        parent_id: Optional[str] = None) -> List[CheckpointMetadata]:
+                        parent_id: Optional[str] = None,
+                        processor_name: Optional[str] = None,
+                        status: Optional[str] = None) -> List[CheckpointMetadata]:
         """
         List checkpoints with optional filtering.
         
         Args:
             level: Filter by level
             parent_id: Filter by parent
+            processor_name: Filter by processor name (stored in metadata)
+            status: Filter by status
             
         Returns:
             List of checkpoint metadata
@@ -288,6 +307,12 @@ class CheckpointManager:
             
             if parent_id:
                 checkpoints = [cp for cp in checkpoints if cp.parent_id == parent_id]
+            
+            if processor_name:
+                checkpoints = [cp for cp in checkpoints if cp.metadata.get('processor_name') == processor_name]
+                
+            if status:
+                checkpoints = [cp for cp in checkpoints if cp.status == status]
             
             # Sort by timestamp (newest first)
             checkpoints.sort(key=lambda x: x.timestamp, reverse=True)
@@ -317,16 +342,30 @@ class CheckpointManager:
             
             # Check directory exists
             if not checkpoint_path.exists():
+                checkpoint_meta.status = "corrupted"
                 return False
             
             # Check all data files exist
             for data_file in checkpoint_meta.data_files:
                 if not (self._checkpoint_dir / data_file).exists():
+                    checkpoint_meta.status = "corrupted"
                     return False
             
             # Verify checksum
             current_checksum = self._calculate_checksum(checkpoint_path)
-            return current_checksum == checkpoint_meta.checksum
+            is_valid = current_checksum == checkpoint_meta.checksum
+            
+            # Update status based on validation result
+            if is_valid:
+                checkpoint_meta.status = "valid"
+                checkpoint_meta.validation_checksum = current_checksum
+            else:
+                checkpoint_meta.status = "corrupted"
+            
+            # Save updated metadata
+            self._save_checkpoint_registry()
+            
+            return is_valid
     
     def cleanup_old_checkpoints(self) -> int:
         """
@@ -383,12 +422,12 @@ class CheckpointManager:
             return deleted_count
     
     def _calculate_checksum(self, checkpoint_path: Path) -> str:
-        """Calculate checksum for checkpoint."""
+        """Calculate checksum for checkpoint data files only (excluding metadata)."""
         hasher = hashlib.sha256()
         
-        # Hash all files in checkpoint
+        # Hash all files in checkpoint except metadata.json
         for file_path in sorted(checkpoint_path.rglob('*')):
-            if file_path.is_file():
+            if file_path.is_file() and file_path.name != 'metadata.json':
                 hasher.update(file_path.name.encode())
                 with open(file_path, 'rb') as f:
                     for chunk in iter(lambda: f.read(4096), b''):

@@ -93,6 +93,16 @@ class SignalHandler:
         """Check if shutdown has been requested."""
         return self._shutdown_in_progress
     
+    @property
+    def is_paused(self) -> bool:
+        """Check if pause has been requested."""
+        return self._pause_requested
+    
+    @property
+    def should_shutdown(self) -> bool:
+        """Check if shutdown has been requested."""
+        return self._shutdown_in_progress
+    
     def is_pause_requested(self) -> bool:
         """Check if pause has been requested."""
         return self._pause_requested

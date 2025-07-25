@@ -80,6 +80,68 @@ class RasterAligner:
     def __init__(self, config: AlignmentConfig = None):
         self.config = config or AlignmentConfig()
         
+    def analyze_mixed_dataset_alignment(self, dataset_infos: List, reference_idx: int = 0) -> AlignmentReport:
+        """
+        Analyze alignment of mixed resampled and passthrough datasets.
+        
+        Args:
+            dataset_infos: List of ResampledDatasetInfo objects
+            reference_idx: Index of reference dataset
+            
+        Returns:
+            Detailed alignment report
+        """
+        if len(dataset_infos) < 2:
+            return AlignmentReport(
+                aligned=True,
+                issues=[],
+                reference_raster=dataset_infos[0].name if dataset_infos else "",
+                compared_rasters=[],
+                summary={'message': 'Single or no dataset provided'}
+            )
+        
+        reference_info = dataset_infos[reference_idx]
+        compared_infos = [info for i, info in enumerate(dataset_infos) if i != reference_idx]
+        
+        logger.info(f"Analyzing mixed dataset alignment with reference: {reference_info.name}")
+        
+        issues = []
+        
+        # Extract reference metadata
+        ref_meta = {
+            'crs': reference_info.target_crs,
+            'bounds': reference_info.bounds,
+            'shape': reference_info.shape,
+            'resolution': (reference_info.target_resolution, reference_info.target_resolution),
+            'dataset_type': 'passthrough' if reference_info.metadata.get('passthrough') else 'resampled'
+        }
+        
+        # Compare each dataset to reference
+        for dataset_info in compared_infos:
+            dataset_meta = {
+                'crs': dataset_info.target_crs,
+                'bounds': dataset_info.bounds,
+                'shape': dataset_info.shape,
+                'resolution': (dataset_info.target_resolution, dataset_info.target_resolution),
+                'dataset_type': 'passthrough' if dataset_info.metadata.get('passthrough') else 'resampled'
+            }
+            
+            dataset_issues = self._compare_dataset_metadata(
+                ref_meta, dataset_meta, reference_info.name, dataset_info.name
+            )
+            issues.extend(dataset_issues)
+        
+        aligned = len(issues) == 0
+        summary = self._generate_mixed_dataset_summary(issues, ref_meta, dataset_infos)
+        
+        return AlignmentReport(
+            aligned=aligned,
+            issues=issues,
+            reference_raster=reference_info.name,
+            compared_rasters=[info.name for info in compared_infos],
+            summary=summary
+        )
+
     def analyze_alignment(self, raster_paths: List[Union[str, Path]], 
                          reference_idx: int = 0) -> AlignmentReport:
         """
@@ -384,6 +446,140 @@ class RasterAligner:
         
         return issues
     
+    def _compare_dataset_metadata(self, ref_meta: Dict[str, Any], 
+                                 dataset_meta: Dict[str, Any],
+                                 ref_name: str, 
+                                 dataset_name: str) -> List[AlignmentIssue]:
+        """Compare dataset metadata and identify alignment issues."""
+        issues = []
+        
+        # Check CRS
+        if ref_meta['crs'] != dataset_meta['crs']:
+            issues.append(AlignmentIssue(
+                type="crs_mismatch",
+                severity="critical",
+                description=f"CRS mismatch between {ref_name} and {dataset_name}",
+                values={'reference': ref_meta['crs'], 'dataset': dataset_meta['crs']},
+                fixable=True,
+                suggested_fix="reproject_to_common_crs"
+            ))
+        
+        # Check resolution - allow small differences for mixed datasets
+        ref_res = ref_meta['resolution']
+        dataset_res = dataset_meta['resolution']
+        res_diff = (abs(ref_res[0] - dataset_res[0]), abs(ref_res[1] - dataset_res[1]))
+        
+        # Use larger tolerance for mixed datasets
+        tolerance = max(self.config.resolution_tolerance, 0.01)  # At least 0.01° tolerance
+        
+        if max(res_diff) > tolerance:
+            severity = "warning" if max(res_diff) < 0.1 else "critical"
+            issues.append(AlignmentIssue(
+                type="resolution_mismatch",
+                severity=severity,
+                description=f"Resolution mismatch between {ref_name} ({ref_meta['dataset_type']}) and {dataset_name} ({dataset_meta['dataset_type']})",
+                values={
+                    'reference': ref_res, 
+                    'dataset': dataset_res, 
+                    'difference': res_diff,
+                    'ref_type': ref_meta['dataset_type'],
+                    'dataset_type': dataset_meta['dataset_type']
+                },
+                fixable=True,
+                suggested_fix="align_to_common_grid"
+            ))
+        
+        # Check bounds overlap
+        ref_bounds = ref_meta['bounds']
+        dataset_bounds = dataset_meta['bounds']
+        
+        # Calculate intersection
+        intersection = (
+            max(ref_bounds[0], dataset_bounds[0]),  # left
+            max(ref_bounds[1], dataset_bounds[1]),  # bottom
+            min(ref_bounds[2], dataset_bounds[2]),  # right
+            min(ref_bounds[3], dataset_bounds[3])   # top
+        )
+        
+        # Check if there's valid intersection
+        if intersection[0] >= intersection[2] or intersection[1] >= intersection[3]:
+            issues.append(AlignmentIssue(
+                type="no_bounds_overlap",
+                severity="critical",
+                description=f"No geographic overlap between {ref_name} and {dataset_name}",
+                values={'reference': ref_bounds, 'dataset': dataset_bounds},
+                fixable=False,
+                suggested_fix="check_dataset_coverage"
+            ))
+        else:
+            # Check if overlap is significant
+            ref_area = (ref_bounds[2] - ref_bounds[0]) * (ref_bounds[3] - ref_bounds[1])
+            overlap_area = (intersection[2] - intersection[0]) * (intersection[3] - intersection[1])
+            overlap_ratio = overlap_area / ref_area
+            
+            if overlap_ratio < 0.5:  # Less than 50% overlap
+                issues.append(AlignmentIssue(
+                    type="limited_bounds_overlap",
+                    severity="warning",
+                    description=f"Limited geographic overlap ({overlap_ratio:.1%}) between {ref_name} and {dataset_name}",
+                    values={
+                        'reference': ref_bounds, 
+                        'dataset': dataset_bounds,
+                        'intersection': intersection,
+                        'overlap_ratio': overlap_ratio
+                    },
+                    fixable=True,
+                    suggested_fix="crop_to_intersection"
+                ))
+        
+        return issues
+    
+    def _generate_mixed_dataset_summary(self, issues: List[AlignmentIssue], 
+                                       ref_meta: Dict[str, Any],
+                                       dataset_infos: List) -> Dict[str, Any]:
+        """Generate summary for mixed dataset alignment analysis."""
+        passthrough_count = sum(1 for info in dataset_infos if info.metadata.get('passthrough', False))
+        resampled_count = len(dataset_infos) - passthrough_count
+        
+        return {
+            'total_issues': len(issues),
+            'critical_issues': len([i for i in issues if i.severity == "critical"]),
+            'warning_issues': len([i for i in issues if i.severity == "warning"]),
+            'fixable_issues': len([i for i in issues if i.fixable]),
+            'dataset_composition': {
+                'total': len(dataset_infos),
+                'passthrough': passthrough_count,
+                'resampled': resampled_count
+            },
+            'reference_metadata': {
+                'crs': ref_meta['crs'],
+                'bounds': ref_meta['bounds'],
+                'resolution': ref_meta['resolution'],
+                'shape': ref_meta['shape'],
+                'type': ref_meta['dataset_type']
+            },
+            'issue_types': list(set(issue.type for issue in issues)),
+            'recommended_strategy': self._recommend_mixed_dataset_strategy(issues, dataset_infos)
+        }
+    
+    def _recommend_mixed_dataset_strategy(self, issues: List[AlignmentIssue], dataset_infos: List) -> str:
+        """Recommend alignment strategy for mixed datasets."""
+        if not issues:
+            return "no_action_needed"
+        
+        has_critical = any(issue.severity == "critical" for issue in issues)
+        has_crs_issues = any(issue.type == "crs_mismatch" for issue in issues)
+        has_no_overlap = any(issue.type == "no_bounds_overlap" for issue in issues)
+        
+        if has_no_overlap:
+            return "check_dataset_coverage"
+        elif has_crs_issues:
+            return "reproject_to_common_crs"
+        elif has_critical:
+            return "align_to_common_grid"
+        else:
+            return "minor_adjustment_for_mixed_data"
+
     def _generate_alignment_summary(self, issues: List[AlignmentIssue], 
                                   ref_meta: Dict[str, Any]) -> Dict[str, Any]:
         """Generate summary of alignment analysis."""

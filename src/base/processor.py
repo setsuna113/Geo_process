@@ -10,6 +10,8 @@ import tracemalloc
 import psutil
 import json
 import mmap
+import signal
+import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
@@ -17,6 +19,10 @@ from ..core.registry import component_registry
 from ..config import config as global_config
 from ..database.schema import schema
 from .memory_tracker import get_memory_tracker
+from ..core.progress_manager import get_progress_manager
+from ..core.progress_events import get_event_bus
+from ..core.checkpoint_manager import get_checkpoint_manager
+from ..core.signal_handler import get_signal_handler
 
 logger = logging.getLogger(__name__)
 
