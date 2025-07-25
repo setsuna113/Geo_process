@@ -2,6 +2,9 @@ gpkg_data/
 outputs/
 data/
 test_output/
+checkpoints/
+logs/
+db_data/
 
 # Python artifacts
 __pycache__/

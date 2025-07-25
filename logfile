@@ -1,0 +1,273 @@
+2025-07-23 23:26:57.235 UTC [2418084] LOG:  starting PostgreSQL 17.5 on x86_64-conda-linux-gnu, compiled by x86_64-conda-linux-gnu-cc (conda-forge gcc 13.3.0-2) 13.3.0, 64-bit
+2025-07-23 23:26:57.235 UTC [2418084] LOG:  could not bind IPv4 address "127.0.0.1": Address already in use
+2025-07-23 23:26:57.235 UTC [2418084] HINT:  Is another postmaster already running on port 5432? If not, wait a few seconds and retry.
+2025-07-23 23:26:57.235 UTC [2418084] WARNING:  could not create listen socket for "localhost"
+2025-07-23 23:26:57.235 UTC [2418084] FATAL:  could not create any TCP/IP sockets
+2025-07-23 23:26:57.241 UTC [2418084] LOG:  database system is shut down
+2025-07-23 23:29:24.430 UTC [2418189] LOG:  starting PostgreSQL 17.5 on x86_64-conda-linux-gnu, compiled by x86_64-conda-linux-gnu-cc (conda-forge gcc 13.3.0-2) 13.3.0, 64-bit
+2025-07-23 23:29:24.431 UTC [2418189] LOG:  listening on IPv4 address "127.0.0.1", port 51051
+2025-07-23 23:29:24.434 UTC [2418189] LOG:  listening on Unix socket "/tmp/.s.PGSQL.51051"
+2025-07-23 23:29:24.446 UTC [2418192] LOG:  database system was shut down at 2025-07-23 23:26:48 UTC
+2025-07-23 23:29:24.457 UTC [2418189] LOG:  database system is ready to accept connections
+2025-07-23 23:31:36.666 UTC [2418272] ERROR:  permission denied to create extension "postgis"
+2025-07-23 23:31:36.666 UTC [2418272] HINT:  Must be superuser to create this extension.
+2025-07-23 23:31:36.666 UTC [2418272] STATEMENT:  CREATE EXTENSION postgis;
+2025-07-23 23:32:48.274 UTC [2418324] FATAL:  database "geo_cluster_db" does not exist
+2025-07-23 23:32:50.279 UTC [2418325] FATAL:  database "geo_cluster_db" does not exist
+2025-07-23 23:32:54.284 UTC [2418326] FATAL:  database "geo_cluster_db" does not exist
+2025-07-23 23:34:24.449 UTC [2418190] LOG:  checkpoint starting: time
+2025-07-23 23:37:43.000 UTC [2418190] LOG:  checkpoint complete: wrote 1986 buffers (12.1%); 0 WAL file(s) added, 0 removed, 1 recycled; write=198.495 s, sync=0.034 s, total=198.552 s; sync files=323, longest=0.008 s, average=0.001 s; distance=14097 kB, estimate=14097 kB; lsn=0/22AEC18, redo lsn=0/22AEB88
+2025-07-23 23:54:24.178 UTC [2418190] LOG:  checkpoint starting: time
+2025-07-23 23:54:24.510 UTC [2418190] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.301 s, sync=0.011 s, total=0.333 s; sync files=1, longest=0.011 s, average=0.011 s; distance=7 kB, estimate=12688 kB; lsn=0/22B08B8, redo lsn=0/22B0860
+2025-07-24 00:02:12.074 UTC [2423163] ERROR:  relation "export_metadata" does not exist
+2025-07-24 00:02:12.074 UTC [2423163] STATEMENT:  CREATE INDEX idx_export_metadata_grid_id ON export_metadata (grid_id);
+2025-07-24 00:02:12.074 UTC [2423163] ERROR:  relation "export_metadata" does not exist
+2025-07-24 00:02:12.074 UTC [2423163] STATEMENT:  CREATE INDEX idx_export_metadata_type ON export_metadata (export_type);
+2025-07-24 00:02:12.074 UTC [2423163] ERROR:  relation "export_metadata" does not exist
+2025-07-24 00:02:12.074 UTC [2423163] STATEMENT:  CREATE INDEX idx_export_metadata_created ON export_metadata (created_at);
+2025-07-24 00:02:12.074 UTC [2423163] ERROR:  relation "export_metadata" does not exist
+2025-07-24 00:02:12.074 UTC [2423163] STATEMENT:  CREATE INDEX idx_export_metadata_expires ON export_metadata (expires_at) WHERE expires_at IS NOT NULL;
+2025-07-24 00:02:12.074 UTC [2423163] ERROR:  relation "export_metadata" does not exist
+2025-07-24 00:02:12.074 UTC [2423163] STATEMENT:  CREATE INDEX idx_export_metadata_extent ON export_metadata USING GIST (spatial_extent);
+2025-07-24 00:02:12.075 UTC [2423163] ERROR:  relation "export_metadata" does not exist
+2025-07-24 00:02:12.075 UTC [2423163] STATEMENT:  CREATE INDEX idx_export_metadata_features ON export_metadata USING GIN (feature_types);
+2025-07-24 00:02:12.104 UTC [2423163] ERROR:  relation "export_metadata" does not exist at character 953
+2025-07-24 00:02:12.104 UTC [2423163] STATEMENT:  CREATE VIEW grid_processing_status AS
+	SELECT 
+	    g.id as grid_id,
+	    g.name as grid_name,
+	    g.grid_type,
+	    g.resolution,
+	    g.processing_status,
+	    g.total_cells,
+	    COUNT(DISTINCT gc.id) as cells_generated,
+	    COUNT(DISTINCT sgi.cell_id) as cells_with_species,
+	    COUNT(DISTINCT f.cell_id) as cells_with_features,
+	    COUNT(DISTINCT cd.cell_id) as cells_with_climate,
+	    COUNT(DISTINCT em.id) as export_files,
+	    ROUND(
+	        ((COUNT(DISTINCT gc.id)::FLOAT / NULLIF(g.total_cells, 0)) * 100)::NUMERIC, 2
+	    ) as generation_progress_percent,
+	    ST_AsText(g.bounds) as bounds_wkt,
+	    CASE 
+	        WHEN g.bounds IS NOT NULL THEN ST_Area(g.bounds::geography) / 1000000.0
+	        ELSE NULL 
+	    END as bounds_area_km2
+	FROM grids g
+	LEFT JOIN grid_cells gc ON g.id = gc.grid_id
+	LEFT JOIN species_grid_intersections sgi ON g.id = sgi.grid_id
+	LEFT JOIN features f ON g.id = f.grid_id
+	LEFT JOIN climate_data cd ON g.id = cd.grid_id
+	LEFT JOIN export_metadata em ON g.id = em.grid_id
+	GROUP BY g.id, g.name, g.grid_type, g.resolution, g.processing_status, g.total_cells, g.bounds;
+2025-07-24 00:02:12.265 UTC [2423163] ERROR:  column "computation_metadata" does not exist at character 124
+2025-07-24 00:02:12.265 UTC [2423163] STATEMENT:  CREATE INDEX IF NOT EXISTS idx_climate_data_test_metadata ON climate_data((computation_metadata->>'__test_data__')) 
+	WHERE computation_metadata->>'__test_data__' IS NOT NULL;
+2025-07-24 00:02:12.267 UTC [2423163] ERROR:  column "results" does not exist at character 117
+2025-07-24 00:02:12.267 UTC [2423163] STATEMENT:  CREATE INDEX IF NOT EXISTS idx_processing_jobs_test_metadata ON processing_jobs((results->>'__test_data__')) 
+	WHERE results->>'__test_data__' IS NOT NULL;
+2025-07-24 00:02:12.281 UTC [2423163] ERROR:  column "created_at" does not exist
+2025-07-24 00:02:12.281 UTC [2423163] STATEMENT:  CREATE INDEX IF NOT EXISTS idx_species_grid_intersections_test_cleanup ON species_grid_intersections(created_at, created_by) WHERE created_by LIKE 'test_%';
+2025-07-24 00:02:12.281 UTC [2423163] ERROR:  column "created_at" does not exist
+2025-07-24 00:02:12.281 UTC [2423163] STATEMENT:  CREATE INDEX IF NOT EXISTS idx_features_test_cleanup ON features(created_at, created_by) WHERE created_by LIKE 'test_%';
+2025-07-24 00:02:12.281 UTC [2423163] ERROR:  column "created_at" does not exist
+2025-07-24 00:02:12.281 UTC [2423163] STATEMENT:  CREATE INDEX IF NOT EXISTS idx_climate_data_test_cleanup ON climate_data(created_at, created_by) WHERE created_by LIKE 'test_%';
+2025-07-24 00:04:24.545 UTC [2418190] LOG:  checkpoint starting: time
+2025-07-24 00:04:48.889 UTC [2418190] LOG:  checkpoint complete: wrote 244 buffers (1.5%); 0 WAL file(s) added, 0 removed, 0 recycled; write=24.301 s, sync=0.023 s, total=24.344 s; sync files=232, longest=0.004 s, average=0.001 s; distance=1507 kB, estimate=11570 kB; lsn=0/2429880, redo lsn=0/24297F0
+2025-07-24 00:09:24.990 UTC [2418190] LOG:  checkpoint starting: time
+2025-07-24 00:09:27.229 UTC [2418190] LOG:  checkpoint complete: wrote 23 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.215 s, sync=0.006 s, total=2.240 s; sync files=14, longest=0.003 s, average=0.001 s; distance=5 kB, estimate=10413 kB; lsn=0/242AD88, redo lsn=0/242AD30
+2025-07-24 07:45:14.903 UTC [2449880] ERROR:  column "created_at" does not exist at character 39
+2025-07-24 07:45:14.903 UTC [2449880] HINT:  Perhaps you meant to reference the column "experiments.created_by".
+2025-07-24 07:45:14.903 UTC [2449880] STATEMENT:  
+	            SELECT id, name, status, created_at, completed_at, 
+	                   EXTRACT(EPOCH FROM (COALESCE(completed_at, NOW()) - created_at))/3600 as hours_elapsed
+	            FROM experiments 
+	            ORDER BY created_at DESC 
+	            LIMIT 10
+	        
+2025-07-24 08:22:17.409 UTC [2418189] LOG:  received smart shutdown request
+2025-07-24 08:22:17.421 UTC [2418189] LOG:  background worker "logical replication launcher" (PID 2418195) exited with exit code 1
+2025-07-24 08:22:17.421 UTC [2418190] LOG:  shutting down
+2025-07-24 08:22:17.424 UTC [2418190] LOG:  checkpoint starting: shutdown immediate
+2025-07-24 08:22:17.441 UTC [2418190] LOG:  checkpoint complete: wrote 4 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.004 s, total=0.020 s; sync files=3, longest=0.003 s, average=0.002 s; distance=0 kB, estimate=9372 kB; lsn=0/242AE38, redo lsn=0/242AE38
+2025-07-24 08:22:17.459 UTC [2418189] LOG:  database system is shut down
+2025-07-25 00:27:16.262 UTC [14766] LOG:  starting PostgreSQL 17.5 on x86_64-conda-linux-gnu, compiled by x86_64-conda-linux-gnu-cc (conda-forge gcc 13.3.0-2) 13.3.0, 64-bit
+2025-07-25 00:27:16.263 UTC [14766] LOG:  could not bind IPv4 address "127.0.0.1": Address already in use
+2025-07-25 00:27:16.263 UTC [14766] HINT:  Is another postmaster already running on port 5432? If not, wait a few seconds and retry.
+2025-07-25 00:27:16.263 UTC [14766] WARNING:  could not create listen socket for "localhost"
+2025-07-25 00:27:16.263 UTC [14766] FATAL:  could not create any TCP/IP sockets
+2025-07-25 00:27:16.269 UTC [14766] LOG:  database system is shut down
+2025-07-25 00:31:26.347 UTC [15061] LOG:  starting PostgreSQL 17.5 on x86_64-conda-linux-gnu, compiled by x86_64-conda-linux-gnu-cc (conda-forge gcc 13.3.0-2) 13.3.0, 64-bit
+2025-07-25 00:31:26.348 UTC [15061] LOG:  listening on IPv4 address "127.0.0.1", port 51051
+2025-07-25 00:31:26.351 UTC [15061] LOG:  listening on Unix socket "/tmp/.s.PGSQL.51051"
+2025-07-25 00:31:26.362 UTC [15064] LOG:  database system was shut down at 2025-07-25 00:27:10 UTC
+2025-07-25 00:31:26.374 UTC [15061] LOG:  database system is ready to accept connections
+2025-07-25 00:31:41.377 UTC [15150] FATAL:  role "jason" does not exist
+2025-07-25 00:31:41.382 UTC [15151] FATAL:  role "jason" does not exist
+2025-07-25 00:31:41.387 UTC [15152] FATAL:  role "jason" does not exist
+2025-07-25 00:31:43.392 UTC [15168] FATAL:  role "jason" does not exist
+2025-07-25 00:31:43.397 UTC [15169] FATAL:  role "jason" does not exist
+2025-07-25 00:31:43.402 UTC [15170] FATAL:  role "jason" does not exist
+2025-07-25 00:31:47.408 UTC [15197] FATAL:  role "jason" does not exist
+2025-07-25 00:31:47.412 UTC [15198] FATAL:  role "jason" does not exist
+2025-07-25 00:31:47.417 UTC [15199] FATAL:  role "jason" does not exist
+2025-07-25 00:36:26.446 UTC [15800] ERROR:  column pj.created_at does not exist at character 745
+2025-07-25 00:36:26.446 UTC [15800] HINT:  Perhaps you meant to reference the column "ps.created_at".
+2025-07-25 00:36:26.446 UTC [15800] STATEMENT:  CREATE OR REPLACE VIEW processing_progress_detail AS
+	SELECT 
+	    pj.job_name,
+	    pj.job_type,
+	    pj.status as job_status,
+	    ps.step_name,
+	    ps.processor_name,
+	    ps.total_items,
+	    ps.processed_items,
+	    ps.failed_items,
+	    CASE 
+	        WHEN ps.total_items > 0 
+	        THEN ROUND((ps.processed_items::NUMERIC / ps.total_items) * 100, 2)
+	        ELSE 0 
+	    END as progress_percent,
+	    ps.status as step_status,
+	    ps.started_at,
+	    ps.completed_at,
+	    CASE 
+	        WHEN ps.completed_at IS NOT NULL AND ps.started_at IS NOT NULL
+	        THEN EXTRACT(EPOCH FROM (ps.completed_at - ps.started_at))
+	        ELSE NULL
+	    END as duration_seconds
+	FROM processing_jobs pj
+	JOIN processing_steps ps ON pj.id = ps.parent_job_id
+	ORDER BY pj.created_at DESC, ps.created_at;
+2025-07-25 00:36:26.461 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 00:39:53.076 UTC [15062] LOG:  checkpoint complete: wrote 2064 buffers (12.6%); 0 WAL file(s) added, 0 removed, 1 recycled; write=206.541 s, sync=0.039 s, total=206.615 s; sync files=482, longest=0.004 s, average=0.001 s; distance=14947 kB, estimate=14947 kB; lsn=0/23D92C0, redo lsn=0/23834E0
+2025-07-25 00:45:54.053 UTC [17680] ERROR:  relation "passthrough_plants_richness" does not exist at character 79
+2025-07-25 00:45:54.053 UTC [17680] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_plants_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:45:54.055 UTC [17680] ERROR:  relation "passthrough_terrestrial_richness" does not exist at character 79
+2025-07-25 00:45:54.055 UTC [17680] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_terrestrial_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:45:54.596 UTC [17680] ERROR:  relation "passthrough_plants_richness" does not exist at character 79
+2025-07-25 00:45:54.596 UTC [17680] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_plants_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:45:54.598 UTC [17680] ERROR:  relation "passthrough_terrestrial_richness" does not exist at character 79
+2025-07-25 00:45:54.598 UTC [17680] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_terrestrial_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:46:26.270 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 00:46:37.643 UTC [15062] LOG:  checkpoint complete: wrote 114 buffers (0.7%); 0 WAL file(s) added, 0 removed, 0 recycled; write=11.349 s, sync=0.008 s, total=11.373 s; sync files=37, longest=0.003 s, average=0.001 s; distance=354 kB, estimate=13488 kB; lsn=0/23DBEC0, redo lsn=0/23DBE30
+2025-07-25 00:47:08.469 UTC [18603] ERROR:  relation "passthrough_plants_richness" does not exist at character 79
+2025-07-25 00:47:08.469 UTC [18603] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_plants_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:47:08.470 UTC [18603] ERROR:  relation "passthrough_terrestrial_richness" does not exist at character 79
+2025-07-25 00:47:08.470 UTC [18603] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_terrestrial_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:47:08.902 UTC [18603] ERROR:  relation "passthrough_plants_richness" does not exist at character 79
+2025-07-25 00:47:08.902 UTC [18603] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_plants_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:47:08.903 UTC [18603] ERROR:  relation "passthrough_terrestrial_richness" does not exist at character 79
+2025-07-25 00:47:08.903 UTC [18603] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_terrestrial_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:51:26.743 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 00:51:27.280 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=3 kB, estimate=12139 kB; lsn=0/23DCB58, redo lsn=0/23DCB00
+2025-07-25 00:54:18.339 UTC [20585] ERROR:  relation "passthrough_plants_richness" does not exist at character 79
+2025-07-25 00:54:18.339 UTC [20585] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_plants_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:54:18.340 UTC [20585] ERROR:  relation "passthrough_terrestrial_richness" does not exist at character 79
+2025-07-25 00:54:18.340 UTC [20585] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_terrestrial_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:54:18.771 UTC [20585] ERROR:  relation "passthrough_plants_richness" does not exist at character 79
+2025-07-25 00:54:18.771 UTC [20585] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_plants_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:54:18.772 UTC [20585] ERROR:  relation "passthrough_terrestrial_richness" does not exist at character 79
+2025-07-25 00:54:18.772 UTC [20585] STATEMENT:  
+	                    SELECT row_idx, col_idx, value 
+	                    FROM passthrough_terrestrial_richness 
+	                    ORDER BY row_idx, col_idx
+	                
+2025-07-25 00:56:26.380 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 00:56:27.117 UTC [15062] LOG:  checkpoint complete: wrote 8 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.705 s, sync=0.012 s, total=0.738 s; sync files=7, longest=0.010 s, average=0.002 s; distance=4 kB, estimate=10926 kB; lsn=0/23DDC88, redo lsn=0/23DDC30
+2025-07-25 01:16:26.443 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 01:16:26.989 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.508 s, sync=0.008 s, total=0.546 s; sync files=6, longest=0.007 s, average=0.002 s; distance=5 kB, estimate=9834 kB; lsn=0/23DF230, redo lsn=0/23DF1D8
+2025-07-25 01:31:27.290 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 01:31:27.827 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=6 kB, estimate=8851 kB; lsn=0/23E0CC0, redo lsn=0/23E0C68
+2025-07-25 01:36:27.927 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 01:36:28.457 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.006 s, total=0.531 s; sync files=6, longest=0.004 s, average=0.001 s; distance=7 kB, estimate=7966 kB; lsn=0/23E2BC8, redo lsn=0/23E2B70
+2025-07-25 01:41:27.555 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 01:41:28.092 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=8 kB, estimate=7171 kB; lsn=0/23E4F70, redo lsn=0/23E4F18
+2025-07-25 02:06:27.555 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:06:28.192 UTC [15062] LOG:  checkpoint complete: wrote 7 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.606 s, sync=0.012 s, total=0.638 s; sync files=7, longest=0.010 s, average=0.002 s; distance=4 kB, estimate=6454 kB; lsn=0/23E5FA0, redo lsn=0/23E5F48
+2025-07-25 02:16:27.393 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:16:27.939 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.506 s, sync=0.012 s, total=0.546 s; sync files=6, longest=0.010 s, average=0.002 s; distance=4 kB, estimate=5809 kB; lsn=0/23E7390, redo lsn=0/23E7338
+2025-07-25 02:21:28.039 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:21:28.575 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.011 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=6 kB, estimate=5229 kB; lsn=0/23E8C28, redo lsn=0/23E8BD0
+2025-07-25 02:26:28.675 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:26:29.212 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=7 kB, estimate=4706 kB; lsn=0/23EA948, redo lsn=0/23EA8F0
+2025-07-25 02:31:28.312 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:31:28.849 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=8 kB, estimate=4237 kB; lsn=0/23ECB10, redo lsn=0/23ECAB8
+2025-07-25 02:32:34.856 UTC [55658] FATAL:  database "production_geoprocess_db" does not exist
+2025-07-25 02:32:52.995 UTC [55688] ERROR:  column "created_at" does not exist at character 65
+2025-07-25 02:32:52.995 UTC [55688] HINT:  Perhaps you meant to reference the column "experiments.created_by".
+2025-07-25 02:32:52.995 UTC [55688] STATEMENT:  SELECT name, status, config->'target_resolution' as resolution, created_at FROM experiments ORDER BY created_at DESC LIMIT 5;
+2025-07-25 02:36:28.949 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:36:30.096 UTC [15062] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.107 s, sync=0.017 s, total=1.147 s; sync files=43, longest=0.008 s, average=0.001 s; distance=78 kB, estimate=3821 kB; lsn=0/2400618, redo lsn=0/24005C0
+2025-07-25 02:41:28.196 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:41:31.138 UTC [15062] LOG:  checkpoint complete: wrote 30 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.917 s, sync=0.006 s, total=2.943 s; sync files=21, longest=0.004 s, average=0.001 s; distance=11 kB, estimate=3440 kB; lsn=0/24033C0, redo lsn=0/2403368
+2025-07-25 02:42:53.662 UTC [58197] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-25 02:42:53.662 UTC [58197] DETAIL:  Key (name)=(fresh_skip_resampling_test) already exists.
+2025-07-25 02:42:53.662 UTC [58197] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('fresh_skip_resampling_test', 'Production pipeline with skip-resampling functionality', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "resample", "dependencies": ["data_load"], "memory_requirements": 8.0, "disk_requirements": null}, {"name": "merge", "dependencies": ["resample"], "memory_requirements": 800.0, "disk_requirements": null}, {"name": "export", "dependencies": ["merge"], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "analysis_som", "dependencies": ["export"], "memory_requirements": 8.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load", "resample", "merge", "export", "analysis_som"], "description": "Production pipeline with skip-resampling functionality"}', 'system')
+	                RETURNING id
+	            
+2025-07-25 02:46:28.239 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:46:28.869 UTC [15062] LOG:  checkpoint complete: wrote 7 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.605 s, sync=0.005 s, total=0.631 s; sync files=7, longest=0.004 s, average=0.001 s; distance=6 kB, estimate=3096 kB; lsn=0/2404CE0, redo lsn=0/2404C50
+2025-07-25 02:51:28.969 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:51:29.505 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=6 kB, estimate=2787 kB; lsn=0/2406858, redo lsn=0/2406800
+2025-07-25 02:56:28.606 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 02:56:29.142 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=9 kB, estimate=2510 kB; lsn=0/2408EA8, redo lsn=0/2408E50
+2025-07-25 03:01:28.242 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 03:01:28.779 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=3 kB, estimate=2259 kB; lsn=0/2409DA0, redo lsn=0/2409D48
+2025-07-25 03:41:02.189 UTC [82795] ERROR:  column "created_at" does not exist at character 47
+2025-07-25 03:41:02.189 UTC [82795] HINT:  Perhaps you meant to reference the column "experiments.created_by".
+2025-07-25 03:41:02.189 UTC [82795] STATEMENT:  
+	                    SELECT id, name, status, created_at, completed_at,
+	                           config->>'target_resolution' as resolution
+	                    FROM experiments
+	                    ORDER BY created_at DESC
+	                    LIMIT 5
+	                
+2025-07-25 03:51:29.780 UTC [15062] LOG:  checkpoint starting: time
+2025-07-25 03:51:30.310 UTC [15062] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.530 s; sync files=6, longest=0.010 s, average=0.002 s; distance=4 kB, estimate=2033 kB; lsn=0/240B130, redo lsn=0/240B0D8

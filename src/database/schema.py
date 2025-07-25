@@ -1,7 +1,7 @@
 """Database schema operations and data access layer."""
 
 from pathlib import Path
-from .connection import db
+from .connection import DatabaseManager, db
 from ..config import config
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Union

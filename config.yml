@@ -21,7 +21,7 @@
 # =============================================================================
 resampling:
   # Target resolution for all datasets (in degrees for geographic data)
-  target_resolution: 0.05  # ~5km at equator (adjust as needed)
+  target_resolution: 0.016667  # ~5km at equator (adjust as needed)
   target_crs: 'EPSG:4326'
   
   # Resampling strategy per data type
@@ -86,13 +86,13 @@ processing:
   subsampling:
     enabled: false  # DISABLED for full dataset quality on high-memory system
     max_samples: 250000000  # Higher than your 224M samples
-    memory_limit_gb: 500    # Use most of your 1TB RAM
+    memory_limit_gb: 800    # Use most of your 1TB RAM
     strategy: 'random'
     min_samples_per_class: 1000
     spatial_block_size: 200
   
   # Optimized for 256-core system
-  max_workers: 64      # Conservative for shared cluster
+  max_workers: 200      # Conservative for shared cluster
   batch_size: 50000    # Larger batches for efficiency
   chunk_size: 100000   # Larger chunks for better throughput
 
@@ -100,8 +100,8 @@ processing:
 # RASTER PROCESSING FOR HIGH-MEMORY SYSTEM
 # =============================================================================
 raster_processing:
-  memory_limit_mb: 500000  # 800GB in MB
-  parallel_workers: 64     # Use multiple cores
+  memory_limit_mb: 800000  # 800GB in MB
+  parallel_workers: 200     # Use multiple cores
   tile_size: 2000         # Larger tiles for efficiency
   cache_ttl_days: 30
   
@@ -122,13 +122,13 @@ raster_processing:
 # SOM ANALYSIS - OPTIMIZED FOR QUALITY ON HIGH-MEMORY SYSTEM
 # =============================================================================
 som_analysis:
-  max_pixels_in_memory: 250000000  # Handle full dataset in memory
+  max_pixels_in_memory: 500000000  # Handle full dataset in memory
   memory_overhead_factor: 2.0      # Reduced overhead with abundant RAM
   use_memory_mapping: false        # Keep everything in RAM for speed
   
   # High-quality SOM settings
   default_grid_size: [12, 12]      # Larger grid for better resolution
-  iterations: 5000                 # More iterations for convergence
+  iterations: 8000                 # More iterations for convergence
   sigma: 1.5                       # Standard deviation for neighborhood
   learning_rate: 0.5               # Learning rate
   neighborhood_function: 'gaussian'
@@ -149,8 +149,8 @@ database:
   host: 'localhost'
   port: 51051  # Cluster database port
   database: 'geo_cluster_db'       # Cluster database name
-  user: 'yl998'                    # Cluster username
-  password: 'your_password'        # Cluster password
+  user: 'jason'                    # Cluster username
+  password: '123456'        # Cluster password
   
   max_connections: 20               # More connections for parallel processing
   connection_timeout: 30

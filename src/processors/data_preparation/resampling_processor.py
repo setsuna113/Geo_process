@@ -841,7 +841,7 @@ class ResamplingProcessor(BaseProcessor):
 
     def load_resampled_data(self, dataset_name: str) -> Optional[np.ndarray]:
         """
-        Load resampled data from database.
+        Load resampled data from database (for non-passthrough datasets).
         
         Args:
             dataset_name: Name of the dataset
@@ -859,6 +859,27 @@ class ResamplingProcessor(BaseProcessor):
                 return None
             
             dataset_info = datasets[0]
+            
+            # Check if it's a passthrough dataset
+            metadata = dataset_info.get('metadata', {})
+            if metadata.get('passthrough', False):
+                logger.info(f"Dataset {dataset_name} is passthrough, use load_passthrough_data instead")
+                # Create ResampledDatasetInfo and load via passthrough method
+                info = ResampledDatasetInfo(
+                    name=dataset_info['name'],
+                    source_path=Path(dataset_info['source_path']),
+                    target_resolution=float(dataset_info['target_resolution']),
+                    target_crs=dataset_info['target_crs'],
+                    bounds=tuple(dataset_info['bounds']),
+                    shape=(int(dataset_info['shape_height']), int(dataset_info['shape_width'])),
+                    data_type=dataset_info['data_type'],
+                    resampling_method=dataset_info['resampling_method'],
+                    band_name=dataset_info['band_name'],
+                    metadata=metadata
+                )
+                return self.load_passthrough_data(info)
+            
+            # For non-passthrough, load from database table
             table_name = dataset_info['data_table_name']
             shape = (dataset_info['shape_height'], dataset_info['shape_width'])
             

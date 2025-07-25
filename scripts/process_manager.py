@@ -36,80 +36,82 @@ class PipelineCLI:
     
     def start(self, args):
         """Start a pipeline process."""
+        
+        # Get values from args with defaults
+        experiment_name = args.experiment_name or "production_test"
+        analysis_method = args.analysis_method or "som"
+        
         # Build command - run the pipeline orchestrator directly
         command = [
             sys.executable,
             "-c",
             f"""
-import sys
-import os
-from pathlib import Path
-sys.path.insert(0, str(Path.cwd()))
+    import sys
+    import os
+    from pathlib import Path
+    sys.path.insert(0, str(Path.cwd()))
 
-# Preserve environment variables
-if os.getenv('FORCE_TEST_MODE'):
-    os.environ['FORCE_TEST_MODE'] = os.getenv('FORCE_TEST_MODE')
-if os.getenv('DB_NAME'):
-    os.environ['DB_NAME'] = os.getenv('DB_NAME')
+    # Preserve environment variables
+    if os.getenv('FORCE_TEST_MODE'):
+        os.environ['FORCE_TEST_MODE'] = os.getenv('FORCE_TEST_MODE')
+    if os.getenv('DB_NAME'):
+        os.environ['DB_NAME'] = os.getenv('DB_NAME')
 
-from src.pipelines.orchestrator import PipelineOrchestrator
-from src.pipelines.stages.load_stage import DataLoadStage
-from src.pipelines.stages.resample_stage import ResampleStage
-from src.pipelines.stages.merge_stage import MergeStage
-from src.pipelines.stages.export_stage import ExportStage
-from src.pipelines.stages.analysis_stage import AnalysisStage
-from src.config.config import Config
-from src.database.connection import DatabaseManager
+    from src.pipelines.orchestrator import PipelineOrchestrator
+    from src.pipelines.stages.load_stage import DataLoadStage
+    from src.pipelines.stages.resample_stage import ResampleStage
+    from src.pipelines.stages.merge_stage import MergeStage
+    from src.pipelines.stages.export_stage import ExportStage
+    from src.pipelines.stages.analysis_stage import AnalysisStage
+    from src.config.config import Config
+    from src.database.connection import DatabaseManager
 
-config = Config()
-db = DatabaseManager()
+    config = Config()
+    db = DatabaseManager()
 
-# Create pipeline orchestrator
-orchestrator = PipelineOrchestrator(config, db)
+    # Create pipeline orchestrator
+    orchestrator = PipelineOrchestrator(config, db)
 
-# Configure pipeline stages
-analysis_method = '{args.analysis_method or "som"}'
-stages = [
-    DataLoadStage,
-    ResampleStage, 
-    MergeStage,
-    ExportStage,
-    lambda: AnalysisStage(analysis_method)  # Use specified analysis method
-]
+    # Configure pipeline stages
+    analysis_method = '{analysis_method}'
+    stages = [
+        DataLoadStage,
+        ResampleStage, 
+        MergeStage,
+        ExportStage,
+        lambda: AnalysisStage(analysis_method)  # Use specified analysis method
+    ]
 
-# Instantiate stages (handle lambda for AnalysisStage)
-stage_instances = []
-for stage_class in stages:
-    if callable(stage_class) and not isinstance(stage_class, type):
-        # Handle lambda case
-        stage_instances.append(stage_class())
-    else:
-        # Handle normal class case
-        stage_instances.append(stage_class())
+    # Instantiate stages (handle lambda for AnalysisStage)
+    stage_instances = []
+    for stage_class in stages:
+        if callable(stage_class) and not isinstance(stage_class, type):
+            # Handle lambda case
+            stage_instances.append(stage_class())
+        else:
+            # Handle normal class case
+            stage_instances.append(stage_class())
 
-for stage in stage_instances:
-    orchestrator.register_stage(stage)
+    for stage in stage_instances:
+        orchestrator.register_stage(stage)
 
-# Get experiment name from args or default
-experiment_name = '{args.experiment_name or "production_test"}'
-description = 'Production pipeline with skip-resampling functionality'
+    # Use the experiment name passed from command line
+    experiment_name = '{experiment_name}'
+    description = 'Production pipeline with skip-resampling functionality'
 
-print(f'🚀 Starting pipeline: {{experiment_name}}')
-print(f'Skip resampling enabled: {{config.get("resampling.allow_skip_resampling")}}')
-print(f'Target resolution: {{config.get("resampling.target_resolution")}}°')
+    print(f'🚀 Starting pipeline: {{experiment_name}}')
 
-# Run complete pipeline
-results = orchestrator.run_pipeline(
-    experiment_name=experiment_name,
-    description=description,
-    resume_from_checkpoint=True
-)
+    # Run complete pipeline
+    results = orchestrator.run_pipeline(
+        experiment_name=experiment_name,
+        description=description,
+        resume_from_checkpoint=True
+    )
 
-print('✅ Pipeline completed successfully!')
-print(f'📊 Pipeline results: {{len(results.get("stages_completed", []))}} stages completed')
-"""
+    print('✅ Pipeline completed successfully!')
+    """
         ]
-        
+            
         # Add arguments
         if args.experiment_name:
             command.extend(['--experiment-name', args.experiment_name])
@@ -230,10 +232,10 @@ print(f'📊 Pipeline results: {{len(results.get("stages_completed", []))}} stag
         try:
             with self.db.get_cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, name, status, created_at, completed_at,
+                    SELECT id, name, status, started_at, completed_at,
                            config->>'target_resolution' as resolution
                     FROM experiments
-                    ORDER BY created_at DESC
+                    ORDER BY started_at DESC
                     LIMIT %s
                 """, (args.limit,))
                 
@@ -247,8 +249,8 @@ print(f'📊 Pipeline results: {{len(results.get("stages_completed", []))}} stag
                 data = []
                 for exp in experiments:
                     duration = None
-                    if exp['completed_at'] and exp['created_at']:
-                        duration = (exp['completed_at'] - exp['created_at']).total_seconds()
+                    if exp['completed_at'] and exp['started_at']:
+                        duration = (exp['completed_at'] - exp['started_at']).total_seconds()
                         duration = f"{duration/60:.1f}m"
                     
                     data.append([
@@ -256,7 +258,7 @@ print(f'📊 Pipeline results: {{len(results.get("stages_completed", []))}} stag
                         exp['name'][:30],
                         exp['status'],
                         exp['resolution'],
-                        exp['created_at'].strftime('%Y-%m-%d %H:%M'),
+                        exp['started_at'].strftime('%Y-%m-%d %H:%M'),
                         duration or '-'
                     ])
                 

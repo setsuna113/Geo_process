@@ -661,7 +661,7 @@ SELECT
     END as duration_seconds
 FROM processing_jobs pj
 JOIN processing_steps ps ON pj.id = ps.parent_job_id
-ORDER BY pj.created_at DESC, ps.created_at;
+ORDER BY pj.id DESC, ps.created_at;
 
 -- Export summary view
 CREATE OR REPLACE VIEW export_summary AS

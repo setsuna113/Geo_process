@@ -381,7 +381,7 @@ class PipelineOrchestrator:
         config = self.config
         
         # Get memory limit from config or system
-        memory_limit_mb = config.get('pipeline.memory_limit_gb', 4.0) * 1024
+        memory_limit_mb = config.get('processing.memory_limit_gb', 4.0) * 1024
         
         # Adjust based on current memory pressure
         memory_status = self.memory_monitor.get_status()
@@ -419,7 +419,7 @@ class PipelineOrchestrator:
                     )
                 
                 # Trigger cleanup if memory is high
-                if end_memory > self.orchestrator.config.get('pipeline.memory_limit_gb', 4.0) * 1024 * 0.8:
+                if end_memory > self.orchestrator.config.get('processing.memory_limit_gb', 4.0) * 1024 * 0.8:
                     self.orchestrator._handle_memory_pressure()
         
         return MemoryMonitoringContext(self, stage)
@@ -802,7 +802,7 @@ class PipelineOrchestrator:
                 for stage in self.stages
             ],
             'monitoring': {
-                'memory_limit_gb': self.config.get('pipeline.memory_limit_gb', 16),
+                'memory_limit_gb': self.config.get('processing.memory_limit_gb', 16),
                 'checkpoint_interval': self.config.get('pipeline.checkpoint_interval', 300)
             }
         }

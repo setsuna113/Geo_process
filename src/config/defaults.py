@@ -23,7 +23,7 @@ PATHS = {
 
 # Pipeline configuration - test mode defaults (production overrides via config.yml)
 PIPELINE = {
-    'memory_limit_gb': 4.0,  # Conservative test mode limit
+    'memory_limit_gb': 800.0,  # Conservative test mode limit
     'enable_memory_monitoring': True,
     'memory_check_interval': 5.0,  # seconds
     'auto_adjust_chunk_size': True
@@ -198,7 +198,7 @@ PROCESS_MANAGEMENT = {
     },
     'daemon_mode': {
         'enabled': False,
-        'pid_file': '/var/run/biodiversity/pipeline.pid',
+        'pid_file': str(Path.home() / '.biodiversity' / 'pipeline.pid'),
         'log_file': LOGS_DIR / 'daemon.log',
         'working_dir': PROJECT_ROOT,
         'umask': 0o022

@@ -72,13 +72,13 @@ class ProcessController:
             if is_test_mode:
                 pid_dir = Path(tempfile.gettempdir()) / "biodiversity_test" / "pid"
             else:
-                pid_dir = Path("/var/run/biodiversity")
+                pid_dir = Path.home() / ".biodiversity" / "pid"
         
         if log_dir is None:
             if is_test_mode:
                 log_dir = Path(tempfile.gettempdir()) / "biodiversity_test" / "logs"
             else:
-                log_dir = Path("/var/log/biodiversity")
+                log_dir = Path.home() / ".biodiversity" / "logs"
         
         self.pid_dir = pid_dir
         self.log_dir = log_dir
