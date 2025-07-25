@@ -11,9 +11,13 @@ pytest.cache/
 *.pyd
 *.npy
 *.log
+*.gz
 
 # VS Code
 .vscode/
 
 # Backup files
 *.backup
+
+#data
+metadata.json
