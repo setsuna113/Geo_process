@@ -5,7 +5,7 @@ import psycopg2.pool
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from pathlib import Path
-from ..config import config
+from src.config import config
 import logging
 import time
 import re
@@ -47,7 +47,7 @@ class DatabaseManager:
         # Check 3: pytest in modules (traditional test detection)
         if 'pytest' in sys.modules:
             try:
-                from ..config import config
+                from src.config import config
                 if config.testing.get('enabled', False):
                     return True
             except:
@@ -70,7 +70,7 @@ class DatabaseManager:
         if not self.is_test_mode:
             raise RuntimeError("Test mode operations can only be performed when test mode is active")
         
-        from ..config import config
+        from src.config import config
         safety_checks = config.testing.get('safety_checks', {})
         
         # Validate database name
@@ -572,7 +572,7 @@ class DatabaseManager:
                 
                 if record_count > 0:
                     # Check if data is from a different experiment
-                    from ..config import config
+                    from src.config import config
                     experiment_name = getattr(config, 'experiment_name', None)
                     
                     if experiment_name:

@@ -14,11 +14,7 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
 import json
-try:
-    import daemon
-    import daemon.pidfile
-except ImportError:
-    daemon = None
+# Manual daemon implementation - no external dependencies needed
 
 logger = logging.getLogger(__name__)
 
@@ -306,37 +302,96 @@ class ProcessController:
         """Start a process as daemon."""
         pid_file = self.pid_dir / f"{name}.pid"
         
-        # Create daemon context
-        context = daemon.DaemonContext(
-            pidfile=daemon.pidfile.PIDLockFile(str(pid_file)),
-            working_directory=str(working_dir) if working_dir else os.getcwd(),
-            stdout=open(log_file, 'a'),
-            stderr=open(log_file, 'a'),
-            signal_map={
-                signal.SIGTERM: 'terminate',
-                signal.SIGINT: 'terminate',
-            }
-        )
+        # Fork process to create daemon
+        pid = os.fork()
         
-        # Fork and run daemon
-        with context:
+        if pid == 0:
+            # Child process - become daemon
+            # Detach from parent environment
+            os.setsid()
+            
+            # Second fork to ensure not a session leader
+            pid2 = os.fork()
+            if pid2 != 0:
+                os._exit(0)
+            
+            # Change directory
+            if working_dir:
+                os.chdir(str(working_dir))
+            else:
+                os.chdir('/')
+            
+            # Set umask
+            os.umask(0)
+            
+            # Close file descriptors
+            import resource
+            max_fd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+            if max_fd == resource.RLIM_INFINITY:
+                max_fd = 1024
+            
+            for fd in range(max_fd):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            
+            # Redirect standard file descriptors
+            with open(log_file, 'a') as log:
+                os.dup2(log.fileno(), 0)  # stdin
+                os.dup2(log.fileno(), 1)  # stdout  
+                os.dup2(log.fileno(), 2)  # stderr
+            
             # Update environment
             if env:
                 os.environ.update(env)
             
-            # Execute command
-            process = subprocess.Popen(command)
-            
-            # Write actual PID
-            with open(pid_file, 'w') as f:
-                f.write(str(process.pid))
-            
-            # Wait for process
-            process.wait()
+            # Execute command and write PID
+            try:
+                process = subprocess.Popen(command)
+                
+                # Write PID to file
+                with open(pid_file, 'w') as f:
+                    f.write(str(process.pid))
+                
+                # Wait for process to complete
+                process.wait()
+                
+            except Exception as e:
+                logger.error(f"Daemon process failed: {e}")
+            finally:
+                # Clean up PID file
+                try:
+                    os.unlink(pid_file)
+                except:
+                    pass
+                os._exit(0)
         
-        # Read PID from file
-        with open(pid_file, 'r') as f:
-            return int(f.read().strip())
+        else:
+            # Parent process - wait for child to detach
+            os.waitpid(pid, 0)
+            
+            # Give daemon time to write PID file
+            max_wait = 3.0  # seconds
+            wait_interval = 0.1
+            waited = 0
+            
+            while waited < max_wait:
+                try:
+                    with open(pid_file, 'r') as f:
+                        pid_str = f.read().strip()
+                        if pid_str:
+                            return int(pid_str)
+                except (FileNotFoundError, ValueError):
+                    pass
+                
+                time.sleep(wait_interval)
+                waited += wait_interval
+            
+            # If we still can't read the PID, log but don't fail
+            logger.warning(f"Could not read PID file for daemon {name}, using placeholder PID")
+            # Return a placeholder PID and let monitoring handle it
+            return -1
     
     def _start_regular_process(self,
                              name: str,
@@ -370,6 +425,17 @@ class ProcessController:
             
             process_info = self._processes[name]
             
+            # Handle placeholder PID from daemon
+            if process_info.pid == -1:
+                pid_file = self.pid_dir / f"{name}.pid"
+                try:
+                    with open(pid_file, 'r') as f:
+                        actual_pid = int(f.read().strip())
+                        process_info.pid = actual_pid
+                except (FileNotFoundError, ValueError):
+                    logger.error(f"Cannot find PID for daemon process '{name}'")
+                    return False
+            
             try:
                 process = psutil.Process(process_info.pid)
                 process.send_signal(sig)
@@ -392,6 +458,17 @@ class ProcessController:
         
         process_info = self._processes[name]
         
+        # Handle placeholder PID from daemon
+        if process_info.pid == -1:
+            # Try to read actual PID from file
+            pid_file = self.pid_dir / f"{name}.pid"
+            try:
+                with open(pid_file, 'r') as f:
+                    actual_pid = int(f.read().strip())
+                    process_info.pid = actual_pid
+            except (FileNotFoundError, ValueError):
+                return False
+        
         try:
             process = psutil.Process(process_info.pid)
             return process.is_running()
@@ -404,6 +481,17 @@ class ProcessController:
             return
         
         process_info = self._processes[name]
+        
+        # Handle placeholder PID from daemon
+        if process_info.pid == -1:
+            pid_file = self.pid_dir / f"{name}.pid"
+            try:
+                with open(pid_file, 'r') as f:
+                    actual_pid = int(f.read().strip())
+                    process_info.pid = actual_pid
+            except (FileNotFoundError, ValueError):
+                # PID file not ready yet, skip monitoring for now
+                return
         
         try:
             process = psutil.Process(process_info.pid)

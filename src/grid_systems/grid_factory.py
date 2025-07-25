@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from ..base import BaseGrid
 from ..core.registry import component_registry
-from ..config import config
+from src.config import config
 from ..database.schema import schema
 from ..database.connection import db
 from .bounds_manager import BoundsManager, BoundsDefinition

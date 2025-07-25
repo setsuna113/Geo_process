@@ -10,7 +10,7 @@ from spopt.region import MaxPHeuristic
 import libpysal
 
 from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
-from src.config.config import Config
+from src.config import config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)

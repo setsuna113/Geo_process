@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import logging
 
-from src.config.config import Config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 

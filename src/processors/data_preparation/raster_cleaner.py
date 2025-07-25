@@ -9,7 +9,7 @@ import xarray as xr
 from dataclasses import dataclass
 from datetime import datetime
 
-from src.config.config import Config
+from src.config import config
 from src.base.processor import BaseProcessor
 from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
 from src.raster_data.loaders.base_loader import RasterWindow

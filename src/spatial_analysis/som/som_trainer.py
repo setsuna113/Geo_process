@@ -16,7 +16,7 @@ from src.spatial_analysis.memory_aware_processor import (
     MemoryAwareProcessor, 
     check_memory_usage
 )
-from src.config.config import Config
+from src.config import config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)

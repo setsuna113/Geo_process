@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from .connection import DatabaseManager, db
-from ..config import config
+from src.config import config
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Union
 import json
@@ -904,7 +904,7 @@ class DatabaseSchema:
         # Validate test mode
         db.validate_test_mode_operation()
         
-        from ..config import config
+        from src.config import config
         testing_config = config.testing
         
         if not testing_config.get('cleanup_after_test', True) and not force:
@@ -1020,7 +1020,7 @@ class DatabaseSchema:
         if not db.is_test_mode:
             return False
         
-        from ..config import config
+        from src.config import config
         import json
         metadata_key = config.testing.get('test_data_markers', {}).get('metadata_key', '__test_data__')
         

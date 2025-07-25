@@ -9,7 +9,7 @@ from functools import lru_cache
 from .base_loader import (
     BaseRasterLoader, RasterMetadata, RasterWindow
 )
-from src.config.config import Config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 

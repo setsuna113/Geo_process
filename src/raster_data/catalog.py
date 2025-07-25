@@ -7,7 +7,7 @@ from dataclasses import dataclass, asdict
 import logging
 
 from src.database.connection import DatabaseManager
-from src.config.config import Config
+from src.config import config
 from src.raster_data.loaders.base_loader import BaseRasterLoader
 from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
 from src.raster_data.loaders.metadata_extractor import RasterMetadataExtractor

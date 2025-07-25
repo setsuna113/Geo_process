@@ -10,7 +10,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from typing import Union as TypingUnion
 import json
 
-from src.config.config import Config
+from src.config import config
 from src.base.processor import BaseProcessor
 from src.database.connection import DatabaseManager
 

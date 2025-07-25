@@ -9,7 +9,7 @@ import json
 from .metadata import RasterMetadataExtractor
 from .processor import RasterProcessor
 from ..database.schema import schema
-from ..config import config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 

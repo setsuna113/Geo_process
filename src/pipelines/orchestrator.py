@@ -13,7 +13,7 @@ import threading
 import queue
 import psutil
 
-from src.config.config import Config
+from src.config import config
 from src.database.connection import DatabaseManager
 from src.pipelines.stages.base_stage import ProcessingConfig
 from src.pipelines.stages.base_stage import PipelineStage, StageStatus, StageResult

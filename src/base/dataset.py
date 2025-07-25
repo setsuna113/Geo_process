@@ -11,7 +11,7 @@ import json
 import numpy as np
 
 from ..core.registry import component_registry
-from ..config import config
+from src.config import config
 from .raster_source import RasterTile
 
 logger = logging.getLogger(__name__)

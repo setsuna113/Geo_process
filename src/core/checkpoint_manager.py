@@ -75,8 +75,10 @@ class CheckpointManager:
         if not hasattr(self, '_initialized'):
             self._initialized = True
             
-            # Configuration
-            self._checkpoint_dir = Path("checkpoints")
+            # Get checkpoint directory from config
+            from src.config import config
+            checkpoint_path = config.get('paths.checkpoint_dir', 'checkpoints')
+            self._checkpoint_dir = Path(checkpoint_path)
             self._checkpoint_dir.mkdir(exist_ok=True)
             
             # Checkpoint registry

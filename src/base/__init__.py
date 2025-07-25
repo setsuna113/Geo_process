@@ -47,6 +47,23 @@ from .grid import BaseGrid, GridCell
 from .feature import BaseFeature, FeatureResult
 from .dataset import BaseDataset, DatasetInfo
 
+# Checkpoint system abstractions
+from .checkpoint_types import (
+    CheckpointData, CheckpointMetadata, CheckpointLevel, CheckpointStatus,
+    CheckpointFilter, StorageConfig, StorageBackend,
+    CheckpointError, CheckpointNotFoundError, CheckpointCorruptedError,
+    CheckpointValidationError, StorageBackendError
+)
+from .checkpoint import (
+    CheckpointStorage, CheckpointValidator, DefaultCheckpointValidator,
+    CheckpointCompressor, NoopCompressor, CheckpointMetrics,
+    generate_checkpoint_id, parse_checkpoint_id, checkpoint_operation_timer
+)
+from .checkpointable import (
+    CheckpointPolicy, ResumableProcess, CheckpointableProcess,
+    SimpleCheckpointableProcess, make_checkpointable, checkpoint_on_interval
+)
+
 # Version and metadata
 __version__ = "1.0.0"
 __author__ = "Jason"
@@ -68,7 +85,46 @@ __all__ = [
     
     # Dataset classes
     'BaseDataset', 
-    'DatasetInfo'
+    'DatasetInfo',
+    
+    # Checkpoint data types
+    'CheckpointData',
+    'CheckpointMetadata', 
+    'CheckpointLevel',
+    'CheckpointStatus',
+    'CheckpointFilter',
+    'StorageConfig',
+    'StorageBackend',
+    
+    # Checkpoint exceptions
+    'CheckpointError',
+    'CheckpointNotFoundError',
+    'CheckpointCorruptedError', 
+    'CheckpointValidationError',
+    'StorageBackendError',
+    
+    # Checkpoint abstractions
+    'CheckpointStorage',
+    'CheckpointValidator',
+    'DefaultCheckpointValidator',
+    'CheckpointCompressor',
+    'NoopCompressor',
+    'CheckpointMetrics',
+    
+    # Checkpoint utilities
+    'generate_checkpoint_id',
+    'parse_checkpoint_id',
+    'checkpoint_operation_timer',
+    
+    # Checkpointable process classes
+    'CheckpointPolicy',
+    'ResumableProcess',
+    'CheckpointableProcess',
+    'SimpleCheckpointableProcess',
+    
+    # Checkpoint decorators
+    'make_checkpointable',
+    'checkpoint_on_interval'
 ]
 
 def get_base_class_info():
@@ -79,7 +135,11 @@ def get_base_class_info():
         ('BaseProcessor', BaseProcessor),
         ('BaseGrid', BaseGrid),
         ('BaseFeature', BaseFeature), 
-        ('BaseDataset', BaseDataset)
+        ('BaseDataset', BaseDataset),
+        ('CheckpointStorage', CheckpointStorage),
+        ('CheckpointValidator', CheckpointValidator),
+        ('CheckpointCompressor', CheckpointCompressor),
+        ('ResumableProcess', ResumableProcess)
     ]
     
     info = {}
@@ -96,14 +156,25 @@ def get_base_class_info():
 def _validate_base_module():
     """Validate base module integrity."""
     try:
-        # Check all imports work
+        # Check all core imports work
         assert BaseProcessor is not None
         assert BaseGrid is not None  
         assert BaseFeature is not None
         assert BaseDataset is not None
         
-        # Check abstract methods are defined
+        # Check checkpoint imports work
+        assert CheckpointData is not None
+        assert CheckpointStorage is not None
+        assert CheckpointableProcess is not None
+        assert CheckpointPolicy is not None
+        
+        # Check abstract methods are defined for core classes
         for cls in [BaseProcessor, BaseGrid, BaseFeature, BaseDataset]:
+            assert hasattr(cls, '__abstractmethods__')
+            assert len(cls.__abstractmethods__) > 0
+        
+        # Check abstract methods are defined for checkpoint classes    
+        for cls in [CheckpointStorage, CheckpointValidator, CheckpointCompressor, ResumableProcess]:
             assert hasattr(cls, '__abstractmethods__')
             assert len(cls.__abstractmethods__) > 0
             

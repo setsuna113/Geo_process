@@ -7,7 +7,7 @@ import importlib
 import importlib.util
 import logging
 from .registry import component_registry, ComponentRegistry
-from ..config import config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 

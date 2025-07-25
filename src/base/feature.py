@@ -8,7 +8,7 @@ import numpy as np
 import logging
 
 from ..core.registry import component_registry
-from ..config import config
+from src.config import config
 from ..database.schema import schema
 
 logger = logging.getLogger(__name__)

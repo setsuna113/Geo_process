@@ -8,7 +8,7 @@ import xarray as xr
 from pathlib import Path
 
 from src.base.processor import BaseProcessor
-from src.config.config import Config
+from src.config import config
 from src.database.connection import DatabaseManager
 from src.processors.data_preparation.array_converter import ArrayConverter
 from src.spatial_analysis.memory_aware_processor import MemoryAwareProcessor, check_memory_usage

@@ -10,7 +10,7 @@ import math
 import logging
 from pathlib import Path
 
-from ..config import config
+from src.config import config
 from ..database.schema import schema
 from ..database.connection import db
 

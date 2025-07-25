@@ -3,7 +3,7 @@
 import logging
 from typing import List, Dict, Optional, Any
 from .connection import DatabaseManager
-from ..config import config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 

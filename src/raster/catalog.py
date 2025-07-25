@@ -14,7 +14,7 @@ from .validators.coverage_validator import CoverageValidator
 from .validators.value_validator import ValueValidator
 from .loaders.base_loader import BaseRasterLoader
 from src.core.registry import Registry
-from src.config.config import Config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 
 from ..core.registry import component_registry
-from ..config import config as global_config
+from src.config import config as global_config
 from ..database.schema import schema
 from .memory_tracker import get_memory_tracker
 from ..core.progress_manager import get_progress_manager

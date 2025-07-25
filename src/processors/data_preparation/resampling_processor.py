@@ -11,7 +11,7 @@ from datetime import datetime
 import json
 import time
 
-from src.config.config import Config
+from src.config import config
 from src.base.processor import BaseProcessor
 from src.base.memory_manager import get_memory_manager
 from src.database.connection import DatabaseManager

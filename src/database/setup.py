@@ -6,7 +6,7 @@ import logging
 from typing import Dict, Any
 from .schema import schema
 from .connection import db
-from ..config import config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 
