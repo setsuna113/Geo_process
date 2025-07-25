@@ -86,7 +86,6 @@ class MergeStage(PipelineStage):
                     var: {
                         'zlib': True, 
                         'complevel': 4,
-                        'chunksizes': (100, 100)  # Chunk size for storage
                     } 
                     for var in merged_dataset.data_vars
                 }
@@ -96,7 +95,7 @@ class MergeStage(PipelineStage):
                     for var in merged_dataset.data_vars
                 }
             
-            merged_dataset.to_netcdf(output_path, encoding=encoding)
+            merged_dataset.to_netcdf(output_path)
             
             # Clean up memory
             if use_chunked:
@@ -137,8 +136,11 @@ class MergeStage(PipelineStage):
         for info in resampled_datasets:
             logger.info(f"Loading resampled data for: {info.name}")
             
-            # Load array data
-            array_data = processor.load_resampled_data(info.name)
+            # Load array data (handle both passthrough and resampled)
+            if info.metadata.get('passthrough', False):
+                array_data = self._load_passthrough_data(info)
+            else:
+                            array_data = self._load_resampled_data(info.name)
             if array_data is None:
                 logger.warning(f"Failed to load data for {info.name}")
                 continue
@@ -202,8 +204,11 @@ class MergeStage(PipelineStage):
             # Load data in chunks and save to temporary file
             temp_path = context.output_dir / f"temp_{info.band_name}.nc"
             
-            # Load array data
-            array_data = processor.load_resampled_data(info.name)
+            # Load array data (handle both passthrough and resampled)
+            if info.metadata.get('passthrough', False):
+                array_data = self._load_passthrough_data(info)
+            else:
+                array_data = self._load_resampled_data(info.name)
             if array_data is None:
                 continue
             
@@ -226,14 +231,8 @@ class MergeStage(PipelineStage):
             })
             
             # Save with chunking
-            temp_ds.to_netcdf(
+            temp_ds.to_netcdf(temp_path)
                 temp_path,
-                encoding={
-                    info.band_name: {
-                        'chunks': (100, 100),
-                        'zlib': True,
-                        'complevel': 4
-                    }
                 }
             )
             
@@ -265,3 +264,17 @@ class MergeStage(PipelineStage):
         })
         
         return merged
+    def _load_passthrough_data(self, info):
+        """Load passthrough data directly from source file."""
+        try:
+            import rasterio
+            with rasterio.open(info.source_path) as src:
+                return src.read(1)  # Read first band
+        except Exception as e:
+            logger.error(f"Failed to load passthrough data from {info.source_path}: {e}")
+            return None
+
+    def _load_resampled_data(self, dataset_name):
+        """Load resampled data - not implemented for skip-resampling mode."""
+        logger.warning(f"Resampled data loading not implemented for {dataset_name}")
+        return None
