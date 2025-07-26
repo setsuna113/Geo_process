@@ -7,7 +7,7 @@ import yaml
 from osgeo import gdal, osr
 
 from src.config.config import Config
-from src.raster_data.catalog import RasterCatalog
+from src.domain.raster.catalog import RasterCatalog
 from src.processors.data_preparation.raster_cleaner import RasterCleaner
 from src.processors.data_preparation.raster_merger import RasterMerger
 from src.processors.data_preparation.data_normalizer import DataNormalizer

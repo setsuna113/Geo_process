@@ -12,6 +12,7 @@ from enum import Enum
 
 from .tileable import Tileable, TileSpec
 from .cacheable import Cacheable
+from ..checkpoints import get_checkpoint_manager, CheckpointLevel
 
 logger = logging.getLogger(__name__)
 
@@ -102,10 +103,11 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
         self._progress_lock = threading.RLock()
         self._progress_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         
-        # Checkpoint management
-        self._checkpoint_file: Optional[Path] = None
+        # Checkpoint management - using unified system
+        self._checkpoint_manager = get_checkpoint_manager()
         self._auto_checkpoint = True
         self._last_checkpoint_time = time.time()
+        self._process_id = f"tile_processor_{id(self)}"
         
         # Processing state
         self._is_processing = False
@@ -160,8 +162,9 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
         self._progress_callbacks.append(callback)
         
     def set_checkpoint_file(self, checkpoint_file: Union[str, Path]) -> None:
-        """Set file for saving processing checkpoints."""
-        self._checkpoint_file = Path(checkpoint_file)
+        """Set process ID for checkpointing (file parameter ignored in unified system)."""
+        # In the unified system, we use the process ID instead of file paths
+        self._process_id = Path(checkpoint_file).stem  # Use filename as process ID
         
     def process_dataset(self,
                        input_data: Any,
@@ -186,8 +189,10 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
             
             # Load checkpoint if resuming
             checkpoint = None
-            if resume_from_checkpoint and self._checkpoint_file and self._checkpoint_file.exists():
-                checkpoint = self._load_checkpoint()
+            if resume_from_checkpoint:
+                checkpoint_data = self._checkpoint_manager.load_latest(self._process_id, CheckpointLevel.STEP)
+                if checkpoint_data:
+                    checkpoint = self._deserialize_checkpoint(checkpoint_data.data)
                 
             # Generate tile specifications
             tiles = self._prepare_tiles(input_data, checkpoint)
@@ -202,9 +207,8 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
             output_path_obj = Path(output_path) if output_path else None
             final_result = self._finalize_processing(results, output_path_obj)
             
-            # Clean up checkpoint on successful completion
-            if self._checkpoint_file and self._checkpoint_file.exists():
-                self._checkpoint_file.unlink()
+            # Cleanup is handled automatically by the unified checkpoint system
+            pass
                 
             return final_result
             
@@ -439,8 +443,8 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
         return results
         
     def _save_checkpoint(self) -> None:
-        """Save processing checkpoint."""
-        if not self._auto_checkpoint or not self._checkpoint_file:
+        """Save processing checkpoint using unified system."""
+        if not self._auto_checkpoint:
             return
             
         try:
@@ -454,37 +458,66 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
                     if progress.status == ProcessingStatus.FAILED
                 ]
                 
-                checkpoint = ProcessingCheckpoint(
-                    timestamp=time.time(),
-                    completed_tiles=completed_tiles,
-                    failed_tiles=failed_tiles,
-                    total_tiles=len(self._tile_progress),
-                    processing_parameters=self._processor_config.copy()
-                )
+                checkpoint_data = {
+                    'timestamp': time.time(),
+                    'completed_tiles': completed_tiles,
+                    'failed_tiles': failed_tiles,
+                    'total_tiles': len(self._tile_progress),
+                    'processing_parameters': self._processor_config.copy(),
+                    'tile_progress': {
+                        tile_id: {
+                            'status': progress.status.value,
+                            'start_time': progress.start_time,
+                            'end_time': progress.end_time,
+                            'error_message': progress.error_message,
+                            'progress_percentage': progress.progress_percentage,
+                            'memory_usage_mb': progress.memory_usage_mb
+                        } for tile_id, progress in self._tile_progress.items()
+                    }
+                }
                 
-                # Save to file
-                import pickle
-                with open(self._checkpoint_file, 'wb') as f:
-                    pickle.dump(checkpoint, f)
+                self._checkpoint_manager.save(
+                    process=self._process_id,
+                    data=checkpoint_data,
+                    level=CheckpointLevel.STEP,
+                    tags=['tile_processor', 'processing']
+                )
                     
                 logger.debug(f"Saved checkpoint: {len(completed_tiles)} completed tiles")
                 
         except Exception as e:
             logger.error(f"Failed to save checkpoint: {e}")
             
-    def _load_checkpoint(self) -> Optional[ProcessingCheckpoint]:
-        """Load processing checkpoint."""
-        if not self._checkpoint_file or not self._checkpoint_file.exists():
-            return None
-            
+    def _deserialize_checkpoint(self, data: Dict[str, Any]) -> Optional[ProcessingCheckpoint]:
+        """Deserialize checkpoint data from unified system."""
         try:
-            import pickle
-            with open(self._checkpoint_file, 'rb') as f:
-                checkpoint = pickle.load(f)
-                logger.info(f"Loaded checkpoint: {checkpoint.completion_percentage:.1f}% complete")
-                return checkpoint
+            # Restore tile progress
+            tile_progress_data = data.get('tile_progress', {})
+            for tile_id, progress_data in tile_progress_data.items():
+                self._tile_progress[tile_id] = TileProgress(
+                    tile_id=tile_id,
+                    status=ProcessingStatus(progress_data['status']),
+                    start_time=progress_data.get('start_time'),
+                    end_time=progress_data.get('end_time'),
+                    error_message=progress_data.get('error_message'),
+                    progress_percentage=progress_data.get('progress_percentage', 0.0),
+                    memory_usage_mb=progress_data.get('memory_usage_mb', 0.0)
+                )
+            
+            # Create checkpoint object
+            checkpoint = ProcessingCheckpoint(
+                timestamp=data['timestamp'],
+                completed_tiles=data['completed_tiles'],
+                failed_tiles=data['failed_tiles'],
+                total_tiles=data['total_tiles'],
+                processing_parameters=data.get('processing_parameters', {})
+            )
+            
+            logger.info(f"Loaded checkpoint: {checkpoint.completion_percentage:.1f}% complete")
+            return checkpoint
+            
         except Exception as e:
-            logger.error(f"Failed to load checkpoint: {e}")
+            logger.error(f"Failed to deserialize checkpoint: {e}")
             return None
             
     def _notify_progress_callbacks(self) -> None:

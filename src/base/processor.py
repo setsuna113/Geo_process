@@ -21,7 +21,8 @@ from ..database.schema import schema
 from .memory_tracker import get_memory_tracker
 from ..core.progress_manager import get_progress_manager
 from ..core.progress_events import get_event_bus
-from ..core.checkpoint_manager import get_checkpoint_manager
+# from ..core.checkpoint_manager import get_checkpoint_manager  # OLD - DEPRECATED
+from ..checkpoints import get_checkpoint_manager, CheckpointLevel
 from ..core.signal_handler import get_signal_handler
 
 logger = logging.getLogger(__name__)
@@ -365,11 +366,13 @@ class BaseProcessor(ABC):
     # NEW: Checkpoint methods
     
     def save_checkpoint(self, checkpoint_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None) -> str:
-        """Save processing checkpoint."""
+        """Save processing checkpoint using unified checkpoint system."""
         if not self.enable_checkpoints or not self._checkpoint_manager:
             return ""
         
-        checkpoint_id = checkpoint_id or f"{self.__class__.__name__}_{int(time.time())}"
+        # Generate checkpoint ID if not provided
+        if not checkpoint_id:
+            checkpoint_id = f"{self.__class__.__name__}_{int(time.time())}"
         
         # Prepare checkpoint data
         checkpoint_data = {
@@ -388,23 +391,26 @@ class BaseProcessor(ABC):
         # Add stored checkpoint data
         checkpoint_data.update(self._checkpoint_data)
         
-        # Save checkpoint
-        path = self._checkpoint_manager.save_checkpoint(
-            checkpoint_id=checkpoint_id,
+        # Save checkpoint using new unified API
+        saved_checkpoint_id = self._checkpoint_manager.save(
+            process=self,
             data=checkpoint_data,
-            level="step",
-            metadata={'processor': self.__class__.__name__}
+            level=CheckpointLevel.STEP,
+            checkpoint_id=checkpoint_id,
+            tags=['processor', self.__class__.__name__]
         )
         
-        logger.info(f"Saved checkpoint: {checkpoint_id}")
-        return path
+        logger.info(f"Saved checkpoint: {saved_checkpoint_id}")
+        return saved_checkpoint_id
     
     def load_checkpoint(self, checkpoint_id: str) -> Dict[str, Any]:
-        """Load processing checkpoint."""
+        """Load processing checkpoint using unified checkpoint system."""
         if not self.enable_checkpoints or not self._checkpoint_manager:
             return {}
         
-        data = self._checkpoint_manager.load_checkpoint(checkpoint_id)
+        # Load checkpoint using new unified API
+        checkpoint_data = self._checkpoint_manager.load(checkpoint_id)
+        data = checkpoint_data.data
         
         # Restore processor state
         if 'processor_state' in data:

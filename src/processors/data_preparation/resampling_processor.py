@@ -12,10 +12,10 @@ import json
 import time
 
 from src.config import config
-from src.base.processor import BaseProcessor
+from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
 from src.base.memory_manager import get_memory_manager
 from src.database.connection import DatabaseManager
-from src.raster_data.catalog import RasterCatalog, RasterEntry
+from src.domain.raster.catalog import RasterCatalog, RasterEntry
 from src.resampling.engines.base_resampler import ResamplingConfig
 from src.resampling.engines.numpy_resampler import NumpyResampler
 from src.resampling.engines.gdal_resampler import GDALResampler
@@ -532,7 +532,7 @@ class ResamplingProcessor(BaseProcessor):
                                       timeout_seconds: int = 60) -> xr.DataArray:
         """Load raster data with timeout protection."""
         import rioxarray
-        from src.raster_data.loaders.lightweight_metadata import gdal_timeout, TimeoutError
+        from src.domain.raster.loaders.lightweight_metadata import gdal_timeout, TimeoutError
         
         logger.info(f"Loading raster data from {raster_path.name}")
         

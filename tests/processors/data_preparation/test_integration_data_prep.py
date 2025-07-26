@@ -118,7 +118,7 @@ class TestDataPreparationIntegration:
     
     def test_merger_integration(self, config, db_connection, tmp_path):
         """Test RasterMerger with multiple rasters."""
-        from src.raster_data.catalog import RasterCatalog
+        from src.domain.raster.catalog import RasterCatalog
         
         # Create test rasters
         raster_paths = []

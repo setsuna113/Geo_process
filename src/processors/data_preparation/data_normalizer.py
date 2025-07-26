@@ -11,7 +11,7 @@ from typing import Union as TypingUnion
 import json
 
 from src.config import config
-from src.base.processor import BaseProcessor
+from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 class DataNormalizer(BaseProcessor):
     """Normalize spatial data while preserving structure and metadata."""
     
-    def __init__(self, config: Config, db_connection: DatabaseManager):
-        super().__init__(batch_size=1000, config=config)
+    def __init__(self, db_connection: DatabaseManager):
+        super().__init__(batch_size=1000)
         self.db = db_connection
         
         # Normalization parameters

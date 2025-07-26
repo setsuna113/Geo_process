@@ -21,6 +21,8 @@ pytest.cache/
 
 # Backup files
 *.backup
+*.bak
+*~
 
 #data
 metadata.json

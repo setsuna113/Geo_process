@@ -7,7 +7,7 @@ import tempfile
 import json
 
 from src.database.schema import schema
-from src.raster.manager import RasterManager
+from src.domain.raster.manager import RasterManager
 from src.raster import manager as raster_manager_module
 
 class TestRasterManager:
@@ -363,6 +363,6 @@ class TestRasterSchemaIntegration:
 
 def test_global_raster_manager_instance():
     """Test that global raster manager instance is available."""
-    from src.raster.manager import raster_manager
+    from src.domain.raster.manager import raster_manager
     assert raster_manager is not None
     assert isinstance(raster_manager, RasterManager)

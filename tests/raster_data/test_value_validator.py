@@ -3,8 +3,8 @@ import pytest
 import numpy as np
 from pathlib import Path
 
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
-from src.raster_data.validators.value_validator import ValueValidator
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.validators.value_validator import ValueValidator
 
 class TestValueValidator:
     """Test value validation functionality."""

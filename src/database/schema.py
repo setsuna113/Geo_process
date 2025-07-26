@@ -1052,6 +1052,9 @@ class DatabaseSchema:
         return False
     
     # Checkpoint Operations
+    # LEGACY CHECKPOINT METHODS - Consider using the unified checkpoint system (src.checkpoints) instead
+    # These methods are kept for backward compatibility and low-level database operations
+    
     def create_checkpoint(self, checkpoint_id: str, level: str, parent_id: Optional[str],
                          processor_name: str, data_summary: Dict[str, Any],
                          file_path: str, file_size_bytes: int,

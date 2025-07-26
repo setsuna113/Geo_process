@@ -1,0 +1,12 @@
+src/pipelines/stages/load_stage.py.backup
+src/pipelines/stages/merge_stage.py.backup
+src/domain/raster/loaders/metadata_extractor.py.backup
+src/domain/raster/loaders/geotiff_loader.py.backup
+src/domain/raster/adapters/raster_source_adapter.py.backup
+src/domain/raster/validators/value_validator.py.backup
+src/domain/raster/validators/coverage_validator.py.backup
+src/domain/raster/catalog.py.backup
+src/base/lazy_loadable.py.bak
+src/processors/data_preparation/raster_cleaner.py.backup
+src/processors/data_preparation/raster_merger.py.backup
+src/processors/data_preparation/resampling_processor.py.backup

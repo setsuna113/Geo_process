@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 
 from src.processors.data_preparation.raster_cleaner import RasterCleaner, CleaningStats
-from src.raster_data.loaders.base_loader import RasterWindow, RasterMetadata
+from src.domain.raster.loaders.base_loader import RasterWindow, RasterMetadata
 
 class TestCleaningStats:
     """Test CleaningStats dataclass."""

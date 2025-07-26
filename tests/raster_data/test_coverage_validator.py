@@ -3,8 +3,8 @@ import pytest
 import geopandas as gpd
 from shapely.geometry import box
 
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
-from src.raster_data.validators.coverage_validator import CoverageValidator
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.validators.coverage_validator import CoverageValidator
 from src.grid_systems.grid_factory import GridFactory
 
 class TestCoverageValidator:

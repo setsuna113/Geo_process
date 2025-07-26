@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 import json
 
-from src.raster_data.catalog import RasterCatalog, RasterEntry
+from src.domain.raster.catalog import RasterCatalog, RasterEntry
 
 class TestRasterCatalog:
     """Test raster catalog functionality."""

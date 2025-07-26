@@ -23,7 +23,8 @@ class MaxPAnalyzer(BaseAnalyzer):
     ensuring each region meets a minimum area threshold.
     """
     
-    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
+    def __init__(self, db_connection: Optional[DatabaseManager] = None):
+        # Use global config instance
         super().__init__(config, db_connection)
         
         # Max-p specific config

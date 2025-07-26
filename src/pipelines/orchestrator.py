@@ -14,13 +14,15 @@ import queue
 import psutil
 
 from src.config import config
+from src.config.config import Config
 from src.database.connection import DatabaseManager
 from src.pipelines.stages.base_stage import ProcessingConfig
 from src.pipelines.stages.base_stage import PipelineStage, StageStatus, StageResult
 from src.pipelines.monitors.memory_monitor import MemoryMonitor
 from src.pipelines.monitors.progress_tracker import ProgressTracker
 from src.pipelines.monitors.quality_checker import QualityChecker
-from src.pipelines.recovery.checkpoint_manager import CheckpointManager
+# from src.pipelines.recovery.checkpoint_manager import CheckpointManager  # OLD - DEPRECATED
+from src.checkpoints import get_checkpoint_manager, CheckpointLevel
 from src.pipelines.recovery.failure_handler import FailureHandler
 
 logger = logging.getLogger(__name__)
@@ -89,8 +91,8 @@ class PipelineOrchestrator:
         self.progress_tracker = ProgressTracker()
         self.quality_checker = QualityChecker(config)
         
-        # Recovery components
-        self.checkpoint_manager = CheckpointManager(config)
+        # Recovery components - using unified checkpoint system
+        self.checkpoint_manager = get_checkpoint_manager()
         self.failure_handler = FailureHandler(config)
         
         # Execution control
@@ -175,10 +177,11 @@ class PipelineOrchestrator:
             
             # Check for existing checkpoint
             if resume_from_checkpoint:
-                checkpoint = self.checkpoint_manager.load_latest(self.context.experiment_id if self.context else "")
-                if checkpoint:
-                    logger.info(f"Resuming from checkpoint: {checkpoint['stage']}")
-                    self._restore_from_checkpoint(checkpoint)
+                process_id = self.context.experiment_id if self.context else "pipeline"
+                checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
+                if checkpoint_data:
+                    logger.info(f"Resuming from checkpoint: {checkpoint_data.checkpoint_id}")
+                    self._restore_from_checkpoint(checkpoint_data.data)
             
             # Execute pipeline
             self.status = PipelineStatus.RUNNING
@@ -327,12 +330,29 @@ class PipelineOrchestrator:
             # Post-execution processing
             self._post_stage_processing(stage, result, execution_time)
             
-            # Save checkpoint
-            self.checkpoint_manager.save_checkpoint(
-                experiment_id=self.context.experiment_id if self.context else "",
-                stage_name=stage.name,
-                context=self.context,
-                stage_results={stage.name: result}
+            # Save checkpoint using unified system
+            process_id = self.context.experiment_id if self.context else "pipeline"
+            checkpoint_data = {
+                'stage': stage.name,
+                'timestamp': datetime.now().isoformat(),
+                'completed_stages': self._get_completed_stages(),
+                'shared_data': self._serialize_shared_data(self.context.shared_data) if self.context else {},
+                'metadata': self.context.metadata if self.context else {},
+                'quality_metrics': self.context.quality_metrics if self.context else {},
+                'stage_results': {stage.name: self._serialize_stage_result(result)},
+                'progress': {
+                    'completed_stages': len(self._get_completed_stages()),
+                    'current_stage': stage.name
+                }
+            }
+            
+            self.checkpoint_manager.save(
+                process=process_id,
+                data=checkpoint_data,
+                level=CheckpointLevel.STAGE,
+                checkpoint_id=f"{process_id}_{stage.name}",
+                parent_checkpoint_id=None,
+                tags=['pipeline', 'stage', stage.name]
             )
             
             # Update progress
@@ -696,9 +716,10 @@ class PipelineOrchestrator:
         
         if recovery_strategy == 'retry':
             # Retry from last checkpoint
-            checkpoint = self.checkpoint_manager.load_latest(self.context.experiment_id if self.context else "")
-            if checkpoint:
-                self._restore_from_checkpoint(checkpoint)
+            process_id = self.context.experiment_id if self.context else "pipeline"
+            checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
+            if checkpoint_data:
+                self._restore_from_checkpoint(checkpoint_data.data)
                 return self._execute_pipeline()
         
         elif recovery_strategy == 'skip':
@@ -728,12 +749,51 @@ class PipelineOrchestrator:
             report
         )
         
-        # Cleanup checkpoints if successful
+        # Cleanup checkpoints if successful - handled automatically by unified system
         if self.config.get('pipeline.cleanup_checkpoints_on_success', True):
-            self.checkpoint_manager.cleanup_checkpoints(self.context.experiment_id if self.context else "")
+            # The unified checkpoint system handles cleanup automatically based on policies
+            pass
         
         logger.info(f"Pipeline completed successfully. Report saved to {report_path}")
     
+    def _get_completed_stages(self) -> List[str]:
+        """Get list of completed stages."""
+        completed = []
+        for stage in self.stages:
+            if stage.status == StageStatus.COMPLETED:
+                completed.append(stage.name)
+        return completed
+    
+    def _serialize_shared_data(self, shared_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Serialize shared data for checkpointing."""
+        serialized = {}
+        for key, value in shared_data.items():
+            if key in ['merged_dataset', 'som_results']:
+                # Store reference instead of actual data
+                serialized[key] = f"<{type(value).__name__} object>"
+            elif hasattr(value, 'to_dict'):
+                serialized[key] = value.to_dict()
+            else:
+                try:
+                    json.dumps(value)  # Test JSON serialization
+                    serialized[key] = value
+                except (TypeError, ValueError):
+                    serialized[key] = str(value)
+        return serialized
+    
+    def _serialize_stage_result(self, result: Any) -> Dict[str, Any]:
+        """Serialize stage result for checkpointing."""
+        if hasattr(result, 'to_dict'):
+            return result.to_dict()
+        elif hasattr(result, '__dict__'):
+            return {
+                'success': getattr(result, 'success', True),
+                'metrics': getattr(result, 'metrics', {}),
+                'warnings': getattr(result, 'warnings', [])
+            }
+        else:
+            return {'result': str(result)}
+
     def _generate_execution_report(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive execution report."""
         return {

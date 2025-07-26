@@ -4,7 +4,7 @@ import time
 import numpy as np
 from pathlib import Path
 
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
 
 class TestRasterPerformance:
     """Performance tests for raster operations."""

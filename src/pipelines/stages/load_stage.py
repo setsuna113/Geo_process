@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from .base_stage import PipelineStage, StageResult
-from src.raster_data.catalog import RasterCatalog
+from src.domain.raster.catalog import RasterCatalog
 from src.config.dataset_utils import DatasetPathResolver
 
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ from unittest.mock import patch, Mock
 from src.resampling import GDALResampler, NumpyResampler
 from src.resampling.engines.base_resampler import ResamplingConfig
 from src.resampling.cache_manager import ResamplingCacheManager
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
 from src.grid_systems.cubic_grid import CubicGrid
 from src.processors.data_preparation.array_converter import ArrayConverter
 from src.config.config import Config

@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 from pathlib import Path
 
-from src.raster_data.loaders.base_loader import (
+from src.domain.raster.loaders.base_loader import (
     RasterWindow, RasterMetadata, BaseRasterLoader
 )
 

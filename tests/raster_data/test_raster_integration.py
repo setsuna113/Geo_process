@@ -5,8 +5,8 @@ import numpy as np
 import psutil
 import gc
 
-from src.raster_data.catalog import RasterCatalog
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.catalog import RasterCatalog
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
 from src.grid_systems.grid_factory import GridFactory
 # from src.processors.richness_processor import RichnessProcessor  # TODO: Implement in Phase 5
 

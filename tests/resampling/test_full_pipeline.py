@@ -15,7 +15,7 @@ from typing import Iterator
 import logging
 
 from src.database.connection import DatabaseManager
-from src.raster.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
 from src.processors.data_preparation.raster_cleaner import RasterCleaner
 from src.processors.data_preparation.data_normalizer import DataNormalizer
 from src.processors.data_preparation.array_converter import ArrayConverter

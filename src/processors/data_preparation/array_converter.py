@@ -12,15 +12,15 @@ import pandas as pd
 from pathlib import Path
 
 from src.config import config
-from src.base.processor import BaseProcessor
+from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
 
 logger = logging.getLogger(__name__)
 
 class ArrayConverter(BaseProcessor):
     """Convert between xarray, numpy, and geopandas formats."""
     
-    def __init__(self, config: Config):
-        super().__init__(batch_size=1000, config=config)
+    def __init__(self):
+        super().__init__(batch_size=1000)
         self.chunk_size = config.get('data_preparation', {}).get('chunk_size', 1000)
     
     def xarray_to_numpy(self, 

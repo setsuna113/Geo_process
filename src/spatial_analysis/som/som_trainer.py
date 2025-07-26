@@ -29,7 +29,7 @@ class SOMAnalyzer(BaseAnalyzer):
     preserving topological relationships.
     """
     
-    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
+    def __init__(self, db_connection: Optional[DatabaseManager] = None):
         # Create memory-aware data processor for SOM
         try:
             from src.processors.spatial_analysis.data_processor import SpatialDataProcessor

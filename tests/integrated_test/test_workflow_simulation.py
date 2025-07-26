@@ -90,7 +90,7 @@ class TestWorkflowSimulation:
         )
         
         # Step 2: Register components
-        from src.raster.loaders.geotiff_loader import GeoTIFFLoader
+        from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
         from src.resampling.engines.gdal_resampler import GDALResampler
         from src.features.ml_formatters.regression_formatter import RegressionFormatter
         
@@ -164,7 +164,7 @@ class TestWorkflowSimulation:
         registry = Registry()
         
         # Register multiple loaders
-        from src.raster.loaders.geotiff_loader import GeoTIFFLoader
+        from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
         # Note: NetCDFLoader not yet implemented
         
         registry.register('raster_loader', 'geotiff', GeoTIFFLoader)

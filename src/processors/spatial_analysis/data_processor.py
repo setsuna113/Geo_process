@@ -7,7 +7,7 @@ import numpy as np
 import xarray as xr
 from pathlib import Path
 
-from src.base.processor import BaseProcessor
+from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
 from src.config import config
 from src.database.connection import DatabaseManager
 from src.processors.data_preparation.array_converter import ArrayConverter

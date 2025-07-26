@@ -9,10 +9,10 @@ import xarray as xr
 from dataclasses import dataclass
 from datetime import datetime
 
-from src.config import config
-from src.base.processor import BaseProcessor
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
-from src.raster_data.loaders.base_loader import RasterWindow
+from src.config import config as global_config
+from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.loaders.base_loader import RasterWindow
 from src.database.connection import DatabaseManager
 import json
 
@@ -40,7 +40,9 @@ class CleaningStats:
 class RasterCleaner(BaseProcessor):
     """Clean and validate raster data for species richness analysis."""
     
-    def __init__(self, config: Config, db_connection: DatabaseManager):
+    def __init__(self, db_connection: DatabaseManager, app_config=None):
+        # Use global config instance
+        config = app_config if app_config is not None else global_config
         super().__init__(batch_size=1000, config=config)
         self.db = db_connection
         self.loader = GeoTIFFLoader(config)

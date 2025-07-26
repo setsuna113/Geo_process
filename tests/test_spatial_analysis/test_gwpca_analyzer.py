@@ -7,9 +7,8 @@ import xarray as xr
 import matplotlib.pyplot as plt
 from unittest.mock import Mock, patch, MagicMock
 
-from src.spatial_analysis.gwpca.gwpca_analyzer import GWPCAAnalyzer
-from src.spatial_analysis.gwpca.bandwidth_selector import BandwidthSelector
-from src.spatial_analysis.gwpca.local_stats_mapper import LocalStatsMapper
+from src.spatial_analysis.gwpca_analyzer import GWPCAAnalyzer
+from src.spatial_analysis.local_stats_mapper import LocalStatsMapper
 
 
 class TestGWPCAAnalyzerUnit:

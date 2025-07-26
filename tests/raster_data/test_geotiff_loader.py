@@ -3,8 +3,8 @@ import pytest
 import numpy as np
 from pathlib import Path
 
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
-from src.raster_data.loaders.base_loader import RasterWindow
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.loaders.base_loader import RasterWindow
 
 class TestGeoTIFFLoader:
     """Test GeoTIFF loader functionality."""

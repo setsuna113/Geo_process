@@ -6,7 +6,7 @@ from unittest.mock import Mock, patch, MagicMock
 from pathlib import Path
 
 from src.processors.data_preparation.raster_merger import RasterMerger, AlignmentCheck
-from src.raster_data.catalog import RasterEntry
+from src.domain.raster.catalog import RasterEntry
 
 class TestAlignmentCheck:
     """Test AlignmentCheck dataclass."""

@@ -74,3 +74,27 @@ This project's architecture was inspired by the GeoCore framework. See ATTRIBUTI
 
 ## License
 MIT License
+
+
+
+Yes, tmux is perfect for this. Here's a copyable command that will run Claude in the background starting from Phase 4:
+
+  tmux new-session -d -s claude_phase4 'claude -p "Continue implementation from Phase 4: Migration & Integration in 
+  implementation_plan.md. Work through Phase 4 step by step, updating the markdown file to check off completed items [x], 
+  testing each migration, and cleaning up temporary files. Continue through Phases 5-6 until all phases are complete. Work 
+  silently and autonomously." --dangerously-skip-permissions'
+
+  To monitor progress while you sleep, you can also set up a second pane to watch the implementation plan file:
+
+  tmux new-session -d -s claude_phase4 \; \
+    send-keys 'claude -p "Continue implementation from Phase 4: Migration & Integration in implementation_plan.md. Work 
+  through Phase 4 step by step, updating the markdown file to check off completed items [x], testing each migration, and 
+  cleaning up temporary files. Continue through Phases 5-6 until all phases are complete. Work silently and autonomously." 
+  --dangerously-skip-permissions' Enter \; \
+    split-window -h \; \
+    send-keys 'watch -n 30 "echo \"=== PROGRESS ===\"; grep -E \"\\[x\\]|\\[ \\]\" implementation_plan.md | head -20"' Enter
+
+  When you wake up, attach with:
+  tmux attach -t claude_phase4
+
+  The second command gives you a split view where the right pane shows progress updates every 30 seconds.

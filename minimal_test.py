@@ -16,7 +16,7 @@ def test_gdal_timeout():
     """Test the GDAL timeout mechanism."""
     print("=== Testing GDAL Timeout Mechanism ===")
     
-    from src.raster_data.loaders.lightweight_metadata import gdal_timeout, TimeoutError
+    from src.domain.raster.loaders.lightweight_metadata import gdal_timeout, TimeoutError
     import time
     
     print("1. Testing timeout context manager...")
@@ -40,7 +40,7 @@ def test_lightweight_extractor_creation():
     """Test creating the lightweight extractor without database."""
     print("\n=== Testing Lightweight Extractor Creation ===")
     
-    from src.raster_data.loaders.lightweight_metadata import LightweightMetadataExtractor
+    from src.domain.raster.loaders.lightweight_metadata import LightweightMetadataExtractor
     
     try:
         print("1. Creating extractor with mock database...")

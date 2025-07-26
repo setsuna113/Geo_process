@@ -3,7 +3,7 @@ import pytest
 import json
 from datetime import datetime
 
-from src.raster_data.loaders.metadata_extractor import RasterMetadataExtractor
+from src.domain.raster.loaders.metadata_extractor import RasterMetadataExtractor
 
 
 class TestRasterMetadataExtractor:

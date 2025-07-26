@@ -12,10 +12,10 @@ import tempfile
 import shutil
 
 from src.config import config
-from src.base.processor import BaseProcessor
+from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
 from src.base.memory_manager import get_memory_manager
-from src.raster_data.catalog import RasterCatalog, RasterEntry
-from src.raster_data.loaders.geotiff_loader import GeoTIFFLoader
+from src.domain.raster.catalog import RasterCatalog, RasterEntry
+from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
 from src.database.connection import DatabaseManager
 from src.processors.data_preparation.raster_alignment import RasterAligner, AlignmentConfig, AlignmentStrategy
 from src.core.progress_events import get_event_bus, create_file_progress, EventType
