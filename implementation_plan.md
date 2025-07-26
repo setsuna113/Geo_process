@@ -9,7 +9,6 @@ conda activate geo
 # 1. Check the box [x] in this file
 # 2. Test functionality with provided test commands
 # 3. Clear temporary test files and old redundant files
-# 4. Commit changes before moving to next phase
 ```
 
 ## 🎯 Objective
