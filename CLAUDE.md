@@ -3,7 +3,24 @@
 ## Project Overview
 This is a geospatial biodiversity analysis system that processes large raster datasets and species distribution data. The system is built around a PostgreSQL/PostGIS database with a comprehensive caching system for efficient spatial operations.
 
-## Critical Implementation Notes (2025-07-22)
+## Critical Implementation Notes (2025-07-26)
+
+### Recent Architectural Analysis Results
+- **Unified Checkpoint System**: Successfully implemented, replaced 5 separate checkpoint systems with 1 clean implementation
+- **Major Issues Discovered**: 
+  - Complete module duplication (raster/ vs raster_data/): 8,000-10,000 lines of duplicate code
+  - Dependency inversion violations in base/ layer (imports from core/, checkpoints/, database/)
+  - Config import pattern inconsistency causing multiple config instances
+  - 3 separate memory management systems with 70% overlap
+  - Circular dependencies between spatial_analysis/ and processors/
+
+### Critical Configuration Rules
+- **ALWAYS** use `from src.config import config` (singleton instance)
+- **NEVER** use `from src.config import Config` then `config = Config()` (creates new instance!)
+- **NEVER** modify `defaults.py` directly - use `config.yml` for overrides
+- **NEVER** use `DatabaseManager(test_mode=True)` in production code
+
+### Previous Implementation Notes (2025-07-22)
 - **RasterAligner** (`src/processors/data_preparation/raster_alignment.py`): Handles misaligned datasets automatically, fixes transform pixel size extraction bug (use transform[0] not transform[1])
 - **DatabaseSchemaUtils** (`src/database/utils.py`): Adapts to different column names (spatial_extent vs bounds) via configuration-driven schema mapping
 - **RasterMerger**: Refactored to use RasterAligner, manages temporary alignment files properly to prevent file deletion before merge completion
@@ -110,4 +127,30 @@ The caching system is heavily used for raster operations:
 - **Extensibility**: Plugin architecture via component registry
 - **Data Provenance**: Full experiment tracking and metadata preservation
 
-This architecture supports large-scale biodiversity analysis workflows with robust data management, efficient spatial processing, and comprehensive analysis capabilities.
+## Architectural Refactoring Plan (2025-07-26)
+
+### Target Architecture (system_update.md active)
+```
+src/
+├── foundations/     # Pure abstractions only (no src imports allowed)
+├── infrastructure/  # Technical services (memory, progress, registry)
+├── domain/         # Business logic (unified raster, spatial, analysis)
+├── application/    # Workflows and processors
+└── orchestration/  # Pipeline coordination
+```
+
+### Key Refactoring Phases:
+1. **Phase 0**: Fix config import pattern (URGENT - prevents multiple config instances)
+2. **Phase 1**: Create clean foundation layer with pure interfaces
+3. **Phase 2**: Consolidate raster modules (remove 8,000+ duplicate lines)
+4. **Phase 3**: Fix dependency violations (move base implementations)
+5. **Phase 4**: Testing strategy with checkpoint validation
+6. **Phase 5**: Risk mitigation and performance validation
+
+### Lessons from Checkpoint System Success:
+- Clean abstractions in base/ with implementations in separate module
+- Comprehensive testing at each layer
+- Gradual migration with compatibility layers
+- Feature flags for safe rollout
+
+This architecture supports large-scale biodiversity analysis workflows with robust data management, efficient spatial processing, and comprehensive analysis capabilities. The ongoing refactoring (system_update.md) will eliminate technical debt while maintaining system stability.
