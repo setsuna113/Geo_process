@@ -74,20 +74,20 @@ src/checkpoints/
   - [x] Ensure clean import structure
 
 ### **Phase 2: Storage Backends (checkpoints/backends/)**
-- [x] **2.1** Create `src/checkpoints/backends/file_backend.py` ✅ **COMPLETED & TESTED**
-  - [x] Implement `FileCheckpointStorage` class
-  - [x] Support JSON format (for pipeline compatibility)
-  - [x] Support binary/pickle format (for tile processor compatibility) 
-  - [x] Hierarchical directory structure: `{base_dir}/{process_id}/{level}/{checkpoint_id}`
-  - [x] Atomic write operations (write to temp, then rename)
-  - [x] Compression support for large checkpoints
+- [ ] **2.1** Create `src/checkpoints/backends/file_backend.py`
+  - [ ] Implement `FileCheckpointStorage` class
+  - [ ] Support JSON format (for pipeline compatibility)
+  - [ ] Support binary/pickle format (for tile processor compatibility) 
+  - [ ] Hierarchical directory structure: `{base_dir}/{process_id}/{level}/{checkpoint_id}`
+  - [ ] Atomic write operations (write to temp, then rename)
+  - [ ] Compression support for large checkpoints
 
-- [x] **2.2** Create `src/checkpoints/backends/db_backend.py` ✅ **COMPLETED & TESTED**
-  - [x] Implement `DatabaseCheckpointStorage` class
-  - [x] Use existing `pipeline_checkpoints` table from schema.sql
-  - [x] Support JSONB data storage for PostgreSQL
-  - [x] Implement efficient querying (by process_id, level, timestamp)
-  - [x] Transaction support for atomic operations
+- [ ] **2.2** Create `src/checkpoints/backends/db_backend.py`
+  - [ ] Implement `DatabaseCheckpointStorage` class
+  - [ ] Use existing `pipeline_checkpoints` table from schema.sql
+  - [ ] Support JSONB data storage for PostgreSQL
+  - [ ] Implement efficient querying (by process_id, level, timestamp)
+  - [ ] Transaction support for atomic operations
 
 - [ ] **2.3** Create `src/checkpoints/backends/memory_backend.py`
   - [ ] Implement `MemoryCheckpointStorage` class
