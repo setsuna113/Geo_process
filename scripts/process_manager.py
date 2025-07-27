@@ -33,6 +33,9 @@ class PipelineCLI:
         self.process_controller = ProcessController()
         self.progress_manager = get_progress_manager()
         self.checkpoint_manager = get_checkpoint_manager()
+        
+        # Clean up stale processes on startup
+        self.process_controller.registry.cleanup_stale_processes()
     
     def start(self, args):
         """Start a pipeline process."""

@@ -15,6 +15,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 import json
 # Manual daemon implementation - no external dependencies needed
+from .process_registry import ProcessRegistry, ProcessRecord
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +86,10 @@ class ProcessController:
         self.pid_dir.mkdir(parents=True, exist_ok=True)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
-        # Process registry
+        # Process registry - both in-memory and persistent
         self._processes: Dict[str, ProcessInfo] = {}
         self._process_lock = threading.RLock()
+        self.registry = ProcessRegistry(self.pid_dir / "registry")
         
         # Monitoring
         self._monitor_thread: Optional[threading.Thread] = None
@@ -99,6 +101,9 @@ class ProcessController:
         self._restart_delay = 5.0  # seconds
         self._max_restart_attempts = 3
         self._restart_attempts: Dict[str, int] = {}
+        
+        # Clean up stale processes on startup
+        self.registry.cleanup_stale_processes()
     
     def start_process(self,
                      name: str,
@@ -137,8 +142,8 @@ class ProcessController:
                 # Start as regular process
                 pid = self._start_regular_process(name, command, log_file, env, working_dir)
             
-            # Register process
-            self._processes[name] = ProcessInfo(
+            # Register process in memory
+            process_info = ProcessInfo(
                 pid=pid,
                 name=name,
                 command=command,
@@ -146,6 +151,20 @@ class ProcessController:
                 status="running",
                 log_file=str(log_file)
             )
+            self._processes[name] = process_info
+            
+            # Create persistent record
+            record = ProcessRecord(
+                name=name,
+                pid=pid,
+                command=command,
+                start_time=process_info.start_time,
+                status="running",
+                log_file=str(log_file),
+                daemon_mode=daemon_mode,
+                auto_restart=auto_restart
+            )
+            self.registry.register_process(record)
             
             self._auto_restart[name] = auto_restart
             self._restart_attempts[name] = 0
@@ -169,10 +188,24 @@ class ProcessController:
             True if stopped successfully
         """
         with self._process_lock:
-            if name not in self._processes:
+            # Check persistent registry first
+            record = self.registry.get_process(name)
+            if not record:
                 raise ValueError(f"Unknown process: {name}")
             
-            process_info = self._processes[name]
+            # Convert to ProcessInfo for compatibility
+            process_info = ProcessInfo(
+                pid=record.pid,
+                name=record.name,
+                command=record.command,
+                start_time=record.start_time,
+                status=record.status,
+                log_file=record.log_file,
+                metadata=record.metadata
+            )
+            
+            # Update in-memory cache
+            self._processes[name] = process_info
             
             try:
                 process = psutil.Process(process_info.pid)
@@ -192,11 +225,15 @@ class ProcessController:
                 process_info.status = "stopped"
                 self._auto_restart[name] = False  # Disable auto-restart
                 
+                # Update persistent registry
+                self.registry.update_process_status(name, "stopped")
+                
                 logger.info(f"Stopped process '{name}'")
                 return True
                 
             except psutil.NoSuchProcess:
                 process_info.status = "stopped"
+                self.registry.update_process_status(name, "stopped")
                 return True
             except Exception as e:
                 logger.error(f"Failed to stop process '{name}': {e}")
@@ -229,10 +266,26 @@ class ProcessController:
     def get_process_status(self, name: str) -> ProcessInfo:
         """Get process status information."""
         with self._process_lock:
-            if name not in self._processes:
+            # Check persistent registry first
+            record = self.registry.get_process(name)
+            if not record:
                 raise ValueError(f"Unknown process: {name}")
             
-            # Update process info
+            # Convert to ProcessInfo for compatibility
+            info = ProcessInfo(
+                pid=record.pid,
+                name=record.name,
+                command=record.command,
+                start_time=record.start_time,
+                status=record.status,
+                log_file=record.log_file,
+                metadata=record.metadata
+            )
+            
+            # Update in-memory cache
+            self._processes[name] = info
+            
+            # Update real-time metrics
             self._update_process_info(name)
             
             return self._processes[name]
@@ -240,11 +293,30 @@ class ProcessController:
     def list_processes(self) -> List[ProcessInfo]:
         """List all managed processes."""
         with self._process_lock:
-            # Update all process info
-            for name in list(self._processes.keys()):
-                self._update_process_info(name)
+            # Get from persistent registry
+            records = self.registry.list_processes()
             
-            return list(self._processes.values())
+            # Convert and update metrics
+            processes = []
+            for record in records:
+                info = ProcessInfo(
+                    pid=record.pid,
+                    name=record.name,
+                    command=record.command,
+                    start_time=record.start_time,
+                    status=record.status,
+                    log_file=record.log_file,
+                    metadata=record.metadata
+                )
+                
+                # Update in-memory cache
+                self._processes[record.name] = info
+                
+                # Update real-time metrics
+                self._update_process_info(record.name)
+                processes.append(self._processes[record.name])
+            
+            return processes
     
     def detect_orphaned_processes(self) -> List[str]:
         """Detect orphaned processes that are no longer running."""
@@ -270,14 +342,15 @@ class ProcessController:
         Returns:
             Log lines
         """
-        if name not in self._processes:
+        # Check persistent registry first
+        record = self.registry.get_process(name)
+        if not record:
             raise ValueError(f"Unknown process: {name}")
         
-        process_info = self._processes[name]
-        if not process_info.log_file:
+        if not record.log_file:
             return []
         
-        log_file = Path(process_info.log_file)
+        log_file = Path(record.log_file)
         if not log_file.exists():
             return []
         
@@ -420,10 +493,24 @@ class ProcessController:
     def _send_signal(self, name: str, sig: signal.Signals, new_status: str) -> bool:
         """Send signal to process."""
         with self._process_lock:
-            if name not in self._processes:
+            # Check persistent registry first
+            record = self.registry.get_process(name)
+            if not record:
                 raise ValueError(f"Unknown process: {name}")
             
-            process_info = self._processes[name]
+            # Convert to ProcessInfo for compatibility
+            process_info = ProcessInfo(
+                pid=record.pid,
+                name=record.name,
+                command=record.command,
+                start_time=record.start_time,
+                status=record.status,
+                log_file=record.log_file,
+                metadata=record.metadata
+            )
+            
+            # Update in-memory cache
+            self._processes[name] = process_info
             
             # Handle placeholder PID from daemon
             if process_info.pid == -1:
@@ -440,12 +527,17 @@ class ProcessController:
                 process = psutil.Process(process_info.pid)
                 process.send_signal(sig)
                 process_info.status = new_status
+                
+                # Update persistent registry
+                self.registry.update_process_status(name, new_status)
+                
                 logger.info(f"Sent {sig.name} to process '{name}'")
                 return True
                 
             except psutil.NoSuchProcess:
                 logger.error(f"Process '{name}' not found")
                 process_info.status = "stopped"
+                self.registry.update_process_status(name, "stopped")
                 return False
             except Exception as e:
                 logger.error(f"Failed to send signal to '{name}': {e}")

@@ -415,3 +415,10 @@
 	        
 2025-07-27 11:55:21.082 UTC [2119568] LOG:  checkpoint starting: time
 2025-07-27 11:55:22.522 UTC [2119568] LOG:  checkpoint complete: wrote 15 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.408 s, sync=0.013 s, total=1.441 s; sync files=11, longest=0.010 s, average=0.002 s; distance=48 kB, estimate=48 kB; lsn=0/2440D00, redo lsn=0/2440CA8
+2025-07-27 12:11:49.332 UTC [2321226] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-27 12:11:49.332 UTC [2321226] DETAIL:  Key (name)=(production_test) already exists.
+2025-07-27 12:11:49.332 UTC [2321226] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('production_test', 'Production pipeline with skip-resampling functionality', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "resample", "dependencies": ["data_load"], "memory_requirements": 8.0, "disk_requirements": null}, {"name": "merge", "dependencies": ["resample"], "memory_requirements": 800.0, "disk_requirements": null}, {"name": "export", "dependencies": ["merge"], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "analysis_som", "dependencies": ["export"], "memory_requirements": 8.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load", "resample", "merge", "export", "analysis_som"], "description": "Production pipeline with skip-resampling functionality"}', 'system')
+	                RETURNING id
+	            
