@@ -573,3 +573,14 @@
 2025-07-27 15:38:58.642 UTC [2524446] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=5 kB, estimate=10 kB; lsn=0/24BB608, redo lsn=0/24BB5B0
 2025-07-27 15:43:58.743 UTC [2524446] LOG:  checkpoint starting: time
 2025-07-27 15:43:59.280 UTC [2524446] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.506 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=7 kB, estimate=10 kB; lsn=0/24BD3F8, redo lsn=0/24BD3A0
+2025-07-27 15:53:58.480 UTC [2524446] LOG:  checkpoint starting: time
+2025-07-27 15:53:59.010 UTC [2524446] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.530 s; sync files=6, longest=0.010 s, average=0.002 s; distance=9 kB, estimate=10 kB; lsn=0/24BFB08, redo lsn=0/24BFAB0
+2025-07-27 15:58:58.110 UTC [2524446] LOG:  checkpoint starting: time
+2025-07-27 15:58:58.848 UTC [2524446] LOG:  checkpoint complete: wrote 8 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.706 s, sync=0.012 s, total=0.739 s; sync files=7, longest=0.010 s, average=0.002 s; distance=9 kB, estimate=10 kB; lsn=0/24C1F08, redo lsn=0/24C1EB0
+2025-07-27 15:59:35.540 UTC [2550903] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-27 15:59:35.540 UTC [2550903] DETAIL:  Key (name)=(test_exact_debug) already exists.
+2025-07-27 15:59:35.540 UTC [2550903] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('test_exact_debug', 'Production pipeline with skip-resampling functionality', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "resample", "dependencies": ["data_load"], "memory_requirements": 8.0, "disk_requirements": null}, {"name": "merge", "dependencies": ["resample"], "memory_requirements": 750, "disk_requirements": null}, {"name": "export", "dependencies": ["merge"], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "analysis_som", "dependencies": ["export"], "memory_requirements": 8.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load", "resample", "merge", "export", "analysis_som"], "description": "Production pipeline with skip-resampling functionality"}', 'system')
+	                RETURNING id
+	            

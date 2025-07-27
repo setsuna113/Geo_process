@@ -169,27 +169,38 @@ class PipelineOrchestrator:
         Returns:
             Pipeline execution results
         """
+        print(f"🎬 DEBUG: run_pipeline() called with experiment_name={experiment_name}")
         try:
             # Initialize pipeline context
+            print("📝 DEBUG: Calling _initialize_context...")
             self._initialize_context(experiment_name, checkpoint_dir, output_dir, **kwargs)
+            print("✅ DEBUG: _initialize_context completed")
             
             # Validate pipeline
+            print("🔍 DEBUG: Validating pipeline...")
             is_valid, errors = self.validate_pipeline()
             if not is_valid:
                 raise ValueError(f"Pipeline validation failed: {errors}")
+            print("✅ DEBUG: Pipeline validation passed")
             
             # Start monitoring
+            print("📊 DEBUG: Starting monitoring...")
             self._start_monitoring()
+            print("✅ DEBUG: Monitoring started")
             
             # Check for existing checkpoint
             if resume_from_checkpoint:
+                print("💾 DEBUG: Checking for existing checkpoints...")
                 process_id = self.context.experiment_id if self.context else "pipeline"
                 checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
                 if checkpoint_data:
                     logger.info(f"Resuming from checkpoint: {checkpoint_data.checkpoint_id}")
                     self._restore_from_checkpoint(checkpoint_data.data)
+                else:
+                    print("💾 DEBUG: No checkpoint found, starting fresh")
             
             # Execute pipeline
+            print("🏃 DEBUG: Setting status to RUNNING...")
             self.status = PipelineStatus.RUNNING
             # Update experiment status in database
             from src.database.schema import schema
@@ -229,6 +240,7 @@ class PipelineOrchestrator:
                            **kwargs):
         """Initialize pipeline execution context."""
         # Create experiment
+        print("🧪 DEBUG: Creating experiment in database...")
         from src.database.schema import schema
         experiment_id = schema.create_experiment(
             name=experiment_name,
