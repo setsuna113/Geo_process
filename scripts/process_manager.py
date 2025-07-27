@@ -46,70 +46,70 @@ class PipelineCLI:
             sys.executable,
             "-c",
             f"""
-    import sys
-    import os
-    from pathlib import Path
-    sys.path.insert(0, str(Path.cwd()))
+import sys
+import os
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()))
 
-    # Preserve environment variables
-    if os.getenv('FORCE_TEST_MODE'):
-        os.environ['FORCE_TEST_MODE'] = os.getenv('FORCE_TEST_MODE')
-    if os.getenv('DB_NAME'):
-        os.environ['DB_NAME'] = os.getenv('DB_NAME')
+# Preserve environment variables
+if os.getenv('FORCE_TEST_MODE'):
+    os.environ['FORCE_TEST_MODE'] = os.getenv('FORCE_TEST_MODE')
+if os.getenv('DB_NAME'):
+    os.environ['DB_NAME'] = os.getenv('DB_NAME')
 
-    from src.pipelines.orchestrator import PipelineOrchestrator
-    from src.pipelines.stages.load_stage import DataLoadStage
-    from src.pipelines.stages.resample_stage import ResampleStage
-    from src.pipelines.stages.merge_stage import MergeStage
-    from src.pipelines.stages.export_stage import ExportStage
-    from src.pipelines.stages.analysis_stage import AnalysisStage
-    from src.config.config import Config
-    from src.database.connection import DatabaseManager
+from src.pipelines.orchestrator import PipelineOrchestrator
+from src.pipelines.stages.load_stage import DataLoadStage
+from src.pipelines.stages.resample_stage import ResampleStage
+from src.pipelines.stages.merge_stage import MergeStage
+from src.pipelines.stages.export_stage import ExportStage
+from src.pipelines.stages.analysis_stage import AnalysisStage
+from src.config.config import Config
+from src.database.connection import DatabaseManager
 
-    config = Config()
-    db = DatabaseManager()
+config = Config()
+db = DatabaseManager()
 
-    # Create pipeline orchestrator
-    orchestrator = PipelineOrchestrator(config, db)
+# Create pipeline orchestrator
+orchestrator = PipelineOrchestrator(config, db)
 
-    # Configure pipeline stages
-    analysis_method = '{analysis_method}'
-    stages = [
-        DataLoadStage,
-        ResampleStage, 
-        MergeStage,
-        ExportStage,
-        lambda: AnalysisStage(analysis_method)  # Use specified analysis method
-    ]
+# Configure pipeline stages
+analysis_method = '{analysis_method}'
+stages = [
+    DataLoadStage,
+    ResampleStage, 
+    MergeStage,
+    ExportStage,
+    lambda: AnalysisStage(analysis_method)  # Use specified analysis method
+]
 
-    # Instantiate stages (handle lambda for AnalysisStage)
-    stage_instances = []
-    for stage_class in stages:
-        if callable(stage_class) and not isinstance(stage_class, type):
-            # Handle lambda case
-            stage_instances.append(stage_class())
-        else:
-            # Handle normal class case
-            stage_instances.append(stage_class())
+# Instantiate stages (handle lambda for AnalysisStage)
+stage_instances = []
+for stage_class in stages:
+    if callable(stage_class) and not isinstance(stage_class, type):
+        # Handle lambda case
+        stage_instances.append(stage_class())
+    else:
+        # Handle normal class case
+        stage_instances.append(stage_class())
 
-    for stage in stage_instances:
-        orchestrator.register_stage(stage)
+for stage in stage_instances:
+    orchestrator.register_stage(stage)
 
-    # Use the experiment name passed from command line
-    experiment_name = '{experiment_name}'
-    description = 'Production pipeline with skip-resampling functionality'
+# Use the experiment name passed from command line
+experiment_name = '{experiment_name}'
+description = 'Production pipeline with skip-resampling functionality'
 
-    print(f'🚀 Starting pipeline: {{experiment_name}}')
+print(f'🚀 Starting pipeline: {{experiment_name}}')
 
-    # Run complete pipeline
-    results = orchestrator.run_pipeline(
-        experiment_name=experiment_name,
-        description=description,
-        resume_from_checkpoint=True
-    )
+# Run complete pipeline
+results = orchestrator.run_pipeline(
+    experiment_name=experiment_name,
+    description=description,
+    resume_from_checkpoint=True
+)
 
-    print('✅ Pipeline completed successfully!')
-    """
+print('✅ Pipeline completed successfully!')
+"""
         ]
             
         # Note: Arguments are already embedded in the Python code string above

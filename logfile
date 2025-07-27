@@ -413,3 +413,5 @@
 	            ORDER BY resampled_at DESC
 	            LIMIT 5
 	        
+2025-07-27 11:55:21.082 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 11:55:22.522 UTC [2119568] LOG:  checkpoint complete: wrote 15 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.408 s, sync=0.013 s, total=1.441 s; sync files=11, longest=0.010 s, average=0.002 s; distance=48 kB, estimate=48 kB; lsn=0/2440D00, redo lsn=0/2440CA8
