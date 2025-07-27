@@ -226,10 +226,21 @@ class ResamplingProcessor(BaseProcessor):
                     passthrough_info = self._create_passthrough_dataset_info(raster_entry, normalized_config)
                     
                     if progress_callback:
-                        progress_callback(f"Storing passthrough metadata", 90)
+                        progress_callback(f"Loading passthrough data for storage", 70)
                     
-                    # Store metadata (no actual data processing needed)
-                    self._store_resampled_dataset(passthrough_info, None)  # Pass None for data
+                    # Load the actual data for database storage
+                    # Even for passthrough, we need to store in DB for consistent lazy processing
+                    with rasterio.open(raster_path) as src:
+                        data = src.read(1).astype(np.float32)
+                        # Handle nodata values
+                        if src.nodata is not None:
+                            data[data == src.nodata] = np.nan
+                    
+                    if progress_callback:
+                        progress_callback(f"Storing passthrough data to database", 90)
+                    
+                    # Store both metadata AND data for passthrough datasets
+                    self._store_resampled_dataset(passthrough_info, data)
                     
                     if progress_callback:
                         progress_callback(f"Completed {dataset_name} (skipped)", 100)
@@ -644,54 +655,22 @@ class ResamplingProcessor(BaseProcessor):
 
     def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: Optional[np.ndarray]):
         """Store resampled dataset in database."""
-        # Handle passthrough datasets differently
-        if info.metadata.get('passthrough', False):
-            logger.info(f"Storing passthrough dataset metadata for {info.name}")
-            try:
-                with self.db.get_connection() as conn:
-                    cur = conn.cursor()
-                    
-                    # Store only metadata for passthrough datasets
-                    # The data remains in the original file
-                    cur.execute("""
-                        INSERT INTO resampled_datasets 
-                        (name, source_path, target_resolution, target_crs, bounds, 
-                         shape_height, shape_width, data_type, resampling_method, 
-                         band_name, data_table_name, metadata)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        info.name,
-                        str(info.source_path),
-                        info.target_resolution,
-                        info.target_crs,
-                        list(info.bounds),
-                        info.shape[0],
-                        info.shape[1],
-                        info.data_type,
-                        info.resampling_method,
-                        info.band_name,
-                        f"passthrough_{info.name.replace('-', '_')}",  # Special table name
-                        json.dumps(info.metadata)
-                    ))
-                    
-                    conn.commit()
-                    logger.info(f"✅ Stored passthrough dataset metadata: {info.name}")
-                    
-            except Exception as e:
-                logger.error(f"Failed to store passthrough dataset metadata: {e}")
-                raise
-            return
-        
-        # Original implementation for resampled datasets
+        # For consistency, store all data in DB (including passthrough)
+        # This ensures lazy loading works uniformly for all datasets
         if data is None:
-            raise ValueError(f"Data cannot be None for non-passthrough dataset {info.name}")
+            raise ValueError(f"Data cannot be None for dataset {info.name}")
         
         try:
             with self.db.get_connection() as conn:
                 cur = conn.cursor()
                 
-                # Create data table name
-                table_name = f"resampled_{info.name.replace('-', '_')}"
+                # Create data table name based on type
+                if info.metadata.get('passthrough', False):
+                    table_name = f"passthrough_{info.name.replace('-', '_')}"
+                    logger.info(f"Storing passthrough dataset {info.name} to database table {table_name}")
+                else:
+                    table_name = f"resampled_{info.name.replace('-', '_')}"
+                    logger.info(f"Storing resampled dataset {info.name} to database table {table_name}")
                 
                 # Insert metadata
                 cur.execute("""
@@ -743,10 +722,10 @@ class ResamplingProcessor(BaseProcessor):
                     )
                 
                 conn.commit()
-                logger.info(f"Stored resampled dataset {info.name}")
+                logger.info(f"✅ Stored dataset {info.name} ({len(data_to_insert) if 'data_to_insert' in locals() else 0} non-NaN values)")
                 
         except Exception as e:
-            logger.error(f"Failed to store resampled dataset: {e}")
+            logger.error(f"Failed to store dataset: {e}")
             raise
     
     # BaseProcessor abstract method implementations
@@ -861,26 +840,7 @@ class ResamplingProcessor(BaseProcessor):
             
             dataset_info = datasets[0]
             
-            # Check if it's a passthrough dataset
-            metadata = dataset_info.get('metadata', {})
-            if metadata.get('passthrough', False):
-                logger.info(f"Dataset {dataset_name} is passthrough, use load_passthrough_data instead")
-                # Create ResampledDatasetInfo and load via passthrough method
-                info = ResampledDatasetInfo(
-                    name=dataset_info['name'],
-                    source_path=Path(dataset_info['source_path']),
-                    target_resolution=float(dataset_info['target_resolution']),
-                    target_crs=dataset_info['target_crs'],
-                    bounds=tuple(dataset_info['bounds']),
-                    shape=(int(dataset_info['shape_height']), int(dataset_info['shape_width'])),
-                    data_type=dataset_info['data_type'],
-                    resampling_method=dataset_info['resampling_method'],
-                    band_name=dataset_info['band_name'],
-                    metadata=metadata
-                )
-                return self.load_passthrough_data(info)
-            
-            # For non-passthrough, load from database table
+            # Load data from database table (works for both passthrough and resampled)
             table_name = dataset_info['data_table_name']
             shape = (dataset_info['shape_height'], dataset_info['shape_width'])
             
