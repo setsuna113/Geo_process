@@ -24,6 +24,7 @@ from src.pipelines.monitors.quality_checker import QualityChecker
 # from src.pipelines.recovery.checkpoint_manager import CheckpointManager  # OLD - DEPRECATED
 from src.checkpoints import get_checkpoint_manager, CheckpointLevel
 from src.pipelines.recovery.failure_handler import FailureHandler
+from src.core.signal_handler import get_signal_handler
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,11 @@ class PipelineOrchestrator:
         # Recovery components - using unified checkpoint system
         self.checkpoint_manager = get_checkpoint_manager()
         self.failure_handler = FailureHandler(config)
+        
+        # Signal handling for pause/resume
+        self.signal_handler = get_signal_handler()
+        self.signal_handler.register_pause_callback(self.pause_pipeline)
+        self.signal_handler.register_resume_callback(self.resume_pipeline)
         
         # Execution control
         self._stop_requested = False
@@ -291,6 +297,19 @@ class PipelineOrchestrator:
             if self._stop_requested:
                 logger.info("Pipeline stop requested")
                 break
+            
+            # Check for pause request (from signal handler or direct call)
+            if self._pause_requested or self.signal_handler.is_pause_requested():
+                if not self._pause_requested:
+                    self._pause_requested = True
+                    self.status = PipelineStatus.PAUSED
+                logger.info("Pipeline paused - waiting for resume")
+                while (self._pause_requested or self.signal_handler.is_pause_requested()) and not self._stop_requested:
+                    time.sleep(0.5)  # Check every 500ms
+                if self._stop_requested:
+                    logger.info("Pipeline stop requested during pause")
+                    break
+                logger.info("Pipeline resumed")
         
         return results
     
@@ -324,6 +343,20 @@ class PipelineOrchestrator:
             # Execute stage
             stage.status = StageStatus.RUNNING
             start_time = time.time()
+            
+            # Check for pause/stop before execution
+            if self._pause_requested or self.signal_handler.is_pause_requested():
+                if not self._pause_requested:
+                    self._pause_requested = True
+                stage.pause()
+                logger.info(f"Stage '{stage.name}' paused before execution")
+                while (self._pause_requested or self.signal_handler.is_pause_requested()) and not self._stop_requested:
+                    time.sleep(0.5)
+                if self._stop_requested:
+                    logger.info(f"Stage '{stage.name}' stopped during pause")
+                    raise InterruptedError("Pipeline stopped during pause")
+                stage.resume()
+                logger.info(f"Stage '{stage.name}' resumed")
             
             # Monitor memory during execution
             with self._memory_monitoring_context(stage):
@@ -848,12 +881,22 @@ class PipelineOrchestrator:
         logger.info("Pausing pipeline...")
         self._pause_requested = True
         self.status = PipelineStatus.PAUSED
+        
+        # Pause all currently running stages
+        for stage in self.stages:
+            if stage.status == StageStatus.RUNNING:
+                stage.pause()
     
     def resume_pipeline(self):
         """Resume pipeline execution."""
         logger.info("Resuming pipeline...")
         self._pause_requested = False
         self.status = PipelineStatus.RUNNING
+        
+        # Resume all paused stages
+        for stage in self.stages:
+            if stage.status == StageStatus.PAUSED:
+                stage.resume()
     
     def stop_pipeline(self):
         """Stop pipeline execution."""

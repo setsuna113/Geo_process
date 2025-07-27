@@ -72,6 +72,10 @@ from src.database.connection import DatabaseManager
 config = Config()
 db = DatabaseManager()
 
+# Initialize signal handler first
+from src.core.signal_handler import get_signal_handler
+signal_handler = get_signal_handler()
+
 # Create pipeline orchestrator
 orchestrator = PipelineOrchestrator(config, db)
 
