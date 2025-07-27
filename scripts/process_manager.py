@@ -17,7 +17,7 @@ sys.path.insert(0, str(project_root))
 
 from src.core.process_controller import ProcessController
 from src.core.progress_manager import get_progress_manager
-from src.core.checkpoint_manager import get_checkpoint_manager
+from src.checkpoints import get_checkpoint_manager
 from src.config.config import Config
 from src.database.connection import DatabaseManager
 from src.database.schema import schema

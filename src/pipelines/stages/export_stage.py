@@ -7,6 +7,7 @@ from datetime import datetime
 
 from .base_stage import PipelineStage, StageResult
 from src.processors.exporters.csv_exporter import CSVExporter, ExportConfig
+from src.processors.exporters.simple_csv_exporter import SimpleCSVExporter
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,13 @@ class ExportStage(PipelineStage):
         logger.info("Starting export stage")
         
         try:
-            # Create exporter
-            exporter = CSVExporter(context.db)
+            # Get merged dataset from context
+            merged_dataset = context.get('merged_dataset')
+            if merged_dataset is None:
+                raise RuntimeError("No merged dataset found in context")
+            
+            # Create simple exporter for xarray dataset
+            exporter = SimpleCSVExporter(context.db)
             
             # Determine output path
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -52,9 +58,9 @@ class ExportStage(PipelineStage):
                 compression='gzip' if context.config.get('export.compress', False) else None
             )
             
-            # Export data
-            exported_file = exporter.export_merged_dataset(
-                experiment_id=context.experiment_id,
+            # Export xarray dataset directly
+            exported_file = exporter.export_xarray_dataset(
+                dataset=merged_dataset,
                 config=config,
                 progress_callback=lambda p: logger.info(
                     f"Export progress: {p['rows_exported']:,} rows"

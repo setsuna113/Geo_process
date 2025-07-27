@@ -230,7 +230,11 @@ class AnalysisStage(PipelineStage):
     def _create_analyzer(self, context):
         """Create analyzer instance."""
         analyzer_class = self._get_analyzer_class()
-        return analyzer_class(context.config, context.db)
+        # SOMAnalyzer only takes db_connection as optional argument
+        if self.analysis_method == 'som':
+            return analyzer_class(db_connection=context.db)
+        else:
+            return analyzer_class(context.config, context.db)
     
     def _get_analysis_params(self, context) -> Dict[str, Any]:
         """Get analysis-specific parameters."""

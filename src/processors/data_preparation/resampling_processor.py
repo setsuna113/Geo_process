@@ -12,6 +12,7 @@ import json
 import time
 
 from src.config import config
+from src.config.config import Config
 from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
 from src.base.memory_manager import get_memory_manager
 from src.database.connection import DatabaseManager

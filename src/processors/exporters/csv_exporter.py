@@ -319,7 +319,9 @@ class CSVExporter(BaseExporter):
             
             # Get all resampled datasets for this experiment
             cur.execute("""
-                SELECT name, band_name, shape, bounds
+                SELECT name, band_name, 
+                       ARRAY[shape_height, shape_width] as shape, 
+                       bounds
                 FROM resampled_datasets
                 WHERE experiment_id = %s
                 ORDER BY name

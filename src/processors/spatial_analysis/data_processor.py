@@ -9,6 +9,7 @@ from pathlib import Path
 
 from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
 from src.config import config
+from src.config.config import Config
 from src.database.connection import DatabaseManager
 from src.processors.data_preparation.array_converter import ArrayConverter
 from src.spatial_analysis.memory_aware_processor import MemoryAwareProcessor, check_memory_usage
