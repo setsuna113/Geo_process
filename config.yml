@@ -85,7 +85,7 @@ datasets:
 processing:
   subsampling:
     enabled: false  # DISABLED for full dataset quality on high-memory system
-    max_samples: 250000000  # Higher than your 224M samples
+    max_samples: 500000000  # Higher than your 224M samples
     memory_limit_gb: 800    # Use most of your 1TB RAM
     strategy: 'random'
     min_samples_per_class: 1000
