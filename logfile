@@ -424,3 +424,14 @@
 	            
 2025-07-27 12:15:21.922 UTC [2119568] LOG:  checkpoint starting: time
 2025-07-27 12:15:22.659 UTC [2119568] LOG:  checkpoint complete: wrote 8 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.705 s, sync=0.012 s, total=0.737 s; sync files=7, longest=0.010 s, average=0.002 s; distance=14 kB, estimate=45 kB; lsn=0/2444698, redo lsn=0/2444640
+2025-07-27 12:20:08.892 UTC [2332056] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-27 12:20:08.892 UTC [2332056] DETAIL:  Key (name)=(production_test) already exists.
+2025-07-27 12:20:08.892 UTC [2332056] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('production_test', 'Production pipeline with skip-resampling functionality', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "resample", "dependencies": ["data_load"], "memory_requirements": 8.0, "disk_requirements": null}, {"name": "merge", "dependencies": ["resample"], "memory_requirements": 800.0, "disk_requirements": null}, {"name": "export", "dependencies": ["merge"], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "analysis_som", "dependencies": ["export"], "memory_requirements": 8.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load", "resample", "merge", "export", "analysis_som"], "description": "Production pipeline with skip-resampling functionality"}', 'system')
+	                RETURNING id
+	            
+2025-07-27 12:20:21.759 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 12:20:21.992 UTC [2119568] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.205 s, sync=0.005 s, total=0.234 s; sync files=3, longest=0.004 s, average=0.002 s; distance=4 kB, estimate=41 kB; lsn=0/2445990, redo lsn=0/2445938
+2025-07-27 12:25:22.093 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 12:25:22.629 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=10 kB, estimate=37 kB; lsn=0/24482B0, redo lsn=0/2448258
