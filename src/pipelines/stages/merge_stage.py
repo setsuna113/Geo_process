@@ -31,7 +31,9 @@ class MergeStage(PipelineStage):
         if self.processing_config and self.processing_config.enable_chunking:
             # Use memory limit from processing config for chunked mode
             return self.processing_config.memory_limit_mb / 1024.0  # Convert MB to GB
-        return 800.0  # GB - use high memory configuration
+        # Fall back to config value or a sensible default
+        from src.config import config
+        return config.processing['subsampling']['memory_limit_gb']
     
     @property
     def supports_chunking(self) -> bool:
@@ -107,15 +109,9 @@ class MergeStage(PipelineStage):
                 'file_size_mb': output_path.stat().st_size / (1024**2)
             }
             
-            # Store as a feature in the database
-            schema.store_feature(
-                grid_id=context.experiment_id,
-                cell_id='merged_dataset',
-                feature_type='merged_dataset',
-                value=merged_metadata,
-                metadata={'stage': 'merge', 'chunked': use_chunked}
-            )
-            logger.info("✅ Stored merged dataset metadata in database")
+            # Store metadata in context for later stages
+            context.set('merge_metadata', merged_metadata)
+            logger.info("✅ Merge metadata stored in context")
             
             # Clean up memory for chunked processing
             if use_chunked:
@@ -186,8 +182,14 @@ class MergeStage(PipelineStage):
                                   common_shape: Tuple[int, int],
                                   resolution: float) -> np.ndarray:
         """Align dataset to common coordinate grid."""
-        # Create output array filled with NaN
-        aligned_data = np.full(common_shape, np.nan, dtype=array_data.dtype)
+        # Create output array filled with appropriate value based on dtype
+        if np.issubdtype(array_data.dtype, np.integer):
+            # For integer data, use 0 or a specific nodata value instead of NaN
+            fill_value = 0  # Could also use a specific nodata value from config
+            aligned_data = np.full(common_shape, fill_value, dtype=array_data.dtype)
+        else:
+            # For floating point data, NaN is fine
+            aligned_data = np.full(common_shape, np.nan, dtype=array_data.dtype)
         
         # Calculate offsets
         x_offset = int(np.round((data_bounds[0] - common_bounds[0]) / resolution))

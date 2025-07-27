@@ -513,8 +513,8 @@ class ResamplingProcessor(BaseProcessor):
             chunk_size=self.chunk_config['tile_size'],
             cache_results=self.resampling_config.get('cache_resampled', True),
             validate_output=self.resampling_config.get('validate_output', True),
-            preserve_sum=self.resampling_config.get('preserve_sum', True),
-            memory_limit_mb=self.chunk_config['max_chunk_size_mb']
+            preserve_sum=self.resampling_config.get('preserve_sum', True)
+            # memory_limit_mb removed - not a valid field
         )
         
         # Create engine

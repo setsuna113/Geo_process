@@ -439,3 +439,137 @@
 2025-07-27 12:35:23.321 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.508 s, sync=0.012 s, total=0.541 s; sync files=6, longest=0.010 s, average=0.002 s; distance=11 kB, estimate=35 kB; lsn=0/244AF60, redo lsn=0/244AF08
 2025-07-27 12:55:22.686 UTC [2119568] LOG:  checkpoint starting: time
 2025-07-27 12:55:23.524 UTC [2119568] LOG:  checkpoint complete: wrote 9 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.806 s, sync=0.012 s, total=0.838 s; sync files=7, longest=0.010 s, average=0.002 s; distance=22 kB, estimate=33 kB; lsn=0/24508C0, redo lsn=0/2450868
+2025-07-27 13:00:22.624 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:00:23.462 UTC [2119568] LOG:  checkpoint complete: wrote 9 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.806 s, sync=0.012 s, total=0.839 s; sync files=7, longest=0.011 s, average=0.002 s; distance=8 kB, estimate=31 kB; lsn=0/2452C78, redo lsn=0/2452C20
+2025-07-27 13:05:22.563 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:05:23.099 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=11 kB, estimate=29 kB; lsn=0/2455880, redo lsn=0/2455828
+2025-07-27 13:06:58.951 UTC [2381948] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-27 13:06:58.951 UTC [2381948] DETAIL:  Key (name)=(production_test) already exists.
+2025-07-27 13:06:58.951 UTC [2381948] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('production_test', 'Production pipeline with skip-resampling functionality', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "resample", "dependencies": ["data_load"], "memory_requirements": 8.0, "disk_requirements": null}, {"name": "merge", "dependencies": ["resample"], "memory_requirements": 800.0, "disk_requirements": null}, {"name": "export", "dependencies": ["merge"], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "analysis_som", "dependencies": ["export"], "memory_requirements": 8.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load", "resample", "merge", "export", "analysis_som"], "description": "Production pipeline with skip-resampling functionality"}', 'system')
+	                RETURNING id
+	            
+2025-07-27 13:08:05.850 UTC [2383139] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-27 13:08:05.850 UTC [2383139] DETAIL:  Key (name)=(production_test) already exists.
+2025-07-27 13:08:05.850 UTC [2383139] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('production_test', 'Production pipeline with skip-resampling functionality', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "resample", "dependencies": ["data_load"], "memory_requirements": 8.0, "disk_requirements": null}, {"name": "merge", "dependencies": ["resample"], "memory_requirements": 800.0, "disk_requirements": null}, {"name": "export", "dependencies": ["merge"], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "analysis_som", "dependencies": ["export"], "memory_requirements": 8.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load", "resample", "merge", "export", "analysis_som"], "description": "Production pipeline with skip-resampling functionality"}', 'system')
+	                RETURNING id
+	            
+2025-07-27 13:10:22.199 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:10:22.430 UTC [2119568] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.205 s, sync=0.005 s, total=0.232 s; sync files=3, longest=0.004 s, average=0.002 s; distance=9 kB, estimate=27 kB; lsn=0/2457D18, redo lsn=0/2457CC0
+2025-07-27 13:11:27.896 UTC [2385541] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-27 13:11:27.896 UTC [2385541] DETAIL:  Key (name)=(production_test) already exists.
+2025-07-27 13:11:27.896 UTC [2385541] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('production_test', 'Production pipeline with skip-resampling functionality', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "resample", "dependencies": ["data_load"], "memory_requirements": 8.0, "disk_requirements": null}, {"name": "merge", "dependencies": ["resample"], "memory_requirements": 800.0, "disk_requirements": null}, {"name": "export", "dependencies": ["merge"], "memory_requirements": 2.0, "disk_requirements": null}, {"name": "analysis_som", "dependencies": ["export"], "memory_requirements": 8.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load", "resample", "merge", "export", "analysis_som"], "description": "Production pipeline with skip-resampling functionality"}', 'system')
+	                RETURNING id
+	            
+2025-07-27 13:15:22.531 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:15:23.161 UTC [2119568] LOG:  checkpoint complete: wrote 7 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.606 s, sync=0.005 s, total=0.631 s; sync files=7, longest=0.004 s, average=0.001 s; distance=9 kB, estimate=25 kB; lsn=0/245A400, redo lsn=0/245A370
+2025-07-27 13:20:22.262 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:20:24.407 UTC [2119568] LOG:  checkpoint complete: wrote 22 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.115 s, sync=0.009 s, total=2.146 s; sync files=35, longest=0.003 s, average=0.001 s; distance=61 kB, estimate=61 kB; lsn=0/24698E8, redo lsn=0/2469890
+2025-07-27 13:27:31.835 UTC [2401421] ERROR:  column "created_at" does not exist at character 22
+2025-07-27 13:27:31.835 UTC [2401421] HINT:  Perhaps you meant to reference the column "experiments.created_by".
+2025-07-27 13:27:31.835 UTC [2401421] STATEMENT:  SELECT name, status, created_at, updated_at FROM experiments ORDER BY created_at DESC LIMIT 3;
+2025-07-27 13:35:22.708 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:35:23.439 UTC [2119568] LOG:  checkpoint complete: wrote 8 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.705 s, sync=0.012 s, total=0.732 s; sync files=8, longest=0.010 s, average=0.002 s; distance=8 kB, estimate=56 kB; lsn=0/246BBD8, redo lsn=0/246BB80
+2025-07-27 13:40:22.540 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:40:23.076 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=9 kB, estimate=51 kB; lsn=0/246DFE0, redo lsn=0/246DF88
+2025-07-27 13:50:22.276 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:50:23.609 UTC [2119568] LOG:  checkpoint complete: wrote 14 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.307 s, sync=0.006 s, total=1.333 s; sync files=13, longest=0.004 s, average=0.001 s; distance=27 kB, estimate=48 kB; lsn=0/2474FF8, redo lsn=0/2474F68
+2025-07-27 13:55:22.709 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 13:55:23.842 UTC [2119568] LOG:  checkpoint complete: wrote 12 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.107 s, sync=0.012 s, total=1.134 s; sync files=12, longest=0.010 s, average=0.001 s; distance=20 kB, estimate=46 kB; lsn=0/247A218, redo lsn=0/247A1C0
+2025-07-27 14:00:22.942 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:00:23.479 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=7 kB, estimate=42 kB; lsn=0/247C060, redo lsn=0/247BFF0
+2025-07-27 14:05:10.835 UTC [2447952] ERROR:  insert or update on table "features" violates foreign key constraint "features_grid_id_fkey"
+2025-07-27 14:05:10.835 UTC [2447952] DETAIL:  Key (grid_id)=(89d3583d-f42b-4575-8a49-97ca892c6725) is not present in table "grids".
+2025-07-27 14:05:10.835 UTC [2447952] STATEMENT:  
+	                INSERT INTO features 
+	                (grid_id, cell_id, feature_type, feature_name, feature_value, computation_metadata)
+	                VALUES ('89d3583d-f42b-4575-8a49-97ca892c6725', 'merged_dataset', 'merged_dataset', 'merged_richness', 1.0, '{"experiment_id": "89d3583d-f42b-4575-8a49-97ca892c6725", "timestamp": "2025-07-27T14:05:10.824270", "shape": {"y": 120, "x": 120}, "variables": ["test_richness", "test_richness2"], "bounds": [-1.0, -1.0, 1.0, 1.0], "resolution": 0.016666666666666666, "file_path": "/home/yl998/dev/geo/outputs/89d3583d-f42b-4575-8a49-97ca892c6725/merged_dataset.nc", "file_size_mb": 0.03828144073486328}')
+	                ON CONFLICT (grid_id, cell_id, feature_type, feature_name)
+	                DO UPDATE SET
+	                    feature_value = EXCLUDED.feature_value,
+	                    computation_metadata = EXCLUDED.computation_metadata,
+	                    computed_at = CURRENT_TIMESTAMP
+	                RETURNING id
+	            
+2025-07-27 14:05:11.084 UTC [2447952] ERROR:  insert or update on table "features" violates foreign key constraint "features_grid_id_fkey"
+2025-07-27 14:05:11.084 UTC [2447952] DETAIL:  Key (grid_id)=(89d3583d-f42b-4575-8a49-97ca892c6725) is not present in table "grids".
+2025-07-27 14:05:11.084 UTC [2447952] STATEMENT:  
+	                INSERT INTO features 
+	                (grid_id, cell_id, feature_type, feature_name, feature_value, computation_metadata)
+	                VALUES ('89d3583d-f42b-4575-8a49-97ca892c6725', 'merged_dataset', 'merged_dataset', 'merged_richness', 1.0, '{"experiment_id": "89d3583d-f42b-4575-8a49-97ca892c6725", "timestamp": "2025-07-27T14:05:11.083764", "shape": {"y": 120, "x": 120}, "variables": ["test_richness", "test_richness2"], "bounds": [-1.0, -1.0, 1.0, 1.0], "resolution": 0.016666666666666666, "file_path": "/home/yl998/dev/geo/outputs/89d3583d-f42b-4575-8a49-97ca892c6725/merged_dataset.nc", "file_size_mb": 0.03828144073486328}')
+	                ON CONFLICT (grid_id, cell_id, feature_type, feature_name)
+	                DO UPDATE SET
+	                    feature_value = EXCLUDED.feature_value,
+	                    computation_metadata = EXCLUDED.computation_metadata,
+	                    computed_at = CURRENT_TIMESTAMP
+	                RETURNING id
+	            
+2025-07-27 14:05:22.579 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:05:26.420 UTC [2119568] LOG:  checkpoint complete: wrote 39 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=3.813 s, sync=0.013 s, total=3.841 s; sync files=32, longest=0.010 s, average=0.001 s; distance=52 kB, estimate=52 kB; lsn=0/2489210, redo lsn=0/24891B8
+2025-07-27 14:10:22.520 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:10:23.060 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.015 s, total=0.540 s; sync files=6, longest=0.010 s, average=0.003 s; distance=5 kB, estimate=47 kB; lsn=0/248A738, redo lsn=0/248A6E0
+2025-07-27 14:15:22.160 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:15:22.697 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=7 kB, estimate=43 kB; lsn=0/248C5B8, redo lsn=0/248C560
+2025-07-27 14:20:22.797 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:20:24.540 UTC [2119568] LOG:  checkpoint complete: wrote 18 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.708 s, sync=0.015 s, total=1.743 s; sync files=33, longest=0.008 s, average=0.001 s; distance=61 kB, estimate=61 kB; lsn=0/249BD68, redo lsn=0/249BD10
+2025-07-27 14:21:21.427 UTC [2469746] ERROR:  relation "column_column_usage" does not exist
+2025-07-27 14:21:21.427 UTC [2469746] STATEMENT:  SELECT table_name, pg_size_pretty(pg_total_relation_size(quote_ident(table_name)::regclass)) as size FROM information_schema.tables WHERE table_schema = 'public' AND pg_total_relation_size(quote_ident(table_name)::regclass) > 0 ORDER BY pg_total_relation_size(quote_ident(table_name)::regclass) DESC LIMIT 10;
+2025-07-27 14:21:27.629 UTC [2469832] ERROR:  relation "processing_cache" does not exist at character 22
+2025-07-27 14:21:27.629 UTC [2469832] STATEMENT:  SELECT COUNT(*) FROM processing_cache; SELECT COUNT(*) FROM file_processing_status;
+2025-07-27 14:25:22.640 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:25:23.273 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.602 s, sync=0.011 s, total=0.633 s; sync files=4, longest=0.010 s, average=0.003 s; distance=10 kB, estimate=56 kB; lsn=0/249E768, redo lsn=0/249E710
+2025-07-27 14:40:22.573 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:40:23.104 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.531 s; sync files=6, longest=0.010 s, average=0.002 s; distance=4 kB, estimate=51 kB; lsn=0/249FA58, redo lsn=0/249FA00
+2025-07-27 14:41:07.592 UTC [2481054] ERROR:  column "path" does not exist at character 90
+2025-07-27 14:41:07.592 UTC [2481054] STATEMENT:  SELECT name, processing_status, active FROM raster_sources WHERE name LIKE '%subset%' OR path LIKE '%yl998%';
+2025-07-27 14:41:28.789 UTC [2481370] ERROR:  column "table_name" does not exist at character 8
+2025-07-27 14:41:28.789 UTC [2481370] STATEMENT:  SELECT table_name, n_tup_ins as inserts, n_tup_upd as updates FROM pg_stat_user_tables WHERE n_tup_ins > 0 OR n_tup_upd > 0 ORDER BY n_tup_ins DESC;
+2025-07-27 14:55:22.404 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 14:55:23.431 UTC [2119568] LOG:  checkpoint complete: wrote 11 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.007 s, sync=0.006 s, total=1.028 s; sync files=9, longest=0.004 s, average=0.001 s; distance=18 kB, estimate=48 kB; lsn=0/24A4680, redo lsn=0/24A45F0
+2025-07-27 15:05:22.620 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 15:05:23.161 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.014 s, total=0.541 s; sync files=6, longest=0.012 s, average=0.003 s; distance=9 kB, estimate=44 kB; lsn=0/24A6C78, redo lsn=0/24A6C20
+2025-07-27 15:15:22.361 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 15:15:22.892 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.006 s, total=0.531 s; sync files=6, longest=0.005 s, average=0.001 s; distance=11 kB, estimate=41 kB; lsn=0/24A9A10, redo lsn=0/24A99B8
+2025-07-27 15:20:22.992 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 15:20:24.031 UTC [2119568] LOG:  checkpoint complete: wrote 11 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.006 s, sync=0.012 s, total=1.040 s; sync files=6, longest=0.010 s, average=0.002 s; distance=40 kB, estimate=41 kB; lsn=0/24B3D80, redo lsn=0/24B3D28
+2025-07-27 15:21:06.075 UTC [2516309] ERROR:  column "created_at" does not exist at character 22
+2025-07-27 15:21:06.075 UTC [2516309] HINT:  Perhaps you meant to reference the column "experiments.created_by".
+2025-07-27 15:21:06.075 UTC [2516309] STATEMENT:  SELECT name, status, created_at, updated_at FROM experiments WHERE name LIKE '%production_run%' OR name LIKE '%exact_test%' ORDER BY created_at DESC LIMIT 5;
+2025-07-27 15:21:23.981 UTC [2516640] ERROR:  column "created_at" does not exist at character 31
+2025-07-27 15:21:23.981 UTC [2516640] STATEMENT:  SELECT COUNT(*) as count, MAX(created_at) as latest FROM processing_jobs WHERE parent_experiment_id IN (SELECT id FROM experiments WHERE name = 'production_run_20250727_151513');
+2025-07-27 15:21:40.707 UTC [2516960] ERROR:  column "table_name" does not exist at character 8
+2025-07-27 15:21:40.707 UTC [2516960] STATEMENT:  SELECT table_name, n_tup_ins as inserts, n_tup_upd as updates FROM pg_stat_user_tables WHERE n_tup_ins > 0 OR n_tup_upd > 0 ORDER BY n_tup_ins DESC LIMIT 10;
+2025-07-27 15:21:48.024 UTC [2517050] ERROR:  column "tablename" does not exist at character 20
+2025-07-27 15:21:48.024 UTC [2517050] STATEMENT:  SELECT schemaname, tablename, n_tup_ins as inserts, n_tup_upd as updates FROM pg_stat_user_tables WHERE n_tup_ins > 0 OR n_tup_upd > 0 ORDER BY n_tup_ins DESC LIMIT 10;
+2025-07-27 15:22:13.006 UTC [2517447] ERROR:  column "stage_name" does not exist at character 8
+2025-07-27 15:22:13.006 UTC [2517447] STATEMENT:  SELECT stage_name, checkpoint_data->>'status' as status, created_at FROM pipeline_checkpoints WHERE experiment_id = 'aafdfc46-a1e9-4064-8d10-8145fdb9c600' ORDER BY created_at DESC;
+2025-07-27 15:22:36.713 UTC [2517850] ERROR:  column "validation_status" does not exist at character 33
+2025-07-27 15:22:36.713 UTC [2517850] STATEMENT:  SELECT name, processing_status, validation_status, created_at FROM raster_sources ORDER BY created_at DESC LIMIT 5;
+2025-07-27 15:25:22.131 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 15:25:22.764 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.602 s, sync=0.011 s, total=0.633 s; sync files=4, longest=0.010 s, average=0.003 s; distance=13 kB, estimate=38 kB; lsn=0/24B7260, redo lsn=0/24B7208
+2025-07-27 15:28:57.948 UTC [2119567] LOG:  server process (PID 2136942) was terminated by signal 9: Killed
+2025-07-27 15:28:57.948 UTC [2119567] DETAIL:  Failed process was running: COMMIT
+2025-07-27 15:28:57.948 UTC [2119567] LOG:  terminating any other active server processes
+2025-07-27 15:28:57.950 UTC [2119567] LOG:  all server processes terminated; reinitializing
+2025-07-27 15:28:57.993 UTC [2524445] LOG:  database system was interrupted; last known up at 2025-07-27 15:25:22 UTC
+2025-07-27 15:28:58.136 UTC [2524445] LOG:  database system was not properly shut down; automatic recovery in progress
+2025-07-27 15:28:58.141 UTC [2524445] LOG:  redo starts at 0/24B7208
+2025-07-27 15:28:58.141 UTC [2524445] LOG:  invalid record length at 0/24B7310: expected at least 24, got 0
+2025-07-27 15:28:58.141 UTC [2524445] LOG:  redo done at 0/24B72D8 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s
+2025-07-27 15:28:58.151 UTC [2524446] LOG:  checkpoint starting: end-of-recovery immediate wait
+2025-07-27 15:28:58.173 UTC [2524446] LOG:  checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.007 s, sync=0.002 s, total=0.026 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/24B7310, redo lsn=0/24B7310
+2025-07-27 15:28:58.182 UTC [2119567] LOG:  database system is ready to accept connections
+2025-07-27 15:33:58.274 UTC [2524446] LOG:  checkpoint starting: time
+2025-07-27 15:33:59.006 UTC [2524446] LOG:  checkpoint complete: wrote 8 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.706 s, sync=0.012 s, total=0.733 s; sync files=7, longest=0.010 s, average=0.002 s; distance=11 kB, estimate=11 kB; lsn=0/24BA138, redo lsn=0/24BA0E0
+2025-07-27 15:38:35.942 UTC [2535690] ERROR:  column "created_at" does not exist at character 37
+2025-07-27 15:38:35.942 UTC [2535690] HINT:  Perhaps you meant to reference the column "features.created_by".
+2025-07-27 15:38:35.942 UTC [2535690] STATEMENT:  SELECT COUNT(*) FROM features WHERE created_at > NOW() - INTERVAL '5 minutes';
+2025-07-27 15:38:58.106 UTC [2524446] LOG:  checkpoint starting: time
+2025-07-27 15:38:58.642 UTC [2524446] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=5 kB, estimate=10 kB; lsn=0/24BB608, redo lsn=0/24BB5B0
+2025-07-27 15:43:58.743 UTC [2524446] LOG:  checkpoint starting: time
+2025-07-27 15:43:59.280 UTC [2524446] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.506 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=7 kB, estimate=10 kB; lsn=0/24BD3F8, redo lsn=0/24BD3A0

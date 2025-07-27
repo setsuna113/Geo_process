@@ -191,6 +191,11 @@ class PipelineOrchestrator:
             
             # Execute pipeline
             self.status = PipelineStatus.RUNNING
+            # Update experiment status in database
+            from src.database.schema import schema
+            if self.context and self.context.experiment_id:
+                schema.update_experiment_status(self.context.experiment_id, 'running')
+                logger.info("Updated experiment status to 'running'")
             results = self._execute_pipeline()
             
             # Finalize
