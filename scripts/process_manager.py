@@ -41,7 +41,7 @@ class PipelineCLI:
         """Start a pipeline process."""
         
         # Get values from args with defaults
-        experiment_name = args.experiment_name or "production_test"
+        experiment_name = args.experiment_name or args.name or "production_test"
         analysis_method = args.analysis_method or "som"
         
         # Build command - run the pipeline orchestrator directly

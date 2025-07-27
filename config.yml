@@ -83,6 +83,14 @@ datasets:
 # HIGH-MEMORY PROCESSING CONFIGURATION (1TB RAM)
 # =============================================================================
 processing:
+  # Memory and chunking settings
+  memory_limit_gb: 800             # Adjust based on your system
+  chunk_size: 1000                 # Grid cells per chunk
+  enable_chunking: true
+  checkpoint_interval: 10          # Checkpoint every N chunks
+  merge_chunk_size: 500            # Size of chunks for lazy merge
+  lazy_merge_threshold_mb: 100     # Use lazy merge for datasets larger than this (set low for testing)
+  
   subsampling:
     enabled: false  # DISABLED for full dataset quality on high-memory system
     max_samples: 500000000  # Higher than your 224M samples
