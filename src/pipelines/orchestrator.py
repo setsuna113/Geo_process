@@ -278,12 +278,21 @@ class PipelineOrchestrator:
     
     def _execute_pipeline(self) -> Dict[str, Any]:
         """Execute pipeline stages in dependency order."""
+        print(f"🚀 DEBUG: _execute_pipeline starting...")
+        logger.info("🚀 DEBUG: _execute_pipeline starting...")
+        
         results = {}
         completed_stages = set()
         
         # Get execution order
         execution_order = self._get_execution_order()
+        print(f"📋 DEBUG: Execution order has {len(execution_order)} stage groups")
+        logger.info(f"📋 DEBUG: Execution order has {len(execution_order)} stage groups")
         
+        for i, stage_group in enumerate(execution_order):
+            print(f"📌 DEBUG: Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
+            logger.info(f"📌 DEBUG: Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
+            
         for stage_group in execution_order:
             # Execute stages in parallel if possible
             if len(stage_group) == 1:
@@ -321,9 +330,12 @@ class PipelineOrchestrator:
     def _execute_stage(self, stage: PipelineStage, 
                       completed_stages: set) -> StageResult:
         """Execute a single pipeline stage with enhanced memory management."""
+        print(f"🎯 DEBUG: Starting stage execution: {stage.name}")
+        logger.info(f"🎯 DEBUG: Starting stage execution: {stage.name}")
         logger.info(f"Executing stage: {stage.name}")
         
         # Update progress
+        print(f"📊 DEBUG: Updating progress tracker for stage: {stage.name}")
         self.progress_tracker.start_stage(stage.name)
         
         # Pre-execution checks with memory awareness
@@ -364,8 +376,12 @@ class PipelineOrchestrator:
                 logger.info(f"Stage '{stage.name}' resumed")
             
             # Monitor memory during execution
+            print(f"🔧 DEBUG: About to call stage.execute() for {stage.name}")
+            logger.info(f"🔧 DEBUG: About to call stage.execute() for {stage.name}")
             with self._memory_monitoring_context(stage):
                 result = stage.execute(self.context)
+                print(f"✅ DEBUG: stage.execute() completed for {stage.name}")
+                logger.info(f"✅ DEBUG: stage.execute() completed for {stage.name}")
             
             execution_time = time.time() - start_time
             stage.status = StageStatus.COMPLETED
