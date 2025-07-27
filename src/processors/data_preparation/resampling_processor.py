@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import time
+import rasterio
 
 from src.config import config
 from src.config.config import Config
