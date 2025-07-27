@@ -112,17 +112,8 @@ class PipelineCLI:
     """
         ]
             
-        # Add arguments
-        if args.experiment_name:
-            command.extend(['--experiment-name', args.experiment_name])
-        if args.resume:
-            command.append('--resume')
-        if args.target_resolution:
-            command.extend(['--target-resolution', str(args.target_resolution)])
-        if args.max_samples:
-            command.extend(['--max-samples', str(args.max_samples)])
-        if args.analysis_method:
-            command.extend(['--analysis-method', args.analysis_method])
+        # Note: Arguments are already embedded in the Python code string above
+        # No need to add them to the command list
         
         # Start process
         try:
