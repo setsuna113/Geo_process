@@ -232,8 +232,13 @@ class PipelineOrchestrator:
         # Setup directories
         if checkpoint_dir is None:
             checkpoint_dir = Path(self.config.get('paths.checkpoint_dir', 'checkpoints')) / experiment_id
+        else:
+            checkpoint_dir = Path(checkpoint_dir)
+            
         if output_dir is None:
             output_dir = Path(self.config.get('paths.output_dir', 'outputs')) / experiment_id
+        else:
+            output_dir = Path(output_dir)
         
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -247,7 +252,7 @@ class PipelineOrchestrator:
             output_dir=output_dir,
             metadata={
                 'experiment_name': experiment_name,
-                'start_time': datetime.now(),
+                'start_time': datetime.now().isoformat(),
                 'pipeline_version': '1.0.0',
                 **kwargs
             }
@@ -737,7 +742,10 @@ class PipelineOrchestrator:
         report = self._generate_execution_report(results)
         
         # Save report
-        report_path = self.context.output_dir if self.context else Path(".") / 'pipeline_report.json'
+        if self.context:
+            report_path = self.context.output_dir / 'pipeline_report.json'
+        else:
+            report_path = Path(".") / 'pipeline_report.json'
         with open(report_path, 'w') as f:
             json.dump(report, f, indent=2, default=str)
         
@@ -796,10 +804,30 @@ class PipelineOrchestrator:
 
     def _generate_execution_report(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive execution report."""
+        # Calculate execution time safely
+        execution_time = 0
+        if self.context and self.context.metadata:
+            start_time = self.context.metadata.get("start_time")
+            if start_time:
+                if isinstance(start_time, str):
+                    # If it's already a string, parse it
+                    from dateutil import parser
+                    start_time = parser.parse(start_time)
+                execution_time = (datetime.now() - start_time).total_seconds()
+        
+        # Clean metadata to ensure JSON serialization
+        metadata = {}
+        if self.context and self.context.metadata:
+            for key, value in self.context.metadata.items():
+                if isinstance(value, datetime):
+                    metadata[key] = value.isoformat()
+                else:
+                    metadata[key] = value
+        
         return {
             'experiment_id': self.context.experiment_id if self.context else "",
             'status': self.status.value,
-            'execution_time': (datetime.now() - (self.context.metadata if self.context else {}).get("start_time", datetime.now())).total_seconds(),
+            'execution_time': execution_time,
             'stages_completed': len([s for s in self.stages if s.status == StageStatus.COMPLETED]),
             'total_stages': len(self.stages),
             'quality_metrics': self.context.quality_metrics if self.context else {},
@@ -812,7 +840,7 @@ class PipelineOrchestrator:
                 }
                 for stage_name, result in results.items()
             },
-            'metadata': self.context.metadata if self.context else {}
+            'metadata': metadata
         }
     
     def pause_pipeline(self):

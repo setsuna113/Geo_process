@@ -378,3 +378,38 @@
 2025-07-27 00:50:12.136 UTC [2119568] LOG:  checkpoint complete: wrote 25 buffers (0.2%); 0 WAL file(s) added, 0 removed, 0 recycled; write=2.411 s, sync=0.015 s, total=2.446 s; sync files=25, longest=0.011 s, average=0.001 s; distance=34 kB, estimate=34 kB; lsn=0/2422DE0, redo lsn=0/2422D88
 2025-07-27 00:55:09.158 UTC [2119568] LOG:  checkpoint starting: time
 2025-07-27 00:55:11.002 UTC [2119568] LOG:  checkpoint complete: wrote 19 buffers (0.1%); 0 WAL file(s) added, 0 removed, 0 recycled; write=1.817 s, sync=0.007 s, total=1.844 s; sync files=19, longest=0.004 s, average=0.001 s; distance=33 kB, estimate=34 kB; lsn=0/242B3E8, redo lsn=0/242B390
+2025-07-27 11:03:49.393 UTC [2268000] ERROR:  duplicate key value violates unique constraint "experiments_name_key"
+2025-07-27 11:03:49.393 UTC [2268000] DETAIL:  Key (name)=(test_mini_run) already exists.
+2025-07-27 11:03:49.393 UTC [2268000] STATEMENT:  
+	                INSERT INTO experiments (name, description, config, created_by)
+	                VALUES ('test_mini_run', 'Pipeline execution', '{"pipeline": {"stages": [{"name": "data_load", "dependencies": [], "memory_requirements": 2.0, "disk_requirements": null}], "monitoring": {"memory_limit_gb": 16, "checkpoint_interval": 300}}, "stages": ["data_load"]}', 'system')
+	                RETURNING id
+	            
+2025-07-27 11:05:20.728 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 11:05:21.465 UTC [2119568] LOG:  checkpoint complete: wrote 8 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.706 s, sync=0.012 s, total=0.738 s; sync files=7, longest=0.010 s, average=0.002 s; distance=13 kB, estimate=32 kB; lsn=0/242EAD8, redo lsn=0/242EA80
+2025-07-27 11:10:20.565 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 11:10:21.102 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.537 s; sync files=6, longest=0.010 s, average=0.002 s; distance=6 kB, estimate=29 kB; lsn=0/24305F8, redo lsn=0/24305A0
+2025-07-27 11:15:20.202 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 11:15:20.739 UTC [2119568] LOG:  checkpoint complete: wrote 6 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.505 s, sync=0.012 s, total=0.538 s; sync files=6, longest=0.010 s, average=0.002 s; distance=7 kB, estimate=27 kB; lsn=0/2432470, redo lsn=0/2432418
+2025-07-27 11:16:13.120 UTC [2276564] ERROR:  column "experiment_id" does not exist at character 17
+2025-07-27 11:16:13.120 UTC [2276564] STATEMENT:  
+	        SELECT experiment_id, name, status, created_at 
+	        FROM experiments 
+	        WHERE created_at > '2025-07-27T11:06:13.120004'::timestamp
+	        ORDER BY created_at DESC
+	        LIMIT 5
+	    
+2025-07-27 11:19:36.380 UTC [2279552] ERROR:  column "experiment_id" does not exist at character 73
+2025-07-27 11:19:36.380 UTC [2279552] STATEMENT:  
+	            SELECT COUNT(*) FROM resampled_datasets 
+	            WHERE experiment_id = '8f963e56-9486-4e62-a828-49a4be093e82'
+	        
+2025-07-27 11:20:20.839 UTC [2119568] LOG:  checkpoint starting: time
+2025-07-27 11:20:21.476 UTC [2119568] LOG:  checkpoint complete: wrote 7 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.606 s, sync=0.011 s, total=0.638 s; sync files=6, longest=0.010 s, average=0.002 s; distance=9 kB, estimate=25 kB; lsn=0/2434B38, redo lsn=0/2434AE0
+2025-07-27 11:20:24.148 UTC [2280071] ERROR:  column "source_resolution" does not exist at character 27
+2025-07-27 11:20:24.148 UTC [2280071] STATEMENT:  
+	            SELECT name, source_resolution, target_resolution, passthrough
+	            FROM resampled_datasets
+	            ORDER BY resampled_at DESC
+	            LIMIT 5
+	        

@@ -1,384 +1,357 @@
-# Geo Pipeline Execution Guide
-
-## Table of Contents
-1. [Overview](#overview)
-2. [Running the Full Pipeline](#running-the-full-pipeline)
-3. [Pause and Resume](#pause-and-resume)
-4. [Process Tracking and Monitoring](#process-tracking-and-monitoring)
-5. [Common Command Arguments](#common-command-arguments)
-6. [Configuration Fields](#configuration-fields)
-7. [Troubleshooting](#troubleshooting)
+# Geo Biodiversity Analysis Pipeline - User Guide
 
 ## Overview
 
-The Geo pipeline is a geospatial biodiversity analysis system that processes large raster datasets through multiple stages. It uses checkpoint-based execution for resumability and tmux for process management.
+This pipeline processes large raster datasets for biodiversity analysis with comprehensive features:
+- **Skip-resampling**: Automatically skips when resolution already matches
+- **Database storage**: All results stored for querying and analysis
+- **CSV export**: Chunked export with optional compression
+- **SOM analysis**: Self-Organizing Maps for spatial pattern analysis
+- **Checkpoints**: Automatic saving and resuming at each stage
+- **Process control**: Full pause/resume/stop functionality
 
-### Pipeline Stages
-1. **Data Preparation** - Loads and normalizes input data
-2. **Grid Processing** - Creates spatial grids at multiple resolutions
-3. **Feature Extraction** - Computes features for each grid cell
-4. **Analysis** - Runs spatial analysis (GWPCA, SOM)
-5. **Export** - Exports results in various formats
+## Quick Start
 
-## Running the Full Pipeline
-
-### Method 1: Using run_analysis.sh (Recommended)
-
+### Basic Pipeline Run
 ```bash
-# Basic run
-./run_analysis.sh
+# Start the pipeline (runs in foreground)
+./run_pipeline.sh
 
-# With custom config
-./run_analysis.sh --config config_custom.yml
+# Start with custom experiment name
+./run_pipeline.sh --experiment-name "my_analysis_2025"
+```
 
-# Dry run (shows what would be executed)
-./run_analysis.sh --dry-run
+### Daemon Mode (Background Process)
+```bash
+# Start in background (detached)
+./run_pipeline.sh --daemon
+
+# Start daemon with custom process name
+./run_pipeline.sh --daemon --process-name "biodiversity_analysis_main"
+```
+
+## Process Management
+
+### Starting Processes
+```bash
+# Foreground (attached to terminal)
+./run_pipeline.sh --experiment-name "test_run"
+
+# Background daemon (detached, survives terminal close)
+./run_pipeline.sh --daemon --process-name "main_analysis"
 
 # Resume from checkpoint
-./run_analysis.sh --resume
+./run_pipeline.sh --resume --process-name "main_analysis"
 ```
 
-### Method 2: Direct Python Execution
-
+### Process Control Commands
 ```bash
-# Basic run
-python run_pipeline.py
+# Check process status
+./run_pipeline.sh --process-name <name> --signal status
 
-# With custom config
-python run_pipeline.py --config config_custom.yml
+# Pause running process (SIGUSR1)
+./run_pipeline.sh --process-name <name> --signal pause
 
-# Resume from specific stage
-python run_pipeline.py --resume --stage analysis
+# Resume paused process (SIGUSR2) 
+./run_pipeline.sh --process-name <name> --signal resume
 
-# Debug mode
-python run_pipeline.py --debug
+# Stop process gracefully (SIGTERM)
+./run_pipeline.sh --process-name <name> --signal stop
 ```
 
-### Method 3: Using tmux (for long-running processes)
-
+### Process Monitoring
 ```bash
-# Start new tmux session
-tmux new-session -s geo-pipeline
-
-# Run pipeline
-python run_pipeline.py
-
-# Detach: Ctrl+B, then D
-# Reattach: tmux attach -t geo-pipeline
-```
-
-## Pause and Resume
-
-### Automatic Checkpointing
-
-The pipeline automatically saves progress at:
-- End of each stage
-- Every N processed items (configurable)
-- Before any error occurs
-
-Checkpoint files are stored in: `checkpoints/pipeline_state.json`
-
-### Manual Pause
-
-1. **Graceful shutdown** (saves checkpoint):
-   ```bash
-   # In tmux session
-   Ctrl+C  # Sends SIGINT, triggers checkpoint save
-   ```
-
-2. **Check saved state**:
-   ```bash
-   cat checkpoints/pipeline_state.json | jq .
-   ```
-
-### Resume Operations
-
-1. **Resume from last checkpoint**:
-   ```bash
-   python run_pipeline.py --resume
-   ```
-
-2. **Resume from specific stage**:
-   ```bash
-   python run_pipeline.py --resume --stage feature_extraction
-   ```
-
-3. **Resume with modified config**:
-   ```bash
-   python run_pipeline.py --resume --config config_modified.yml
-   ```
-
-## Process Tracking and Monitoring
-
-### Real-time Progress
-
-1. **Console output**:
-   - Progress bars for each stage
-   - Current item being processed
-   - ETA and processing rate
-   - Memory usage
-
-2. **Log files**:
-   ```bash
-   # Main log
-   tail -f logs/pipeline_$(date +%Y%m%d).log
-   
-   # Stage-specific logs
-   tail -f logs/stage_analysis_$(date +%Y%m%d).log
-   ```
-
-3. **Database monitoring**:
-   ```sql
-   -- Current experiment status
-   SELECT * FROM experiments WHERE status = 'running' ORDER BY created_at DESC;
-   
-   -- Stage progress
-   SELECT stage_name, items_processed, total_items, 
-          ROUND(items_processed::numeric / total_items * 100, 2) as percent_complete
-   FROM experiment_progress 
-   WHERE experiment_id = (SELECT id FROM experiments ORDER BY created_at DESC LIMIT 1);
-   ```
-
-### Using process_manager.py
-
-```bash
-# Check pipeline status
+# List all managed processes
 python scripts/process_manager.py status
 
-# Monitor in real-time
-python scripts/process_manager.py monitor
+# Show specific process details
+python scripts/process_manager.py status <process_name>
 
-# View stage details
-python scripts/process_manager.py stage-info --stage analysis
+# View live logs (follow mode)
+python scripts/process_manager.py logs <process_name> --follow
+
+# View last 100 lines of logs
+python scripts/process_manager.py logs <process_name> --lines 100
 ```
 
-### tmux Monitoring
+## Advanced Usage
 
+### Process Manager Direct Commands
 ```bash
-# List tmux sessions
-tmux ls
+# Start process with custom settings
+python scripts/process_manager.py start \
+    --name "custom_analysis" \
+    --experiment-name "experiment_2025" \
+    --analysis-method som \
+    --daemon
 
-# Attach to running session
-tmux attach -t geo-pipeline
+# List all processes with details
+python scripts/process_manager.py status
 
-# Split panes for monitoring
-# Ctrl+B, then %  (vertical split)
-# Ctrl+B, then "  (horizontal split)
+# Show resource usage
+python scripts/process_manager.py resources
 ```
 
-## Common Command Arguments
+### Checkpoint Management
+```bash
+# List available checkpoints
+python scripts/process_manager.py checkpoints list
 
-### run_pipeline.py Arguments
+# Show checkpoint details
+python scripts/process_manager.py checkpoints info <checkpoint_id>
 
-| Argument | Description | Example |
-|----------|-------------|---------|
-| `--config` | Path to config file | `--config config_custom.yml` |
-| `--resume` | Resume from checkpoint | `--resume` |
-| `--stage` | Specific stage to run | `--stage analysis` |
-| `--debug` | Enable debug logging | `--debug` |
-| `--dry-run` | Show execution plan | `--dry-run` |
-| `--force` | Override safety checks | `--force` |
-| `--workers` | Number of parallel workers | `--workers 8` |
-| `--memory-limit` | Max memory usage (GB) | `--memory-limit 32` |
+# Clean up old checkpoints (keep last 7 days)
+python scripts/process_manager.py checkpoints cleanup --days 7
+```
 
-### Stage-specific Arguments
+### Experiment Management
+```bash
+# List recent experiments
+python scripts/process_manager.py experiments --limit 10
 
-**Data Preparation**:
-- `--input-dir`: Directory with input data
-- `--validate`: Run data validation
-- `--skip-missing`: Continue if files missing
+# Show experiment details
+python scripts/process_manager.py experiments <experiment_id>
+```
 
-**Analysis**:
-- `--algorithm`: Analysis algorithm (gwpca, som)
-- `--parameters`: Algorithm parameters JSON
-- `--output-format`: Output format (csv, netcdf, geotiff)
+## Configuration
 
-## Configuration Fields
+### Main Configuration File: `config.yml`
 
-### Core Configuration (config.yml)
+Key settings for pipeline behavior:
 
 ```yaml
-# Database settings
-database:
-  host: localhost
-  port: 5432
-  name: geo_biodiversity
-  user: geo_user
-  password: ${DB_PASSWORD}  # Environment variable
-  pool_size: 20
-  test_mode: false
-
-# Pipeline control
-pipeline:
-  checkpoint_interval: 100  # Save every N items
-  memory_limit_gb: 32
-  parallel_workers: 8
-  resume_on_error: true
+# Target resolution for resampling
+resampling:
+  target_resolution: 0.016667  # ~5km at equator
   
-# Stages configuration  
-stages:
-  data_preparation:
-    enabled: true
-    batch_size: 1000
-    validation_mode: strict
-    
-  grid_processing:
-    enabled: true
-    resolutions: [5, 10, 25, 50, 100]  # km
-    grid_type: cubic  # or hexagonal
-    
-  feature_extraction:
-    enabled: true
-    features:
-      - type: climate
-        variables: ["temperature", "precipitation"]
-      - type: species_richness
-        min_occurrences: 5
-        
-  analysis:
-    enabled: true
-    algorithms:
-      gwpca:
-        components: 10
-        kernel_type: gaussian
-        adaptive: true
-      som:
-        grid_size: [20, 20]
-        iterations: 1000
-        
-  export:
-    enabled: true
-    formats: ["csv", "geotiff"]
-    output_dir: outputs/
+# Skip-resampling when resolution matches
+resampling:
+  cache_resampled: true  # Cache results to avoid reprocessing
+
+# SOM analysis settings
+som_analysis:
+  default_grid_size: [8, 8]  # 8x8 SOM grid
+  iterations: 1000
+  subsample_ratio: 1.0  # Use full dataset
+
+# Export settings  
+export:
+  compress: false  # Set to true for gzip compression
+  chunk_size: 10000  # Rows per chunk
+  include_metadata: true
 ```
 
-### Data Source Configuration
-
+### Dataset Configuration
 ```yaml
-data_sources:
-  rasters:
-    - name: climate_temperature
-      path: data/climate/temperature/*.tif
-      type: geotiff
-      temporal: monthly
-      resampling: bilinear
-      
-    - name: land_cover
-      path: data/landcover/lc_*.tif
-      type: geotiff
-      categorical: true
-      
-  species:
-    source: gbif
-    filters:
-      min_occurrences: 10
-      spatial_uncertainty_max: 1000  # meters
-      date_range: [2010, 2023]
+datasets:
+  target_datasets:
+    - name: "plants-richness"
+      path: "/maps/mwd24/richness/daru-plants-richness.tif"
+      enabled: true
+    - name: "terrestrial-richness"
+      path: "/maps/mwd24/richness/iucn-terrestrial-richness.tif" 
+      enabled: true
 ```
 
-### Performance Tuning
+## Pipeline Stages
 
-```yaml
-performance:
-  cache:
-    enabled: true
-    size_gb: 8
-    ttl_hours: 24
-    
-  processing:
-    chunk_size: 10000
-    prefetch_queue: 50
-    compression: lz4
-    
-  memory:
-    max_usage_percent: 80
-    gc_threshold_gb: 4
-    swap_warning: true
+The pipeline consists of 5 stages that run sequentially:
+
+1. **Data Load**: Validate and load dataset configurations
+2. **Resample**: Resample to target resolution (or skip if matching)
+3. **Merge**: Merge all datasets into single NetCDF file
+4. **Export**: Export merged data to CSV format
+5. **Analysis**: Run SOM analysis and generate reports
+
+Each stage automatically saves a checkpoint upon completion.
+
+## Debugging and Troubleshooting
+
+### Log Files
+```bash
+# View real-time logs
+python scripts/process_manager.py logs <process_name> --follow
+
+# Search logs for errors
+python scripts/process_manager.py logs <process_name> | grep -i error
+
+# View debug information
+python scripts/process_manager.py logs <process_name> --lines 200
 ```
 
-## Troubleshooting
+### Debug Mode
+```bash
+# Run with debug logging
+export GEO_LOG_LEVEL=DEBUG
+./run_pipeline.sh
+
+# Check process manager logs
+tail -f logs/process_manager.log
+```
 
 ### Common Issues
 
-1. **Pipeline hangs or crashes**:
-   ```bash
-   # Check logs
-   tail -n 100 logs/pipeline_*.log | grep ERROR
-   
-   # Check database locks
-   psql -d geo_biodiversity -c "SELECT * FROM pg_locks WHERE granted = false;"
-   
-   # Resume with debug
-   python run_pipeline.py --resume --debug
-   ```
-
-2. **Out of memory**:
-   ```bash
-   # Reduce workers and batch size
-   python run_pipeline.py --workers 4 --config config_low_memory.yml
-   ```
-
-3. **Checkpoint corruption**:
-   ```bash
-   # Backup corrupted checkpoint
-   mv checkpoints/pipeline_state.json checkpoints/pipeline_state.json.bak
-   
-   # Restore from previous checkpoint
-   cp checkpoints/pipeline_state.json.1 checkpoints/pipeline_state.json
-   ```
-
-### Performance Monitoring
-
+**Pipeline hangs during resampling:**
 ```bash
-# System resources
-htop  # CPU and memory usage
-iotop  # Disk I/O
-nvidia-smi  # GPU usage (if applicable)
+# Check memory usage
+python scripts/process_manager.py resources
 
-# Database performance
-psql -d geo_biodiversity -c "SELECT * FROM pg_stat_activity WHERE state = 'active';"
-
-# Pipeline metrics
-python scripts/process_manager.py metrics --last-hour
+# Pause and inspect
+./run_pipeline.sh --process-name <name> --signal pause
+python scripts/process_manager.py status <name>
 ```
 
-### Recovery Procedures
+**Process killed unexpectedly:**
+```bash
+# Always use daemon mode for long runs
+./run_pipeline.sh --daemon --process-name "safe_run"
 
-1. **From database failure**:
-   ```bash
-   # Restart PostgreSQL
-   sudo systemctl restart postgresql
-   
-   # Resume pipeline
-   python run_pipeline.py --resume
-   ```
+# Check system resources
+python scripts/process_manager.py resources
+```
 
-2. **From incomplete stage**:
-   ```bash
-   # Check stage status
-   python scripts/process_manager.py stage-info --stage feature_extraction
-   
-   # Resume from stage start
-   python run_pipeline.py --resume --stage feature_extraction --force-restart
-   ```
+**Resume from failure:**
+```bash
+# Resume automatically finds latest checkpoint
+./run_pipeline.sh --resume --process-name <name>
 
-3. **Full reset** (caution):
-   ```bash
-   # Clear checkpoints
-   rm -rf checkpoints/*
-   
-   # Clear database state
-   psql -d geo_biodiversity -c "UPDATE experiments SET status = 'failed' WHERE status = 'running';"
-   
-   # Start fresh
-   python run_pipeline.py
-   ```
+# Or start new with same experiment name (auto-resume)
+./run_pipeline.sh --experiment-name <existing_experiment>
+```
 
-## Best Practices
+## Output Structure
 
-1. **Always use tmux** for production runs
-2. **Monitor logs** in separate pane/terminal
-3. **Set appropriate memory limits** based on system
-4. **Regular checkpoint backups** for critical runs
-5. **Test configuration** with small dataset first
-6. **Use --dry-run** to verify execution plan
+```
+outputs/<experiment_id>/
+├── merged_dataset.nc              # NetCDF merged data
+├── merged_data_<id>_<time>.csv    # Exported CSV
+├── merged_data_<id>_<time>.meta.json  # Export metadata
+├── som_Analysis_<id>/             # SOM analysis results
+│   ├── som_report.txt            # Analysis report
+│   ├── som_statistics.json       # Statistics
+│   ├── cluster_assignments.csv   # Cell clusters
+│   └── visualizations/           # Maps and plots
+└── pipeline_report.json          # Full pipeline report
+```
+
+## Process Safety
+
+### Avoiding Process Termination
+- **Always use `--daemon` for long-running processes**
+- Daemon processes survive terminal disconnection
+- Use `screen` or `tmux` for additional safety:
+  ```bash
+  tmux new-session -d -s geo_pipeline './run_pipeline.sh --daemon'
+  ```
+
+### Resource Management
+- Monitor with: `python scripts/process_manager.py resources`
+- Set memory limits in config: `processing.memory_limit_gb`
+- Use chunking for large datasets: `processing.chunk_size`
+
+### Graceful Shutdown
+```bash
+# Always stop gracefully (saves checkpoint)
+./run_pipeline.sh --process-name <name> --signal stop
+
+# Emergency kill (loses progress)
+kill -9 <pid>  # Only if absolutely necessary
+```
+
+## Examples
+
+### Complete Analysis Workflow
+```bash
+# 1. Start background analysis
+./run_pipeline.sh --daemon --process-name "analysis_2025" --experiment-name "biodiversity_study"
+
+# 2. Monitor progress
+python scripts/process_manager.py status analysis_2025
+
+# 3. Check logs if needed
+python scripts/process_manager.py logs analysis_2025 --follow
+
+# 4. Results available in outputs/ when complete
+```
+
+### Pause and Resume Workflow
+```bash
+# Start process
+./run_pipeline.sh --daemon --process-name "long_analysis"
+
+# Pause during execution (saves checkpoint)
+./run_pipeline.sh --process-name "long_analysis" --signal pause
+
+# Check status
+python scripts/process_manager.py status long_analysis
+
+# Resume from where it left off
+./run_pipeline.sh --process-name "long_analysis" --signal resume
+```
+
+### Recovery from Interruption
+```bash
+# If process was killed or system restarted
+./run_pipeline.sh --resume --process-name "recovery_run" --experiment-name "original_experiment"
+
+# The pipeline will automatically resume from the latest checkpoint
+```
+
+### Multiple Parallel Analyses
+```bash
+# Start multiple analyses with different datasets
+./run_pipeline.sh --daemon --process-name "analysis_1" --experiment-name "dataset_A"
+./run_pipeline.sh --daemon --process-name "analysis_2" --experiment-name "dataset_B"
+
+# Monitor all processes
+python scripts/process_manager.py status
+
+# Track specific process
+python scripts/process_manager.py logs analysis_1 --follow
+```
+
+## Performance Tips
+
+1. **Use daemon mode** for long analyses to avoid interruption
+2. **Monitor resources** regularly with `python scripts/process_manager.py resources`
+3. **Adjust chunk sizes** in config based on available memory
+4. **Use compression** for CSV exports to save disk space
+5. **Clean up checkpoints** periodically to free disk space
+6. **Use tmux/screen** for additional process safety
+
+## Getting Help
+
+```bash
+# Show all available commands
+./run_pipeline.sh --help
+
+# Process manager help
+python scripts/process_manager.py --help
+
+# Command-specific help
+python scripts/process_manager.py start --help
+python scripts/process_manager.py logs --help
+python scripts/process_manager.py checkpoints --help
+```
+
+## Process Lifecycle
+
+### Normal Flow
+1. `./run_pipeline.sh --daemon` → Process starts in background
+2. Pipeline runs through all 5 stages with checkpoints
+3. Results saved to `outputs/<experiment_id>/`
+4. Process completes and exits cleanly
+
+### With Interruption
+1. Process paused/stopped → Checkpoint automatically saved
+2. `./run_pipeline.sh --resume` → Resumes from last checkpoint
+3. Pipeline continues from exact point of interruption
+4. Normal completion
+
+### Monitoring Commands
+```bash
+# Essential monitoring commands
+python scripts/process_manager.py status          # Process overview
+python scripts/process_manager.py resources       # System resources
+python scripts/process_manager.py logs <name> -f  # Live logs
+```

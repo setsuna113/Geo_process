@@ -166,8 +166,17 @@ handle_signal() {
     
     case $sig in
         INT|TERM)
-            echo "Forwarding shutdown signal to process..."
-            $PYTHON_ENV "$PROCESS_MANAGER" stop "$PROCESS_NAME" --timeout 30
+            echo "Checking if process is registered..."
+            # Check if process exists before trying to stop it
+            if $PYTHON_ENV "$PROCESS_MANAGER" status "$PROCESS_NAME" 2>/dev/null | grep -q "$PROCESS_NAME"; then
+                echo "Forwarding shutdown signal to process..."
+                $PYTHON_ENV "$PROCESS_MANAGER" stop "$PROCESS_NAME" --timeout 30
+            else
+                echo "Process not yet registered, killing directly..."
+                if [ ! -z "$PIPELINE_PID" ]; then
+                    kill -TERM $PIPELINE_PID 2>/dev/null || true
+                fi
+            fi
             exit 0
             ;;
         USR1)

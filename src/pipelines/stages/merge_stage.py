@@ -94,6 +94,29 @@ class MergeStage(PipelineStage):
             # Save with netcdf4 engine
             merged_dataset.to_netcdf(output_path, encoding=encoding, engine='netcdf4')
             
+            # Store merged dataset metadata in database
+            from src.database.schema import schema
+            merged_metadata = {
+                'experiment_id': context.experiment_id,
+                'timestamp': datetime.now().isoformat(),
+                'shape': dict(merged_dataset.sizes),
+                'variables': list(merged_dataset.data_vars),
+                'bounds': self._calculate_common_bounds(resampled_datasets),
+                'resolution': resampled_datasets[0].target_resolution if resampled_datasets else None,
+                'file_path': str(output_path),
+                'file_size_mb': output_path.stat().st_size / (1024**2)
+            }
+            
+            # Store as a feature in the database
+            schema.store_feature(
+                grid_id=context.experiment_id,
+                cell_id='merged_dataset',
+                feature_type='merged_dataset',
+                value=merged_metadata,
+                metadata={'stage': 'merge', 'chunked': use_chunked}
+            )
+            logger.info("✅ Stored merged dataset metadata in database")
+            
             # Clean up memory for chunked processing
             if use_chunked:
                 del merged_dataset
