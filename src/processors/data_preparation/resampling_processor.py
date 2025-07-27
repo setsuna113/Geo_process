@@ -819,6 +819,64 @@ class ResamplingProcessor(BaseProcessor):
             logger.error(f"Failed to retrieve dataset {dataset_name}: {e}")
             return None
 
+    def load_resampled_data_chunk(self, dataset_name: str,
+                                  row_start: int, row_end: int,
+                                  col_start: int, col_end: int) -> Optional[np.ndarray]:
+        """
+        Load a spatial chunk of resampled data from database.
+        
+        Args:
+            dataset_name: Name of the dataset
+            row_start: Starting row index (inclusive)
+            row_end: Ending row index (exclusive)
+            col_start: Starting column index (inclusive)
+            col_end: Ending column index (exclusive)
+            
+        Returns:
+            Numpy array chunk or None if failed
+        """
+        try:
+            from src.database.schema import schema
+            
+            # Get dataset info
+            datasets = schema.get_resampled_datasets({'name': dataset_name})
+            if not datasets:
+                logger.error(f"Dataset {dataset_name} not found")
+                return None
+            
+            dataset_info = datasets[0]
+            table_name = dataset_info['data_table_name']
+            
+            # Create chunk array
+            chunk_shape = (row_end - row_start, col_end - col_start)
+            chunk_data = np.full(chunk_shape, np.nan, dtype=np.float32)
+            
+            # Load only the chunk data from table
+            with self.db.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(f"""
+                    SELECT row_idx - %s as rel_row, col_idx - %s as rel_col, value 
+                    FROM {table_name} 
+                    WHERE row_idx >= %s AND row_idx < %s
+                    AND col_idx >= %s AND col_idx < %s
+                    ORDER BY row_idx, col_idx
+                """, (row_start, col_start, row_start, row_end, col_start, col_end))
+                
+                rows = cur.fetchall()
+                
+                # Fill chunk array
+                for row in rows:
+                    rel_row, rel_col, value = row
+                    if 0 <= rel_row < chunk_shape[0] and 0 <= rel_col < chunk_shape[1]:
+                        chunk_data[rel_row, rel_col] = value
+                
+                logger.debug(f"Loaded chunk [{row_start}:{row_end}, {col_start}:{col_end}] for {dataset_name}: {len(rows)} values")
+                return chunk_data
+                
+        except Exception as e:
+            logger.error(f"Failed to load chunk for {dataset_name}: {e}")
+            return None
+    
     def load_resampled_data(self, dataset_name: str) -> Optional[np.ndarray]:
         """
         Load resampled data from database (for non-passthrough datasets).
