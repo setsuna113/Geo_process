@@ -323,48 +323,52 @@ class MergeStage(PipelineStage):
         
         # Use netCDF4 directly for better control over lazy allocation
         import netCDF4
+        from src.pipelines.utils.file_utils import safe_write_file
         
-        # Create the file and dimensions
-        with netCDF4.Dataset(output_path, 'w', format='NETCDF4') as nc:
-            # Create dimensions
-            nc.createDimension('y', common_shape[0])
-            nc.createDimension('x', common_shape[1])
-            
-            # Create coordinate variables
-            y_var = nc.createVariable('y', 'f8', ('y',))
-            y_var[:] = coords['y'].values
-            y_var.units = 'degrees_north'
-            y_var.standard_name = 'latitude'
-            
-            x_var = nc.createVariable('x', 'f8', ('x',))
-            x_var[:] = coords['x'].values
-            x_var.units = 'degrees_east'
-            x_var.standard_name = 'longitude'
-            
-            # Create data variables (without allocating data)
-            for info in resampled_datasets:
-                var = nc.createVariable(
-                    info.band_name, 
-                    'f4', 
-                    ('y', 'x'),
-                    chunksizes=(min(chunk_size, common_shape[0]), min(chunk_size, common_shape[1])),
-                    zlib=True,
-                    complevel=4,
-                    fill_value=np.nan
-                )
-                # Set attributes
-                var.long_name = f'{info.name} data'
-                var.source_path = str(info.source_path)
-                var.resampling_method = info.resampling_method
-                var.original_bounds = str(info.bounds)
-                var.original_shape = str(info.shape)
-            
-            # Set global attributes
-            nc.title = 'Merged Resampled Dataset (Lazy Chunked)'
-            nc.created_by = 'pipeline_merge_stage'
-            nc.created_at = datetime.now().isoformat()
-            nc.common_bounds = str(common_bounds)
-            nc.resolution = resolution
+        def write_nc(path):
+            with netCDF4.Dataset(path, 'w', format='NETCDF4') as nc:
+                # Create dimensions
+                nc.createDimension('y', common_shape[0])
+                nc.createDimension('x', common_shape[1])
+                
+                # Create coordinate variables
+                y_var = nc.createVariable('y', 'f8', ('y',))
+                y_var[:] = coords['y'].values
+                y_var.units = 'degrees_north'
+                y_var.standard_name = 'latitude'
+                
+                x_var = nc.createVariable('x', 'f8', ('x',))
+                x_var[:] = coords['x'].values
+                x_var.units = 'degrees_east'
+                x_var.standard_name = 'longitude'
+                
+                # Create data variables (without allocating data)
+                for info in resampled_datasets:
+                    var = nc.createVariable(
+                        info.band_name, 
+                        'f4', 
+                        ('y', 'x'),
+                        chunksizes=(min(chunk_size, common_shape[0]), min(chunk_size, common_shape[1])),
+                        zlib=True,
+                        complevel=4,
+                        fill_value=np.nan
+                    )
+                    # Set attributes
+                    var.long_name = f'{info.name} data'
+                    var.source_path = str(info.source_path)
+                    var.resampling_method = info.resampling_method
+                    var.original_bounds = str(info.bounds)
+                    var.original_shape = str(info.shape)
+                
+                # Set global attributes
+                nc.title = 'Merged Resampled Dataset (Lazy Chunked)'
+                nc.created_by = 'pipeline_merge_stage'
+                nc.created_at = datetime.now().isoformat()
+                nc.common_bounds = str(common_bounds)
+                nc.resolution = resolution
+        
+        # Create file with safe atomic write
+        safe_write_file(output_path, write_nc)
         
         # Now process in chunks and write to the file
         total_chunks = ((common_shape[0] + chunk_size - 1) // chunk_size) * \
@@ -595,12 +599,16 @@ class MergeStage(PipelineStage):
         # Merge all datasets
         merged = xr.merge(datasets)
         
-        # Clean up temp files
+        # Clean up temp files with proper error handling
+        from src.pipelines.utils.file_utils import cleanup_temp_file, register_temp_file
+        
+        # Register temp files for cleanup on exit
         for _, temp_path in temp_files:
-            try:
-                temp_path.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to delete temp file {temp_path}: {e}")
+            register_temp_file(temp_path)
+            
+        # Attempt immediate cleanup
+        for _, temp_path in temp_files:
+            cleanup_temp_file(temp_path, ignore_errors=True)
         
         # Add attributes
         merged.attrs.update({

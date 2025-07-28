@@ -44,24 +44,48 @@ class ProcessRegistry:
         self._lock_file = self.registry_dir / ".registry.lock"
         
     def _acquire_lock(self, timeout=5.0):
-        """Acquire exclusive lock for registry operations."""
-        lock_fd = os.open(str(self._lock_file), os.O_CREAT | os.O_RDWR)
-        start_time = time.time()
+        """Acquire exclusive lock for registry operations with exponential backoff."""
+        import random
         
-        while True:
+        lock_fd = os.open(str(self._lock_file), os.O_CREAT | os.O_RDWR)
+        max_attempts = 50
+        attempt = 0
+        backoff_base = 0.1  # 100ms base
+        
+        while attempt < max_attempts:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                logger.debug(f"Acquired lock on {self._lock_file} after {attempt} attempts")
                 return lock_fd
             except BlockingIOError:
-                if time.time() - start_time > timeout:
+                attempt += 1
+                if attempt >= max_attempts:
                     os.close(lock_fd)
-                    raise TimeoutError("Could not acquire registry lock")
-                time.sleep(0.1)
+                    raise TimeoutError(f"Failed to acquire lock on {self._lock_file} after {max_attempts} attempts")
+                
+                # Exponential backoff with jitter
+                wait_time = backoff_base * (2 ** min(attempt, 10)) + random.uniform(0, 0.1)
+                logger.debug(f"Lock busy, waiting {wait_time:.3f}s (attempt {attempt}/{max_attempts})")
+                time.sleep(wait_time)
+            except Exception as e:
+                os.close(lock_fd)
+                raise RuntimeError(f"Unexpected error acquiring lock on {self._lock_file}: {e}")
     
     def _release_lock(self, lock_fd):
-        """Release registry lock."""
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
+        """Safely release a file lock."""
+        if lock_fd is None:
+            return
+        
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+            logger.debug(f"Released lock on {self._lock_file}")
+        except Exception as e:
+            logger.warning(f"Error releasing lock on {self._lock_file}: {e}")
+            try:
+                os.close(lock_fd)
+            except:
+                pass
     
     def register_process(self, record: ProcessRecord):
         """Register a new process."""

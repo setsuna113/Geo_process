@@ -44,11 +44,38 @@ class PipelineCLI:
         experiment_name = args.experiment_name or args.name or "production_test"
         analysis_method = args.analysis_method or "som"
         
-        # Build command - run the pipeline orchestrator directly
+        # Validate analysis method against whitelist for security
+        ALLOWED_ANALYSIS_METHODS = {'gwpca', 'som', 'combined', 'test'}
+        
+        def validate_analysis_method(method: str) -> str:
+            """Validate and sanitize analysis method input."""
+            import re
+            method = method.lower().strip()
+            
+            # Check against whitelist
+            if method not in ALLOWED_ANALYSIS_METHODS:
+                raise ValueError(f"Invalid analysis method: {method}. Allowed: {ALLOWED_ANALYSIS_METHODS}")
+            
+            # Additional validation - only alphanumeric and underscore
+            if not re.match(r'^[a-zA-Z0-9_]+$', method):
+                raise ValueError(f"Analysis method contains invalid characters: {method}")
+            
+            return method
+        
+        try:
+            safe_analysis_method = validate_analysis_method(analysis_method)
+        except ValueError as e:
+            logger.error(f"Security validation failed: {e}")
+            raise
+        
+        # Build command using environment variables for safety
+        env = os.environ.copy()
+        env['ANALYSIS_METHOD'] = safe_analysis_method
+        
         command = [
             sys.executable,
             "-c",
-            f"""
+            """
 import sys
 import os
 from pathlib import Path
@@ -80,7 +107,9 @@ signal_handler = get_signal_handler()
 orchestrator = PipelineOrchestrator(config, db)
 
 # Configure pipeline stages
-analysis_method = '{analysis_method}'
+analysis_method = os.environ.get('ANALYSIS_METHOD')
+if not analysis_method:
+    raise ValueError("ANALYSIS_METHOD not set")
 stages = [
     DataLoadStage,
     ResampleStage, 
@@ -129,7 +158,8 @@ print('✅ Pipeline completed successfully!')
                 command=command,
                 daemon_mode=args.daemon,
                 auto_restart=args.auto_restart,
-                working_dir=project_root
+                working_dir=project_root,
+                env=env
             )
             
             print(f"✅ Started process with PID: {pid}")

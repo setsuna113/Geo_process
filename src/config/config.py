@@ -111,6 +111,7 @@ class Config:
             'timeouts': defaults.TIMEOUTS.copy(),
             'process_management': defaults.PROCESS_MANAGEMENT.copy(),
             'memory_management': defaults.MEMORY_MANAGEMENT.copy(),
+            'memory_config': defaults.MEMORY_CONFIG.copy(),
             'paths': defaults.PATHS.copy(),
             'pipeline': defaults.PIPELINE.copy(),
             'processing': defaults.PROCESSING.copy()
@@ -199,6 +200,10 @@ class Config:
     @property
     def memory_management(self) -> Dict[str, Any]:
         return self.settings.get('memory_management', {})
+    
+    @property
+    def memory_config(self) -> Dict[str, Any]:
+        return self.settings.get('memory_config', {})
     
     # Existing property accessors
     @property

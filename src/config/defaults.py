@@ -269,6 +269,14 @@ MEMORY_MANAGEMENT = {
     }
 }
 
+# Memory check configuration for pipeline orchestrator
+MEMORY_CONFIG = {
+    'tolerance_factor': 0.95,  # Allow using 95% of available memory
+    'error_threshold': 1.1,    # Error if requirement exceeds 110% of available
+    'warning_increase_gb': 1.0, # Warn if memory increases by more than 1GB
+    'critical_increase_gb': 5.0, # Critical if memory increases by more than 5GB
+}
+
 # Note: PROCESSING configuration moved to top of file near PIPELINE config
 
 # Grid configurations

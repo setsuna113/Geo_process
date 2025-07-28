@@ -520,6 +520,20 @@ class PipelineOrchestrator:
             checkpoint_interval=config.get('processing.checkpoint_interval', 10)
         )
     
+    def _get_stage_key(self, stage_identifier):
+        """Safely extract stage key from various input types."""
+        if hasattr(stage_identifier, "name"):
+            # It's a stage instance
+            return str(stage_identifier.name)
+        elif isinstance(stage_identifier, type) and hasattr(stage_identifier, "__name__"):
+            # It's a stage class
+            return stage_identifier.__name__.lower().replace("stage", "")
+        elif isinstance(stage_identifier, str):
+            # It's already a string key
+            return stage_identifier
+        else:
+            raise ValueError(f"Invalid stage identifier type: {type(stage_identifier)}")
+    
     def _memory_monitoring_context(self, stage: PipelineStage):
         """Context manager for memory monitoring during stage execution."""
         class MemoryMonitoringContext:
@@ -536,7 +550,8 @@ class PipelineOrchestrator:
                 end_memory = psutil.Process().memory_info().rss / 1024 / 1024
                 memory_increase = end_memory - self.start_memory
                 
-                if memory_increase > 1024:  # More than 1GB increase
+                warning_threshold_mb = config.memory_config.warning_increase_gb * 1024
+                if memory_increase > warning_threshold_mb:
                     logger.warning(
                         f"Stage '{self.stage.name}' increased memory by {memory_increase:.0f}MB"
                     )
@@ -630,20 +645,24 @@ class PipelineOrchestrator:
     
     def _pre_stage_checks(self, stage: PipelineStage):
         """Pre-execution checks for a stage."""
-        # Memory check
+        # Memory check with configurable tolerance
         available_memory = self.memory_monitor.get_available_memory()
         required_memory = stage.memory_requirements
         
-        if required_memory and available_memory < required_memory:
-            # Try to free memory
-            self.memory_monitor.trigger_cleanup()
-            available_memory = self.memory_monitor.get_available_memory()
+        if required_memory and available_memory:
+            memory_tolerance = config.memory_config.tolerance_factor
+            error_threshold = config.memory_config.error_threshold
             
-            if available_memory < required_memory:
-                raise MemoryError(
-                    f"Insufficient memory for stage '{stage.name}': "
-                    f"required {required_memory}GB, available {available_memory}GB"
-                )
+            if required_memory > available_memory * memory_tolerance:
+                logger.warning(f"Memory usage close to limit: {required_memory:.1f}GB required, {available_memory:.1f}GB available")
+                
+                # Try to free memory
+                self.memory_monitor.trigger_cleanup()
+                available_memory = self.memory_monitor.get_available_memory()
+                
+                # Only fail if significantly over
+                if required_memory > available_memory * error_threshold:
+                    raise MemoryError(f"Memory requirement ({required_memory:.1f}GB) exceeds available ({available_memory:.1f}GB) by more than {(error_threshold-1)*100:.0f}%")
         
         # Disk space check
         if stage.disk_requirements:
@@ -705,8 +724,14 @@ class PipelineOrchestrator:
             
             for _ in range(level_size):
                 stage_name = queue.popleft()
-                stage_key = stage_name.name if hasattr(stage_name, "name") else stage_name
-                stage = self.stage_registry[str(stage_key)]
+                try:
+                    stage_key = self._get_stage_key(stage_name)
+                    if stage_key not in self.stage_registry:
+                        raise KeyError(f"Stage '{stage_key}' not found in registry. Available: {list(self.stage_registry.keys())}")
+                    stage = self.stage_registry[stage_key]
+                except Exception as e:
+                    logger.error(f"Failed to get stage for {stage_name}: {e}")
+                    raise
                 current_level.append(stage)
                 
                 # Update in-degrees
