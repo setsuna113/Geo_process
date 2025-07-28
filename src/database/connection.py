@@ -21,19 +21,19 @@ class DatabaseManager:
     """Database connection manager with connection pooling and retry logic."""
     
     def __init__(self):
-        print("🔌 DEBUG: DatabaseManager.__init__() called")
+        logger.debug("🔌 DatabaseManager.__init__() called")
         self.pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
         self.connection_attempts = 0
         self.max_connection_attempts = 3
-        print("🔍 DEBUG: Detecting test mode...")
+        logger.debug("🔍 Detecting test mode...")
         self.is_test_mode = self._detect_test_mode()
         if self.is_test_mode:
             logger.info("🧪 Database running in TEST MODE")
-        print("🐘 DEBUG: Ensuring PostgreSQL service...")
+        logger.debug("🐘 Ensuring PostgreSQL service...")
         self._ensure_postgresql_service()
-        print("🏊 DEBUG: Creating connection pool...")
+        logger.debug("🏊 Creating connection pool...")
         self._create_pool()
-        print("✅ DEBUG: DatabaseManager initialized")
+        logger.debug("✅ DatabaseManager initialized")
     
     def _detect_test_mode(self) -> bool:
         """Safely detect if we're running in test mode."""
@@ -108,15 +108,15 @@ class DatabaseManager:
 
     def _create_pool(self):
         """Create connection pool with retry logic."""
-        print(f"🏊 DEBUG: _create_pool started, max attempts: {self.max_connection_attempts}")
+        logger.debug(f"🏊 _create_pool started, max attempts: {self.max_connection_attempts}")
         while self.connection_attempts < self.max_connection_attempts:
             try:
                 self.connection_attempts += 1
-                print(f"🔄 DEBUG: Connection attempt {self.connection_attempts}/{self.max_connection_attempts}")
+                logger.debug(f"🔄 Connection attempt {self.connection_attempts}/{self.max_connection_attempts}")
                 
                 # Get database configuration
                 db_config = config.database.copy()
-                print(f"📊 DEBUG: DB config - host={db_config.get('host')}, port={db_config.get('port')}, database={db_config.get('database')}, user={db_config.get('user')}")
+                logger.debug(f"📊 DB config - host={db_config.get('host')}, port={db_config.get('port')}, database={db_config.get('database')}, user={db_config.get('user')}")
                 
                 # Try to create connection pool with auto-database creation
                 database_created = False

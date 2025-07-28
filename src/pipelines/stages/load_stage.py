@@ -37,15 +37,15 @@ class DataLoadStage(PipelineStage):
     
     def execute(self, context) -> StageResult:
         """Load and validate datasets."""
-        print("🔍 DEBUG: DataLoadStage.execute() called")
+        logger.debug("🔍 DataLoadStage.execute() called")
         logger.info("🔍 DEBUG: DataLoadStage.execute() called")
         logger.info("Starting data load stage")
         
         try:
             # Get dataset configurations
-            print("📂 DEBUG: Getting dataset configurations from context.config")
+            logger.debug("📂 Getting dataset configurations from context.config")
             datasets_config = context.config.get('datasets.target_datasets', [])
-            print(f"📊 DEBUG: Found {len(datasets_config)} datasets in config")
+            logger.debug(f"📊 Found {len(datasets_config)} datasets in config")
             enabled_datasets = [ds for ds in datasets_config if ds.get('enabled', True)]
             
             if not enabled_datasets:
@@ -57,11 +57,11 @@ class DataLoadStage(PipelineStage):
                 )
             
             # Resolve dataset paths
-            print("🔧 DEBUG: Creating DatasetPathResolver")
+            logger.debug("🔧 Creating DatasetPathResolver")
             resolver = DatasetPathResolver(context.config)
-            print("🔧 DEBUG: Creating RasterCatalog")
+            logger.debug("🔧 Creating RasterCatalog")
             catalog = RasterCatalog(context.db, context.config)
-            print("✅ DEBUG: Resolver and Catalog created")
+            logger.debug("✅ Resolver and Catalog created")
             
             loaded_datasets = []
             metrics = {
@@ -71,12 +71,12 @@ class DataLoadStage(PipelineStage):
             }
             
             for i, dataset_config in enumerate(enabled_datasets):
-                print(f"📦 DEBUG: Processing dataset {i+1}/{len(enabled_datasets)}: {dataset_config.get('name', 'unknown')}")
+                logger.debug(f"📦 Processing dataset {i+1}/{len(enabled_datasets)}: {dataset_config.get('name', 'unknown')}")
                 try:
                     # Validate and resolve path
-                    print(f"🔍 DEBUG: Validating dataset config for {dataset_config.get('name')}")
+                    logger.debug(f"🔍 Validating dataset config for {dataset_config.get('name')}")
                     normalized_config = resolver.validate_dataset_config(dataset_config)
-                    print(f"✅ DEBUG: Dataset config validated")
+                    logger.debug(f"✅ Dataset config validated")
                     dataset_path = Path(normalized_config['resolved_path'])
                     
                     # Register in catalog if needed

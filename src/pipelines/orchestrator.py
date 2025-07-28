@@ -169,51 +169,51 @@ class PipelineOrchestrator:
         Returns:
             Pipeline execution results
         """
-        print(f"🎬 DEBUG: run_pipeline() called with experiment_name={experiment_name}")
+        logger.debug(f"🎬 run_pipeline() called with experiment_name={experiment_name}")
         try:
             # Auto-cleanup for fresh start if needed
             if kwargs.get('auto_cleanup', True):
-                print("🧹 DEBUG: Performing auto-cleanup for fresh start...")
+                logger.debug("🧹 Performing auto-cleanup for fresh start...")
                 from src.utils.cleanup_manager import cleanup_for_fresh_start
                 cleanup_success = cleanup_for_fresh_start(experiment_name)
                 if cleanup_success:
-                    print("✅ DEBUG: Auto-cleanup completed successfully")
+                    logger.debug("✅ Auto-cleanup completed successfully")
                 else:
-                    print("⚠️  DEBUG: Auto-cleanup had issues but continuing...")
+                    logger.debug("⚠️  Auto-cleanup had issues but continuing...")
             
             # Initialize pipeline context
-            print("📝 DEBUG: Calling _initialize_context...")
+            logger.debug("📝 Calling _initialize_context...")
             self._initialize_context(experiment_name, checkpoint_dir, output_dir, **kwargs)
-            print("✅ DEBUG: _initialize_context completed")
+            logger.debug("✅ _initialize_context completed")
             
             # Validate pipeline
-            print("🔍 DEBUG: Validating pipeline...")
+            logger.debug("🔍 Validating pipeline...")
             is_valid, errors = self.validate_pipeline()
             if not is_valid:
                 raise ValueError(f"Pipeline validation failed: {errors}")
-            print("✅ DEBUG: Pipeline validation passed")
+            logger.debug("✅ Pipeline validation passed")
             
             # Reset stop flag before starting monitoring
             self._stop_requested = False
             
             # Start monitoring
-            print("📊 DEBUG: Starting monitoring...")
+            logger.debug("📊 Starting monitoring...")
             self._start_monitoring()
-            print("✅ DEBUG: Monitoring started")
+            logger.debug("✅ Monitoring started")
             
             # Check for existing checkpoint
             if resume_from_checkpoint:
-                print("💾 DEBUG: Checking for existing checkpoints...")
+                logger.debug("💾 Checking for existing checkpoints...")
                 process_id = self.context.experiment_id if self.context else "pipeline"
                 checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
                 if checkpoint_data:
                     logger.info(f"Resuming from checkpoint: {checkpoint_data.checkpoint_id}")
                     self._restore_from_checkpoint(checkpoint_data.data)
                 else:
-                    print("💾 DEBUG: No checkpoint found, starting fresh")
+                    logger.debug("💾 No checkpoint found, starting fresh")
             
             # Execute pipeline
-            print("🏃 DEBUG: Setting status to RUNNING...")
+            logger.debug("🏃 Setting status to RUNNING...")
             self.status = PipelineStatus.RUNNING
             # Update experiment status in database
             from src.database.schema import schema
@@ -253,7 +253,7 @@ class PipelineOrchestrator:
                            **kwargs):
         """Initialize pipeline execution context."""
         # Create experiment
-        print("🧪 DEBUG: Creating experiment in database...")
+        logger.debug("🧪 Creating experiment in database...")
         from src.database.schema import schema
         experiment_id = schema.create_experiment(
             name=experiment_name,
@@ -303,20 +303,20 @@ class PipelineOrchestrator:
     
     def _execute_pipeline(self) -> Dict[str, Any]:
         """Execute pipeline stages in dependency order."""
-        print(f"🚀 DEBUG: _execute_pipeline starting...")
-        logger.info("🚀 DEBUG: _execute_pipeline starting...")
+        logger.debug(f"🚀 _execute_pipeline starting...")
+        logger.debug("🚀 _execute_pipeline starting...")
         
         results = {}
         completed_stages = set()
         
         # Get execution order
         execution_order = self._get_execution_order()
-        print(f"📋 DEBUG: Execution order has {len(execution_order)} stage groups")
-        logger.info(f"📋 DEBUG: Execution order has {len(execution_order)} stage groups")
+        logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
+        logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
         
         for i, stage_group in enumerate(execution_order):
-            print(f"📌 DEBUG: Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
-            logger.info(f"📌 DEBUG: Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
+            logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
+            logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
             
         for stage_group in execution_order:
             # Execute stages in parallel if possible
@@ -355,12 +355,12 @@ class PipelineOrchestrator:
     def _execute_stage(self, stage: PipelineStage, 
                       completed_stages: set) -> StageResult:
         """Execute a single pipeline stage with enhanced memory management."""
-        print(f"🎯 DEBUG: Starting stage execution: {stage.name}")
-        logger.info(f"🎯 DEBUG: Starting stage execution: {stage.name}")
+        logger.debug(f"🎯 Starting stage execution: {stage.name}")
+        logger.debug(f"🎯 Starting stage execution: {stage.name}")
         logger.info(f"Executing stage: {stage.name}")
         
         # Update progress
-        print(f"📊 DEBUG: Updating progress tracker for stage: {stage.name}")
+        logger.debug(f"📊 Updating progress tracker for stage: {stage.name}")
         self.progress_tracker.start_stage(stage.name)
         
         # Pre-execution checks with memory awareness
@@ -410,19 +410,19 @@ class PipelineOrchestrator:
                 logger.info(f"Stage '{stage.name}' skipped - using existing data")
             else:
                 # Monitor memory during execution
-                print(f"🔧 DEBUG: About to call stage.execute() for {stage.name}")
-                logger.info(f"🔧 DEBUG: About to call stage.execute() for {stage.name}")
+                logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
+                logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
                 
                 try:
                     with self._memory_monitoring_context(stage):
-                        print(f"🚀 DEBUG: Entering stage.execute() for {stage.name}")
+                        logger.debug(f"🚀 Entering stage.execute() for {stage.name}")
                         result = stage.execute(self.context)
-                        print(f"✅ DEBUG: stage.execute() completed for {stage.name}")
-                        logger.info(f"✅ DEBUG: stage.execute() completed for {stage.name}")
+                        logger.debug(f"✅ stage.execute() completed for {stage.name}")
+                        logger.debug(f"✅ stage.execute() completed for {stage.name}")
                 except Exception as e:
                     import traceback
-                    print(f"❌ ERROR in stage {stage.name}: {str(e)}")
-                    print(f"❌ TRACEBACK:\n{traceback.format_exc()}")
+                    logger.error(f"❌ ERROR in stage {stage.name}: {str(e)}")
+                    logger.error(f"❌ TRACEBACK:\n{traceback.format_exc()}")
                     logger.error(f"Stage {stage.name} failed: {str(e)}")
                     logger.error(f"Traceback:\n{traceback.format_exc()}")
                     raise

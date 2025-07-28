@@ -1,8 +1,9 @@
 # src/processors/data_preparation/resampling_processor.py
 """Enhanced processor for resampling datasets with chunked loading and progress support."""
-print("🔍 DEBUG: resampling_processor.py module loading...")
-
 import logging
+
+logger = logging.getLogger(__name__)
+logger.debug("🔍 resampling_processor.py module loading...")
 from typing import Dict, Any, List, Optional, Tuple, Union, Callable
 from pathlib import Path
 import numpy as np
@@ -23,8 +24,6 @@ from src.resampling.engines.base_resampler import ResamplingConfig
 from src.resampling.engines.numpy_resampler import NumpyResampler
 from src.resampling.engines.gdal_resampler import GDALResampler
 from src.resampling.cache_manager import ResamplingCacheManager
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -193,25 +192,25 @@ class ResamplingProcessor(BaseProcessor):
             ResampledDatasetInfo
         """
         logger.info(f"🔍 DEBUG: resample_dataset() called for {dataset_config.get('name', 'unknown')}")
-        print(f"🔍 DEBUG: resample_dataset() called for {dataset_config.get('name', 'unknown')}")
+        logger.debug(f"🔍 resample_dataset() called for {dataset_config.get('name', 'unknown')}")
         from src.config.dataset_utils import DatasetPathResolver
         
         # Memory allocation tracking
         logger.info(f"🔍 DEBUG: Entering memory context for {dataset_config['name']}")
-        print(f"🔍 DEBUG: Entering memory context for {dataset_config['name']}")
+        logger.debug(f"🔍 Entering memory context for {dataset_config['name']}")
         with self.memory_manager.memory_context(
             f"resample_{dataset_config['name']}", 
             estimated_mb=self.chunk_config['max_chunk_size_mb']
         ):
             logger.info(f"🔍 DEBUG: Inside memory context, creating DatasetPathResolver")
-            print(f"🔍 DEBUG: Inside memory context, creating DatasetPathResolver")
+            logger.debug(f"🔍 Inside memory context, creating DatasetPathResolver")
             # Resolve dataset path
             resolver = DatasetPathResolver(self.config)
             logger.info(f"🔍 DEBUG: DatasetPathResolver created, validating config")
-            print(f"🔍 DEBUG: DatasetPathResolver created, validating config")
+            logger.debug(f"🔍 DatasetPathResolver created, validating config")
             normalized_config = resolver.validate_dataset_config(dataset_config)
             logger.info(f"🔍 DEBUG: Config validated, extracting paths")
-            print(f"🔍 DEBUG: Config validated, extracting paths")
+            logger.debug(f"🔍 Config validated, extracting paths")
             
             dataset_name = normalized_config['name']
             raster_path = Path(normalized_config['resolved_path'])
@@ -219,7 +218,7 @@ class ResamplingProcessor(BaseProcessor):
             band_name = normalized_config['band_name']
             
             logger.info(f"🔍 DEBUG: Paths extracted - dataset: {dataset_name}, path: {raster_path}")
-            print(f"🔍 DEBUG: Paths extracted - dataset: {dataset_name}, path: {raster_path}")
+            logger.debug(f"🔍 Paths extracted - dataset: {dataset_name}, path: {raster_path}")
             
             logger.info(f"Resampling dataset: {dataset_name}")
             if progress_callback:
@@ -228,26 +227,26 @@ class ResamplingProcessor(BaseProcessor):
             # Get resampling method
             method = self.strategies.get(data_type, 'bilinear')
             logger.info(f"🔍 DEBUG: Resampling method: {method}")
-            print(f"🔍 DEBUG: Resampling method: {method}")
+            logger.debug(f"🔍 Resampling method: {method}")
             
             # Get or register raster in catalog
             logger.info(f"🔍 DEBUG: About to call _get_or_register_raster")
-            print(f"🔍 DEBUG: About to call _get_or_register_raster")
+            logger.debug(f"🔍 About to call _get_or_register_raster")
             raster_entry = self._get_or_register_raster(
                 dataset_name, raster_path, data_type, progress_callback
             )
             logger.info(f"🔍 DEBUG: _get_or_register_raster completed")
-            print(f"🔍 DEBUG: _get_or_register_raster completed")
+            logger.debug(f"🔍 _get_or_register_raster completed")
             
             # Check if skip-resampling is enabled and resolution matches
             logger.info(f"🔍 DEBUG: Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
-            print(f"🔍 DEBUG: Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
+            logger.debug(f"🔍 Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
             if self.config.get('resampling.allow_skip_resampling', False):
                 logger.info(f"🔍 DEBUG: About to check resolution match")
-                print(f"🔍 DEBUG: About to check resolution match")
+                logger.debug(f"🔍 About to check resolution match")
                 if self._check_resolution_match(raster_entry):
                     logger.info(f"🔍 DEBUG: Resolution matches! Will skip resampling")
-                    print(f"🔍 DEBUG: Resolution matches! Will skip resampling")
+                    logger.debug(f"🔍 Resolution matches! Will skip resampling")
                     print(f"🚨 IMMEDIATE: About to log skipping message", flush=True)
                     logger.info(f"🚀 Skipping resampling for {dataset_name} - resolution matches target")
                     print(f"🚨 IMMEDIATE: Logged skipping message", flush=True)
@@ -537,14 +536,14 @@ class ResamplingProcessor(BaseProcessor):
                                progress_callback: Optional[Callable[[str, float], None]] = None) -> RasterEntry:
         """Get raster from catalog or register it."""
         logger.info(f"🔍 DEBUG: _get_or_register_raster called for {dataset_name}")
-        print(f"🔍 DEBUG: _get_or_register_raster called for {dataset_name}")
+        logger.debug(f"🔍 _get_or_register_raster called for {dataset_name}")
         raster_entry = self.catalog.get_raster(dataset_name)
         logger.info(f"🔍 DEBUG: catalog.get_raster returned: {raster_entry is not None}")
-        print(f"🔍 DEBUG: catalog.get_raster returned: {raster_entry is not None}")
+        logger.debug(f"🔍 catalog.get_raster returned: {raster_entry is not None}")
         
         if raster_entry is None:
             logger.info(f"🔍 DEBUG: Raster entry is None, need to register")
-            print(f"🔍 DEBUG: Raster entry is None, need to register")
+            logger.debug(f"🔍 Raster entry is None, need to register")
             if not raster_path.exists():
                 raise FileNotFoundError(f"Raster file not found: {raster_path}")
             
@@ -553,7 +552,7 @@ class ResamplingProcessor(BaseProcessor):
                 progress_callback(f"Registering {dataset_name}", 10)
             
             logger.info(f"🔍 DEBUG: About to call catalog.add_raster_lightweight")
-            print(f"🔍 DEBUG: About to call catalog.add_raster_lightweight")
+            logger.debug(f"🔍 About to call catalog.add_raster_lightweight")
             # Use lightweight registration
             raster_entry = self.catalog.add_raster_lightweight(
                 raster_path,
@@ -561,7 +560,7 @@ class ResamplingProcessor(BaseProcessor):
                 validate=False
             )
             logger.info(f"🔍 DEBUG: catalog.add_raster_lightweight completed")
-            print(f"🔍 DEBUG: catalog.add_raster_lightweight completed")
+            logger.debug(f"🔍 catalog.add_raster_lightweight completed")
             logger.info(f"✅ Registered {dataset_name}")
         
         return raster_entry
@@ -661,7 +660,7 @@ class ResamplingProcessor(BaseProcessor):
             True if resolution matches within tolerance, False otherwise
         """
         logger.info(f"🔍 DEBUG: _check_resolution_match called for {raster_entry.name}")
-        print(f"🔍 DEBUG: _check_resolution_match called for {raster_entry.name}")
+        logger.debug(f"🔍 _check_resolution_match called for {raster_entry.name}")
         if not raster_entry.resolution_degrees:
             logger.warning(f"No resolution information for {raster_entry.name}, cannot skip resampling")
             return False

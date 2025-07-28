@@ -4,18 +4,19 @@
 from typing import List, Tuple
 import logging
 
+logger = logging.getLogger(__name__)
+
 from .base_stage import PipelineStage, StageResult
-print("🔍 DEBUG: About to import ResamplingProcessor")
+logger.debug("🔍 About to import ResamplingProcessor")
 
 # Configure GDAL to use exceptions
 from osgeo import gdal
 gdal.UseExceptions()
 
 from src.processors.data_preparation.resampling_processor import ResamplingProcessor
-print("🔍 DEBUG: ResamplingProcessor imported successfully")
+logger.debug("🔍 ResamplingProcessor imported successfully")
 
-logger = logging.getLogger(__name__)
-print("🔍 DEBUG: resample_stage.py module loaded successfully")
+logger.debug("🔍 resample_stage.py module loaded successfully")
 
 
 class ResampleStage(PipelineStage):
