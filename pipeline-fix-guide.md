@@ -9,66 +9,343 @@ This guide is designed for fixing the pipeline issues systematically. Each step 
 2. **Database**: Never use `DatabaseManager(test_mode=True)` in production code
 3. **File Paths**: Always use `Path` objects, never string concatenation
 4. **Imports**: Always use absolute imports from `src.*`
+5. **Security**: Always validate user inputs, especially in command execution contexts
+6. **Resource Management**: Always ensure proper cleanup of temporary files and locks
 
 ## Phase 1: Foundation Fixes (Enables Everything Else)
 
-### Step 1.1: Fix Memory Check Issue
+### Step 1.1: Fix Memory Check Issue & Magic Numbers
 **File**: `src/pipelines/orchestrator.py`
 **Why First**: Blocks pipeline execution, simplest fix
+**Issues Addressed**: Memory check failures, hard-coded memory thresholds
 
 ```python
+# ADD to config/defaults.py:
+MEMORY_CONFIG = {
+    'tolerance_factor': 0.95,  # Allow using 95% of available memory
+    'error_threshold': 1.1,    # Error if requirement exceeds 110% of available
+    'warning_increase_gb': 1.0, # Warn if memory increases by more than 1GB
+    'critical_increase_gb': 5.0, # Critical if memory increases by more than 5GB
+}
+
 # FIND around line 643:
 if required_memory > available_memory:
     raise MemoryError(...)
 
 # REPLACE WITH:
-memory_tolerance = 0.95  # 5% tolerance
+from src.config import config
+
+memory_tolerance = config.memory_config.tolerance_factor
+error_threshold = config.memory_config.error_threshold
+
 if required_memory > available_memory * memory_tolerance:
     logger.warning(f"Memory usage close to limit: {required_memory:.1f}GB required, {available_memory:.1f}GB available")
-else:
+    
     # Only fail if significantly over
-    if required_memory > available_memory * 1.1:  # 10% over
-        raise MemoryError(...)
+    if required_memory > available_memory * error_threshold:
+        raise MemoryError(f"Memory requirement ({required_memory:.1f}GB) exceeds available ({available_memory:.1f}GB) by more than {(error_threshold-1)*100:.0f}%")
+
+# ALSO FIX magic number at line 539:
+# OLD:
+if memory_increase > 1024:  # More than 1GB increase
+
+# NEW:
+warning_threshold_mb = config.memory_config.warning_increase_gb * 1024
+if memory_increase > warning_threshold_mb:
+    logger.warning(f"Memory increased by {memory_increase/1024:.1f}GB")
 ```
 
 **Test**: Run pipeline with 790-800GB data, should not fail
 
-### Step 1.2: Fix File Permission Issues
+### Step 1.2: Fix File Permission Issues & Resource Cleanup
 **Files**: 
 - `src/pipelines/stages/merge_stage.py`
 - `src/pipelines/stages/export_stage.py`
 **Why Next**: Blocks retries, affects multiple stages
+**Issues Addressed**: File permission errors, improper temp file cleanup
 
 ```python
-# ADD this utility function at module level:
-def safe_write_file(file_path: Path, write_func):
-    """Safely write file with overwrite handling."""
-    file_path = Path(file_path)
-    if file_path.exists():
-        logger.warning(f"File exists, removing: {file_path}")
-        file_path.unlink()
+# ADD this utility module at src/pipelines/utils/file_utils.py:
+"""File handling utilities for safe writes and cleanup."""
+from pathlib import Path
+import tempfile
+import atexit
+import logging
+from contextlib import contextmanager
+from typing import Callable, Set
+
+logger = logging.getLogger(__name__)
+
+# Track temp files for cleanup
+_temp_files: Set[Path] = set()
+
+def _cleanup_temp_files():
+    """Clean up any remaining temp files on exit."""
+    for temp_file in list(_temp_files):
+        try:
+            if temp_file.exists():
+                temp_file.unlink()
+                logger.debug(f"Cleaned up temp file: {temp_file}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up {temp_file}: {e}")
+        finally:
+            _temp_files.discard(temp_file)
+
+# Register cleanup on exit
+atexit.register(_cleanup_temp_files)
+
+@contextmanager
+def temp_file_context(suffix: str = '.tmp', dir: Path = None):
+    """Context manager for temporary files with guaranteed cleanup."""
+    temp_fd, temp_path = tempfile.mkstemp(suffix=suffix, dir=dir)
+    temp_path = Path(temp_path)
+    _temp_files.add(temp_path)
     
-    # Write with temporary file first
-    temp_path = file_path.with_suffix('.tmp')
     try:
+        yield temp_path
+    finally:
+        try:
+            import os
+            os.close(temp_fd)  # Close file descriptor
+            if temp_path.exists():
+                temp_path.unlink()
+        except Exception as e:
+            logger.warning(f"Error cleaning up temp file {temp_path}: {e}")
+        finally:
+            _temp_files.discard(temp_path)
+
+def safe_write_file(file_path: Path, write_func: Callable):
+    """Safely write file with overwrite handling and atomic replace."""
+    file_path = Path(file_path)
+    
+    # Use temp file in same directory for atomic rename
+    with temp_file_context(suffix='.tmp', dir=file_path.parent) as temp_path:
+        # Write to temp file
         write_func(temp_path)
-        temp_path.rename(file_path)
-    except Exception as e:
-        if temp_path.exists():
-            temp_path.unlink()
-        raise
+        
+        # Atomic replace
+        if file_path.exists():
+            logger.warning(f"File exists, replacing: {file_path}")
+        
+        temp_path.replace(file_path)
 
 # USE in merge_stage.py around line 328:
 # REPLACE: with netCDF4.Dataset(output_path, 'w', format='NETCDF4') as nc:
 # WITH:
+from src.pipelines.utils.file_utils import safe_write_file
+
 def write_nc(path):
     with netCDF4.Dataset(path, 'w', format='NETCDF4') as nc:
         # ... existing write code ...
         
 safe_write_file(output_path, write_nc)
+
+# FIX resource cleanup at line 598-604:
+# OLD:
+for _, temp_path in temp_files:
+    try:
+        temp_path.unlink()
+    except Exception as e:
+        logger.warning(f"Failed to delete temp file {temp_path}: {e}")
+
+# NEW:
+from src.pipelines.utils.file_utils import _temp_files
+
+# Register temp files for cleanup
+for _, temp_path in temp_files:
+    _temp_files.add(temp_path)
+    
+# Attempt immediate cleanup
+for _, temp_path in temp_files:
+    try:
+        if temp_path.exists():
+            temp_path.unlink()
+            _temp_files.discard(temp_path)
+            logger.debug(f"Cleaned up temp file: {temp_path}")
+    except Exception as e:
+        logger.warning(f"Failed to delete temp file {temp_path}: {e}, will retry on exit")
 ```
 
 **Test**: Run pipeline twice, second run should not fail on file exists
+
+### Step 1.3: Fix Unsafe Type Assumptions
+**File**: `src/pipelines/orchestrator.py`
+**Why**: Prevents KeyError from mixed stage name handling
+**Issues Addressed**: Unsafe type assumptions in stage registry lookup
+
+```python
+# FIND around line 708-709:
+stage_key = stage_name.name if hasattr(stage_name, "name") else stage_name
+stage = self.stage_registry[str(stage_key)]
+
+# REPLACE WITH:
+def _get_stage_key(self, stage_identifier):
+    """Safely extract stage key from various input types."""
+    if hasattr(stage_identifier, "name"):
+        # It's a stage instance
+        return str(stage_identifier.name)
+    elif isinstance(stage_identifier, type) and hasattr(stage_identifier, "__name__"):
+        # It's a stage class
+        return stage_identifier.__name__.lower().replace("stage", "")
+    elif isinstance(stage_identifier, str):
+        # It's already a string key
+        return stage_identifier
+    else:
+        raise ValueError(f"Invalid stage identifier type: {type(stage_identifier)}")
+
+# Use the safe method:
+try:
+    stage_key = self._get_stage_key(stage_name)
+    if stage_key not in self.stage_registry:
+        raise KeyError(f"Stage '{stage_key}' not found in registry. Available: {list(self.stage_registry.keys())}")
+    stage = self.stage_registry[stage_key]
+except Exception as e:
+    logger.error(f"Failed to get stage for {stage_name}: {e}")
+    raise
+```
+
+**Test**: Pass various stage identifier types, should handle all gracefully
+
+### Step 1.4: Fix File Locking Issues
+**File**: `src/core/process_registry.py`
+**Why**: Prevents race conditions in high-concurrency scenarios
+**Issues Addressed**: File locking implementation improvements
+
+```python
+# FIND around line 46-59:
+while True:
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd
+    except BlockingIOError:
+        # Continue loop
+
+# REPLACE WITH:
+import time
+import random
+
+max_attempts = 50
+attempt = 0
+backoff_base = 0.1  # 100ms base
+
+while attempt < max_attempts:
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        logger.debug(f"Acquired lock on {lock_file} after {attempt} attempts")
+        return lock_fd
+    except BlockingIOError:
+        attempt += 1
+        if attempt >= max_attempts:
+            os.close(lock_fd)
+            raise TimeoutError(f"Failed to acquire lock on {lock_file} after {max_attempts} attempts")
+        
+        # Exponential backoff with jitter
+        wait_time = backoff_base * (2 ** min(attempt, 10)) + random.uniform(0, 0.1)
+        logger.debug(f"Lock busy, waiting {wait_time:.3f}s (attempt {attempt}/{max_attempts})")
+        time.sleep(wait_time)
+    except Exception as e:
+        os.close(lock_fd)
+        raise RuntimeError(f"Unexpected error acquiring lock on {lock_file}: {e}")
+
+# ALSO ADD lock release safety:
+def release_lock_safe(lock_fd, lock_file):
+    """Safely release a file lock."""
+    if lock_fd is None:
+        return
+    
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        logger.debug(f"Released lock on {lock_file}")
+    except Exception as e:
+        logger.warning(f"Error releasing lock on {lock_file}: {e}")
+        try:
+            os.close(lock_fd)
+        except:
+            pass
+```
+
+**Test**: Run multiple process managers concurrently, should handle locks properly
+
+### Step 1.5: Fix Command Injection Security Risk
+**File**: `scripts/process_manager.py`
+**Why**: Critical security vulnerability in command execution
+**Issues Addressed**: Command injection risk through string interpolation
+
+```python
+# FIND around line 48-50:
+command = [
+    sys.executable,
+    "-c",
+    f"""
+import sys
+# ... embedded Python code with {analysis_method}
+"""
+]
+
+# REPLACE WITH secure implementation:
+import shlex
+import re
+
+# Validate analysis method against whitelist
+ALLOWED_ANALYSIS_METHODS = {'gwpca', 'som', 'combined', 'test'}
+
+def validate_analysis_method(method: str) -> str:
+    """Validate and sanitize analysis method input."""
+    method = method.lower().strip()
+    
+    # Check against whitelist
+    if method not in ALLOWED_ANALYSIS_METHODS:
+        raise ValueError(f"Invalid analysis method: {method}. Allowed: {ALLOWED_ANALYSIS_METHODS}")
+    
+    # Additional validation - only alphanumeric and underscore
+    if not re.match(r'^[a-zA-Z0-9_]+$', method):
+        raise ValueError(f"Analysis method contains invalid characters: {method}")
+    
+    return method
+
+# Use validated method:
+try:
+    safe_analysis_method = validate_analysis_method(analysis_method)
+except ValueError as e:
+    logger.error(f"Security validation failed: {e}")
+    raise
+
+# Build command with validated input
+command = [
+    sys.executable,
+    "-c",
+    # Use a safer approach - pass method as argument instead of interpolation
+    """
+import sys
+import json
+args = json.loads(sys.argv[1])
+analysis_method = args['analysis_method']
+# ... rest of code uses analysis_method variable ...
+""",
+    json.dumps({'analysis_method': safe_analysis_method})
+]
+
+# Alternative approach using environment variables:
+env = os.environ.copy()
+env['ANALYSIS_METHOD'] = safe_analysis_method
+
+command = [
+    sys.executable,
+    "-c",
+    """
+import os
+analysis_method = os.environ.get('ANALYSIS_METHOD')
+if not analysis_method:
+    raise ValueError("ANALYSIS_METHOD not set")
+# ... rest of code ...
+"""
+]
+
+subprocess.Popen(command, env=env)
+```
+
+**Test**: Try injecting malicious code in analysis_method, should be rejected
 
 ## Phase 2: Data Flow Fixes (Core Issues)
 
@@ -202,6 +479,151 @@ def _align_data_to_common_grid(self, array_data: np.ndarray,
     logger.info(f"Calculated offsets: x={x_offset}, y={y_offset}")
     
     # ... rest of existing code ...
+```
+
+### Step 2.4: Refactor Complex Method _merge_lazy_chunked
+**File**: `src/pipelines/stages/merge_stage.py`
+**Why**: Method is 164 lines long with multiple responsibilities
+**Issues Addressed**: Complex method length, maintainability
+
+```python
+# REFACTOR the _merge_lazy_chunked method (lines 288-452) into smaller methods:
+
+def _merge_lazy_chunked(self, context, resampled_datasets):
+    """Main orchestrator for lazy chunked merging."""
+    try:
+        # Step 1: Prepare merge operation
+        merge_config = self._prepare_merge_config(resampled_datasets)
+        
+        # Step 2: Initialize output file
+        output_path = self._initialize_output_file(context, merge_config)
+        
+        # Step 3: Process chunks
+        chunk_results = self._process_all_chunks(merge_config, output_path)
+        
+        # Step 4: Finalize and validate
+        self._finalize_merge(output_path, chunk_results)
+        
+        return output_path
+        
+    except Exception as e:
+        logger.error(f"Merge failed: {e}")
+        self._cleanup_failed_merge(output_path)
+        raise
+
+def _prepare_merge_config(self, resampled_datasets):
+    """Prepare configuration for merge operation."""
+    config = {
+        'datasets': resampled_datasets,
+        'chunk_size': self._calculate_optimal_chunk_size(resampled_datasets),
+        'common_bounds': self._compute_common_bounds(resampled_datasets),
+        'common_shape': self._compute_common_shape(resampled_datasets),
+        'temp_files': []
+    }
+    
+    # Validate configuration
+    self._validate_merge_config(config)
+    
+    return config
+
+def _calculate_optimal_chunk_size(self, datasets):
+    """Calculate optimal chunk size based on available memory."""
+    from src.config import config
+    
+    # Get available memory
+    available_memory_gb = self._get_available_memory()
+    
+    # Calculate based on dataset sizes
+    total_data_size = sum(d.get('size_gb', 1.0) for d in datasets)
+    num_datasets = len(datasets)
+    
+    # Use configuration
+    memory_factor = config.get('merge.memory_factor', 0.5)
+    min_chunk_size = config.get('merge.min_chunk_size', 1000)
+    max_chunk_size = config.get('merge.max_chunk_size', 10000)
+    
+    # Calculate optimal size
+    optimal_size = int((available_memory_gb * memory_factor * 1024) / (num_datasets * 8))  # 8 bytes per float64
+    
+    return max(min_chunk_size, min(optimal_size, max_chunk_size))
+
+def _process_all_chunks(self, config, output_path):
+    """Process all chunks with progress tracking."""
+    chunk_results = []
+    total_chunks = self._calculate_total_chunks(config)
+    
+    with tqdm(total=total_chunks, desc="Processing chunks") as pbar:
+        for chunk_idx, chunk_bounds in enumerate(self._generate_chunks(config)):
+            result = self._process_single_chunk(
+                chunk_idx=chunk_idx,
+                chunk_bounds=chunk_bounds,
+                config=config,
+                output_path=output_path
+            )
+            chunk_results.append(result)
+            pbar.update(1)
+            
+            # Memory management
+            if chunk_idx % 10 == 0:
+                self._cleanup_memory()
+    
+    return chunk_results
+
+def _process_single_chunk(self, chunk_idx, chunk_bounds, config, output_path):
+    """Process a single chunk of data."""
+    try:
+        # Load chunk data from all datasets
+        chunk_data = self._load_chunk_data(chunk_bounds, config['datasets'])
+        
+        # Align to common grid
+        aligned_data = self._align_chunk_data(chunk_data, chunk_bounds, config)
+        
+        # Write to output
+        self._write_chunk_to_output(aligned_data, chunk_idx, output_path)
+        
+        return {
+            'chunk_idx': chunk_idx,
+            'bounds': chunk_bounds,
+            'status': 'success',
+            'records_written': len(aligned_data)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to process chunk {chunk_idx}: {e}")
+        return {
+            'chunk_idx': chunk_idx,
+            'bounds': chunk_bounds,
+            'status': 'failed',
+            'error': str(e)
+        }
+
+def _cleanup_memory(self):
+    """Force garbage collection to free memory."""
+    import gc
+    gc.collect()
+
+def _finalize_merge(self, output_path, chunk_results):
+    """Finalize merge and validate results."""
+    # Check for failed chunks
+    failed_chunks = [r for r in chunk_results if r['status'] == 'failed']
+    if failed_chunks:
+        raise RuntimeError(f"Merge failed for {len(failed_chunks)} chunks")
+    
+    # Add metadata
+    self._add_merge_metadata(output_path, chunk_results)
+    
+    # Validate output
+    if not self._validate_merged_output(output_path):
+        raise ValueError("Merged output validation failed")
+
+def _cleanup_failed_merge(self, output_path):
+    """Clean up after a failed merge."""
+    if output_path and Path(output_path).exists():
+        try:
+            Path(output_path).unlink()
+            logger.info(f"Cleaned up failed merge output: {output_path}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up {output_path}: {e}")
 ```
 
 ## Phase 3: Skip Logic Enhancement
@@ -499,3 +921,54 @@ print(df.head())
 - [ ] Direct DB → Parquet export works
 - [ ] Validation catches mismatches
 - [ ] 4x performance improvement
+- [ ] All security vulnerabilities patched
+- [ ] Complex methods refactored for maintainability
+- [ ] Proper resource cleanup implemented
+- [ ] Race conditions in file locking resolved
+
+## Summary of Critical Fixes Added
+
+### 1. Code Quality Improvements
+- **Complex Method Refactoring**: Split 164-line `_merge_lazy_chunked` into 8+ focused methods
+- **Magic Number Elimination**: All thresholds now configurable via `config.yml`
+- **Type Safety**: Added robust type checking for stage identifiers
+
+### 2. Security Enhancements  
+- **Command Injection Prevention**: Input validation and whitelisting for `analysis_method`
+- **Safe Command Execution**: Use environment variables or JSON args instead of string interpolation
+- **Input Sanitization**: Regex validation for alphanumeric inputs only
+
+### 3. Resource Management
+- **Atomic File Writes**: Temp file with atomic rename pattern
+- **Guaranteed Cleanup**: `atexit` handlers for temp file cleanup
+- **File Descriptor Management**: Proper closing of file handles
+
+### 4. Concurrency & Stability
+- **Exponential Backoff**: File locking with jitter to prevent thundering herd
+- **Lock Timeouts**: Configurable max attempts with proper error handling
+- **Safe Lock Release**: Defensive cleanup even on errors
+
+### 5. Configuration-Driven Behavior
+```yaml
+# Add to config.yml:
+memory_config:
+  tolerance_factor: 0.95
+  error_threshold: 1.1
+  warning_increase_gb: 1.0
+  critical_increase_gb: 5.0
+
+merge:
+  memory_factor: 0.5
+  min_chunk_size: 1000
+  max_chunk_size: 10000
+```
+
+## Implementation Priority
+
+1. **Critical Security**: Command injection fix (Step 1.5)
+2. **Data Integrity**: Type safety and coordinate fixes (Steps 1.3, 2.3)  
+3. **Stability**: File locking and resource cleanup (Steps 1.2, 1.4)
+4. **Performance**: Memory configuration and method refactoring (Steps 1.1, 2.4)
+5. **Architecture**: DB reader and new pipeline (Steps 2.1, 4.1)
+
+Remember: Each fix builds on previous ones. Test thoroughly after each phase!
