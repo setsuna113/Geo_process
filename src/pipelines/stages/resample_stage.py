@@ -68,6 +68,10 @@ class ResampleStage(PipelineStage):
             processor = ResamplingProcessor(context.config, context.db)
             logger.info("✅ DEBUG: ResamplingProcessor created")
             
+            # Initialize skip controller for intelligent skip decisions
+            from .skip_control import StageSkipController
+            skip_controller = StageSkipController(context.config, context.db)
+            
             resampled_datasets = []
             metrics = {
                 'total_datasets': len(loaded_datasets),
@@ -82,26 +86,26 @@ class ResampleStage(PipelineStage):
                     dataset_config = dataset_info['config']
                     logger.info(f"Processing dataset {idx+1}/{len(loaded_datasets)}: {dataset_config['name']}")
                     
-                    # Check if already resampled (including passthrough datasets)
-                    existing = processor.get_resampled_dataset(dataset_config['name'])
-                    target_resolution = context.config.get('resampling.target_resolution')
-                    tolerance = context.config.get('resampling.resolution_tolerance', 0.001)
+                    # Enhanced skip logic with DB status detection
+                    can_skip, skip_reason = skip_controller.can_skip_dataset_processing(dataset_config['name'])
                     
-                    if existing:
-                        # Check if resolution matches target (for both resampled and passthrough)
-                        res_matches = abs(existing.target_resolution - target_resolution) <= tolerance
-                        
-                        if res_matches:
+                    if can_skip:
+                        # Load metadata from DB instead of reprocessing
+                        existing = processor.get_resampled_dataset(dataset_config['name'])
+                        if existing:
                             is_passthrough = existing.metadata.get('passthrough', False)
                             dataset_type = "passthrough" if is_passthrough else "resampled"
-                            logger.info(f"✓ Using existing {dataset_type} dataset: {dataset_config['name']}")
-                            logger.info(f"  Resolution: {existing.target_resolution:.6f}° (matches target)")
+                            logger.info(f"✓ Skipping {dataset_config['name']} - {skip_reason}")
+                            logger.info(f"  Using existing {dataset_type} data from DB")
                             
                             resampled_datasets.append(existing)
                             metrics['skipped_existing'] += 1
                             continue
-                        else:
-                            logger.info(f"Existing dataset {dataset_config['name']} has different resolution, reprocessing")
+                    else:
+                        # Cannot skip - check if we need to clean up partial data
+                        if "error" in skip_reason or "incomplete" in skip_reason:
+                            logger.warning(f"DB status {skip_reason}, cleaning and reprocessing")
+                            skip_controller.cleanup_partial_data(dataset_config['name'])
                     
                     # Resample dataset (this will handle skip-resampling automatically)
                     logger.info(f"Processing dataset: {dataset_config['name']}")

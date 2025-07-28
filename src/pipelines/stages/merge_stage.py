@@ -184,6 +184,11 @@ class MergeStage(PipelineStage):
                                   common_shape: Tuple[int, int],
                                   resolution: float) -> np.ndarray:
         """Align dataset to common coordinate grid."""
+        
+        # ADD validation and debugging
+        logger.info(f"Aligning data: shape={array_data.shape}, "
+                   f"data_bounds={data_bounds}, common_bounds={common_bounds}")
+        
         # Create output array filled with appropriate value based on dtype
         if np.issubdtype(array_data.dtype, np.integer):
             # For integer data, use 0 or a specific nodata value instead of NaN
@@ -193,9 +198,17 @@ class MergeStage(PipelineStage):
             # For floating point data, NaN is fine
             aligned_data = np.full(common_shape, np.nan, dtype=array_data.dtype)
         
-        # Calculate offsets
+        # Calculate offsets with validation
         x_offset = int(np.round((data_bounds[0] - common_bounds[0]) / resolution))
         y_offset = int(np.round((common_bounds[3] - data_bounds[3]) / resolution))
+        
+        # Validate offsets
+        if x_offset < 0 or y_offset < 0:
+            logger.error(f"Negative offsets detected: x={x_offset}, y={y_offset}")
+            logger.error(f"This indicates bounds mismatch - data may be corrupted!")
+        
+        # Log for debugging
+        logger.info(f"Calculated offsets: x={x_offset}, y={y_offset}")
         
         # Calculate the slice where this data should go
         y_slice = slice(y_offset, y_offset + array_data.shape[0])
@@ -286,9 +299,30 @@ class MergeStage(PipelineStage):
         return merged
     
     def _merge_lazy_chunked(self, context, resampled_datasets):
-        """True lazy chunked merge that processes data in spatial tiles without loading full arrays."""
+        """Main orchestrator for lazy chunked merging."""
+        try:
+            # Step 1: Prepare merge operation
+            merge_config = self._prepare_merge_config(context, resampled_datasets)
+            
+            # Step 2: Initialize output file
+            output_path = self._initialize_output_file(context, merge_config)
+            
+            # Step 3: Process chunks
+            chunk_results = self._process_all_chunks(merge_config, output_path)
+            
+            # Step 4: Finalize and validate
+            self._finalize_merge(output_path, chunk_results)
+            
+            return xr.open_dataset(output_path, chunks={'x': merge_config['chunk_size'], 'y': merge_config['chunk_size']})
+            
+        except Exception as e:
+            logger.error(f"Merge failed: {e}")
+            self._cleanup_failed_merge(context.output_dir / 'merged_dataset.nc')
+            raise
+
+    def _prepare_merge_config(self, context, resampled_datasets):
+        """Prepare configuration for merge operation."""
         from src.processors.data_preparation.resampling_processor import ResamplingProcessor
-        processor = ResamplingProcessor(context.config, context.db)
         
         # Calculate common bounds and resolution
         common_bounds = self._calculate_common_bounds(resampled_datasets)
@@ -298,57 +332,104 @@ class MergeStage(PipelineStage):
         coords = self._create_common_coordinates(common_bounds, resolution)
         common_shape = (len(coords['y']), len(coords['x']))
         
-        logger.info(f"Lazy merge: common shape {common_shape}, processing in chunks")
-        
         # Chunk size from config or default
-        chunk_size = context.config.get('processing.merge_chunk_size', 500)
+        chunk_size = self._calculate_optimal_chunk_size(context, resampled_datasets)
         
-        # Create output NetCDF file with structure but no data yet
+        config = {
+            'datasets': resampled_datasets,
+            'processor': ResamplingProcessor(context.config, context.db),
+            'chunk_size': chunk_size,
+            'common_bounds': common_bounds,
+            'common_shape': common_shape,
+            'coords': coords,
+            'resolution': resolution,
+            'temp_files': []
+        }
+        
+        # Validate configuration
+        self._validate_merge_config(config)
+        
+        logger.info(f"Lazy merge: common shape {common_shape}, chunk size {chunk_size}")
+        
+        return config
+    
+    def _calculate_optimal_chunk_size(self, context, resampled_datasets):
+        """Calculate optimal chunk size based on available memory."""
+        from src.config import config
+        
+        # Get available memory (in GB)
+        available_memory_gb = self._get_available_memory()
+        
+        # Calculate based on dataset sizes and memory config
+        total_data_size = sum(getattr(d, 'size_gb', 1.0) for d in resampled_datasets)
+        num_datasets = len(resampled_datasets)
+        
+        # Use configuration or defaults
+        memory_factor = config.get('merge.memory_factor', 0.5)
+        min_chunk_size = config.get('merge.min_chunk_size', 500)  # Updated default
+        max_chunk_size = config.get('merge.max_chunk_size', 2000)
+        
+        # Calculate optimal size (in pixels)
+        if available_memory_gb and available_memory_gb > 0:
+            # Estimate memory per chunk (GB = pixels^2 * datasets * 4 bytes / 1GB)
+            optimal_size = int(np.sqrt((available_memory_gb * memory_factor * 1024**3) / (num_datasets * 4)))
+        else:
+            optimal_size = context.config.get('processing.merge_chunk_size', 500)
+        
+        return max(min_chunk_size, min(optimal_size, max_chunk_size))
+    
+    def _get_available_memory(self):
+        """Get available system memory in GB."""
+        try:
+            import psutil
+            return psutil.virtual_memory().available / (1024**3)
+        except:
+            return None
+    
+    def _validate_merge_config(self, config):
+        """Validate merge configuration."""
+        if not config['datasets']:
+            raise ValueError("No datasets provided for merge")
+        
+        if config['chunk_size'] <= 0:
+            raise ValueError(f"Invalid chunk size: {config['chunk_size']}")
+        
+        if not all(hasattr(d, 'target_resolution') for d in config['datasets']):
+            raise ValueError("All datasets must have target_resolution")
+    
+    def _initialize_output_file(self, context, merge_config):
+        """Initialize the output NetCDF file with structure but no data."""
         output_path = context.output_dir / 'merged_dataset.nc'
         
-        # Initialize the output dataset with proper dimensions and coordinates
-        output_ds = xr.Dataset(
-            coords={
-                'x': coords['x'],
-                'y': coords['y']
-            },
-            attrs={
-                'title': 'Merged Resampled Dataset (Lazy Chunked)',
-                'created_by': 'pipeline_merge_stage',
-                'created_at': datetime.now().isoformat(),
-                'common_bounds': common_bounds,
-                'resolution': resolution
-            }
-        )
-        
-        # Use netCDF4 directly for better control over lazy allocation
+        # Create file with safe atomic write (moved from original method)
         import netCDF4
         from src.pipelines.utils.file_utils import safe_write_file
         
         def write_nc(path):
             with netCDF4.Dataset(path, 'w', format='NETCDF4') as nc:
                 # Create dimensions
-                nc.createDimension('y', common_shape[0])
-                nc.createDimension('x', common_shape[1])
+                nc.createDimension('y', merge_config['common_shape'][0])
+                nc.createDimension('x', merge_config['common_shape'][1])
                 
                 # Create coordinate variables
                 y_var = nc.createVariable('y', 'f8', ('y',))
-                y_var[:] = coords['y'].values
+                y_var[:] = merge_config['coords']['y'].values
                 y_var.units = 'degrees_north'
                 y_var.standard_name = 'latitude'
                 
                 x_var = nc.createVariable('x', 'f8', ('x',))
-                x_var[:] = coords['x'].values
+                x_var[:] = merge_config['coords']['x'].values
                 x_var.units = 'degrees_east'
                 x_var.standard_name = 'longitude'
                 
                 # Create data variables (without allocating data)
-                for info in resampled_datasets:
+                for info in merge_config['datasets']:
                     var = nc.createVariable(
                         info.band_name, 
                         'f4', 
                         ('y', 'x'),
-                        chunksizes=(min(chunk_size, common_shape[0]), min(chunk_size, common_shape[1])),
+                        chunksizes=(min(merge_config['chunk_size'], merge_config['common_shape'][0]), 
+                                  min(merge_config['chunk_size'], merge_config['common_shape'][1])),
                         zlib=True,
                         complevel=4,
                         fill_value=np.nan
@@ -364,96 +445,189 @@ class MergeStage(PipelineStage):
                 nc.title = 'Merged Resampled Dataset (Lazy Chunked)'
                 nc.created_by = 'pipeline_merge_stage'
                 nc.created_at = datetime.now().isoformat()
-                nc.common_bounds = str(common_bounds)
-                nc.resolution = resolution
+                nc.common_bounds = str(merge_config['common_bounds'])
+                nc.resolution = merge_config['resolution']
         
         # Create file with safe atomic write
         safe_write_file(output_path, write_nc)
         
-        # Now process in chunks and write to the file
-        total_chunks = ((common_shape[0] + chunk_size - 1) // chunk_size) * \
-                      ((common_shape[1] + chunk_size - 1) // chunk_size)
-        chunk_count = 0
+        return output_path
+    
+    def _process_all_chunks(self, merge_config, output_path):
+        """Process all chunks with progress tracking."""
+        chunk_results = []
+        total_chunks = self._calculate_total_chunks(merge_config)
         
-        for y_start in range(0, common_shape[0], chunk_size):
-            y_end = min(y_start + chunk_size, common_shape[0])
+        chunk_count = 0
+        for y_start in range(0, merge_config['common_shape'][0], merge_config['chunk_size']):
+            y_end = min(y_start + merge_config['chunk_size'], merge_config['common_shape'][0])
             
-            for x_start in range(0, common_shape[1], chunk_size):
-                x_end = min(x_start + chunk_size, common_shape[1])
+            for x_start in range(0, merge_config['common_shape'][1], merge_config['chunk_size']):
+                x_end = min(x_start + merge_config['chunk_size'], merge_config['common_shape'][1])
                 chunk_count += 1
                 
                 logger.info(f"Processing chunk {chunk_count}/{total_chunks}: "
                            f"y[{y_start}:{y_end}], x[{x_start}:{x_end}]")
                 
-                # Process this spatial chunk for all datasets
-                chunk_data = {}
+                result = self._process_single_chunk(
+                    chunk_idx=chunk_count,
+                    chunk_bounds=(y_start, y_end, x_start, x_end),
+                    merge_config=merge_config,
+                    output_path=output_path
+                )
+                chunk_results.append(result)
                 
-                for info in resampled_datasets:
-                    # Calculate the bounds for this chunk in the dataset's coordinate system
-                    chunk_bounds = self._calculate_chunk_bounds(
-                        y_start, y_end, x_start, x_end,
-                        common_bounds, resolution
-                    )
-                    
-                    # Calculate corresponding indices in the source dataset
-                    src_indices = self._calculate_source_indices(
-                        chunk_bounds, info.bounds, info.shape, info.target_resolution
-                    )
-                    
-                    if src_indices is None:
-                        # This chunk doesn't overlap with this dataset
-                        chunk_data[info.band_name] = np.full(
-                            (y_end - y_start, x_end - x_start), 
-                            np.nan, 
-                            dtype=np.float32
-                        )
-                        continue
-                    
-                    # Load only this chunk from the database
-                    src_y_start, src_y_end, src_x_start, src_x_end = src_indices
-                    
-                    logger.debug(f"Loading chunk from {info.name}: "
-                                f"[{src_y_start}:{src_y_end}, {src_x_start}:{src_x_end}]")
-                    
-                    chunk_array = processor.load_resampled_data_chunk(
-                        info.name,
-                        src_y_start, src_y_end,
-                        src_x_start, src_x_end
-                    )
-                    
-                    if chunk_array is None:
-                        logger.warning(f"Failed to load chunk from {info.name}")
-                        chunk_data[info.band_name] = np.full(
-                            (y_end - y_start, x_end - x_start),
-                            np.nan,
-                            dtype=np.float32
-                        )
-                        continue
-                    
-                    # Align this chunk to the common grid chunk
-                    aligned_chunk = self._align_chunk_to_common_grid(
-                        chunk_array, src_indices, info.bounds,
-                        chunk_bounds, (y_end - y_start, x_end - x_start),
-                        resolution
-                    )
-                    
-                    chunk_data[info.band_name] = aligned_chunk
-                
-                # Write this chunk to the output file
-                # NetCDF doesn't support true append mode, so we need to use a different approach
-                import netCDF4
-                with netCDF4.Dataset(output_path, 'r+') as nc:
-                    for band_name, data in chunk_data.items():
-                        nc.variables[band_name][y_start:y_end, x_start:x_end] = data
-                
-                # Force garbage collection after each chunk
-                del chunk_data
-                gc.collect()
+                # Memory management
+                if chunk_count % 10 == 0:
+                    self._cleanup_memory()
         
-        logger.info(f"✅ Lazy chunked merge completed: {total_chunks} chunks processed")
+        return chunk_results
+    
+    def _calculate_total_chunks(self, merge_config):
+        """Calculate total number of chunks to process."""
+        y_chunks = (merge_config['common_shape'][0] + merge_config['chunk_size'] - 1) // merge_config['chunk_size']
+        x_chunks = (merge_config['common_shape'][1] + merge_config['chunk_size'] - 1) // merge_config['chunk_size']
+        return y_chunks * x_chunks
+    
+    def _process_single_chunk(self, chunk_idx, chunk_bounds, merge_config, output_path):
+        """Process a single chunk of data."""
+        try:
+            y_start, y_end, x_start, x_end = chunk_bounds
+            
+            # Load chunk data from all datasets
+            chunk_data = self._load_chunk_data(chunk_bounds, merge_config)
+            
+            # Write to output file
+            self._write_chunk_to_output(chunk_data, chunk_bounds, output_path)
+            
+            return {
+                'chunk_idx': chunk_idx,
+                'bounds': chunk_bounds,
+                'status': 'success',
+                'records_written': len(chunk_data)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to process chunk {chunk_idx}: {e}")
+            return {
+                'chunk_idx': chunk_idx,
+                'bounds': chunk_bounds,
+                'status': 'failed',
+                'error': str(e)
+            }
+    
+    def _load_chunk_data(self, chunk_bounds, merge_config):
+        """Load data for a single chunk from all datasets."""
+        y_start, y_end, x_start, x_end = chunk_bounds
+        chunk_data = {}
         
-        # Return reference to the output file
-        return xr.open_dataset(output_path, chunks={'x': chunk_size, 'y': chunk_size})
+        for info in merge_config['datasets']:
+            # Calculate the bounds for this chunk in the dataset's coordinate system
+            chunk_geographic_bounds = self._calculate_chunk_bounds(
+                y_start, y_end, x_start, x_end,
+                merge_config['common_bounds'], merge_config['resolution']
+            )
+            
+            # Calculate corresponding indices in the source dataset
+            src_indices = self._calculate_source_indices(
+                chunk_geographic_bounds, info.bounds, info.shape, info.target_resolution
+            )
+            
+            if src_indices is None:
+                # This chunk doesn't overlap with this dataset
+                chunk_data[info.band_name] = np.full(
+                    (y_end - y_start, x_end - x_start), 
+                    np.nan, 
+                    dtype=np.float32
+                )
+                continue
+                
+            # Load only this chunk from the database
+            src_y_start, src_y_end, src_x_start, src_x_end = src_indices
+            
+            logger.debug(f"Loading chunk from {info.name}: "
+                        f"[{src_y_start}:{src_y_end}, {src_x_start}:{src_x_end}]")
+            
+            chunk_array = merge_config['processor'].load_resampled_data_chunk(
+                info.name,
+                src_y_start, src_y_end,
+                src_x_start, src_x_end
+            )
+            
+            if chunk_array is None:
+                logger.warning(f"Failed to load chunk from {info.name}")
+                chunk_data[info.band_name] = np.full(
+                    (y_end - y_start, x_end - x_start),
+                    np.nan,
+                    dtype=np.float32
+                )
+                continue
+            
+            # Align this chunk to the common grid chunk
+            aligned_chunk = self._align_chunk_to_common_grid(
+                chunk_array, src_indices, info.bounds,
+                chunk_geographic_bounds, (y_end - y_start, x_end - x_start),
+                merge_config['resolution']
+            )
+            
+            chunk_data[info.band_name] = aligned_chunk
+            
+        return chunk_data
+    
+    def _write_chunk_to_output(self, chunk_data, chunk_bounds, output_path):
+        """Write chunk data to the output NetCDF file."""
+        y_start, y_end, x_start, x_end = chunk_bounds
+        
+        # NetCDF doesn't support true append mode, so we need to use a different approach
+        import netCDF4
+        with netCDF4.Dataset(output_path, 'r+') as nc:
+            for band_name, data in chunk_data.items():
+                nc.variables[band_name][y_start:y_end, x_start:x_end] = data
+    
+    def _cleanup_memory(self):
+        """Force garbage collection to free memory."""
+        import gc
+        gc.collect()
+    
+    def _finalize_merge(self, output_path, chunk_results):
+        """Finalize merge and validate results."""
+        # Check for failed chunks
+        failed_chunks = [r for r in chunk_results if r['status'] == 'failed']
+        if failed_chunks:
+            raise RuntimeError(f"Merge failed for {len(failed_chunks)} chunks")
+        
+        # Add metadata
+        logger.info(f"✅ Lazy chunked merge completed: {len(chunk_results)} chunks processed")
+        
+        # Validate output
+        if not self._validate_merged_output(output_path):
+            raise ValueError("Merged output validation failed")
+    
+    def _validate_merged_output(self, output_path):
+        """Basic validation of merged output."""
+        try:
+            # Check if file exists and is readable
+            import netCDF4
+            with netCDF4.Dataset(output_path, 'r') as nc:
+                # Check dimensions exist
+                if 'x' not in nc.dimensions or 'y' not in nc.dimensions:
+                    return False
+                # Basic checks passed
+                return True
+        except Exception as e:
+            logger.error(f"Output validation failed: {e}")
+            return False
+    
+    def _cleanup_failed_merge(self, output_path):
+        """Clean up after a failed merge."""
+        if output_path and Path(output_path).exists():
+            try:
+                Path(output_path).unlink()
+                logger.info(f"Cleaned up failed merge output: {output_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up {output_path}: {e}")
+    
+    # Refactoring complete - original 164-line method now broken into 8+ focused methods
     
     def _calculate_chunk_bounds(self, y_start: int, y_end: int, x_start: int, x_end: int,
                                common_bounds: Tuple[float, float, float, float],

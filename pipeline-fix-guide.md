@@ -350,11 +350,12 @@ subprocess.Popen(command, env=env)
 ## Phase 2: Data Flow Fixes (Core Issues)
 
 ### Step 2.1: Create DB Data Reader
-**New File**: `src/processors/data_preparation/db_data_reader.py`
+**New File**: `src/database/data_reader.py`
 **Why**: Centralizes DB reading logic, needed by multiple fixes
+**Location Justification**: Placed in database/ layer as it's purely data retrieval, not processing
 
 ```python
-"""Database data reader for passthrough tables."""
+"""Database data reader for passthrough and resampled tables."""
 import numpy as np
 from typing import Optional, Tuple
 import logging
@@ -413,9 +414,178 @@ class DBDataReader:
                    f"valid_cells={np.sum(~np.isnan(data))}")
         
         return data
+    
+    def read_resampled_data(self, dataset_name: str,
+                          bounds: Optional[Tuple[float, float, float, float]] = None) -> np.ndarray:
+        """
+        Read data from resampled table.
+        
+        Args:
+            dataset_name: Name like 'terrestrial-richness' 
+            bounds: Optional (min_lon, min_lat, max_lon, max_lat)
+            
+        Returns:
+            2D numpy array with data
+        """
+        # Normalize name to table name
+        table_name = f"resampled_{dataset_name.replace('-', '_')}"
+        return self._read_from_table(table_name, bounds)
+    
+    def read_data_chunk(self, table_name: str, 
+                       row_range: Tuple[int, int],
+                       col_range: Tuple[int, int]) -> np.ndarray:
+        """
+        Read a spatial chunk from any data table.
+        
+        Args:
+            table_name: Full table name
+            row_range: (min_row, max_row) inclusive
+            col_range: (min_col, max_col) inclusive
+            
+        Returns:
+            2D numpy array with chunk data
+        """
+        with self.db.get_cursor() as cursor:
+            # Use parameterized query for safety
+            query = """
+                SELECT row_idx, col_idx, value
+                FROM %(table)s
+                WHERE row_idx >= %(min_row)s AND row_idx <= %(max_row)s
+                  AND col_idx >= %(min_col)s AND col_idx <= %(max_col)s
+                  AND value IS NOT NULL
+                ORDER BY row_idx, col_idx
+            """
+            
+            cursor.execute(query, {
+                'table': table_name,
+                'min_row': row_range[0],
+                'max_row': row_range[1],
+                'min_col': col_range[0],
+                'max_col': col_range[1]
+            })
+            
+            # Create chunk array
+            height = row_range[1] - row_range[0] + 1
+            width = col_range[1] - col_range[0] + 1
+            chunk = np.full((height, width), np.nan, dtype=np.float32)
+            
+            # Fill with data
+            for row in cursor:
+                r = row['row_idx'] - row_range[0]
+                c = row['col_idx'] - col_range[0]
+                chunk[r, c] = row['value']
+                
+        return chunk
+    
+    def _read_from_table(self, table_name: str,
+                        bounds: Optional[Tuple[float, float, float, float]] = None) -> np.ndarray:
+        """
+        Internal method to read from any table.
+        
+        Args:
+            table_name: Full table name
+            bounds: Optional geographic bounds
+            
+        Returns:
+            2D numpy array with data
+        """
+        with self.db.get_cursor() as cursor:
+            # Get dimensions
+            cursor.execute(f"""
+                SELECT MIN(row_idx), MAX(row_idx), 
+                       MIN(col_idx), MAX(col_idx)
+                FROM {table_name}
+            """)
+            min_row, max_row, min_col, max_col = cursor.fetchone()
+            
+            # Create empty array
+            height = max_row - min_row + 1
+            width = max_col - min_col + 1
+            data = np.full((height, width), np.nan, dtype=np.float32)
+            
+            # Fill with data
+            cursor.execute(f"""
+                SELECT row_idx, col_idx, value
+                FROM {table_name}
+                WHERE value IS NOT NULL
+            """)
+            
+            for row in cursor:
+                r = row['row_idx'] - min_row
+                c = row['col_idx'] - min_col
+                data[r, c] = row['value']
+                
+        logger.info(f"Loaded {table_name}: shape={data.shape}, "
+                   f"valid_cells={np.sum(~np.isnan(data))}")
+        
+        return data
 ```
 
-### Step 2.2: Fix Merge Stage Data Source
+### Step 2.2: Replace Fragmented DB Reading Functions
+**Files**: `src/processors/data_preparation/resampling_processor.py`
+**Why**: Consolidate DB reading logic, fix security issues, reduce duplication
+
+Replace the existing fragmented DB reading functions with calls to the centralized DBDataReader:
+
+```python
+# FIND load_resampled_data method (around line 1002)
+def load_resampled_data(self, info: ResampledDatasetInfo) -> Optional[np.ndarray]:
+    """Load data from database for resampled dataset."""
+    
+    # REPLACE the entire method body with:
+    if not info.data_table_name:
+        logger.error(f"No data table name for dataset {info.name}")
+        return None
+    
+    logger.info(f"Loading resampled data from DB table: {info.data_table_name}")
+    
+    try:
+        from src.database.data_reader import DBDataReader
+        reader = DBDataReader(self.db)
+        
+        # Extract dataset name from table name
+        dataset_name = info.data_table_name.replace('resampled_', '').replace('_', '-')
+        
+        return reader.read_resampled_data(dataset_name)
+        
+    except Exception as e:
+        logger.error(f"Failed to load resampled data: {e}")
+        return None
+
+# FIND load_resampled_data_chunk method (around line 944)
+def load_resampled_data_chunk(self, info: ResampledDatasetInfo,
+                            row_range: Tuple[int, int],
+                            col_range: Tuple[int, int]) -> Optional[np.ndarray]:
+    """Load a spatial chunk of resampled data from database."""
+    
+    # REPLACE the entire method body with:
+    if not info.data_table_name:
+        logger.error(f"No data table name for dataset {info.name}")
+        return None
+    
+    logger.debug(f"Loading chunk from {info.data_table_name}: rows {row_range}, cols {col_range}")
+    
+    try:
+        from src.database.data_reader import DBDataReader
+        reader = DBDataReader(self.db)
+        
+        return reader.read_data_chunk(info.data_table_name, row_range, col_range)
+        
+    except Exception as e:
+        logger.error(f"Failed to load data chunk: {e}")
+        return None
+```
+
+**Benefits**:
+- Single source of truth for DB reading logic
+- Consistent error handling
+- Easier to fix SQL injection vulnerabilities in one place
+- Reduced code duplication (~100 lines removed)
+- Better testability
+
+**Test**: Verify resampled data loading still works after replacement
+
+### Step 2.3: Fix Merge Stage Data Source
 **File**: `src/processors/data_preparation/resampling_processor.py`
 **Critical**: This fixes the core data corruption issue
 
@@ -428,7 +598,7 @@ def load_passthrough_data(self, info: ResampledDatasetInfo) -> Optional[np.ndarr
     # Check if we should load from DB instead of file
     if hasattr(info, 'data_table_name') and info.data_table_name:
         logger.info(f"Loading passthrough data from DB table: {info.data_table_name}")
-        from .db_data_reader import DBDataReader
+        from src.database.data_reader import DBDataReader
         reader = DBDataReader(self.db)
         
         # Extract dataset name from table name
@@ -444,7 +614,7 @@ def load_passthrough_data(self, info: ResampledDatasetInfo) -> Optional[np.ndarr
 
 **Critical Test**: After this change, merged data should match DB values exactly
 
-### Step 2.3: Fix Coordinate Alignment
+### Step 2.4: Fix Coordinate Alignment
 **File**: `src/pipelines/stages/merge_stage.py`
 **Why**: Fixes the 40-pixel offset bug
 
@@ -481,7 +651,7 @@ def _align_data_to_common_grid(self, array_data: np.ndarray,
     # ... rest of existing code ...
 ```
 
-### Step 2.4: Refactor Complex Method _merge_lazy_chunked
+### Step 2.5: Refactor Complex Method _merge_lazy_chunked
 **File**: `src/pipelines/stages/merge_stage.py`
 **Why**: Method is 164 lines long with multiple responsibilities
 **Issues Addressed**: Complex method length, maintainability

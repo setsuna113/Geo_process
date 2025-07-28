@@ -120,6 +120,85 @@ class StageSkipController:
                 return False, f"Source file {path} not found"
                 
         return True, "All source files exist"
+    
+    def _check_db_status(self, dataset_name: str) -> str:
+        """Check if dataset exists in DB and its status."""
+        try:
+            from src.database.schema import schema
+            
+            # Check passthrough table
+            table_name = f"passthrough_{dataset_name.replace('-', '_')}"
+            
+            with self.db.get_cursor() as cursor:
+                # Check if table exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables 
+                        WHERE table_name = %s
+                    )
+                """, (table_name,))
+                
+                if not cursor.fetchone()[0]:
+                    return "missing"
+                
+                # Check row count
+                cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+                count = cursor.fetchone()[0]
+                
+                if count == 0:
+                    return "empty"
+                
+                # Check metadata
+                datasets = schema.get_resampled_datasets({'name': dataset_name})
+                if not datasets:
+                    return "incomplete"  # Table exists but no metadata
+                    
+                return "complete"
+                
+        except Exception as e:
+            logger.error(f"Error checking DB status: {e}")
+            return "error"
+    
+    def can_skip_dataset_processing(self, dataset_name: str) -> Tuple[bool, str]:
+        """Check if individual dataset processing can be skipped based on DB status."""
+        db_status = self._check_db_status(dataset_name)
+        
+        if db_status == "complete":
+            return True, f"Dataset {dataset_name} already complete in DB"
+        elif db_status in ["error", "incomplete"]:
+            return False, f"DB status {db_status}, cleaning and reprocessing needed"
+        elif db_status == "empty":
+            return False, f"Dataset {dataset_name} table is empty"
+        elif db_status == "missing":
+            return False, f"Dataset {dataset_name} not found in DB"
+        else:
+            return False, f"Unknown DB status: {db_status}"
+    
+    def cleanup_partial_data(self, dataset_name: str):
+        """Clean up partial data for a dataset."""
+        try:
+            from src.database.schema import schema
+            
+            # Remove from resampled_datasets table
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get table name before deletion
+                    cur.execute("SELECT data_table_name FROM resampled_datasets WHERE name = %s", (dataset_name,))
+                    result = cur.fetchone()
+                    table_name = result[0] if result else None
+                    
+                    # Delete metadata
+                    cur.execute("DELETE FROM resampled_datasets WHERE name = %s", (dataset_name,))
+                    
+                    # Drop data table if it exists
+                    if table_name:
+                        cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+                        
+                    conn.commit()
+                    logger.info(f"Cleaned up partial data for {dataset_name}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to clean up partial data for {dataset_name}: {e}")
         
     def log_skip_decision(self, stage_name: str, can_skip: bool, reason: str):
         """Log the skip decision for audit trail."""

@@ -847,7 +847,20 @@ class ResamplingProcessor(BaseProcessor):
         if not info.metadata.get('passthrough', False):
             raise ValueError(f"Dataset {info.name} is not a passthrough dataset")
         
-        logger.info(f"Loading passthrough data from: {info.source_path}")
+        # Check if we should load from DB instead of file
+        if hasattr(info, 'data_table_name') and info.data_table_name:
+            logger.info(f"Loading passthrough data from DB table: {info.data_table_name}")
+            from src.database.data_reader import DBDataReader
+            reader = DBDataReader(self.db)
+            
+            # Extract dataset name from table name
+            # passthrough_terrestrial_richness -> terrestrial-richness
+            dataset_name = info.data_table_name.replace('passthrough_', '').replace('_', '-')
+            
+            return reader.read_passthrough_data(dataset_name)
+        
+        # KEEP existing file loading as fallback
+        logger.info(f"Loading passthrough data from file: {info.source_path}")
         
         try:
             # Load data with timeout protection 
@@ -959,8 +972,9 @@ class ResamplingProcessor(BaseProcessor):
         """
         try:
             from src.database.schema import schema
+            from src.database.data_reader import DBDataReader
             
-            # Get dataset info
+            # Get dataset info to determine table name
             datasets = schema.get_resampled_datasets({'name': dataset_name})
             if not datasets:
                 logger.error(f"Dataset {dataset_name} not found")
@@ -969,32 +983,16 @@ class ResamplingProcessor(BaseProcessor):
             dataset_info = datasets[0]
             table_name = dataset_info['data_table_name']
             
-            # Create chunk array
-            chunk_shape = (row_end - row_start, col_end - col_start)
-            chunk_data = np.full(chunk_shape, np.nan, dtype=np.float32)
+            # Use centralized reader for chunk loading
+            reader = DBDataReader(self.db)
             
-            # Load only the chunk data from table
-            with self.db.get_connection() as conn:
-                cur = conn.cursor()
-                cur.execute(f"""
-                    SELECT row_idx - %s as rel_row, col_idx - %s as rel_col, value 
-                    FROM {table_name} 
-                    WHERE row_idx >= %s AND row_idx < %s
-                    AND col_idx >= %s AND col_idx < %s
-                    ORDER BY row_idx, col_idx
-                """, (row_start, col_start, row_start, row_end, col_start, col_end))
-                
-                rows = cur.fetchall()
-                
-                # Fill chunk array
-                for row in rows:
-                    rel_row, rel_col, value = row
-                    if 0 <= rel_row < chunk_shape[0] and 0 <= rel_col < chunk_shape[1]:
-                        chunk_data[rel_row, rel_col] = value
-                
-                logger.debug(f"Loaded chunk [{row_start}:{row_end}, {col_start}:{col_end}] for {dataset_name}: {len(rows)} values")
-                return chunk_data
-                
+            # Convert to inclusive ranges for the reader
+            row_range = (row_start, row_end - 1)
+            col_range = (col_start, col_end - 1)
+            
+            logger.debug(f"Loading chunk [{row_start}:{row_end}, {col_start}:{col_end}] for {dataset_name}")
+            return reader.read_data_chunk(table_name, row_range, col_range)
+            
         except Exception as e:
             logger.error(f"Failed to load chunk for {dataset_name}: {e}")
             return None
@@ -1010,44 +1008,12 @@ class ResamplingProcessor(BaseProcessor):
             Numpy array or None if failed
         """
         try:
-            from src.database.schema import schema
+            from src.database.data_reader import DBDataReader
+            reader = DBDataReader(self.db)
             
-            # Get dataset info
-            datasets = schema.get_resampled_datasets({'name': dataset_name})
-            if not datasets:
-                logger.error(f"Dataset {dataset_name} not found")
-                return None
+            logger.info(f"Loading resampled data from DB: {dataset_name}")
+            return reader.read_resampled_data(dataset_name)
             
-            dataset_info = datasets[0]
-            
-            # Load data from database table (works for both passthrough and resampled)
-            table_name = dataset_info['data_table_name']
-            shape = (dataset_info['shape_height'], dataset_info['shape_width'])
-            
-            # Load data from table
-            with self.db.get_connection() as conn:
-                cur = conn.cursor()
-                cur.execute(f"""
-                    SELECT row_idx, col_idx, value 
-                    FROM {table_name} 
-                    ORDER BY row_idx, col_idx
-                """)
-                
-                rows = cur.fetchall()
-                
-                if not rows:
-                    logger.warning(f"No data found in table {table_name}")
-                    return np.full(shape, np.nan, dtype=np.float32)
-                
-                # Create array
-                array_data = np.full(shape, np.nan, dtype=np.float32)
-                
-                for row in rows:
-                    array_data[row[0], row[1]] = row[2]
-                
-                logger.info(f"✅ Loaded resampled data: {dataset_name}, shape: {shape}")
-                return array_data
-                
         except Exception as e:
             logger.error(f"Failed to load resampled data for {dataset_name}: {e}")
             return None
