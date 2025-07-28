@@ -33,12 +33,15 @@ class PipelineCLI:
         self.process_controller = ProcessController()
         self.progress_manager = get_progress_manager()
         self.checkpoint_manager = get_checkpoint_manager()
+        
+        # Clean up stale processes on startup
+        self.process_controller.registry.cleanup_stale_processes()
     
     def start(self, args):
         """Start a pipeline process."""
         
         # Get values from args with defaults
-        experiment_name = args.experiment_name or "production_test"
+        experiment_name = args.experiment_name or args.name or "production_test"
         analysis_method = args.analysis_method or "som"
         
         # Build command - run the pipeline orchestrator directly
@@ -46,70 +49,74 @@ class PipelineCLI:
             sys.executable,
             "-c",
             f"""
-    import sys
-    import os
-    from pathlib import Path
-    sys.path.insert(0, str(Path.cwd()))
+import sys
+import os
+from pathlib import Path
+sys.path.insert(0, str(Path.cwd()))
 
-    # Preserve environment variables
-    if os.getenv('FORCE_TEST_MODE'):
-        os.environ['FORCE_TEST_MODE'] = os.getenv('FORCE_TEST_MODE')
-    if os.getenv('DB_NAME'):
-        os.environ['DB_NAME'] = os.getenv('DB_NAME')
+# Preserve environment variables
+if os.getenv('FORCE_TEST_MODE'):
+    os.environ['FORCE_TEST_MODE'] = os.getenv('FORCE_TEST_MODE')
+if os.getenv('DB_NAME'):
+    os.environ['DB_NAME'] = os.getenv('DB_NAME')
 
-    from src.pipelines.orchestrator import PipelineOrchestrator
-    from src.pipelines.stages.load_stage import DataLoadStage
-    from src.pipelines.stages.resample_stage import ResampleStage
-    from src.pipelines.stages.merge_stage import MergeStage
-    from src.pipelines.stages.export_stage import ExportStage
-    from src.pipelines.stages.analysis_stage import AnalysisStage
-    from src.config.config import Config
-    from src.database.connection import DatabaseManager
+from src.pipelines.orchestrator import PipelineOrchestrator
+from src.pipelines.stages.load_stage import DataLoadStage
+from src.pipelines.stages.resample_stage import ResampleStage
+from src.pipelines.stages.merge_stage import MergeStage
+from src.pipelines.stages.export_stage import ExportStage
+from src.pipelines.stages.analysis_stage import AnalysisStage
+from src.config.config import Config
+from src.database.connection import DatabaseManager
 
-    config = Config()
-    db = DatabaseManager()
+config = Config()
+db = DatabaseManager()
 
-    # Create pipeline orchestrator
-    orchestrator = PipelineOrchestrator(config, db)
+# Initialize signal handler first
+from src.core.signal_handler import get_signal_handler
+signal_handler = get_signal_handler()
 
-    # Configure pipeline stages
-    analysis_method = '{analysis_method}'
-    stages = [
-        DataLoadStage,
-        ResampleStage, 
-        MergeStage,
-        ExportStage,
-        lambda: AnalysisStage(analysis_method)  # Use specified analysis method
-    ]
+# Create pipeline orchestrator
+orchestrator = PipelineOrchestrator(config, db)
 
-    # Instantiate stages (handle lambda for AnalysisStage)
-    stage_instances = []
-    for stage_class in stages:
-        if callable(stage_class) and not isinstance(stage_class, type):
-            # Handle lambda case
-            stage_instances.append(stage_class())
-        else:
-            # Handle normal class case
-            stage_instances.append(stage_class())
+# Configure pipeline stages
+analysis_method = '{analysis_method}'
+stages = [
+    DataLoadStage,
+    ResampleStage, 
+    MergeStage,
+    ExportStage,
+    lambda: AnalysisStage(analysis_method)  # Use specified analysis method
+]
 
-    for stage in stage_instances:
-        orchestrator.register_stage(stage)
+# Instantiate stages (handle lambda for AnalysisStage)
+stage_instances = []
+for stage_class in stages:
+    if callable(stage_class) and not isinstance(stage_class, type):
+        # Handle lambda case
+        stage_instances.append(stage_class())
+    else:
+        # Handle normal class case
+        stage_instances.append(stage_class())
 
-    # Use the experiment name passed from command line
-    experiment_name = '{experiment_name}'
-    description = 'Production pipeline with skip-resampling functionality'
+for stage in stage_instances:
+    orchestrator.register_stage(stage)
 
-    print(f'🚀 Starting pipeline: {{experiment_name}}')
+# Use the experiment name passed from command line
+experiment_name = '{experiment_name}'
+description = 'Production pipeline with skip-resampling functionality'
 
-    # Run complete pipeline
-    results = orchestrator.run_pipeline(
-        experiment_name=experiment_name,
-        description=description,
-        resume_from_checkpoint=True
-    )
+print(f'🚀 Starting pipeline: {{experiment_name}}')
 
-    print('✅ Pipeline completed successfully!')
-    """
+# Run complete pipeline
+results = orchestrator.run_pipeline(
+    experiment_name=experiment_name,
+    description=description,
+    resume_from_checkpoint=True
+)
+
+print('✅ Pipeline completed successfully!')
+"""
         ]
             
         # Note: Arguments are already embedded in the Python code string above

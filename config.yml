@@ -42,13 +42,13 @@ resampling:
 datasets:
   target_datasets:
     - name: "plants-richness"
-      path: "/maps/mwd24/richness/daru-plants-richness.tif"  # Full cluster path
+      path: "/maps/mwd24/richness/daru-plants-richness.tif"  # Full production data
       data_type: "richness_data"
       band_name: "plants_richness"
       enabled: true
       
     - name: "terrestrial-richness" 
-      path: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"  # Full cluster path
+      path: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"  # Full production data
       data_type: "richness_data"
       band_name: "terrestrial_richness"
       enabled: true
@@ -83,24 +83,32 @@ datasets:
 # HIGH-MEMORY PROCESSING CONFIGURATION (1TB RAM)
 # =============================================================================
 processing:
+  # Memory and chunking settings
+  memory_limit_gb: 800             # Adjust based on your system
+  chunk_size: 1000                 # Grid cells per chunk
+  enable_chunking: true
+  checkpoint_interval: 10          # Checkpoint every N chunks
+  merge_chunk_size: 500            # Size of chunks for lazy merge
+  lazy_merge_threshold_mb: 100     # Use lazy merge for datasets larger than this (set low for testing)
+  
   subsampling:
     enabled: false  # DISABLED for full dataset quality on high-memory system
     max_samples: 500000000  # Higher than your 224M samples
-    memory_limit_gb: 800    # Use most of your 1TB RAM
+    memory_limit_gb: 750    # Reduced to fit available memory
     strategy: 'random'
     min_samples_per_class: 1000
     spatial_block_size: 200
   
   # Optimized for 256-core system
   max_workers: 200      # Conservative for shared cluster
-  batch_size: 50000    # Larger batches for efficiency
-  chunk_size: 100000   # Larger chunks for better throughput
+  batch_size: 1000     # Smaller for testing
+  chunk_size: 2000     # Smaller for testing
 
 # =============================================================================
 # RASTER PROCESSING FOR HIGH-MEMORY SYSTEM
 # =============================================================================
 raster_processing:
-  memory_limit_mb: 800000  # 800GB in MB
+  memory_limit_mb: 750000  # 750GB in MB
   parallel_workers: 200     # Use multiple cores
   tile_size: 2000         # Larger tiles for efficiency
   cache_ttl_days: 30
@@ -195,6 +203,9 @@ output_paths:
 # PROCESSING BOUNDS (GEOGRAPHIC REGIONS)
 # =============================================================================
 processing_bounds:
+  # TINY TEST REGION FOR DEBUGGING
+  tiny_test: [-1, -1, 1, 1]  # 2x2 degree box for quick testing
+  test_small: [-10, -10, 10, 10]  # 20x20 degree box for quick testing
   global: [-180, -90, 180, 90]
   europe: [-25.0, 35.0, 50.0, 75.0]
   north_america: [-170.0, 15.0, -50.0, 75.0]
@@ -266,3 +277,27 @@ testing:
   cleanup_after_tests: true
   small_dataset_size: 1000
   integration_test_timeout: 300
+
+# =============================================================================
+# PIPELINE CONTROL CONFIGURATION
+# =============================================================================
+pipeline:
+  # Master switch for stage skipping - USE WITH CAUTION!
+  allow_skip_stages: true  # Set to true only when you're sure data is fresh
+  
+  # Stage-specific skip settings
+  stages:
+    data_load:
+      skip_if_exists: true
+    resample:
+      skip_if_exists: true  # Set to true to use existing DB data
+      
+  # Data validation for skip decisions
+  data_validation:
+    max_age_hours: 24  # Consider data stale after this
+    check_source_timestamps: true  # Verify source files haven't changed
+    
+  # Other pipeline settings
+  cleanup_checkpoints_on_success: true
+  checkpoint_interval_stages: 1
+  lazy_merge_threshold_mb: 500

@@ -34,7 +34,7 @@ class SpatialDataProcessor(BaseProcessor):
         )
         
         self.config = config
-        self.array_converter = ArrayConverter(config)
+        self.array_converter = ArrayConverter()
         self.memory_processor = MemoryAwareProcessor(
             memory_limit_gb=config.get('processing', {}).get('subsampling', {}).get('memory_limit_gb', 8.0)
         )

@@ -157,14 +157,17 @@ class SignalHandler:
         self._shutdown_in_progress = True
         logger.info(f"Received shutdown signal: {sig.name if hasattr(sig, 'name') else sig}")
         
-        # Notify all registered handlers
-        with self._handler_lock:
+        # Notify all registered handlers (avoid locks in signal context)
+        try:
             for handler_list in self._handlers.values():
                 for handler in handler_list:
                     try:
                         handler(sig)
                     except Exception as e:
-                        logger.error(f"Error in signal handler: {e}")
+                        print(f"Error in signal handler: {e}")
+        except Exception:
+            # Ignore errors to prevent crashes in signal context
+            pass
         
         # Call shutdown callbacks
         for callback in self._shutdown_callbacks:
@@ -175,9 +178,10 @@ class SignalHandler:
         
         # Restore original handler and re-raise if needed
         if sig in self._original_handlers:
-            signal.signal(sig, self._original_handlers[sig])
-            if frame is not None:
-                self._original_handlers[sig](sig, frame)
+            original_handler = self._original_handlers[sig]
+            signal.signal(sig, original_handler)
+            if frame is not None and callable(original_handler):
+                original_handler(sig, frame)
     
     def _handle_control_signal(self, sig) -> None:
         """Handle control signals (SIGUSR1/SIGUSR2)."""
@@ -186,46 +190,51 @@ class SignalHandler:
         elif sig == signal.SIGUSR2:
             self._handle_resume_signal()
         
-        # Also notify registered handlers
-        with self._handler_lock:
+        # Note: Avoid threading locks in signal context
+        # Notify registered handlers without locks (signal handlers should be simple)
+        try:
             for handler_list in self._handlers.values():
                 for handler in handler_list:
                     try:
                         handler(sig)
                     except Exception as e:
-                        logger.error(f"Error in signal handler: {e}")
+                        # Can't use logger in signal context safely
+                        print(f"Error in signal handler: {e}")
+        except Exception:
+            # Ignore errors to prevent crashes in signal context
+            pass
     
     def _handle_pause_signal(self) -> None:
         """Handle pause signal."""
         if self._pause_requested:
-            logger.info("Already paused")
+            print("Already paused")  # Use print instead of logger in signal context
             return
         
         self._pause_requested = True
-        logger.info("Processing paused")
+        print("Processing paused")  # Use print instead of logger in signal context
         
         # Call pause callbacks
         for callback in self._pause_callbacks:
             try:
                 callback()
             except Exception as e:
-                logger.error(f"Error in pause callback: {e}")
+                print(f"Error in pause callback: {e}")  # Use print instead of logger
     
     def _handle_resume_signal(self) -> None:
         """Handle resume signal."""
         if not self._pause_requested:
-            logger.info("Not paused")
+            print("Not paused")  # Use print instead of logger in signal context
             return
         
         self._pause_requested = False
-        logger.info("Processing resumed")
+        print("Processing resumed")  # Use print instead of logger in signal context
         
         # Call resume callbacks
         for callback in self._resume_callbacks:
             try:
                 callback()
             except Exception as e:
-                logger.error(f"Error in resume callback: {e}")
+                print(f"Error in resume callback: {e}")  # Use print instead of logger
     
     def cleanup(self) -> None:
         """Clean up and restore original signal handlers."""

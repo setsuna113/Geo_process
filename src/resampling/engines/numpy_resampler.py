@@ -419,7 +419,13 @@ class NumpyResampler(BaseResampler):
             mask = reshaped != self.config.nodata_value
             sums = np.sum(np.where(mask, reshaped, 0), axis=(1, 3))
             counts = np.sum(mask, axis=(1, 3))
-            result = np.divide(sums, counts, where=counts > 0, out=np.full((tgt_height, tgt_width), np.nan))
+            # Use appropriate fill value based on data type
+            if np.issubdtype(source.dtype, np.integer):
+                fill_value = self.config.nodata_value if self.config.nodata_value is not None else 0
+                out_array = np.full((tgt_height, tgt_width), fill_value, dtype=source.dtype)
+            else:
+                out_array = np.full((tgt_height, tgt_width), np.nan, dtype=np.float64)
+            result = np.divide(sums, counts, where=counts > 0, out=out_array)
         else:
             result = np.mean(reshaped, axis=(1, 3))
         

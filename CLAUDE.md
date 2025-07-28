@@ -145,4 +145,41 @@ src/
 - Gradual migration with compatibility layers
 - Feature flags for safe rollout
 
-This architecture supports large-scale biodiversity analysis workflows with robust data management, efficient spatial processing, and comprehensive analysis capabilities. The ongoing refactoring (system_update.md) will eliminate technical debt while maintaining system stability.
+### Daemon Process Management
+
+The system uses a persistent process registry for tracking daemon processes across invocations:
+
+- **Registry location**: `~/.biodiversity/pid/registry/`
+- **Process state**: Each daemon has a JSON file with full metadata (PID, status, logs, etc.)
+- **Automatic cleanup**: Stale processes cleaned up on startup
+- **File locking**: Atomic operations prevent race conditions
+- **Cross-invocation tracking**: Different process manager invocations can manage the same daemons
+
+#### Common Daemon Commands:
+```bash
+# Start daemon with unique experiment name
+./run_pipeline.sh --daemon --process-name "production_run"
+python scripts/process_manager.py start --name "my_daemon" --daemon --experiment-name "unique_name"
+
+# Check daemon status (works from any terminal)
+python scripts/process_manager.py status production_run
+python scripts/process_manager.py status  # List all daemons
+
+# View daemon logs in real-time
+python scripts/process_manager.py logs production_run -f
+python scripts/process_manager.py logs production_run --lines 100
+
+# Stop daemon gracefully
+python scripts/process_manager.py stop production_run
+
+# Monitor system resources
+python scripts/process_manager.py resources
+```
+
+#### Critical Implementation Notes:
+- **ALWAYS** use unique experiment names to avoid database constraint violations
+- **NEVER** assume daemons persist after system reboot (they don't)
+- **ALWAYS** check daemon status before starting new ones with same name
+- Registry handles PID file cleanup automatically
+
+This architecture supports large-scale biodiversity analysis workflows with robust data management, efficient spatial processing, comprehensive analysis capabilities, and reliable daemon process management. The ongoing refactoring (system_update.md) will eliminate technical debt while maintaining system stability.

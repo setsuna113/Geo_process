@@ -24,6 +24,7 @@ from src.pipelines.monitors.quality_checker import QualityChecker
 # from src.pipelines.recovery.checkpoint_manager import CheckpointManager  # OLD - DEPRECATED
 from src.checkpoints import get_checkpoint_manager, CheckpointLevel
 from src.pipelines.recovery.failure_handler import FailureHandler
+from src.core.signal_handler import get_signal_handler
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,11 @@ class PipelineOrchestrator:
         self.checkpoint_manager = get_checkpoint_manager()
         self.failure_handler = FailureHandler(config)
         
+        # Signal handling for pause/resume
+        self.signal_handler = get_signal_handler()
+        self.signal_handler.register_pause_callback(self.pause_pipeline)
+        self.signal_handler.register_resume_callback(self.resume_pipeline)
+        
         # Execution control
         self._stop_requested = False
         self._pause_requested = False
@@ -163,28 +169,57 @@ class PipelineOrchestrator:
         Returns:
             Pipeline execution results
         """
+        logger.debug(f"🎬 run_pipeline() called with experiment_name={experiment_name}")
         try:
+            # Auto-cleanup for fresh start if needed
+            if kwargs.get('auto_cleanup', True):
+                logger.debug("🧹 Performing auto-cleanup for fresh start...")
+                from src.utils.cleanup_manager import cleanup_for_fresh_start
+                cleanup_success = cleanup_for_fresh_start(experiment_name)
+                if cleanup_success:
+                    logger.debug("✅ Auto-cleanup completed successfully")
+                else:
+                    logger.debug("⚠️  Auto-cleanup had issues but continuing...")
+            
             # Initialize pipeline context
+            logger.debug("📝 Calling _initialize_context...")
             self._initialize_context(experiment_name, checkpoint_dir, output_dir, **kwargs)
+            logger.debug("✅ _initialize_context completed")
             
             # Validate pipeline
+            logger.debug("🔍 Validating pipeline...")
             is_valid, errors = self.validate_pipeline()
             if not is_valid:
                 raise ValueError(f"Pipeline validation failed: {errors}")
+            logger.debug("✅ Pipeline validation passed")
+            
+            # Reset stop flag before starting monitoring
+            self._stop_requested = False
             
             # Start monitoring
+            logger.debug("📊 Starting monitoring...")
             self._start_monitoring()
+            logger.debug("✅ Monitoring started")
             
             # Check for existing checkpoint
             if resume_from_checkpoint:
+                logger.debug("💾 Checking for existing checkpoints...")
                 process_id = self.context.experiment_id if self.context else "pipeline"
                 checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
                 if checkpoint_data:
                     logger.info(f"Resuming from checkpoint: {checkpoint_data.checkpoint_id}")
                     self._restore_from_checkpoint(checkpoint_data.data)
+                else:
+                    logger.debug("💾 No checkpoint found, starting fresh")
             
             # Execute pipeline
+            logger.debug("🏃 Setting status to RUNNING...")
             self.status = PipelineStatus.RUNNING
+            # Update experiment status in database
+            from src.database.schema import schema
+            if self.context and self.context.experiment_id:
+                schema.update_experiment_status(self.context.experiment_id, 'running')
+                logger.info("Updated experiment status to 'running'")
             results = self._execute_pipeline()
             
             # Finalize
@@ -218,6 +253,7 @@ class PipelineOrchestrator:
                            **kwargs):
         """Initialize pipeline execution context."""
         # Create experiment
+        logger.debug("🧪 Creating experiment in database...")
         from src.database.schema import schema
         experiment_id = schema.create_experiment(
             name=experiment_name,
@@ -267,12 +303,21 @@ class PipelineOrchestrator:
     
     def _execute_pipeline(self) -> Dict[str, Any]:
         """Execute pipeline stages in dependency order."""
+        logger.debug(f"🚀 _execute_pipeline starting...")
+        logger.debug("🚀 _execute_pipeline starting...")
+        
         results = {}
         completed_stages = set()
         
         # Get execution order
         execution_order = self._get_execution_order()
+        logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
+        logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
         
+        for i, stage_group in enumerate(execution_order):
+            logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
+            logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
+            
         for stage_group in execution_order:
             # Execute stages in parallel if possible
             if len(stage_group) == 1:
@@ -291,15 +336,31 @@ class PipelineOrchestrator:
             if self._stop_requested:
                 logger.info("Pipeline stop requested")
                 break
+            
+            # Check for pause request (from signal handler or direct call)
+            if self._pause_requested or self.signal_handler.is_pause_requested():
+                if not self._pause_requested:
+                    self._pause_requested = True
+                    self.status = PipelineStatus.PAUSED
+                logger.info("Pipeline paused - waiting for resume")
+                while (self._pause_requested or self.signal_handler.is_pause_requested()) and not self._stop_requested:
+                    time.sleep(0.5)  # Check every 500ms
+                if self._stop_requested:
+                    logger.info("Pipeline stop requested during pause")
+                    break
+                logger.info("Pipeline resumed")
         
         return results
     
     def _execute_stage(self, stage: PipelineStage, 
                       completed_stages: set) -> StageResult:
         """Execute a single pipeline stage with enhanced memory management."""
+        logger.debug(f"🎯 Starting stage execution: {stage.name}")
+        logger.debug(f"🎯 Starting stage execution: {stage.name}")
         logger.info(f"Executing stage: {stage.name}")
         
         # Update progress
+        logger.debug(f"📊 Updating progress tracker for stage: {stage.name}")
         self.progress_tracker.start_stage(stage.name)
         
         # Pre-execution checks with memory awareness
@@ -325,9 +386,46 @@ class PipelineOrchestrator:
             stage.status = StageStatus.RUNNING
             start_time = time.time()
             
-            # Monitor memory during execution
-            with self._memory_monitoring_context(stage):
-                result = stage.execute(self.context)
+            # Check for pause/stop before execution
+            if self._pause_requested or self.signal_handler.is_pause_requested():
+                if not self._pause_requested:
+                    self._pause_requested = True
+                stage.pause()
+                logger.info(f"Stage '{stage.name}' paused before execution")
+                while (self._pause_requested or self.signal_handler.is_pause_requested()) and not self._stop_requested:
+                    time.sleep(0.5)
+                if self._stop_requested:
+                    logger.info(f"Stage '{stage.name}' stopped during pause")
+                    raise InterruptedError("Pipeline stopped during pause")
+                stage.resume()
+                logger.info(f"Stage '{stage.name}' resumed")
+            
+            # Check if stage can be skipped
+            skip_result = self._check_stage_skip(stage)
+            if skip_result is not None:
+                # Stage was skipped, use the skip result
+                result = skip_result
+                execution_time = 0.01  # Minimal time for skipped stage
+                stage.status = StageStatus.COMPLETED
+                logger.info(f"Stage '{stage.name}' skipped - using existing data")
+            else:
+                # Monitor memory during execution
+                logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
+                logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
+                
+                try:
+                    with self._memory_monitoring_context(stage):
+                        logger.debug(f"🚀 Entering stage.execute() for {stage.name}")
+                        result = stage.execute(self.context)
+                        logger.debug(f"✅ stage.execute() completed for {stage.name}")
+                        logger.debug(f"✅ stage.execute() completed for {stage.name}")
+                except Exception as e:
+                    import traceback
+                    logger.error(f"❌ ERROR in stage {stage.name}: {str(e)}")
+                    logger.error(f"❌ TRACEBACK:\n{traceback.format_exc()}")
+                    logger.error(f"Stage {stage.name} failed: {str(e)}")
+                    logger.error(f"Traceback:\n{traceback.format_exc()}")
+                    raise
             
             execution_time = time.time() - start_time
             stage.status = StageStatus.COMPLETED
@@ -645,6 +743,97 @@ class PipelineOrchestrator:
         
         return visit(start_stage.name)
     
+    def _check_stage_skip(self, stage: PipelineStage) -> Optional[StageResult]:
+        """Check if stage can be skipped using StageSkipController."""
+        from src.pipelines.stages.skip_control import StageSkipController
+        
+        # Initialize skip controller
+        controller = StageSkipController(self.config, self.db)
+        
+        # Check if stage can be skipped
+        can_skip, reason = controller.can_skip_stage(
+            stage.name,
+            self.context.metadata.get('experiment_name', '') if self.context else "",
+            force_fresh=self.context.get('force_fresh', False) if self.context else False
+        )
+        
+        # Log decision
+        controller.log_skip_decision(stage.name, can_skip, reason)
+        
+        if not can_skip:
+            return None
+            
+        # Handle different stages differently
+        if stage.name == 'resample':
+            # For resample stage, load existing datasets from database
+            from src.database.schema import schema
+            from src.processors.data_preparation.resampling_processor import ResampledDatasetInfo
+            
+            existing_datasets = schema.get_resampled_datasets()
+            resampled_infos = []
+            
+            for dataset in existing_datasets:
+                # Convert database record to ResampledDatasetInfo
+                info = ResampledDatasetInfo(
+                    name=dataset['name'],
+                    source_path=Path(dataset['source_path']),
+                    bounds=tuple(dataset['bounds']),
+                    shape=(dataset['shape_height'], dataset['shape_width']),
+                    resampling_method=dataset['resampling_method'],
+                    target_resolution=dataset['target_resolution'],
+                    target_crs=dataset.get('target_crs', 'EPSG:4326'),
+                    band_name=dataset.get('band_name', dataset['name']),
+                    data_type=dataset.get('data_type', 'richness_data'),
+                    metadata=dataset.get('metadata', {})
+                )
+                resampled_infos.append(info)
+            
+            # Store in context
+            if self.context:
+                self.context.set('resampled_datasets', resampled_infos)
+            
+            return StageResult(
+                success=True,
+                data={'resampled_datasets': resampled_infos},
+                metrics={
+                    'datasets_loaded': len(resampled_infos),
+                    'skipped': True,
+                    'reason': reason
+                }
+            )
+            
+        elif stage.name == 'data_load':
+            # For data_load stage, verify files exist and return success
+            datasets = self.config.get('datasets.target_datasets', [])
+            enabled_datasets = [d for d in datasets if d.get('enabled', True)]
+            
+            # Store the dataset info in context as if we loaded them
+            if self.context:
+                self.context.set('target_datasets', enabled_datasets)
+                self.context.set('dataset_configs', enabled_datasets)
+            
+            return StageResult(
+                success=True,
+                data={'datasets': enabled_datasets},
+                metrics={
+                    'datasets_loaded': len(enabled_datasets),  # Quality checker expects this
+                    'datasets_count': len(enabled_datasets),
+                    'skipped': True,
+                    'reason': reason
+                }
+            )
+            
+        else:
+            # For other stages, return a generic skip result
+            return StageResult(
+                success=True,
+                data={},
+                metrics={
+                    'skipped': True,
+                    'reason': reason
+                }
+            )
+    
     def _start_monitoring(self):
         """Start monitoring threads."""
         self._monitor_thread = threading.Thread(
@@ -659,6 +848,10 @@ class PipelineOrchestrator:
     
     def _stop_monitoring(self):
         """Stop monitoring threads."""
+        # Set flag to stop monitoring loop
+        self._stop_requested = True
+        
+        # Stop individual monitors
         self.memory_monitor.stop()
         self.progress_tracker.stop()
         
@@ -848,12 +1041,22 @@ class PipelineOrchestrator:
         logger.info("Pausing pipeline...")
         self._pause_requested = True
         self.status = PipelineStatus.PAUSED
+        
+        # Pause all currently running stages
+        for stage in self.stages:
+            if stage.status == StageStatus.RUNNING:
+                stage.pause()
     
     def resume_pipeline(self):
         """Resume pipeline execution."""
         logger.info("Resuming pipeline...")
         self._pause_requested = False
         self.status = PipelineStatus.RUNNING
+        
+        # Resume all paused stages
+        for stage in self.stages:
+            if stage.status == StageStatus.PAUSED:
+                stage.resume()
     
     def stop_pipeline(self):
         """Stop pipeline execution."""

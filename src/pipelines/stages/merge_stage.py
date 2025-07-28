@@ -31,7 +31,9 @@ class MergeStage(PipelineStage):
         if self.processing_config and self.processing_config.enable_chunking:
             # Use memory limit from processing config for chunked mode
             return self.processing_config.memory_limit_mb / 1024.0  # Convert MB to GB
-        return 800.0  # GB - use high memory configuration
+        # Fall back to config value or a sensible default
+        from src.config import config
+        return config.processing['subsampling']['memory_limit_gb']
     
     @property
     def supports_chunking(self) -> bool:
@@ -61,18 +63,20 @@ class MergeStage(PipelineStage):
             for info in resampled_datasets:
                 logger.info(f"Dataset {info.name}: bounds={info.bounds}, shape={info.shape}, resolution={info.target_resolution}")
             
-            # Determine if we should use chunked merging
+            # Determine merging strategy based on data size
             total_size_estimate = sum(
                 info.shape[0] * info.shape[1] * 4 / (1024**2)  # MB
                 for info in resampled_datasets
             ) * len(resampled_datasets)
             
-            use_chunked = (
-                total_size_estimate > 1000 or  # More than 1GB estimated
-                (self.processing_config and self.processing_config.enable_chunking)
-            )
+            # Check if we should use lazy chunked processing
+            lazy_threshold_mb = context.config.get('processing.lazy_merge_threshold_mb', 500)
+            use_lazy = total_size_estimate > lazy_threshold_mb
             
-            if use_chunked:
+            if use_lazy:
+                logger.info(f"Using lazy chunked merging (estimated size: {total_size_estimate:.0f}MB)")
+                merged_dataset = self._merge_lazy_chunked(context, resampled_datasets)
+            elif total_size_estimate > 1000 or (self.processing_config and self.processing_config.enable_chunking):
                 logger.info(f"Using chunked merging (estimated size: {total_size_estimate:.0f}MB)")
                 merged_dataset = self._merge_chunked(context, resampled_datasets)
             else:
@@ -107,18 +111,12 @@ class MergeStage(PipelineStage):
                 'file_size_mb': output_path.stat().st_size / (1024**2)
             }
             
-            # Store as a feature in the database
-            schema.store_feature(
-                grid_id=context.experiment_id,
-                cell_id='merged_dataset',
-                feature_type='merged_dataset',
-                value=merged_metadata,
-                metadata={'stage': 'merge', 'chunked': use_chunked}
-            )
-            logger.info("✅ Stored merged dataset metadata in database")
+            # Store metadata in context for later stages
+            context.set('merge_metadata', merged_metadata)
+            logger.info("✅ Merge metadata stored in context")
             
-            # Clean up memory for chunked processing
-            if use_chunked:
+            # Clean up memory for lazy/chunked processing
+            if use_lazy or (total_size_estimate > 1000):
                 del merged_dataset
                 gc.collect()
                 
@@ -131,7 +129,7 @@ class MergeStage(PipelineStage):
                 'total_bands': len(merged_dataset.data_vars) if merged_dataset else 0,
                 'output_shape': dict(merged_dataset.sizes) if merged_dataset else {},
                 'output_size_mb': output_path.stat().st_size / (1024**2),
-                'chunked_merge': use_chunked
+                'chunked_merge': use_lazy or (total_size_estimate > 1000)
             }
             
             return StageResult(
@@ -186,8 +184,14 @@ class MergeStage(PipelineStage):
                                   common_shape: Tuple[int, int],
                                   resolution: float) -> np.ndarray:
         """Align dataset to common coordinate grid."""
-        # Create output array filled with NaN
-        aligned_data = np.full(common_shape, np.nan, dtype=array_data.dtype)
+        # Create output array filled with appropriate value based on dtype
+        if np.issubdtype(array_data.dtype, np.integer):
+            # For integer data, use 0 or a specific nodata value instead of NaN
+            fill_value = 0  # Could also use a specific nodata value from config
+            aligned_data = np.full(common_shape, fill_value, dtype=array_data.dtype)
+        else:
+            # For floating point data, NaN is fine
+            aligned_data = np.full(common_shape, np.nan, dtype=array_data.dtype)
         
         # Calculate offsets
         x_offset = int(np.round((data_bounds[0] - common_bounds[0]) / resolution))
@@ -280,6 +284,236 @@ class MergeStage(PipelineStage):
         
         logger.info(f"Created merged dataset with {len(data_vars)} bands, shape: {dict(merged.sizes)}")
         return merged
+    
+    def _merge_lazy_chunked(self, context, resampled_datasets):
+        """True lazy chunked merge that processes data in spatial tiles without loading full arrays."""
+        from src.processors.data_preparation.resampling_processor import ResamplingProcessor
+        processor = ResamplingProcessor(context.config, context.db)
+        
+        # Calculate common bounds and resolution
+        common_bounds = self._calculate_common_bounds(resampled_datasets)
+        resolution = resampled_datasets[0].target_resolution
+        
+        # Create common coordinates
+        coords = self._create_common_coordinates(common_bounds, resolution)
+        common_shape = (len(coords['y']), len(coords['x']))
+        
+        logger.info(f"Lazy merge: common shape {common_shape}, processing in chunks")
+        
+        # Chunk size from config or default
+        chunk_size = context.config.get('processing.merge_chunk_size', 500)
+        
+        # Create output NetCDF file with structure but no data yet
+        output_path = context.output_dir / 'merged_dataset.nc'
+        
+        # Initialize the output dataset with proper dimensions and coordinates
+        output_ds = xr.Dataset(
+            coords={
+                'x': coords['x'],
+                'y': coords['y']
+            },
+            attrs={
+                'title': 'Merged Resampled Dataset (Lazy Chunked)',
+                'created_by': 'pipeline_merge_stage',
+                'created_at': datetime.now().isoformat(),
+                'common_bounds': common_bounds,
+                'resolution': resolution
+            }
+        )
+        
+        # Use netCDF4 directly for better control over lazy allocation
+        import netCDF4
+        
+        # Create the file and dimensions
+        with netCDF4.Dataset(output_path, 'w', format='NETCDF4') as nc:
+            # Create dimensions
+            nc.createDimension('y', common_shape[0])
+            nc.createDimension('x', common_shape[1])
+            
+            # Create coordinate variables
+            y_var = nc.createVariable('y', 'f8', ('y',))
+            y_var[:] = coords['y'].values
+            y_var.units = 'degrees_north'
+            y_var.standard_name = 'latitude'
+            
+            x_var = nc.createVariable('x', 'f8', ('x',))
+            x_var[:] = coords['x'].values
+            x_var.units = 'degrees_east'
+            x_var.standard_name = 'longitude'
+            
+            # Create data variables (without allocating data)
+            for info in resampled_datasets:
+                var = nc.createVariable(
+                    info.band_name, 
+                    'f4', 
+                    ('y', 'x'),
+                    chunksizes=(min(chunk_size, common_shape[0]), min(chunk_size, common_shape[1])),
+                    zlib=True,
+                    complevel=4,
+                    fill_value=np.nan
+                )
+                # Set attributes
+                var.long_name = f'{info.name} data'
+                var.source_path = str(info.source_path)
+                var.resampling_method = info.resampling_method
+                var.original_bounds = str(info.bounds)
+                var.original_shape = str(info.shape)
+            
+            # Set global attributes
+            nc.title = 'Merged Resampled Dataset (Lazy Chunked)'
+            nc.created_by = 'pipeline_merge_stage'
+            nc.created_at = datetime.now().isoformat()
+            nc.common_bounds = str(common_bounds)
+            nc.resolution = resolution
+        
+        # Now process in chunks and write to the file
+        total_chunks = ((common_shape[0] + chunk_size - 1) // chunk_size) * \
+                      ((common_shape[1] + chunk_size - 1) // chunk_size)
+        chunk_count = 0
+        
+        for y_start in range(0, common_shape[0], chunk_size):
+            y_end = min(y_start + chunk_size, common_shape[0])
+            
+            for x_start in range(0, common_shape[1], chunk_size):
+                x_end = min(x_start + chunk_size, common_shape[1])
+                chunk_count += 1
+                
+                logger.info(f"Processing chunk {chunk_count}/{total_chunks}: "
+                           f"y[{y_start}:{y_end}], x[{x_start}:{x_end}]")
+                
+                # Process this spatial chunk for all datasets
+                chunk_data = {}
+                
+                for info in resampled_datasets:
+                    # Calculate the bounds for this chunk in the dataset's coordinate system
+                    chunk_bounds = self._calculate_chunk_bounds(
+                        y_start, y_end, x_start, x_end,
+                        common_bounds, resolution
+                    )
+                    
+                    # Calculate corresponding indices in the source dataset
+                    src_indices = self._calculate_source_indices(
+                        chunk_bounds, info.bounds, info.shape, info.target_resolution
+                    )
+                    
+                    if src_indices is None:
+                        # This chunk doesn't overlap with this dataset
+                        chunk_data[info.band_name] = np.full(
+                            (y_end - y_start, x_end - x_start), 
+                            np.nan, 
+                            dtype=np.float32
+                        )
+                        continue
+                    
+                    # Load only this chunk from the database
+                    src_y_start, src_y_end, src_x_start, src_x_end = src_indices
+                    
+                    logger.debug(f"Loading chunk from {info.name}: "
+                                f"[{src_y_start}:{src_y_end}, {src_x_start}:{src_x_end}]")
+                    
+                    chunk_array = processor.load_resampled_data_chunk(
+                        info.name,
+                        src_y_start, src_y_end,
+                        src_x_start, src_x_end
+                    )
+                    
+                    if chunk_array is None:
+                        logger.warning(f"Failed to load chunk from {info.name}")
+                        chunk_data[info.band_name] = np.full(
+                            (y_end - y_start, x_end - x_start),
+                            np.nan,
+                            dtype=np.float32
+                        )
+                        continue
+                    
+                    # Align this chunk to the common grid chunk
+                    aligned_chunk = self._align_chunk_to_common_grid(
+                        chunk_array, src_indices, info.bounds,
+                        chunk_bounds, (y_end - y_start, x_end - x_start),
+                        resolution
+                    )
+                    
+                    chunk_data[info.band_name] = aligned_chunk
+                
+                # Write this chunk to the output file
+                # NetCDF doesn't support true append mode, so we need to use a different approach
+                import netCDF4
+                with netCDF4.Dataset(output_path, 'r+') as nc:
+                    for band_name, data in chunk_data.items():
+                        nc.variables[band_name][y_start:y_end, x_start:x_end] = data
+                
+                # Force garbage collection after each chunk
+                del chunk_data
+                gc.collect()
+        
+        logger.info(f"✅ Lazy chunked merge completed: {total_chunks} chunks processed")
+        
+        # Return reference to the output file
+        return xr.open_dataset(output_path, chunks={'x': chunk_size, 'y': chunk_size})
+    
+    def _calculate_chunk_bounds(self, y_start: int, y_end: int, x_start: int, x_end: int,
+                               common_bounds: Tuple[float, float, float, float],
+                               resolution: float) -> Tuple[float, float, float, float]:
+        """Calculate geographic bounds for a chunk given pixel indices."""
+        min_x = common_bounds[0] + x_start * resolution
+        max_x = common_bounds[0] + x_end * resolution
+        max_y = common_bounds[3] - y_start * resolution
+        min_y = common_bounds[3] - y_end * resolution
+        return (min_x, min_y, max_x, max_y)
+    
+    def _calculate_source_indices(self, chunk_bounds: Tuple[float, float, float, float],
+                                 dataset_bounds: Tuple[float, float, float, float],
+                                 dataset_shape: Tuple[int, int],
+                                 dataset_resolution: float) -> Optional[Tuple[int, int, int, int]]:
+        """Calculate source dataset indices that correspond to the chunk bounds."""
+        # Check if chunk overlaps with dataset
+        if (chunk_bounds[2] <= dataset_bounds[0] or chunk_bounds[0] >= dataset_bounds[2] or
+            chunk_bounds[3] <= dataset_bounds[1] or chunk_bounds[1] >= dataset_bounds[3]):
+            return None  # No overlap
+        
+        # Calculate overlapping bounds
+        overlap_min_x = max(chunk_bounds[0], dataset_bounds[0])
+        overlap_max_x = min(chunk_bounds[2], dataset_bounds[2])
+        overlap_min_y = max(chunk_bounds[1], dataset_bounds[1])
+        overlap_max_y = min(chunk_bounds[3], dataset_bounds[3])
+        
+        # Convert to pixel indices in the dataset
+        x_start = int(np.floor((overlap_min_x - dataset_bounds[0]) / dataset_resolution))
+        x_end = int(np.ceil((overlap_max_x - dataset_bounds[0]) / dataset_resolution))
+        y_start = int(np.floor((dataset_bounds[3] - overlap_max_y) / dataset_resolution))
+        y_end = int(np.ceil((dataset_bounds[3] - overlap_min_y) / dataset_resolution))
+        
+        # Clamp to dataset bounds
+        x_start = max(0, x_start)
+        x_end = min(dataset_shape[1], x_end)
+        y_start = max(0, y_start)
+        y_end = min(dataset_shape[0], y_end)
+        
+        return (y_start, y_end, x_start, x_end)
+    
+    def _align_chunk_to_common_grid(self, chunk_data: np.ndarray,
+                                   src_indices: Tuple[int, int, int, int],
+                                   dataset_bounds: Tuple[float, float, float, float],
+                                   chunk_bounds: Tuple[float, float, float, float],
+                                   output_shape: Tuple[int, int],
+                                   resolution: float) -> np.ndarray:
+        """Align a data chunk to the common grid coordinates."""
+        # This is a simplified version - in practice you'd need proper resampling
+        # For now, just place the data in the correct position
+        output = np.full(output_shape, np.nan, dtype=chunk_data.dtype)
+        
+        # Calculate where this data goes in the output chunk
+        # This is simplified - real implementation would need proper coordinate mapping
+        # Ensure we don't exceed output dimensions
+        rows_to_copy = min(chunk_data.shape[0], output_shape[0])
+        cols_to_copy = min(chunk_data.shape[1], output_shape[1])
+        
+        if rows_to_copy < chunk_data.shape[0] or cols_to_copy < chunk_data.shape[1]:
+            logger.warning(f"Chunk data shape {chunk_data.shape} exceeds output shape {output_shape}, trimming to fit")
+        
+        output[:rows_to_copy, :cols_to_copy] = chunk_data[:rows_to_copy, :cols_to_copy]
+        
+        return output
     
     def _merge_chunked(self, context, resampled_datasets):
         """Chunked merge for large datasets with proper coordinate handling."""

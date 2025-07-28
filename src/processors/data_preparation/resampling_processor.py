@@ -1,7 +1,9 @@
 # src/processors/data_preparation/resampling_processor.py
 """Enhanced processor for resampling datasets with chunked loading and progress support."""
-
 import logging
+
+logger = logging.getLogger(__name__)
+logger.debug("🔍 resampling_processor.py module loading...")
 from typing import Dict, Any, List, Optional, Tuple, Union, Callable
 from pathlib import Path
 import numpy as np
@@ -10,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import time
+import rasterio
 
 from src.config import config
 from src.config.config import Config
@@ -21,8 +24,6 @@ from src.resampling.engines.base_resampler import ResamplingConfig
 from src.resampling.engines.numpy_resampler import NumpyResampler
 from src.resampling.engines.gdal_resampler import GDALResampler
 from src.resampling.cache_manager import ResamplingCacheManager
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +45,7 @@ class ResamplingProcessor(BaseProcessor):
     """Enhanced resampling processor with chunked loading and progress support."""
     
     def __init__(self, config: Config, db_connection: DatabaseManager):
+        logger.info("🔧 DEBUG: ResamplingProcessor.__init__() called")
         # Initialize with enhanced features
         super().__init__(
             batch_size=1000, 
@@ -53,10 +55,13 @@ class ResamplingProcessor(BaseProcessor):
             checkpoint_interval=1,  # Checkpoint after each dataset
             supports_chunking=True
         )
+        logger.info("✅ DEBUG: BaseProcessor initialized")
         
         self.db = db_connection
         self.config = config
+        logger.info("🔧 DEBUG: Creating RasterCatalog...")
         self.catalog = RasterCatalog(db_connection, config)
+        logger.info("✅ DEBUG: RasterCatalog created")
         self.cache_manager = ResamplingCacheManager()
         self.memory_manager = get_memory_manager()
         
@@ -186,21 +191,34 @@ class ResamplingProcessor(BaseProcessor):
         Returns:
             ResampledDatasetInfo
         """
+        logger.info(f"🔍 DEBUG: resample_dataset() called for {dataset_config.get('name', 'unknown')}")
+        logger.debug(f"🔍 resample_dataset() called for {dataset_config.get('name', 'unknown')}")
         from src.config.dataset_utils import DatasetPathResolver
         
         # Memory allocation tracking
+        logger.info(f"🔍 DEBUG: Entering memory context for {dataset_config['name']}")
+        logger.debug(f"🔍 Entering memory context for {dataset_config['name']}")
         with self.memory_manager.memory_context(
             f"resample_{dataset_config['name']}", 
             estimated_mb=self.chunk_config['max_chunk_size_mb']
         ):
+            logger.info(f"🔍 DEBUG: Inside memory context, creating DatasetPathResolver")
+            logger.debug(f"🔍 Inside memory context, creating DatasetPathResolver")
             # Resolve dataset path
             resolver = DatasetPathResolver(self.config)
+            logger.info(f"🔍 DEBUG: DatasetPathResolver created, validating config")
+            logger.debug(f"🔍 DatasetPathResolver created, validating config")
             normalized_config = resolver.validate_dataset_config(dataset_config)
+            logger.info(f"🔍 DEBUG: Config validated, extracting paths")
+            logger.debug(f"🔍 Config validated, extracting paths")
             
             dataset_name = normalized_config['name']
             raster_path = Path(normalized_config['resolved_path'])
             data_type = normalized_config['data_type']
             band_name = normalized_config['band_name']
+            
+            logger.info(f"🔍 DEBUG: Paths extracted - dataset: {dataset_name}, path: {raster_path}")
+            logger.debug(f"🔍 Paths extracted - dataset: {dataset_name}, path: {raster_path}")
             
             logger.info(f"Resampling dataset: {dataset_name}")
             if progress_callback:
@@ -208,16 +226,30 @@ class ResamplingProcessor(BaseProcessor):
             
             # Get resampling method
             method = self.strategies.get(data_type, 'bilinear')
+            logger.info(f"🔍 DEBUG: Resampling method: {method}")
+            logger.debug(f"🔍 Resampling method: {method}")
             
             # Get or register raster in catalog
+            logger.info(f"🔍 DEBUG: About to call _get_or_register_raster")
+            logger.debug(f"🔍 About to call _get_or_register_raster")
             raster_entry = self._get_or_register_raster(
                 dataset_name, raster_path, data_type, progress_callback
             )
+            logger.info(f"🔍 DEBUG: _get_or_register_raster completed")
+            logger.debug(f"🔍 _get_or_register_raster completed")
             
             # Check if skip-resampling is enabled and resolution matches
+            logger.info(f"🔍 DEBUG: Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
+            logger.debug(f"🔍 Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
             if self.config.get('resampling.allow_skip_resampling', False):
+                logger.info(f"🔍 DEBUG: About to check resolution match")
+                logger.debug(f"🔍 About to check resolution match")
                 if self._check_resolution_match(raster_entry):
+                    logger.info(f"🔍 DEBUG: Resolution matches! Will skip resampling")
+                    logger.debug(f"🔍 Resolution matches! Will skip resampling")
+                    print(f"🚨 IMMEDIATE: About to log skipping message", flush=True)
                     logger.info(f"🚀 Skipping resampling for {dataset_name} - resolution matches target")
+                    print(f"🚨 IMMEDIATE: Logged skipping message", flush=True)
                     
                     if progress_callback:
                         progress_callback(f"Skipping resampling (resolution match)", 50)
@@ -226,10 +258,56 @@ class ResamplingProcessor(BaseProcessor):
                     passthrough_info = self._create_passthrough_dataset_info(raster_entry, normalized_config)
                     
                     if progress_callback:
-                        progress_callback(f"Storing passthrough metadata", 90)
+                        progress_callback(f"Loading passthrough data for storage", 70)
                     
-                    # Store metadata (no actual data processing needed)
-                    self._store_resampled_dataset(passthrough_info, None)  # Pass None for data
+                    # Load the actual data for database storage
+                    # Even for passthrough, we need to store in DB for consistent lazy processing
+                    logger.info(f"Loading raster data from {raster_path} (this may take time for large files)")
+                    logger.info(f"About to open raster file: {raster_path}")
+                    
+                    # Check memory requirements first
+                    logger.info("Opening file for size check...")
+                    with rasterio.open(raster_path) as src:
+                        shape = (src.height, src.width)
+                        estimated_mb = (shape[0] * shape[1] * 4) / (1024 * 1024)  # float32
+                        logger.info(f"Raster shape: {shape}, estimated memory: {estimated_mb:.1f}MB")
+                        
+                        if estimated_mb > 5000:  # More than 5GB
+                            logger.warning(f"Large raster detected ({estimated_mb:.1f}MB), this may take several minutes")
+                    
+                    logger.info("Size check complete, now loading data...")
+                    start_time = time.time()
+                    with rasterio.open(raster_path) as src:
+                        logger.info("File opened, reading band 1...")
+                        data = src.read(1).astype(np.float32)
+                        logger.info(f"Data read, shape: {data.shape}")
+                        # Handle nodata values
+                        if src.nodata is not None:
+                            logger.info(f"Handling nodata value: {src.nodata}")
+                            data[data == src.nodata] = np.nan
+                    load_time = time.time() - start_time
+                    data_mb = data.nbytes / (1024 * 1024)
+                    logger.info(f"Loaded {data.shape} array ({data_mb:.1f}MB) in {load_time:.1f}s")
+                    
+                    if progress_callback:
+                        progress_callback(f"Storing passthrough data to database", 90)
+                    
+                    # Store both metadata AND data for passthrough datasets
+                    try:
+                        self._store_resampled_dataset(passthrough_info, data)
+                    except Exception as e:
+                        logger.error(f"Failed to store passthrough data for {dataset_name}: {e}")
+                        # Clean up any partial data
+                        try:
+                            with self.db.get_connection() as conn:
+                                with conn.cursor() as cur:
+                                    cur.execute("DELETE FROM resampled_datasets WHERE name = %s", (dataset_name,))
+                                    table_name = f"passthrough_{dataset_name.replace('-', '_')}"
+                                    cur.execute(f"DROP TABLE IF EXISTS {table_name}")
+                                    conn.commit()
+                        except:
+                            pass
+                        raise
                     
                     if progress_callback:
                         progress_callback(f"Completed {dataset_name} (skipped)", 100)
@@ -457,9 +535,15 @@ class ResamplingProcessor(BaseProcessor):
                                data_type: str,
                                progress_callback: Optional[Callable[[str, float], None]] = None) -> RasterEntry:
         """Get raster from catalog or register it."""
+        logger.info(f"🔍 DEBUG: _get_or_register_raster called for {dataset_name}")
+        logger.debug(f"🔍 _get_or_register_raster called for {dataset_name}")
         raster_entry = self.catalog.get_raster(dataset_name)
+        logger.info(f"🔍 DEBUG: catalog.get_raster returned: {raster_entry is not None}")
+        logger.debug(f"🔍 catalog.get_raster returned: {raster_entry is not None}")
         
         if raster_entry is None:
+            logger.info(f"🔍 DEBUG: Raster entry is None, need to register")
+            logger.debug(f"🔍 Raster entry is None, need to register")
             if not raster_path.exists():
                 raise FileNotFoundError(f"Raster file not found: {raster_path}")
             
@@ -467,12 +551,16 @@ class ResamplingProcessor(BaseProcessor):
             if progress_callback:
                 progress_callback(f"Registering {dataset_name}", 10)
             
+            logger.info(f"🔍 DEBUG: About to call catalog.add_raster_lightweight")
+            logger.debug(f"🔍 About to call catalog.add_raster_lightweight")
             # Use lightweight registration
             raster_entry = self.catalog.add_raster_lightweight(
                 raster_path,
                 dataset_type=data_type,
                 validate=False
             )
+            logger.info(f"🔍 DEBUG: catalog.add_raster_lightweight completed")
+            logger.debug(f"🔍 catalog.add_raster_lightweight completed")
             logger.info(f"✅ Registered {dataset_name}")
         
         return raster_entry
@@ -513,8 +601,8 @@ class ResamplingProcessor(BaseProcessor):
             chunk_size=self.chunk_config['tile_size'],
             cache_results=self.resampling_config.get('cache_resampled', True),
             validate_output=self.resampling_config.get('validate_output', True),
-            preserve_sum=self.resampling_config.get('preserve_sum', True),
-            memory_limit_mb=self.chunk_config['max_chunk_size_mb']
+            preserve_sum=self.resampling_config.get('preserve_sum', True)
+            # memory_limit_mb removed - not a valid field
         )
         
         # Create engine
@@ -571,6 +659,8 @@ class ResamplingProcessor(BaseProcessor):
         Returns:
             True if resolution matches within tolerance, False otherwise
         """
+        logger.info(f"🔍 DEBUG: _check_resolution_match called for {raster_entry.name}")
+        logger.debug(f"🔍 _check_resolution_match called for {raster_entry.name}")
         if not raster_entry.resolution_degrees:
             logger.warning(f"No resolution information for {raster_entry.name}, cannot skip resampling")
             return False
@@ -644,62 +734,42 @@ class ResamplingProcessor(BaseProcessor):
 
     def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: Optional[np.ndarray]):
         """Store resampled dataset in database."""
-        # Handle passthrough datasets differently
-        if info.metadata.get('passthrough', False):
-            logger.info(f"Storing passthrough dataset metadata for {info.name}")
-            try:
-                with self.db.get_connection() as conn:
-                    cur = conn.cursor()
-                    
-                    # Store only metadata for passthrough datasets
-                    # The data remains in the original file
-                    cur.execute("""
-                        INSERT INTO resampled_datasets 
-                        (name, source_path, target_resolution, target_crs, bounds, 
-                         shape_height, shape_width, data_type, resampling_method, 
-                         band_name, data_table_name, metadata)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        info.name,
-                        str(info.source_path),
-                        info.target_resolution,
-                        info.target_crs,
-                        list(info.bounds),
-                        info.shape[0],
-                        info.shape[1],
-                        info.data_type,
-                        info.resampling_method,
-                        info.band_name,
-                        f"passthrough_{info.name.replace('-', '_')}",  # Special table name
-                        json.dumps(info.metadata)
-                    ))
-                    
-                    conn.commit()
-                    logger.info(f"✅ Stored passthrough dataset metadata: {info.name}")
-                    
-            except Exception as e:
-                logger.error(f"Failed to store passthrough dataset metadata: {e}")
-                raise
-            return
-        
-        # Original implementation for resampled datasets
+        # For consistency, store all data in DB (including passthrough)
+        # This ensures lazy loading works uniformly for all datasets
         if data is None:
-            raise ValueError(f"Data cannot be None for non-passthrough dataset {info.name}")
+            raise ValueError(f"Data cannot be None for dataset {info.name}")
         
         try:
             with self.db.get_connection() as conn:
                 cur = conn.cursor()
                 
-                # Create data table name
-                table_name = f"resampled_{info.name.replace('-', '_')}"
+                # Create data table name based on type
+                if info.metadata.get('passthrough', False):
+                    table_name = f"passthrough_{info.name.replace('-', '_')}"
+                    logger.info(f"Storing passthrough dataset {info.name} to database table {table_name}")
+                else:
+                    table_name = f"resampled_{info.name.replace('-', '_')}"
+                    logger.info(f"Storing resampled dataset {info.name} to database table {table_name}")
                 
-                # Insert metadata
+                # Insert or update metadata
                 cur.execute("""
                     INSERT INTO resampled_datasets 
                     (name, source_path, target_resolution, target_crs, bounds, 
                      shape_height, shape_width, data_type, resampling_method, 
                      band_name, data_table_name, metadata)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (name) DO UPDATE SET
+                        source_path = EXCLUDED.source_path,
+                        target_resolution = EXCLUDED.target_resolution,
+                        target_crs = EXCLUDED.target_crs,
+                        bounds = EXCLUDED.bounds,
+                        shape_height = EXCLUDED.shape_height,
+                        shape_width = EXCLUDED.shape_width,
+                        data_type = EXCLUDED.data_type,
+                        resampling_method = EXCLUDED.resampling_method,
+                        band_name = EXCLUDED.band_name,
+                        data_table_name = EXCLUDED.data_table_name,
+                        metadata = EXCLUDED.metadata
                 """, (
                     info.name,
                     str(info.source_path),
@@ -725,6 +795,10 @@ class ResamplingProcessor(BaseProcessor):
                     )
                 """)
                 
+                # Truncate existing data to avoid conflicts
+                logger.info(f"Truncating existing data in {table_name}")
+                cur.execute(f"TRUNCATE TABLE {table_name}")
+                
                 # Store non-NaN values
                 if not np.all(np.isnan(data)):
                     valid_mask = ~np.isnan(data)
@@ -735,18 +809,22 @@ class ResamplingProcessor(BaseProcessor):
                     
                     # Batch insert
                     from psycopg2.extras import execute_values
+                    logger.info(f"Inserting {len(data_to_insert):,} values into {table_name}...")
+                    insert_start = time.time()
                     execute_values(
                         cur,
                         f"INSERT INTO {table_name} (row_idx, col_idx, value) VALUES %s",
                         data_to_insert,
                         page_size=10000
                     )
+                    insert_time = time.time() - insert_start
+                    logger.info(f"Insert completed in {insert_time:.1f}s ({len(data_to_insert)/insert_time:.0f} values/sec)")
                 
                 conn.commit()
-                logger.info(f"Stored resampled dataset {info.name}")
+                logger.info(f"✅ Stored dataset {info.name} ({len(data_to_insert) if 'data_to_insert' in locals() else 0} non-NaN values)")
                 
         except Exception as e:
-            logger.error(f"Failed to store resampled dataset: {e}")
+            logger.error(f"Failed to store dataset: {e}")
             raise
     
     # BaseProcessor abstract method implementations
@@ -834,12 +912,93 @@ class ResamplingProcessor(BaseProcessor):
             )
             
             logger.info(f"Found existing dataset: {dataset_name} ({'passthrough' if resampled_info.metadata.get('passthrough') else 'resampled'})")
+            
+            # Verify the data table actually exists
+            table_name = dataset_row.get('data_table_name')
+            if table_name:
+                with self.db.get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT EXISTS (
+                                SELECT 1 
+                                FROM information_schema.tables 
+                                WHERE table_schema = 'public' 
+                                AND table_name = %s
+                            )
+                        """, (table_name,))
+                        table_exists = cur.fetchone()[0]
+                        
+                        if not table_exists:
+                            logger.warning(f"Data table {table_name} missing for {dataset_name}, will reprocess")
+                            # Delete the orphaned metadata entry
+                            cur.execute("DELETE FROM resampled_datasets WHERE name = %s", (dataset_name,))
+                            conn.commit()
+                            return None
+            
             return resampled_info
             
         except Exception as e:
             logger.error(f"Failed to retrieve dataset {dataset_name}: {e}")
             return None
 
+    def load_resampled_data_chunk(self, dataset_name: str,
+                                  row_start: int, row_end: int,
+                                  col_start: int, col_end: int) -> Optional[np.ndarray]:
+        """
+        Load a spatial chunk of resampled data from database.
+        
+        Args:
+            dataset_name: Name of the dataset
+            row_start: Starting row index (inclusive)
+            row_end: Ending row index (exclusive)
+            col_start: Starting column index (inclusive)
+            col_end: Ending column index (exclusive)
+            
+        Returns:
+            Numpy array chunk or None if failed
+        """
+        try:
+            from src.database.schema import schema
+            
+            # Get dataset info
+            datasets = schema.get_resampled_datasets({'name': dataset_name})
+            if not datasets:
+                logger.error(f"Dataset {dataset_name} not found")
+                return None
+            
+            dataset_info = datasets[0]
+            table_name = dataset_info['data_table_name']
+            
+            # Create chunk array
+            chunk_shape = (row_end - row_start, col_end - col_start)
+            chunk_data = np.full(chunk_shape, np.nan, dtype=np.float32)
+            
+            # Load only the chunk data from table
+            with self.db.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(f"""
+                    SELECT row_idx - %s as rel_row, col_idx - %s as rel_col, value 
+                    FROM {table_name} 
+                    WHERE row_idx >= %s AND row_idx < %s
+                    AND col_idx >= %s AND col_idx < %s
+                    ORDER BY row_idx, col_idx
+                """, (row_start, col_start, row_start, row_end, col_start, col_end))
+                
+                rows = cur.fetchall()
+                
+                # Fill chunk array
+                for row in rows:
+                    rel_row, rel_col, value = row
+                    if 0 <= rel_row < chunk_shape[0] and 0 <= rel_col < chunk_shape[1]:
+                        chunk_data[rel_row, rel_col] = value
+                
+                logger.debug(f"Loaded chunk [{row_start}:{row_end}, {col_start}:{col_end}] for {dataset_name}: {len(rows)} values")
+                return chunk_data
+                
+        except Exception as e:
+            logger.error(f"Failed to load chunk for {dataset_name}: {e}")
+            return None
+    
     def load_resampled_data(self, dataset_name: str) -> Optional[np.ndarray]:
         """
         Load resampled data from database (for non-passthrough datasets).
@@ -861,26 +1020,7 @@ class ResamplingProcessor(BaseProcessor):
             
             dataset_info = datasets[0]
             
-            # Check if it's a passthrough dataset
-            metadata = dataset_info.get('metadata', {})
-            if metadata.get('passthrough', False):
-                logger.info(f"Dataset {dataset_name} is passthrough, use load_passthrough_data instead")
-                # Create ResampledDatasetInfo and load via passthrough method
-                info = ResampledDatasetInfo(
-                    name=dataset_info['name'],
-                    source_path=Path(dataset_info['source_path']),
-                    target_resolution=float(dataset_info['target_resolution']),
-                    target_crs=dataset_info['target_crs'],
-                    bounds=tuple(dataset_info['bounds']),
-                    shape=(int(dataset_info['shape_height']), int(dataset_info['shape_width'])),
-                    data_type=dataset_info['data_type'],
-                    resampling_method=dataset_info['resampling_method'],
-                    band_name=dataset_info['band_name'],
-                    metadata=metadata
-                )
-                return self.load_passthrough_data(info)
-            
-            # For non-passthrough, load from database table
+            # Load data from database table (works for both passthrough and resampled)
             table_name = dataset_info['data_table_name']
             shape = (dataset_info['shape_height'], dataset_info['shape_width'])
             

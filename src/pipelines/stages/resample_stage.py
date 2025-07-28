@@ -4,10 +4,19 @@
 from typing import List, Tuple
 import logging
 
-from .base_stage import PipelineStage, StageResult
-from src.processors.data_preparation.resampling_processor import ResamplingProcessor
-
 logger = logging.getLogger(__name__)
+
+from .base_stage import PipelineStage, StageResult
+logger.debug("🔍 About to import ResamplingProcessor")
+
+# Configure GDAL to use exceptions
+from osgeo import gdal
+gdal.UseExceptions()
+
+from src.processors.data_preparation.resampling_processor import ResamplingProcessor
+logger.debug("🔍 ResamplingProcessor imported successfully")
+
+logger.debug("🔍 resample_stage.py module loaded successfully")
 
 
 class ResampleStage(PipelineStage):
@@ -40,10 +49,12 @@ class ResampleStage(PipelineStage):
     def execute(self, context) -> StageResult:
         """Execute resampling for all datasets."""
         logger.info("Starting resample stage")
+        logger.info("🔍 DEBUG: ResampleStage.execute() called - entering try block")
         
         try:
             # Get loaded datasets from previous stage
             loaded_datasets = context.get('loaded_datasets', [])
+            logger.info(f"📊 DEBUG: Found {len(loaded_datasets)} loaded datasets in context")
             if not loaded_datasets:
                 return StageResult(
                     success=False,
@@ -53,7 +64,9 @@ class ResampleStage(PipelineStage):
                 )
             
             # Initialize resampling processor
+            logger.info("🔧 DEBUG: Creating ResamplingProcessor...")
             processor = ResamplingProcessor(context.config, context.db)
+            logger.info("✅ DEBUG: ResamplingProcessor created")
             
             resampled_datasets = []
             metrics = {
@@ -64,9 +77,10 @@ class ResampleStage(PipelineStage):
                 'total_pixels_processed': 0
             }
             
-            for dataset_info in loaded_datasets:
+            for idx, dataset_info in enumerate(loaded_datasets):
                 try:
                     dataset_config = dataset_info['config']
+                    logger.info(f"Processing dataset {idx+1}/{len(loaded_datasets)}: {dataset_config['name']}")
                     
                     # Check if already resampled (including passthrough datasets)
                     existing = processor.get_resampled_dataset(dataset_config['name'])

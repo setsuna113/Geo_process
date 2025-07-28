@@ -21,14 +21,19 @@ class DatabaseManager:
     """Database connection manager with connection pooling and retry logic."""
     
     def __init__(self):
+        logger.debug("🔌 DatabaseManager.__init__() called")
         self.pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
         self.connection_attempts = 0
         self.max_connection_attempts = 3
+        logger.debug("🔍 Detecting test mode...")
         self.is_test_mode = self._detect_test_mode()
         if self.is_test_mode:
             logger.info("🧪 Database running in TEST MODE")
+        logger.debug("🐘 Ensuring PostgreSQL service...")
         self._ensure_postgresql_service()
+        logger.debug("🏊 Creating connection pool...")
         self._create_pool()
+        logger.debug("✅ DatabaseManager initialized")
     
     def _detect_test_mode(self) -> bool:
         """Safely detect if we're running in test mode."""
@@ -103,12 +108,15 @@ class DatabaseManager:
 
     def _create_pool(self):
         """Create connection pool with retry logic."""
+        logger.debug(f"🏊 _create_pool started, max attempts: {self.max_connection_attempts}")
         while self.connection_attempts < self.max_connection_attempts:
             try:
                 self.connection_attempts += 1
+                logger.debug(f"🔄 Connection attempt {self.connection_attempts}/{self.max_connection_attempts}")
                 
                 # Get database configuration
                 db_config = config.database.copy()
+                logger.debug(f"📊 DB config - host={db_config.get('host')}, port={db_config.get('port')}, database={db_config.get('database')}, user={db_config.get('user')}")
                 
                 # Try to create connection pool with auto-database creation
                 database_created = False
