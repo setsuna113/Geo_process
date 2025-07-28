@@ -277,3 +277,27 @@ testing:
   cleanup_after_tests: true
   small_dataset_size: 1000
   integration_test_timeout: 300
+
+# =============================================================================
+# PIPELINE CONTROL CONFIGURATION
+# =============================================================================
+pipeline:
+  # Master switch for stage skipping - USE WITH CAUTION!
+  allow_skip_stages: true  # Set to true only when you're sure data is fresh
+  
+  # Stage-specific skip settings
+  stages:
+    data_load:
+      skip_if_exists: true
+    resample:
+      skip_if_exists: true  # Set to true to use existing DB data
+      
+  # Data validation for skip decisions
+  data_validation:
+    max_age_hours: 24  # Consider data stale after this
+    check_source_timestamps: true  # Verify source files haven't changed
+    
+  # Other pipeline settings
+  cleanup_checkpoints_on_success: true
+  checkpoint_interval_stages: 1
+  lazy_merge_threshold_mb: 500
