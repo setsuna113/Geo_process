@@ -42,13 +42,13 @@ resampling:
 datasets:
   target_datasets:
     - name: "plants-richness"
-      path: "/home/yl998/test_data/plants_test_subset.tif"  # Test subset (500x500)
+      path: "/maps/mwd24/richness/daru-plants-richness.tif"  # Full production data
       data_type: "richness_data"
       band_name: "plants_richness"
       enabled: true
       
     - name: "terrestrial-richness" 
-      path: "/home/yl998/test_data/terrestrial_test_subset.tif"  # Test subset (500x500)
+      path: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"  # Full production data
       data_type: "richness_data"
       band_name: "terrestrial_richness"
       enabled: true

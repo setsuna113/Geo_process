@@ -504,16 +504,34 @@ class DatabaseSchema:
     
     # Experiment and Job Tracking (for pipeline/ modules)
     def create_experiment(self, name: str, description: str, config: Dict) -> str:
-        """Create new experiment."""
+        """Create new experiment, handling duplicates gracefully."""
         with db.get_cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO experiments (name, description, config, created_by)
-                VALUES (%s, %s, %s, %s)
-                RETURNING id
-            """, (name, description, json.dumps(config), config.get('created_by', 'system')))
-            experiment_id = cursor.fetchone()['id']
-            logger.info(f"✅ Created experiment '{name}': {experiment_id}")
-            return experiment_id
+            try:
+                cursor.execute("""
+                    INSERT INTO experiments (name, description, config, created_by)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                """, (name, description, json.dumps(config), config.get('created_by', 'system')))
+                experiment_id = cursor.fetchone()['id']
+                logger.info(f"✅ Created experiment '{name}': {experiment_id}")
+                return experiment_id
+            except Exception as e:
+                if 'duplicate key' in str(e).lower() or 'unique constraint' in str(e).lower():
+                    # Handle duplicate experiment name by appending timestamp
+                    import time
+                    timestamp = int(time.time())
+                    new_name = f"{name}_{timestamp}"
+                    logger.warning(f"Experiment '{name}' exists, creating as '{new_name}'")
+                    cursor.execute("""
+                        INSERT INTO experiments (name, description, config, created_by)
+                        VALUES (%s, %s, %s, %s)
+                        RETURNING id
+                    """, (new_name, description, json.dumps(config), config.get('created_by', 'system')))
+                    experiment_id = cursor.fetchone()['id']
+                    logger.info(f"✅ Created experiment '{new_name}': {experiment_id}")
+                    return experiment_id
+                else:
+                    raise
     
     def update_experiment_status(self, experiment_id: str, status: str, 
                                 results: Optional[Dict] = None, 

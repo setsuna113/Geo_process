@@ -115,8 +115,8 @@ class MergeStage(PipelineStage):
             context.set('merge_metadata', merged_metadata)
             logger.info("✅ Merge metadata stored in context")
             
-            # Clean up memory for chunked processing
-            if use_chunked:
+            # Clean up memory for lazy/chunked processing
+            if use_lazy or (total_size_estimate > 1000):
                 del merged_dataset
                 gc.collect()
                 
@@ -129,7 +129,7 @@ class MergeStage(PipelineStage):
                 'total_bands': len(merged_dataset.data_vars) if merged_dataset else 0,
                 'output_shape': dict(merged_dataset.sizes) if merged_dataset else {},
                 'output_size_mb': output_path.stat().st_size / (1024**2),
-                'chunked_merge': use_chunked
+                'chunked_merge': use_lazy or (total_size_estimate > 1000)
             }
             
             return StageResult(
@@ -504,7 +504,14 @@ class MergeStage(PipelineStage):
         
         # Calculate where this data goes in the output chunk
         # This is simplified - real implementation would need proper coordinate mapping
-        output[:chunk_data.shape[0], :chunk_data.shape[1]] = chunk_data
+        # Ensure we don't exceed output dimensions
+        rows_to_copy = min(chunk_data.shape[0], output_shape[0])
+        cols_to_copy = min(chunk_data.shape[1], output_shape[1])
+        
+        if rows_to_copy < chunk_data.shape[0] or cols_to_copy < chunk_data.shape[1]:
+            logger.warning(f"Chunk data shape {chunk_data.shape} exceeds output shape {output_shape}, trimming to fit")
+        
+        output[:rows_to_copy, :cols_to_copy] = chunk_data[:rows_to_copy, :cols_to_copy]
         
         return output
     

@@ -18,6 +18,7 @@ PROCESS_NAME=""
 RESUME_MODE=false
 EXPERIMENT_NAME=""
 SIGNAL_FORWARD=""
+ANALYSIS_METHOD="som"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -36,6 +37,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --experiment-name)
             EXPERIMENT_NAME="$2"
+            shift 2
+            ;;
+        --analysis-method)
+            ANALYSIS_METHOD="$2"
             shift 2
             ;;
         --signal)
@@ -65,11 +70,13 @@ fi
 # Auto-detect Python environment
 detect_python_env() {
     local possible_paths=(
+        "$HOME/anaconda3/envs/geo/bin/python"
+        "$HOME/miniconda3/envs/geo/bin/python"
+        "$HOME/conda/envs/geo/bin/python"
+        "/opt/anaconda3/envs/geo/bin/python"
+        "/opt/miniconda3/envs/geo/bin/python"
         "$HOME/anaconda3/envs/geo_py311/bin/python"
         "$HOME/miniconda3/envs/geo_py311/bin/python"
-        "$HOME/conda/envs/geo_py311/bin/python"
-        "/opt/anaconda3/envs/geo_py311/bin/python"
-        "/opt/miniconda3/envs/geo_py311/bin/python"
     )
     
     # Try current conda environment if active
@@ -147,9 +154,16 @@ if [ ! -z "$EXPERIMENT_NAME" ]; then
     START_CMD+=("--experiment-name" "$EXPERIMENT_NAME")
 fi
 
+# Always add analysis method
+START_CMD+=("--analysis-method" "$ANALYSIS_METHOD")
+
 # Add pass-through arguments
 if [ ${#PASS_THROUGH_ARGS[@]} -gt 0 ]; then
-    START_CMD+=("${PASS_THROUGH_ARGS[@]}")
+    # The first pass-through arg is typically the experiment name
+    if [ -z "$EXPERIMENT_NAME" ] && [ ${#PASS_THROUGH_ARGS[@]} -gt 0 ]; then
+        EXPERIMENT_NAME="${PASS_THROUGH_ARGS[0]}"
+        START_CMD+=("--experiment-name" "$EXPERIMENT_NAME")
+    fi
 fi
 
 # Show what we're executing
