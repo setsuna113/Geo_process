@@ -3,6 +3,7 @@ outputs/
 data/
 test_output/
 checkpoints/
+checkpoint_outputs/
 logs/
 db_data/
 

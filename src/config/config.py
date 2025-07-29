@@ -151,7 +151,7 @@ class Config:
         directories = [
             self.settings['paths']['data_dir'],
             self.settings['paths']['logs_dir'],
-            self.settings.get('checkpointing', {}).get('checkpoint_dir', Path('checkpoints'))
+            self.settings.get('checkpointing', {}).get('checkpoint_dir', Path('checkpoint_outputs'))
         ]
         
         for path in directories:

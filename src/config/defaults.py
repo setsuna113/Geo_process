@@ -16,7 +16,7 @@ PATHS = {
     'data_dir': str(DATA_DIR),
     'rawdata_dir': str(RAWDATA_DIR),
     'logs_dir': str(LOGS_DIR),
-    'checkpoint_dir': str(PROJECT_ROOT / 'checkpoints'),
+    'checkpoint_dir': str(PROJECT_ROOT / 'checkpoint_outputs'),
     'output_dir': str(PROJECT_ROOT / 'outputs'),
     'temp_dir': str(PROJECT_ROOT / 'temp')
 }
@@ -123,7 +123,7 @@ PROGRESS_MONITORING = {
 # Checkpoint configuration
 CHECKPOINTING = {
     'enabled': True,
-    'checkpoint_dir': PROJECT_ROOT / 'checkpoints',
+    'checkpoint_dir': PROJECT_ROOT / 'checkpoint_outputs',
     'compression': 'gzip',  # 'gzip', 'lz4', or None
     'intervals': {
         'time_based': 300,  # Checkpoint every 5 minutes

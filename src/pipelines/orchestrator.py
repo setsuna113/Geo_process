@@ -275,7 +275,7 @@ class PipelineOrchestrator:
         
         # Setup directories
         if checkpoint_dir is None:
-            checkpoint_dir = Path(self.config.get('paths.checkpoint_dir', 'checkpoints')) / experiment_id
+            checkpoint_dir = Path(self.config.get('paths.checkpoint_dir', 'checkpoint_outputs')) / experiment_id
         else:
             checkpoint_dir = Path(checkpoint_dir)
             

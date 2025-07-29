@@ -118,7 +118,7 @@ class PipelineOrchestrator:
                 config=self.config,
                 db=self.db,
                 experiment_id=experiment_name,
-                checkpoint_dir=checkpoint_dir or Path.cwd() / "checkpoints",
+                checkpoint_dir=checkpoint_dir or Path.cwd() / "checkpoint_outputs",
                 output_dir=output_dir
             )
             
