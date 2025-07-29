@@ -2,11 +2,13 @@
 """Enhanced NumPy resampling with chunked processing and progress support."""
 
 import numpy as np
-from typing import Union, Optional, Tuple, Callable, Iterator
+from typing import Union, Optional, Tuple, Callable, Iterator, Dict, Any
 import xarray as xr
 from scipy import ndimage
 import logging
 import gc
+import json
+from datetime import datetime
 
 from .base_resampler import BaseResampler, ResamplingResult
 from ..strategies.area_weighted import AreaWeightedStrategy
@@ -568,3 +570,221 @@ class NumpyResampler(BaseResampler):
         coverage = self._mean_aggregate(validity, target_shape) * 100
         
         return coverage
+    
+    def resample_windowed(self,
+                         source_path: str,
+                         target_table: str,
+                         db_connection,
+                         progress_callback: Optional[Callable[[str, float], None]] = None) -> Dict[str, Any]:
+        """
+        Resample raster data using windowed processing without loading full dataset.
+        
+        Args:
+            source_path: Path to source raster file
+            target_table: Database table for storing results
+            db_connection: Database connection
+            progress_callback: Optional callback for progress reporting
+            
+        Returns:
+            Dictionary with processing statistics
+        """
+        import rasterio
+        from rasterio.windows import Window
+        from src.infrastructure.logging import get_logger
+        from src.infrastructure.logging.decorators import log_stage
+        
+        logger = get_logger(__name__)
+        
+        stats = {
+            'source_path': source_path,
+            'target_table': target_table,
+            'total_windows': 0,
+            'processed_windows': 0,
+            'total_pixels': 0,
+            'stored_pixels': 0,
+            'resampling_method': self.config.method,
+            'target_resolution': self.config.target_resolution
+        }
+        
+        try:
+            # Open source raster
+            with rasterio.open(source_path) as src:
+                logger.info(f"Opening source raster: {source_path}")
+                logger.info(f"Source shape: {src.shape}, CRS: {src.crs}")
+                
+                # Calculate output dimensions
+                source_bounds = src.bounds
+                source_res = abs(src.transform[0])  # Assuming square pixels
+                
+                # Calculate scale factors
+                scale_factor = source_res / self.config.target_resolution
+                output_height = int(np.ceil(src.height * scale_factor))
+                output_width = int(np.ceil(src.width * scale_factor))
+                
+                logger.info(f"Output dimensions: {output_height} x {output_width}")
+                logger.info(f"Scale factor: {scale_factor:.4f}")
+                
+                # Create output table
+                from src.database.schema import schema
+                from src.processors.data_preparation.windowed_storage import WindowedStorageManager
+                storage_manager = WindowedStorageManager()
+                storage_manager.create_storage_table(target_table, db_connection)
+                
+                # Get window parameters
+                window_size = self.config.chunk_size
+                overlap = getattr(self.config, 'window_overlap', 128)
+                
+                # Generate windows
+                windows = list(self.generate_resampling_windows(src.shape, window_size, overlap))
+                stats['total_windows'] = len(windows)
+                
+                logger.info(f"Processing {len(windows)} windows")
+                
+                # Process each window
+                for (row_start, row_end, col_start, col_end), window_idx in windows:
+                    # Read source window
+                    window = Window(col_start, row_start, col_end - col_start, row_end - row_start)
+                    source_data = src.read(1, window=window)
+                    
+                    # Calculate window bounds
+                    window_transform = src.window_transform(window)
+                    window_bounds = (
+                        window_transform.c,  # minx
+                        window_transform.f + window_transform.e * source_data.shape[0],  # miny
+                        window_transform.c + window_transform.a * source_data.shape[1],  # maxx
+                        window_transform.f   # maxy
+                    )
+                    
+                    # Calculate target shape for this window
+                    target_height = int(np.ceil((row_end - row_start) * scale_factor))
+                    target_width = int(np.ceil((col_end - col_start) * scale_factor))
+                    target_shape = (target_height, target_width)
+                    
+                    # Resample window
+                    strategy = self.strategies.get(self.config.method)
+                    if callable(strategy):
+                        resampled_data = strategy(source_data, target_shape, None)
+                    else:
+                        # Use custom strategy
+                        mapping = self._build_pixel_mapping(
+                            source_data.shape, window_bounds,
+                            target_shape, window_bounds
+                        )
+                        resampled_data = strategy.resample(
+                            source_data, target_shape, mapping, self.config, None
+                        )
+                    
+                    # Calculate output offsets
+                    out_row_start = int(row_start * scale_factor)
+                    out_col_start = int(col_start * scale_factor)
+                    
+                    # Store resampled chunk
+                    stored = self._store_resampled_chunk(
+                        db_connection, target_table, resampled_data,
+                        out_row_start, out_col_start,
+                        window_transform, src.nodata
+                    )
+                    
+                    stats['stored_pixels'] += stored
+                    stats['processed_windows'] += 1
+                    
+                    # Report progress
+                    if progress_callback and window_idx % 10 == 0:
+                        progress = (window_idx + 1) / len(windows) * 100
+                        progress_callback(f"Processing window {window_idx + 1}/{len(windows)}", progress)
+                
+                # Store metadata
+                bounds_tuple = (source_bounds.left, source_bounds.bottom, 
+                              source_bounds.right, source_bounds.top)
+                self._store_resampling_metadata(
+                    db_connection, target_table, bounds_tuple,
+                    (output_height, output_width), stats
+                )
+                
+                logger.info(f"Windowed resampling complete: {stats['stored_pixels']:,} pixels stored")
+                
+        except Exception as e:
+            logger.error(
+                "Windowed resampling failed",
+                exc_info=True,
+                extra={'context': stats}
+            )
+            raise
+            
+        return stats
+    
+    def _store_resampled_chunk(self, db_connection, table_name: str,
+                              data: np.ndarray, row_offset: int, col_offset: int,
+                              transform, nodata: Optional[float] = None) -> int:
+        """Store resampled chunk to database."""
+        from psycopg2.extras import execute_values
+        
+        # Extract valid values
+        if nodata is not None:
+            valid_mask = data != nodata
+        else:
+            valid_mask = ~np.isnan(data)
+            
+        if not np.any(valid_mask):
+            return 0
+        
+        rows, cols = np.where(valid_mask)
+        values = data[valid_mask]
+        
+        # Adjust indices by offset
+        global_rows = rows + row_offset
+        global_cols = cols + col_offset
+        
+        # Calculate geographic coordinates
+        x_coords = []
+        y_coords = []
+        for r, c in zip(global_rows, global_cols):
+            x, y = transform * (c, r)
+            x_coords.append(x)
+            y_coords.append(y)
+        
+        # Prepare batch insert data
+        data_to_insert = [
+            (int(r), int(c), float(x), float(y), float(v))
+            for r, c, x, y, v in zip(global_rows, global_cols, x_coords, y_coords, values)
+        ]
+        
+        # Insert using batch operation
+        with db_connection.get_connection() as conn:
+            with conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    f"""
+                    INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) 
+                    VALUES %s
+                    ON CONFLICT (row_idx, col_idx) 
+                    DO UPDATE SET 
+                        value = EXCLUDED.value,
+                        x_coord = EXCLUDED.x_coord,
+                        y_coord = EXCLUDED.y_coord
+                    """,
+                    data_to_insert,
+                    page_size=1000
+                )
+            conn.commit()
+            
+        return len(data_to_insert)
+    
+    def _store_resampling_metadata(self, db_connection, table_name: str,
+                                  bounds: Tuple[float, float, float, float],
+                                  shape: Tuple[int, int],
+                                  stats: Dict[str, Any]) -> None:
+        """Store metadata about the resampling operation."""
+        metadata = {
+            'resampling_stats': stats,
+            'bounds': bounds,
+            'shape': shape,
+            'completed_at': datetime.now().isoformat()
+        }
+        
+        with db_connection.get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    COMMENT ON TABLE {table_name} IS %s
+                """, (json.dumps(metadata),))
+            conn.commit()

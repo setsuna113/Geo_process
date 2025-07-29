@@ -354,7 +354,15 @@ class ResamplingProcessor(BaseProcessor):
             else:
                 logger.debug(f"Skip-resampling disabled for {dataset_name}")
             
-            # Estimate memory requirements
+            # Check if memory-aware processing is enabled for resampling
+            use_memory_aware = self.config.get('resampling.enable_memory_aware_processing', False)
+            
+            if use_memory_aware:
+                # Use memory-aware resampling that doesn't load data
+                logger.info(f"Using memory-aware resampling for {dataset_name}")
+                return self._handle_resampling_memory_aware(raster_entry, normalized_config, progress_callback)
+            
+            # Legacy path: estimate memory requirements
             estimated_memory = self._estimate_memory_requirements(raster_entry)
             logger.info(f"Estimated memory requirement: {estimated_memory:.1f} MB")
             
@@ -861,6 +869,93 @@ class ResamplingProcessor(BaseProcessor):
         )
         
         logger.info(f"Registered dataset metadata: {info.name}")
+    
+    def _handle_resampling_memory_aware(self, raster_entry: RasterEntry, dataset_config: dict,
+                                      progress_callback: Optional[Callable[[str, float], None]] = None) -> ResampledDatasetInfo:
+        """Handle resampling dataset without loading data into memory.
+        
+        This method uses windowed processing to resample data directly
+        to the database without loading the entire dataset.
+        
+        Args:
+            raster_entry: Raster catalog entry
+            dataset_config: Dataset configuration
+            progress_callback: Optional progress callback
+            
+        Returns:
+            ResampledDatasetInfo for the resampled dataset
+        """
+        logger.info(f"Processing resampling dataset (memory-aware): {dataset_config['name']}")
+        
+        # Create output table name
+        table_name = f"resampled_{dataset_config['name'].replace('-', '_')}"
+        
+        # Get resampling engine
+        if self.engine_type == 'numpy':
+            from src.domain.resampling.engines.numpy_resampler import NumpyResampler
+            from src.domain.resampling.engines.base_resampler import ResamplingConfig
+            
+            # Create resampling config
+            resample_config = ResamplingConfig(
+                source_resolution=raster_entry.resolution_degrees,
+                target_resolution=self.target_resolution,
+                method=dataset_config.get('resampling_method', self._get_resampling_method(dataset_config['data_type'])),
+                bounds=raster_entry.bounds,
+                source_crs=raster_entry.crs or 'EPSG:4326',
+                target_crs=self.target_crs,
+                chunk_size=self.config.get('resampling.window_size', 2048),
+                preserve_sum=dataset_config['data_type'] == 'richness_data',
+                nodata_value=raster_entry.metadata.get('nodata_value')
+            )
+            
+            resampler = NumpyResampler(resample_config)
+        else:
+            raise ValueError(f"Unsupported engine for windowed resampling: {self.engine_type}")
+        
+        if progress_callback:
+            progress_callback("Starting windowed resampling", 30)
+        
+        # Perform windowed resampling
+        stats = resampler.resample_windowed(
+            str(raster_entry.path),
+            table_name,
+            self.db,
+            progress_callback
+        )
+        
+        logger.info(f"✅ Memory-aware resampling completed for {dataset_config['name']}")
+        logger.info(f"   Processed {stats['processed_windows']} windows, stored {stats['stored_pixels']:,} pixels")
+        
+        # Calculate expected shape based on target resolution
+        bounds = raster_entry.bounds
+        width = int(np.ceil((bounds[2] - bounds[0]) / self.target_resolution))
+        height = int(np.ceil((bounds[3] - bounds[1]) / self.target_resolution))
+        
+        # Create resampled dataset info
+        resampled_info = ResampledDatasetInfo(
+            name=dataset_config['name'],
+            source_path=raster_entry.path,
+            target_resolution=self.target_resolution,
+            target_crs=self.target_crs,
+            bounds=bounds,
+            shape=(height, width),
+            data_type=dataset_config['data_type'],
+            resampling_method=dataset_config.get('resampling_method', self._get_resampling_method(dataset_config['data_type'])),
+            band_name=dataset_config['band_name'],
+            metadata={
+                'storage_table': table_name,
+                'resampling_stats': stats,
+                'memory_aware': True,
+                'engine': self.engine_type,
+                'source_resolution': raster_entry.resolution_degrees,
+                'target_resolution': self.target_resolution
+            }
+        )
+        
+        # Register metadata
+        self._register_dataset_metadata(resampled_info)
+        
+        return resampled_info
 
     def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: Optional[np.ndarray]):
         """Store resampled dataset in database."""

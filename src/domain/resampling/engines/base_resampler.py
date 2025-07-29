@@ -2,7 +2,7 @@
 """Abstract base class for resampling engines."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Optional, Tuple, Union, Any, Callable
+from typing import Dict, Optional, Tuple, Union, Any, Callable, Iterator
 import numpy as np
 import xarray as xr
 from dataclasses import dataclass
@@ -100,6 +100,29 @@ class BaseResampler(ABC):
         """
         pass
     
+    @abstractmethod
+    def resample_windowed(self,
+                         source_path: str,
+                         target_table: str,
+                         db_connection,
+                         progress_callback: Optional[Callable[[str, float], None]] = None) -> Dict[str, Any]:
+        """
+        Resample raster data using windowed processing without loading full dataset.
+        
+        This method reads the source raster in windows, resamples each window,
+        and stores results directly to database without accumulating in memory.
+        
+        Args:
+            source_path: Path to source raster file
+            target_table: Database table for storing results
+            db_connection: Database connection
+            progress_callback: Optional callback for progress reporting
+            
+        Returns:
+            Dictionary with processing statistics
+        """
+        pass
+    
     def validate_config(self):
         """Validate resampling configuration."""
         if self.config.source_resolution <= 0:
@@ -155,3 +178,30 @@ class BaseResampler(ABC):
                 data = np.clip(data, dtype_info.min, dtype_info.max)
         
         return data.astype(self.config.dtype)
+    
+    def generate_resampling_windows(self, source_shape: Tuple[int, int], 
+                                  window_size: int = 2048,
+                                  overlap: int = 128) -> Iterator[Tuple[Tuple[int, int, int, int], int]]:
+        """
+        Generate windows for resampling with overlap to avoid edge artifacts.
+        
+        Args:
+            source_shape: (height, width) of source raster
+            window_size: Size of windows in pixels
+            overlap: Overlap between windows
+            
+        Yields:
+            Tuple of ((row_start, row_end, col_start, col_end), window_index)
+        """
+        height, width = source_shape
+        step_size = window_size - overlap
+        
+        window_idx = 0
+        for row_start in range(0, height, step_size):
+            row_end = min(row_start + window_size, height)
+            
+            for col_start in range(0, width, step_size):
+                col_end = min(col_start + window_size, width)
+                
+                yield (row_start, row_end, col_start, col_end), window_idx
+                window_idx += 1
