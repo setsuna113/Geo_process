@@ -140,7 +140,7 @@ def register_default_components():
     """Register all default components from the project."""
     # Import to trigger registration decorators
     try:
-        from ..grid_systems import CubicGrid, HexagonalGrid
+        from ..domain.grid_systems import CubicGrid, HexagonalGrid
         component_registry.grids.register(CubicGrid)
         component_registry.grids.register(HexagonalGrid)
         logger.info("Registered default grid systems")

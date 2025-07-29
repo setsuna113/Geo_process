@@ -4,60 +4,20 @@ from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any, Tuple, Union, Sequence
 import numpy as np
 import logging
-from enum import Enum
-from dataclasses import dataclass, field
 
 from src.abstractions.mixins import Cacheable
+from src.abstractions.types.resampling_types import ResamplingMethod, AggregationMethod, ResamplingConfidence
 
 logger = logging.getLogger(__name__)
 
 
-class ResamplingMethod(Enum):
-    """Available resampling methods."""
-    NEAREST = "nearest"
-    BILINEAR = "bilinear"
-    BICUBIC = "bicubic"
-    LANCZOS = "lanczos"
-    AVERAGE = "average"
-    MODE = "mode"
-    MINIMUM = "minimum"
-    MAXIMUM = "maximum"
-    MEDIAN = "median"
-    Q1 = "q1"
-    Q3 = "q3"
+# ResamplingMethod moved to abstractions.types.resampling_types
 
 
-class AggregationMethod(Enum):
-    """Available aggregation methods for downsampling."""
-    MEAN = "mean"
-    SUM = "sum"
-    COUNT = "count"
-    MIN = "min"
-    MAX = "max"
-    MEDIAN = "median"
-    MODE = "mode"
-    STD = "std"
-    VAR = "var"
-    FIRST = "first"
-    LAST = "last"
+# AggregationMethod moved to abstractions.types.resampling_types
 
 
-@dataclass
-class ResamplingConfidence:
-    """Confidence metrics for resampling operation."""
-    overall_confidence: float  # 0.0 to 1.0
-    spatial_confidence: float  # Based on resolution change
-    data_confidence: float     # Based on data type compatibility
-    method_confidence: float   # Based on method suitability
-    
-    # Quality metrics
-    information_loss: float    # Estimated information loss (0.0 to 1.0)
-    aliasing_risk: float      # Risk of aliasing artifacts (0.0 to 1.0)
-    interpolation_accuracy: float  # Expected interpolation accuracy
-    
-    # Recommendations
-    recommended_method: Optional[ResamplingMethod] = None
-    warnings: List[str] = field(default_factory=list)
+# ResamplingConfidence moved to abstractions.types.resampling_types
 
 
 class BaseResampler(Cacheable, ABC):

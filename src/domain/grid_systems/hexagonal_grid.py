@@ -5,11 +5,10 @@ from typing import Optional, Union, List, Tuple, Set, Iterator
 import logging
 import h3  # type: ignore
 from h3 import LatLngPoly  # type: ignore
-from ..grid_systems.bounds_manager import BoundsDefinition
 from shapely.geometry import Polygon, Point
 import numpy as np
 
-from ..base import BaseGrid, GridCell
+from ...base import BaseGrid, GridCell
 # Registry import removed to avoid circular dependency - using lazy registration
 from .bounds_manager import BoundsManager, BoundsDefinition
 

@@ -8,47 +8,19 @@ import logging
 import time
 import threading
 from dataclasses import dataclass, field
-from enum import Enum
 
+from src.abstractions.types.processing_types import ProcessingStatus, TileProgress
+from src.abstractions.types.checkpoint_types import CheckpointLevel
 from src.abstractions.mixins import Tileable, TileSpec
 from src.abstractions.mixins import Cacheable
-from ..checkpoints import get_checkpoint_manager, CheckpointLevel
 
 logger = logging.getLogger(__name__)
 
 
-class ProcessingStatus(Enum):
-    """Status of tile processing."""
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    SKIPPED = "skipped"
+# ProcessingStatus moved to abstractions.types.processing_types
 
 
-@dataclass
-class TileProgress:
-    """Progress information for a tile."""
-    tile_id: str
-    status: ProcessingStatus = ProcessingStatus.PENDING
-    start_time: Optional[float] = None
-    end_time: Optional[float] = None
-    error_message: Optional[str] = None
-    progress_percentage: float = 0.0
-    memory_usage_mb: float = 0.0
-    
-    @property
-    def processing_time_seconds(self) -> Optional[float]:
-        """Get processing time in seconds."""
-        if self.start_time is None:
-            return None
-        end_time = self.end_time or time.time()
-        return end_time - self.start_time
-        
-    @property
-    def is_complete(self) -> bool:
-        """Check if tile processing is complete."""
-        return self.status in [ProcessingStatus.COMPLETED, ProcessingStatus.FAILED, ProcessingStatus.SKIPPED]
+# TileProgress moved to abstractions.types.processing_types
 
 
 @dataclass
@@ -80,6 +52,7 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
                  overlap: int = 0,
                  num_workers: int = 1,
                  checkpoint_interval: int = 10,
+                 checkpoint_manager=None,
                  **kwargs):
         """
         Initialize tile processor.
@@ -89,6 +62,7 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
             overlap: Overlap between tiles for boundary handling
             num_workers: Number of worker threads
             checkpoint_interval: Save checkpoint every N completed tiles
+            checkpoint_manager: Injected checkpoint manager (optional)
             **kwargs: Additional processor-specific parameters
         """
         super().__init__()
@@ -103,8 +77,8 @@ class BaseTileProcessor(Tileable, Cacheable, ABC):
         self._progress_lock = threading.RLock()
         self._progress_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         
-        # Checkpoint management - using unified system
-        self._checkpoint_manager = get_checkpoint_manager()
+        # Checkpoint management - injected to avoid architectural violation
+        self._checkpoint_manager = checkpoint_manager
         self._auto_checkpoint = True
         self._last_checkpoint_time = time.time()
         self._process_id = f"tile_processor_{id(self)}"

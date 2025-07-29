@@ -16,8 +16,6 @@ from src.config import config
 logger = logging.getLogger(__name__)
 
 # GridCell moved to abstractions.types.grid_types
-        intersection = self.geometry.intersection(geometry)
-        return intersection.area / 1_000_000  # m² to km²
 
 
 class BaseGrid(ABC):

@@ -6,10 +6,10 @@ from shapely.geometry import Polygon, Point
 from shapely import wkt
 import math
 
-from ..base import BaseGrid, GridCell
+from ...base import BaseGrid, GridCell
 # Registry import removed to avoid circular dependency - using lazy registration
-from ..database.schema import schema
-from ..database.connection import db
+from ...database.schema import schema
+from ...database.connection import db
 from .bounds_manager import BoundsManager, BoundsDefinition
 
 logger = logging.getLogger(__name__)

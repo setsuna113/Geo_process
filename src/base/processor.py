@@ -13,82 +13,40 @@ import mmap
 import signal
 import threading
 from dataclasses import dataclass, asdict
-from src.abstractions.types import ProcessingResult, ProcessorConfig
+from src.abstractions.types.processing_types import ProcessingResult, ProcessorConfig
 from datetime import datetime
 
 # Registry import removed - unused import violating base layer architecture
 from src.config import config as global_config
 # Database schema import removed - using dependency injection to avoid architectural violation
 from .memory_tracker import get_memory_tracker
-# Progress manager and event bus imports removed - using dependency injection to avoid architectural violation
-# from ..core.progress_manager import ProgressManager, create_progress_manager
-# from ..core.progress_events import EventBus, create_event_bus, create_processing_progress, EventType
-# from ..core.checkpoint_manager import get_checkpoint_manager  # OLD - DEPRECATED
-from ..checkpoints import get_checkpoint_manager, CheckpointLevel
-from ..core.signal_handler import SignalHandler, create_signal_handler
+# All components now injected to avoid architectural violations
+# Interfaces for dependency injection (no direct imports from core/checkpoints)
+from src.abstractions.types.checkpoint_types import CheckpointLevel
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class ProcessorConfig:
-    """Configuration object for BaseProcessor to reduce constructor parameters."""
-    batch_size: int = 1000
-    max_workers: Optional[int] = None
-    store_results: bool = True
-    memory_limit_mb: Optional[int] = None
-    tile_size: Optional[int] = None
-    supports_chunking: bool = True
-    enable_progress: bool = True
-    enable_checkpoints: bool = True
-    checkpoint_interval: int = 100
-    timeout_seconds: Optional[float] = None
-    
-    @classmethod
-    def from_config(cls, config_dict: Optional[Dict[str, Any]] = None, processor_name: str = "") -> 'ProcessorConfig':
-        """Create ProcessorConfig from config dictionary."""
-        if not config_dict:
-            return cls()
-        
-        # Get processor-specific config
-        processor_config = config_dict.get(f'processors.{processor_name}', {})
-        global_processor_config = config_dict.get('processors', {})
-        
-        # Merge configs with processor-specific taking precedence
-        merged_config = {**global_processor_config, **processor_config}
-        
-        # Map config keys to ProcessorConfig fields
-        return cls(
-            batch_size=merged_config.get('batch_size', 1000),
-            max_workers=merged_config.get('max_workers'),
-            store_results=merged_config.get('store_results', True),
-            memory_limit_mb=merged_config.get('memory_limit_mb'),
-            tile_size=merged_config.get('tile_size'),
-            supports_chunking=merged_config.get('supports_chunking', True),
-            enable_progress=merged_config.get('enable_progress', True),
-            enable_checkpoints=merged_config.get('enable_checkpoints', True),
-            checkpoint_interval=merged_config.get('checkpoint_interval', 100),
-            timeout_seconds=merged_config.get('timeout_seconds')
-        )
+# ProcessorConfig moved to abstractions.types.processing_types
 
 
 @dataclass 
 class ProcessorDependencies:
     """Dependency injection container for BaseProcessor to eliminate constructor coupling."""
-    signal_handler: Optional[SignalHandler] = None
-    progress_manager = None  # Type hint avoided to prevent circular imports
-    event_bus = None  # Type hint avoided to prevent circular imports
-    database_schema = None  # Type hint avoided to prevent circular imports
-    config = None  # Type hint avoided to prevent circular imports
+    signal_handler: Optional[Any] = None  # Type hint avoided to prevent circular imports
+    progress_manager: Optional[Any] = None  # Type hint avoided to prevent circular imports
+    event_bus: Optional[Any] = None  # Type hint avoided to prevent circular imports
+    database_schema: Optional[Any] = None  # Type hint avoided to prevent circular imports
+    checkpoint_manager: Optional[Any] = None  # Type hint avoided to prevent circular imports
+    config: Optional[Any] = None  # Type hint avoided to prevent circular imports
     
     @classmethod
     def create_default(cls) -> 'ProcessorDependencies':
         """Create dependencies with sensible defaults."""
         return cls(
-            signal_handler=create_signal_handler(),
             config=global_config
         )
     
-    def with_signal_handler(self, handler: SignalHandler) -> 'ProcessorDependencies':
+    def with_signal_handler(self, handler) -> 'ProcessorDependencies':
         """Builder method to set signal handler."""
         self.signal_handler = handler
         return self
@@ -111,6 +69,11 @@ class ProcessorDependencies:
     def with_config(self, config) -> 'ProcessorDependencies':
         """Builder method to set config."""
         self.config = config
+        return self
+    
+    def with_checkpoint_manager(self, manager) -> 'ProcessorDependencies':
+        """Builder method to set checkpoint manager."""
+        self.checkpoint_manager = manager
         return self
 
 
@@ -172,28 +135,7 @@ class ProcessorBuilder:
         )
 
 
-@dataclass
-class ProcessingResult:
-    """Standard result format for all processors."""
-    success: bool
-    items_processed: int
-    items_failed: int
-    elapsed_time: float
-    memory_used_mb: float
-    results: Optional[List[Any]] = None
-    errors: Optional[List[Dict[str, Any]]] = None
-    metadata: Optional[Dict[str, Any]] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for storage."""
-        return asdict(self)
-    
-    def summary(self) -> str:
-        """Get human-readable summary."""
-        return (f"Processed: {self.items_processed}, "
-                f"Failed: {self.items_failed}, "
-                f"Time: {self.elapsed_time:.2f}s, "
-                f"Memory: {self.memory_used_mb:.1f}MB")
+# ProcessingResult moved to abstractions.types.processing_types
 
 
 class LegacyMemoryTracker:
@@ -262,7 +204,7 @@ class BaseProcessor(ABC):
                  processor_config: Optional[ProcessorConfig] = None,
                  dependencies: Optional[ProcessorDependencies] = None,
                  # Legacy parameters for backward compatibility
-                 signal_handler: Optional[SignalHandler] = None,
+                 signal_handler = None,
                  progress_manager=None,
                  event_bus=None,
                  database_schema=None,
@@ -368,12 +310,12 @@ class BaseProcessor(ABC):
         # NEW: Checkpoint management
         self.enable_checkpoints = processor_config.enable_checkpoints
         self.checkpoint_interval = processor_config.checkpoint_interval
-        self._checkpoint_manager = get_checkpoint_manager() if processor_config.enable_checkpoints else None
+        self._checkpoint_manager = dependencies.checkpoint_manager if processor_config.enable_checkpoints else None
         self._last_checkpoint_items = 0
         self._checkpoint_data: Dict[str, Any] = {}
         
-        # NEW: Signal handling - support dependency injection
-        self._signal_handler = dependencies.signal_handler or create_signal_handler()
+        # Signal handling - now fully injected (no fallback to avoid architectural violation)
+        self._signal_handler = dependencies.signal_handler
         self._processing_lock = threading.Lock()
         self._is_processing = False
         self._should_stop = threading.Event()
@@ -595,7 +537,7 @@ class BaseProcessor(ABC):
         # Publish start event
         if self._event_bus:
             try:
-                # Import only when needed to avoid architectural violations
+                # TODO: Replace with injected progress factory to eliminate architectural violation
                 from ..core.progress_events import create_processing_progress, EventType
                 event = create_processing_progress(
                     operation_name=operation_name,
@@ -623,6 +565,7 @@ class BaseProcessor(ABC):
         # Publish progress event
         if self._event_bus:
             try:
+                # TODO: Replace with injected progress factory to eliminate architectural violation
                 from ..core.progress_events import create_processing_progress
                 event = create_processing_progress(
                     operation_name=self._progress_node_id,
@@ -650,6 +593,7 @@ class BaseProcessor(ABC):
         # Publish complete event
         if self._event_bus:
             try:
+                # TODO: Replace with injected progress factory to eliminate architectural violation
                 from ..core.progress_events import create_processing_progress, EventType
                 event_type = EventType.PROCESSING_COMPLETE if status == "completed" else EventType.PROCESSING_ERROR
                 event = create_processing_progress(

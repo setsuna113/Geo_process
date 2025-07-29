@@ -169,12 +169,12 @@ class EnhancedRegistry:
             # Only import when explicitly requested (on-demand loading)
             
             if "CubicGrid" not in self._components:
-                from ..grid_systems.cubic_grid import CubicGrid
+                from ..domain.grid_systems.cubic_grid import CubicGrid
                 self.register(CubicGrid)
                 logger.debug("Auto-registered CubicGrid")
             
             if "HexagonalGrid" not in self._components:
-                from ..grid_systems.hexagonal_grid import HexagonalGrid
+                from ..domain.grid_systems.hexagonal_grid import HexagonalGrid
                 self.register(HexagonalGrid)
                 logger.debug("Auto-registered HexagonalGrid")
                 

@@ -20,10 +20,10 @@ from src.base.processor import BaseProcessor
 from src.base.memory_manager import get_memory_manager
 from src.database.connection import DatabaseManager
 from src.domain.raster.catalog import RasterCatalog, RasterEntry
-from src.resampling.engines.base_resampler import ResamplingConfig
-from src.resampling.engines.numpy_resampler import NumpyResampler
-from src.resampling.engines.gdal_resampler import GDALResampler
-from src.resampling.cache_manager import ResamplingCacheManager
+from src.domain.resampling.engines.base_resampler import ResamplingConfig
+from src.domain.resampling.engines.numpy_resampler import NumpyResampler
+from src.domain.resampling.engines.gdal_resampler import GDALResampler
+from src.domain.resampling.cache_manager import ResamplingCacheManager
 
 
 @dataclass

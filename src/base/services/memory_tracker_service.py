@@ -5,30 +5,17 @@ import psutil
 import threading
 import weakref
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field
-from enum import Enum
 import logging
+
+from src.abstractions.types.memory_types import MemoryPressureLevel, MemoryAllocation
 
 logger = logging.getLogger(__name__)
 
 
-class MemoryPressureLevel(Enum):
-    """Memory pressure levels."""
-    NORMAL = "normal"
-    WARNING = "warning"
-    HIGH = "high"
-    CRITICAL = "critical"
+# MemoryPressureLevel moved to abstractions.types.memory_types
 
 
-@dataclass
-class MemoryAllocation:
-    """Track a memory allocation."""
-    name: str
-    owner: str
-    size_mb: float
-    allocated_at: float
-    description: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
+# MemoryAllocation moved to abstractions.types.memory_types
 
 
 class MemoryTrackerService:

@@ -7,34 +7,20 @@ import logging
 import threading
 import time
 from typing import Dict, Any, Optional, Callable, List, Tuple
-from dataclasses import dataclass, field
-from enum import Enum
 import weakref
 from contextlib import contextmanager
 
+from src.abstractions.types.memory_types import MemoryPressureLevel, MemoryAllocation
 from .memory_tracker import get_memory_tracker, MemorySnapshot
 from ..config.processing_config import ProcessingConfig, ChunkInfo
 
 logger = logging.getLogger(__name__)
 
 
-class MemoryPressureLevel(Enum):
-    """Memory pressure levels."""
-    NORMAL = "normal"
-    WARNING = "warning"
-    HIGH = "high"
-    CRITICAL = "critical"
+# MemoryPressureLevel moved to abstractions.types.memory_types
 
 
-@dataclass
-class MemoryAllocation:
-    """Track memory allocations."""
-    name: str
-    size_mb: float
-    timestamp: float
-    owner: Optional[str] = None
-    can_release: bool = True
-    priority: int = 0  # Higher priority = keep longer
+# MemoryAllocation moved to abstractions.types.memory_types
 
 
 class MemoryManager:

@@ -2,46 +2,19 @@
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Union, Tuple
-from dataclasses import dataclass
-from enum import Enum
 import numpy as np
 import logging
 
+from src.abstractions.types.feature_types import SourceType, FeatureResult
 # Registry import removed - unused import violating base layer architecture
 from src.config import config
 # Database schema import removed - using dependency injection to avoid architectural violation
 
 logger = logging.getLogger(__name__)
 
-class SourceType(Enum):
-    """Types of data sources for feature extraction."""
-    RASTER = "raster"
-    VECTOR = "vector"
-    TABULAR = "tabular"
-    API = "api"
-    COMPUTED = "computed"
-    MIXED = "mixed"
+# SourceType moved to abstractions.types.feature_types
 
-@dataclass
-class FeatureResult:
-    """Standard feature extraction result."""
-    feature_name: str
-    feature_type: str
-    value: Union[float, np.ndarray]
-    metadata: Optional[Dict[str, Any]] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for storage."""
-        value = self.value
-        if isinstance(value, np.ndarray):
-            value = value.tolist()
-            
-        return {
-            'feature_name': self.feature_name,
-            'feature_type': self.feature_type,
-            'feature_value': value,
-            'computation_metadata': self.metadata or {}
-        }
+# FeatureResult moved to abstractions.types.feature_types
 
 
 class BaseFeature(ABC):

@@ -31,6 +31,12 @@ from .feature_types import SourceType, FeatureResult
 # Grid types
 from .grid_types import GridCell
 
+# Validation types
+from .validation_types import (
+    BoundsValidation, CoordinateValidation, ValueRangeValidation,
+    SpatialIntegrityValidation, ValidationErrorType, ValidationContext
+)
+
 __all__ = [
     # Checkpoint
     'CheckpointData', 'CheckpointMetadata', 'CheckpointLevel', 'CheckpointStatus',
@@ -54,5 +60,9 @@ __all__ = [
     'SourceType', 'FeatureResult',
     
     # Grid
-    'GridCell'
+    'GridCell',
+    
+    # Validation
+    'BoundsValidation', 'CoordinateValidation', 'ValueRangeValidation',
+    'SpatialIntegrityValidation', 'ValidationErrorType', 'ValidationContext'
 ]
