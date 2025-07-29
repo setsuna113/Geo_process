@@ -39,6 +39,8 @@ class MergeStage(PipelineStage):
             if len(resampled_datasets) < 2:
                 return StageResult(
                     success=False,
+                    data={'error': 'Insufficient datasets'},
+                    metrics={},
                     warnings=['Need at least 2 datasets for merging']
                 )
             
@@ -161,8 +163,12 @@ class MergeStage(PipelineStage):
                     
                     return StageResult(
                         success=False,
-                        error=f"Validation error during merge: {error_msg}",
-                        data={'validation_results': validation_results}
+                        data={
+                            'error': f"Validation error during merge: {error_msg}",
+                            'validation_results': validation_results
+                        },
+                        metrics={},
+                        warnings=[f"Validation error: {error_msg}"]
                     )
                 else:
                     # Re-raise non-validation errors
@@ -172,5 +178,7 @@ class MergeStage(PipelineStage):
             logger.error(f"Merge stage failed: {e}")
             return StageResult(
                 success=False,
-                error=str(e)
+                data={'error': str(e)},
+                metrics={},
+                warnings=[f"Merge stage failed: {str(e)}"]
             )
