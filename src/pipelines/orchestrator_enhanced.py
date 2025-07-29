@@ -239,6 +239,65 @@ class EnhancedPipelineOrchestrator(PipelineOrchestrator):
             if hasattr(self, 'context') and isinstance(self.context, EnhancedPipelineContext):
                 self.context.stop_monitoring()
     
+    def _execute_stage(self, stage: PipelineStage, 
+                      stage_registry: Dict[str, PipelineStage]) -> bool:
+        """Execute a single stage with enhanced logging context.
+        
+        Args:
+            stage: Stage to execute
+            stage_registry: Registry of all stages
+            
+        Returns:
+            True if successful
+        """
+        # Wrap stage execution with logging context
+        stage_name = stage.name
+        
+        # Special handling for merge stage
+        if stage_name == "merge" and isinstance(self.context, EnhancedPipelineContext):
+            with self.context.logging_context.operation("merge_datasets"):
+                logger.info(f"Executing merge stage with enhanced monitoring")
+                result = super()._execute_stage(stage, stage_registry)
+                
+                # Log merge-specific metrics if available
+                if hasattr(self.context, 'shared_data'):
+                    merge_validation = self.context.shared_data.get('merge_validation_results')
+                    if merge_validation:
+                        logger.info(
+                            "Merge validation summary",
+                            extra={
+                                'validation_results': len(merge_validation),
+                                'validation_errors': sum(v['result'].error_count for v in merge_validation),
+                                'validation_warnings': sum(v['result'].warning_count for v in merge_validation)
+                            }
+                        )
+                    
+                    # Track merge metrics in monitoring
+                    if hasattr(self.context, 'monitor') and self.context.monitor:
+                        self.context.monitor.track_metric(
+                            'merge_datasets_count',
+                            len(self.context.shared_data.get('resampled_datasets', []))
+                        )
+                        
+                        # Track alignment metrics if available
+                        stage_results = self.context.get_stage_results()
+                        merge_result = stage_results.get('merge', {})
+                        if merge_result and 'metrics' in merge_result:
+                            metrics = merge_result['metrics']
+                            self.context.monitor.track_metric(
+                                'datasets_requiring_alignment',
+                                metrics.get('datasets_requiring_alignment', 0)
+                            )
+                            self.context.monitor.track_metric(
+                                'max_alignment_shift_degrees',
+                                metrics.get('max_alignment_shift_degrees', 0.0)
+                            )
+                
+                return result
+        else:
+            # Standard stage execution
+            return super()._execute_stage(stage, stage_registry)
+    
     def _is_stage_completed(self, stage_name: str) -> bool:
         """Check if stage was previously completed.
         

@@ -1,13 +1,15 @@
 # src/pipelines/stages/merge_stage.py
 """Dataset merging stage - orchestration only."""
 
-from typing import List, Tuple
-import logging
+from typing import List, Tuple, Dict, Any
 from pathlib import Path
 from .base_stage import PipelineStage, StageResult
 from src.processors.data_preparation.coordinate_merger import CoordinateMerger
+from src.processors.data_preparation.raster_alignment import RasterAligner
+from src.infrastructure.logging import get_logger
+from src.infrastructure.logging.decorators import log_stage
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MergeStage(PipelineStage):
@@ -25,6 +27,7 @@ class MergeStage(PipelineStage):
         """Validate merge configuration."""
         return True, []
     
+    @log_stage("merge")
     def execute(self, context) -> StageResult:
         """Orchestrate merge process."""
         logger.info("Starting merge stage orchestration")
@@ -42,15 +45,55 @@ class MergeStage(PipelineStage):
             # Convert ResampledDatasetInfo objects to dict format for the merger
             dataset_dicts = []
             for info in resampled_datasets:
+                # Detect storage type from metadata
+                if info.metadata.get('memory_aware', False):
+                    # New windowed storage format
+                    table_name = info.metadata.get('storage_table')
+                    if not table_name:
+                        logger.warning(f"No storage_table found for memory-aware dataset {info.name}")
+                        table_name = f"windowed_{info.name.replace('-', '_')}"
+                else:
+                    # Legacy naming
+                    table_name = f"passthrough_{info.name.replace('-', '_')}" if info.metadata.get('passthrough', False) else f"resampled_{info.name.replace('-', '_')}"
+                
                 dataset_dict = {
                     'name': info.name,
-                    'table_name': f"passthrough_{info.name.replace('-', '_')}" if info.metadata.get('passthrough', False) else f"resampled_{info.name.replace('-', '_')}",
+                    'table_name': table_name,
                     'source_path': str(info.source_path),
                     'bounds': list(info.bounds),  # Ensure it's a list
                     'resolution': info.target_resolution,
-                    'passthrough': info.metadata.get('passthrough', False)
+                    'passthrough': info.metadata.get('passthrough', False),
+                    'memory_aware': info.metadata.get('memory_aware', False)
                 }
                 dataset_dicts.append(dataset_dict)
+            
+            # Check alignment using RasterAligner
+            logger.info("Checking dataset alignment...")
+            aligner = RasterAligner()
+            alignment_report = aligner.calculate_grid_shifts(resampled_datasets)
+            
+            # Log alignment issues
+            alignment_metrics = {
+                'datasets_requiring_alignment': 0,
+                'max_shift_degrees': 0.0
+            }
+            
+            for alignment in alignment_report:
+                if alignment.requires_shift:
+                    alignment_metrics['datasets_requiring_alignment'] += 1
+                    max_shift = max(abs(alignment.x_shift), abs(alignment.y_shift))
+                    alignment_metrics['max_shift_degrees'] = max(
+                        alignment_metrics['max_shift_degrees'], 
+                        max_shift
+                    )
+                    logger.info(f"Dataset {alignment.aligned_dataset} requires shift: "
+                              f"x={alignment.x_shift:.6f}, y={alignment.y_shift:.6f} degrees")
+            
+            # Determine chunk size based on config and dataset sizes
+            chunk_size = None
+            if context.config.get('merge.enable_chunked_processing', False):
+                chunk_size = context.config.get('merge.chunk_size', 5000)
+                logger.info(f"Using chunked processing with chunk_size={chunk_size}")
             
             # Delegate all work to processor
             merger = CoordinateMerger(context.config, context.db)
@@ -58,7 +101,8 @@ class MergeStage(PipelineStage):
             try:
                 ml_ready_path = merger.create_ml_ready_parquet(
                     dataset_dicts,
-                    context.output_dir
+                    context.output_dir,
+                    chunk_size=chunk_size
                 )
                 
                 # Get validation results
@@ -89,7 +133,8 @@ class MergeStage(PipelineStage):
                     success=True,
                     data={
                         'ml_ready_path': str(ml_ready_path),
-                        'file_size_mb': ml_ready_path.stat().st_size / (1024**2)
+                        'file_size_mb': ml_ready_path.stat().st_size / (1024**2),
+                        'alignment_report': alignment_report
                     },
                     metrics={
                         'datasets_merged': len(resampled_datasets),
@@ -97,7 +142,10 @@ class MergeStage(PipelineStage):
                         'validation_checks': len(validation_results),
                         'validation_errors': total_errors,
                         'validation_warnings': total_warnings,
-                        'validation_failures': failed_validations
+                        'validation_failures': failed_validations,
+                        'datasets_requiring_alignment': alignment_metrics['datasets_requiring_alignment'],
+                        'max_alignment_shift_degrees': alignment_metrics['max_shift_degrees'],
+                        'chunked_processing': chunk_size is not None
                     },
                     warnings=warnings
                 )
