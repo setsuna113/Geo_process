@@ -132,10 +132,15 @@ class UnifiedMonitor:
                 
             except Exception as e:
                 # Mark as failed - safely get current progress
+                completed_units = 0
                 try:
-                    node_info = self.progress_backend.get_node(self.experiment_id, node_id)
-                    completed_units = node_info.get('completed_units', 0) if node_info else 0
-                except:
+                    if hasattr(self.progress_backend, 'get_node') and self.experiment_id and node_id:
+                        node_info = self.progress_backend.get_node(self.experiment_id, node_id)
+                        if isinstance(node_info, dict):
+                            completed_units = node_info.get('completed_units', 0)
+                except (KeyError, AttributeError, TypeError) as lookup_error:
+                    # Log the lookup error but don't fail
+                    logger.debug(f"Could not retrieve node info for {node_id}: {lookup_error}")
                     completed_units = 0
                 
                 self.progress_backend.update_progress(

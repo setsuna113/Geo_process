@@ -4,6 +4,7 @@ import logging
 import sys
 import json
 import traceback
+import functools
 from typing import Dict, Any, Optional, Union
 from contextvars import ContextVar
 from datetime import datetime
@@ -210,13 +211,12 @@ class StructuredLogger(logging.Logger):
         return get_logger(child_name)
 
 
-# Global logger cache with size limit
-_logger_cache: Dict[str, StructuredLogger] = {}
-_logger_cache_max_size = 1000  # Prevent unbounded growth
-
-
+# Use LRU cache for better memory management
+@functools.lru_cache(maxsize=1000)
 def get_logger(name: str) -> StructuredLogger:
     """Get or create a structured logger instance.
+    
+    Uses LRU cache to automatically manage memory and evict least recently used loggers.
     
     Args:
         name: Logger name (usually __name__)
@@ -228,24 +228,12 @@ def get_logger(name: str) -> StructuredLogger:
         from src.infrastructure.logging import get_logger
         logger = get_logger(__name__)
     """
-    if name in _logger_cache:
-        return _logger_cache[name]
-    
-    # Check cache size and clean if needed
-    if len(_logger_cache) >= _logger_cache_max_size:
-        # Remove oldest entries (simple FIFO for now)
-        # In production, consider using functools.lru_cache
-        keys_to_remove = list(_logger_cache.keys())[:len(_logger_cache) // 4]
-        for key in keys_to_remove:
-            del _logger_cache[key]
-    
     # Temporarily set logger class
     original_class = logging.getLoggerClass()
     logging.setLoggerClass(StructuredLogger)
     
     try:
         logger = logging.getLogger(name)
-        _logger_cache[name] = logger
         return logger
     finally:
         # Restore original logger class
