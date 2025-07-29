@@ -7,9 +7,9 @@ import numpy as np
 from pathlib import Path
 import logging
 
-from .lazy_loadable import LazyLoadable
-from .tileable import Tileable, TileSpec
-from .cacheable import Cacheable
+from src.abstractions.mixins import LazyLoadable
+from src.abstractions.mixins import Tileable, TileSpec
+from src.abstractions.mixins import Cacheable
 
 logger = logging.getLogger(__name__)
 

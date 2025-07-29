@@ -7,7 +7,7 @@ import logging
 from enum import Enum
 from dataclasses import dataclass, field
 
-from .cacheable import Cacheable
+from src.abstractions.mixins import Cacheable
 
 logger = logging.getLogger(__name__)
 

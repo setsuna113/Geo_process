@@ -9,7 +9,8 @@ import pandas as pd
 from spopt.region import MaxPHeuristic
 import libpysal
 
-from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
+from src.base.analyzer import BaseAnalyzer
+from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
 from src.config import config
 from src.database.connection import DatabaseManager
 

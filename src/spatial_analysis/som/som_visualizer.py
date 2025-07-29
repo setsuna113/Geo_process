@@ -12,7 +12,7 @@ from matplotlib.patches import Circle
 from matplotlib.colors import ListedColormap
 
 
-from src.spatial_analysis.base_analyzer import AnalysisResult
+from src.abstractions.interfaces.analyzer import AnalysisResult
 
 logger = logging.getLogger(__name__)
 

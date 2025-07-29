@@ -13,7 +13,7 @@ import json
 import time
 import logging
 
-from src.foundations.types.checkpoint_types import (
+from src.abstractions.types.checkpoint_types import (
     CheckpointData, CheckpointFilter, CheckpointLevel, CheckpointStatus,
     StorageConfig, StorageBackend,
     CheckpointError, CheckpointNotFoundError, CheckpointCorruptedError,

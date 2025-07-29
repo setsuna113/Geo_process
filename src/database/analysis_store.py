@@ -9,7 +9,7 @@ import numpy as np
 from pathlib import Path
 
 from src.database.connection import DatabaseManager
-from src.spatial_analysis.base_analyzer import AnalysisResult, AnalysisMetadata
+from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
 
 logger = logging.getLogger(__name__)
 

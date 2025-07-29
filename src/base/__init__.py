@@ -42,13 +42,20 @@ Usage Example:
     results = processor.process_batch(species_records)
 """
 
-from .processor import BaseProcessor, ProcessingResult, LegacyMemoryTracker as MemoryTracker
-from .grid import BaseGrid, GridCell
-from .feature import BaseFeature, FeatureResult
-from .dataset import BaseDataset, DatasetInfo
+from .processor import BaseProcessor, LegacyMemoryTracker as MemoryTracker
+from .grid import BaseGrid
+from .feature import BaseFeature
+from .dataset import BaseDataset
+from .analyzer import BaseAnalyzer
+
+# Import types from abstractions
+from src.abstractions.types import (
+    ProcessingResult, GridCell, FeatureResult, DatasetInfo
+)
+from .analyzer import BaseAnalyzer
 
 # Checkpoint system abstractions
-from src.foundations.types.checkpoint_types import (
+from src.abstractions.types.checkpoint_types import (
     CheckpointData, CheckpointMetadata, CheckpointLevel, CheckpointStatus,
     CheckpointFilter, StorageConfig, StorageBackend,
     CheckpointError, CheckpointNotFoundError, CheckpointCorruptedError,
@@ -77,15 +84,18 @@ __all__ = [
     
     # Grid classes
     'BaseGrid', 
-    'GridCell',
+    'GridCell',  # From abstractions.types
     
     # Feature classes  
     'BaseFeature', 
-    'FeatureResult',
+    'FeatureResult',  # From abstractions.types
     
     # Dataset classes
     'BaseDataset', 
-    'DatasetInfo',
+    'DatasetInfo',  # From abstractions.types
+    
+    # Analyzer classes
+    'BaseAnalyzer',
     
     # Checkpoint data types
     'CheckpointData',

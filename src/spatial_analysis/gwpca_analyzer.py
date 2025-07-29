@@ -12,14 +12,14 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import xarray as xr
 
-from src.infrastructure.analyzers.enhanced_analyzer import EnhancedAnalyzer
-from src.foundations.interfaces.analyzer import AnalysisResult, AnalysisMetadata
+from src.base.analyzer import BaseAnalyzer
+from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
 from src.config import config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
-class GWPCAAnalyzer(EnhancedAnalyzer):
+class GWPCAAnalyzer(BaseAnalyzer):
     """
     Geographically Weighted PCA analyzer with block aggregation support.
     

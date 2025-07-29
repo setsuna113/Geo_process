@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
-from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
+from src.base.processor import BaseProcessor
 from src.database.connection import DatabaseManager
 from src.domain.raster.catalog import RasterCatalog
 

@@ -10,7 +10,7 @@ import xarray as xr
 import geopandas as gpd
 from datetime import datetime
 
-from src.spatial_analysis.base_analyzer import AnalysisResult, AnalysisMetadata
+from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
 
 logger = logging.getLogger(__name__)
 

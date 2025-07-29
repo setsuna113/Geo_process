@@ -11,7 +11,7 @@ import seaborn as sns
 from matplotlib.colors import TwoSlopeNorm
 import xarray as xr
 
-from src.spatial_analysis.base_analyzer import AnalysisResult
+from src.abstractions.interfaces.analyzer import AnalysisResult
 
 logger = logging.getLogger(__name__)
 

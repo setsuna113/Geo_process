@@ -10,8 +10,8 @@ import threading
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .tileable import Tileable, TileSpec
-from .cacheable import Cacheable
+from src.abstractions.mixins import Tileable, TileSpec
+from src.abstractions.mixins import Cacheable
 from ..checkpoints import get_checkpoint_manager, CheckpointLevel
 
 logger = logging.getLogger(__name__)

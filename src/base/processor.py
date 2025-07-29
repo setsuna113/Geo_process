@@ -13,6 +13,7 @@ import mmap
 import signal
 import threading
 from dataclasses import dataclass, asdict
+from src.abstractions.types import ProcessingResult, ProcessorConfig
 from datetime import datetime
 
 # Registry import removed - unused import violating base layer architecture

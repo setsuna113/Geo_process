@@ -12,7 +12,8 @@ import os
 import gc
 from minisom import MiniSom
 
-from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
+from src.base.analyzer import BaseAnalyzer
+from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
 from src.processors.spatial_analysis.data_processor import SpatialDataProcessor
 from src.database.analysis_store import AnalysisStore
 from src.processors.spatial_analysis.result_store import ResultStore

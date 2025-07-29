@@ -2,7 +2,8 @@
 
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional, Tuple, Iterator
-from dataclasses import dataclass
+# GridCell moved to abstractions
+from src.abstractions.types import GridCell
 from shapely.geometry import Polygon, Point, box
 from shapely.ops import transform
 import pyproj
@@ -14,35 +15,7 @@ from src.config import config
 
 logger = logging.getLogger(__name__)
 
-@dataclass
-class GridCell:
-    """Standard grid cell representation."""
-    cell_id: str
-    geometry: Polygon
-    centroid: Point
-    area_km2: float
-    bounds: Tuple[float, float, float, float]  # minx, miny, maxx, maxy
-    metadata: Optional[Dict[str, Any]] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for storage."""
-        return {
-            'cell_id': self.cell_id,
-            'geometry_wkt': self.geometry.wkt,
-            'centroid_wkt': self.centroid.wkt,
-            'area_km2': self.area_km2,
-            'bounds': self.bounds,
-            'metadata': self.metadata or {}
-        }
-    
-    def intersects(self, geometry: Polygon) -> bool:
-        """Check if cell intersects with geometry."""
-        return self.geometry.intersects(geometry)
-    
-    def intersection_area(self, geometry: Polygon) -> float:
-        """Calculate intersection area in km²."""
-        if not self.intersects(geometry):
-            return 0.0
+# GridCell moved to abstractions.types.grid_types
         intersection = self.geometry.intersection(geometry)
         return intersection.area / 1_000_000  # m² to km²
 

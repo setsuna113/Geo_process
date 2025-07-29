@@ -10,7 +10,8 @@ import os
 import gc
 from minisom import MiniSom
 
-from src.spatial_analysis.base_analyzer import BaseAnalyzer, AnalysisResult, AnalysisMetadata
+from src.base.analyzer import BaseAnalyzer
+from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
 from src.spatial_analysis.memory_aware_processor import (
     SubsamplingStrategy, 
     MemoryAwareProcessor, 

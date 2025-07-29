@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-from src.spatial_analysis.base_analyzer import AnalysisResult
+from src.abstractions.interfaces.analyzer import AnalysisResult
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import seaborn as sns
 
-from src.spatial_analysis.base_analyzer import AnalysisResult
+from src.abstractions.interfaces.analyzer import AnalysisResult
 
 logger = logging.getLogger(__name__)
 

@@ -12,7 +12,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 
-from src.foundations.types.checkpoint_types import (
+from src.abstractions.types.checkpoint_types import (
     CheckpointData, CheckpointLevel, CheckpointStatus, CheckpointMetadata,
     CheckpointFilter, CheckpointError
 )
