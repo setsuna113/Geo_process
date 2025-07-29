@@ -20,6 +20,12 @@ from .raster_cache import RasterCache
 from .schema_management import SchemaManagement
 from .checkpoint_operations import CheckpointOperations
 
+# Export database exceptions for external use
+from ..exceptions import (
+    DatabaseError, DatabaseNotFoundError, DatabaseDuplicateError,
+    DatabaseConnectionError, DatabaseIntegrityError
+)
+
 
 class DatabaseSchema:
     """

@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 import json
 import logging
 from ..connection import db
+from ..exceptions import handle_database_error, safe_fetch_id
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 class SpeciesOperations:
     """Species-related database operations."""
     
+    @handle_database_error("store_species_range")
     def store_species_range(self, species_data: Dict[str, Any]) -> str:
         """Store species range data from .gpkg file."""
         with db.get_cursor() as cursor:
@@ -43,10 +45,11 @@ class SpeciesOperations:
                 'area_km2': species_data.get('area_km2'),
                 'metadata': json.dumps(species_data.get('metadata', {}))
             })
-            range_id = cursor.fetchone()['id']
+            range_id = safe_fetch_id(cursor, "store_species_range")
             logger.debug(f"✅ Stored species range: {species_data['species_name']} ({range_id})")
             return range_id
     
+    @handle_database_error("store_species_intersections_batch")
     def store_species_intersections_batch(self, intersections: List[Dict]) -> int:
         """Bulk store species-grid intersections."""
         with db.get_cursor() as cursor:

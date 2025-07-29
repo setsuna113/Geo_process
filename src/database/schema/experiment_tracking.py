@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime
 from ..connection import db
+from ..exceptions import handle_database_error, safe_fetch_id, DatabaseDuplicateError
 
 logger = logging.getLogger(__name__)
 
@@ -21,27 +22,25 @@ class ExperimentTracking:
                     VALUES (%s, %s, %s, %s)
                     RETURNING id
                 """, (name, description, json.dumps(config), config.get('created_by', 'system')))
-                experiment_id = cursor.fetchone()['id']
+                experiment_id = safe_fetch_id(cursor, "create_experiment")
                 logger.info(f"✅ Created experiment '{name}': {experiment_id}")
                 return experiment_id
-            except Exception as e:
-                if 'duplicate key' in str(e).lower() or 'unique constraint' in str(e).lower():
-                    # Handle duplicate experiment name by appending timestamp
-                    import time
-                    timestamp = int(time.time())
-                    new_name = f"{name}_{timestamp}"
-                    logger.warning(f"Experiment '{name}' exists, creating as '{new_name}'")
-                    cursor.execute("""
-                        INSERT INTO experiments (name, description, config, created_by)
-                        VALUES (%s, %s, %s, %s)
-                        RETURNING id
-                    """, (new_name, description, json.dumps(config), config.get('created_by', 'system')))
-                    experiment_id = cursor.fetchone()['id']
-                    logger.info(f"✅ Created experiment '{new_name}': {experiment_id}")
-                    return experiment_id
-                else:
-                    raise
+            except DatabaseDuplicateError:
+                # Handle duplicate experiment name by appending timestamp
+                import time
+                timestamp = int(time.time())
+                new_name = f"{name}_{timestamp}"
+                logger.warning(f"Experiment '{name}' exists, creating as '{new_name}'")
+                cursor.execute("""
+                    INSERT INTO experiments (name, description, config, created_by)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id
+                """, (new_name, description, json.dumps(config), config.get('created_by', 'system')))
+                experiment_id = safe_fetch_id(cursor, "create_experiment_with_timestamp")
+                logger.info(f"✅ Created experiment '{new_name}': {experiment_id}")
+                return experiment_id
     
+    @handle_database_error("update_experiment_status")
     def update_experiment_status(self, experiment_id: str, status: str, 
                                 results: Optional[Dict] = None, 
                                 error_message: Optional[str] = None):
@@ -54,6 +53,7 @@ class ExperimentTracking:
                 WHERE id = %s
             """, (status, completed_at, json.dumps(results or {}), error_message, experiment_id))
     
+    @handle_database_error("create_processing_job") 
     def create_processing_job(self, job_type: str, job_name: str, parameters: Dict,
                              parent_experiment_id: Optional[str] = None) -> str:
         """Create processing job."""
@@ -63,7 +63,7 @@ class ExperimentTracking:
                 VALUES (%s, %s, %s, %s)
                 RETURNING id
             """, (job_type, job_name, json.dumps(parameters), parent_experiment_id))
-            job_id = cursor.fetchone()['id']
+            job_id = safe_fetch_id(cursor, "create_processing_job")
             logger.info(f"✅ Created job '{job_name}' ({job_type}): {job_id}")
             return job_id
     

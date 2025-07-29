@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 import json
 import logging
 from ..connection import db
+from ..exceptions import handle_database_error, safe_fetch_id
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 class FeatureOperations:
     """Feature-related database operations."""
     
+    @handle_database_error("store_feature")
     def store_feature(self, grid_id: str, cell_id: str, feature_type: str,
                      feature_name: str, feature_value: float,
                      metadata: Optional[Dict] = None) -> str:
@@ -28,8 +30,9 @@ class FeatureOperations:
                 RETURNING id
             """, (grid_id, cell_id, feature_type, feature_name, feature_value,
                   json.dumps(metadata or {})))
-            return cursor.fetchone()['id']
+            return safe_fetch_id(cursor, "store_feature")
     
+    @handle_database_error("store_features_batch")
     def store_features_batch(self, features: List[Dict]) -> int:
         """Bulk store features."""
         with db.get_cursor() as cursor:
@@ -57,6 +60,7 @@ class FeatureOperations:
             
             return cursor.rowcount
     
+    @handle_database_error("store_climate_data_batch")
     def store_climate_data_batch(self, climate_data: List[Dict]) -> int:
         """Bulk store climate data."""
         with db.get_cursor() as cursor:

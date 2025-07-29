@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 import json
 import logging
 from ..connection import db
+from ..exceptions import handle_database_error, safe_fetch_id, DatabaseNotFoundError
 from src.config import config
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 class GridOperations:
     """Grid-related database operations."""
     
+    @handle_database_error("store_grid_definition")
     def store_grid_definition(self, name: str, grid_type: str, resolution: int,
                              bounds: Optional[str] = None, 
                              metadata: Optional[Dict] = None) -> str:
@@ -37,10 +39,11 @@ class GridOperations:
                 'bounds': bounds,
                 'metadata': json.dumps(metadata or {})
             })
-            grid_id = cursor.fetchone()['id']
+            grid_id = safe_fetch_id(cursor, "store_grid_definition")
             logger.info(f"✅ Created grid '{name}' with ID: {grid_id}")
             return grid_id
     
+    @handle_database_error("store_grid_cells_batch")
     def store_grid_cells_batch(self, grid_id: str, cells_data: List[Dict]) -> int:
         """Bulk insert grid cells."""
         with db.get_cursor() as cursor:
@@ -66,6 +69,7 @@ class GridOperations:
             logger.info(f"✅ Inserted {inserted_count} grid cells for grid {grid_id}")
             return inserted_count
     
+    @handle_database_error("get_grid_by_name")
     def get_grid_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get grid by name."""
         with db.get_cursor() as cursor:
