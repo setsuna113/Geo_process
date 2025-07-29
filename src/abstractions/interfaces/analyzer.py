@@ -2,7 +2,8 @@
 """Pure analyzer interface - NO IMPLEMENTATIONS!"""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Union, Tuple, List
+from typing import Dict, Any, Optional, Union, Tuple, List, Callable
+from pathlib import Path
 import numpy as np
 import xarray as xr
 from dataclasses import dataclass
@@ -86,5 +87,31 @@ class IAnalyzer(ABC):
             
         Returns:
             Tuple of (is_valid, list_of_issues)
+        """
+        pass
+    
+    @abstractmethod
+    def save_results(self, result: AnalysisResult, output_name: str, 
+                     output_dir: Path = None) -> Path:
+        """
+        Save analysis results to disk.
+        
+        Args:
+            result: Analysis result to save
+            output_name: Base name for output files
+            output_dir: Directory to save results (optional)
+            
+        Returns:
+            Path to the primary saved file
+        """
+        pass
+    
+    @abstractmethod
+    def set_progress_callback(self, callback: Callable[[int, int, str], None]) -> None:
+        """
+        Set callback for progress updates.
+        
+        Args:
+            callback: Function that accepts (current, total, message)
         """
         pass
