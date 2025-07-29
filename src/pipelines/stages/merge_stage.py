@@ -83,36 +83,27 @@ class MergeStage(PipelineStage):
                 logger.info(f"Using standard merging (estimated size: {total_size_estimate:.0f}MB)")
                 merged_dataset = self._merge_standard(context, resampled_datasets)
             
-            # Store in context
-            context.set('merged_dataset', merged_dataset)
+            # Skip NetCDF creation - go directly to ML-ready parquet
+            logger.info("Creating ML-ready parquet dataset directly from database")
             
-            # Save to file with compression
-            output_path = context.output_dir / 'merged_dataset.nc'
+            # Create ML-ready parquet dataset from the database coordinate data
+            ml_ready_path = self._create_ml_ready_parquet(context, resampled_datasets)
             
-            # Simple encoding without problematic parameters
-            encoding = {
-                var: {'zlib': True, 'complevel': 4} 
-                for var in merged_dataset.data_vars
-            }
-            
-            # Save with netcdf4 engine
-            merged_dataset.to_netcdf(output_path, encoding=encoding, engine='netcdf4')
-            
-            # Store merged dataset metadata in database
-            from src.database.schema import schema
+            # Store metadata in context for later stages  
             merged_metadata = {
                 'experiment_id': context.experiment_id,
                 'timestamp': datetime.now().isoformat(),
-                'shape': dict(merged_dataset.sizes),
-                'variables': list(merged_dataset.data_vars),
+                'shape': dict(merged_dataset.sizes) if merged_dataset else {},
+                'variables': list(merged_dataset.data_vars) if merged_dataset else [],
                 'bounds': self._calculate_common_bounds(resampled_datasets),
                 'resolution': resampled_datasets[0].target_resolution if resampled_datasets else None,
-                'file_path': str(output_path),
-                'file_size_mb': output_path.stat().st_size / (1024**2)
+                'ml_ready_path': str(ml_ready_path),
+                'file_size_mb': ml_ready_path.stat().st_size / (1024**2) if ml_ready_path.exists() else 0
             }
             
-            # Store metadata in context for later stages
             context.set('merge_metadata', merged_metadata)
+            context.set('ml_ready_path', str(ml_ready_path))
+            logger.info(f"✅ ML-ready parquet created: {ml_ready_path}")
             logger.info("✅ Merge metadata stored in context")
             
             # Clean up memory for lazy/chunked processing
@@ -613,3 +604,83 @@ class MergeStage(PipelineStage):
         
         logger.info(f"Created chunked merged dataset with shape: {dict(merged.sizes)}")
         return merged
+    
+    def _create_ml_ready_parquet(self, context, resampled_datasets):
+        """Create ML-ready parquet directly from database coordinate data."""
+        import pandas as pd
+        
+        logger.info("Loading coordinate data from database tables")
+        
+        # Collect all coordinate data from passthrough tables
+        all_data = []
+        
+        for info in resampled_datasets:
+            logger.info(f"Loading data for {info.name}")
+            
+            # Load coordinate data from database table
+            table_name = f"passthrough_{info.name.replace('-', '_')}"
+            
+            with context.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Check if table uses row_idx/col_idx or x/y structure
+                    cur.execute(f"""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name = %s AND table_schema = 'public'
+                    """, (table_name,))
+                    columns = [row[0] for row in cur.fetchall()]
+                    
+                    if 'x' in columns and 'y' in columns:
+                        # Standard coordinate structure
+                        cur.execute(f"SELECT x, y, value FROM {table_name} WHERE value IS NOT NULL AND value != 0")
+                    else:
+                        # Passthrough structure - need to convert row_idx/col_idx to coordinates
+                        logger.info(f"Converting passthrough table {table_name} to coordinates")
+                        
+                        # Get bounds and resolution from info
+                        min_x, min_y, max_x, max_y = info.bounds
+                        resolution = info.target_resolution
+                        
+                        cur.execute(f"SELECT row_idx, col_idx, value FROM {table_name} WHERE value IS NOT NULL AND value != 0")
+                        rows = cur.fetchall()
+                        
+                        # Convert to coordinates
+                        coord_data = []
+                        for row_idx, col_idx, value in rows:
+                            x = min_x + (col_idx + 0.5) * resolution
+                            y = max_y - (row_idx + 0.5) * resolution
+                            coord_data.append((x, y, value))
+                        
+                        rows = coord_data
+                    
+                    if 'x' in columns and 'y' in columns:
+                        rows = cur.fetchall()
+                    
+                    logger.info(f"Loaded {len(rows):,} coordinate points for {info.name}")
+                    
+                    # Convert to DataFrame with renamed column
+                    if rows:
+                        df = pd.DataFrame(rows, columns=['x', 'y', info.name])
+                        all_data.append(df)
+        
+        if not all_data:
+            raise ValueError("No coordinate data found in any dataset")
+        
+        # Merge all datasets on coordinates
+        logger.info("Merging coordinate datasets")
+        merged_df = all_data[0]
+        
+        for df in all_data[1:]:
+            merged_df = merged_df.merge(df, on=['x', 'y'], how='outer')
+        
+        # Sort by coordinates for consistent ordering
+        merged_df = merged_df.sort_values(['y', 'x']).reset_index(drop=True)
+        
+        # Save as parquet
+        output_path = context.output_dir / 'ml_ready_aligned_data.parquet'
+        merged_df.to_parquet(output_path, index=False)
+        
+        logger.info(f"Created ML-ready parquet with {len(merged_df):,} rows and {len(merged_df.columns)} columns")
+        logger.info(f"Columns: {list(merged_df.columns)}")
+        
+        return output_path

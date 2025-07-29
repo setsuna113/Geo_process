@@ -9,6 +9,8 @@ db_data/
 # Python artifacts
 __pycache__/
 pytest.cache/
+db_data
+data
 *.pyc
 *.pyo
 *.pyd
