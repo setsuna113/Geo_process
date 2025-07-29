@@ -7,6 +7,10 @@ import signal
 import queue
 from unittest.mock import Mock, patch, MagicMock
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
 from src.core.signal_handler import SignalHandler, SignalEvent
 
 

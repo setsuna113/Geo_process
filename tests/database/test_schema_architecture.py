@@ -4,6 +4,10 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from typing import Dict, Any
 
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
 from src.database.schema import DatabaseSchema
 from src.database.schema.grid_operations import GridOperations
 
