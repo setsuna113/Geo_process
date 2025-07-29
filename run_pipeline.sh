@@ -10,6 +10,6 @@ echo ""
 # Get the directory of this script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Execute the main production script from the project root
+# Execute the monitored production script from the project root
 cd "$SCRIPT_DIR"
-exec ./scripts/production/run_unified_resampling.sh "$@"
+exec ./scripts/production/run_monitored_pipeline.sh "$@"

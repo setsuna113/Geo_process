@@ -15,7 +15,7 @@ import psutil
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.core.process_controller import ProcessController
+from src.core.process_controller_enhanced import EnhancedProcessController
 from src.core.progress_manager import get_progress_manager
 from src.checkpoints import get_checkpoint_manager
 from src.config.config import Config
@@ -30,7 +30,9 @@ class PipelineCLI:
     def __init__(self):
         self.config = Config()
         self.db = DatabaseManager()
-        self.process_controller = ProcessController()
+        # Get experiment_id from the database if available
+        experiment_id = None
+        self.process_controller = EnhancedProcessController(experiment_id=experiment_id)
         self.progress_manager = get_progress_manager()
         self.checkpoint_manager = get_checkpoint_manager()
         
@@ -60,7 +62,7 @@ if os.getenv('FORCE_TEST_MODE'):
 if os.getenv('DB_NAME'):
     os.environ['DB_NAME'] = os.getenv('DB_NAME')
 
-from src.pipelines.orchestrator import PipelineOrchestrator
+from src.pipelines.orchestrator_enhanced import EnhancedPipelineOrchestrator
 from src.pipelines.stages.load_stage import DataLoadStage
 from src.pipelines.stages.resample_stage import ResampleStage
 from src.pipelines.stages.merge_stage import MergeStage
@@ -72,12 +74,12 @@ from src.database.connection import DatabaseManager
 config = Config()
 db = DatabaseManager()
 
-# Initialize signal handler first
-from src.core.signal_handler import create_signal_handler
-signal_handler = create_signal_handler()
+# Initialize enhanced signal handler first
+from src.core.signal_handler_enhanced import EnhancedSignalHandler
+signal_handler = EnhancedSignalHandler()
 
-# Create pipeline orchestrator with injected signal handler
-orchestrator = PipelineOrchestrator(config, db, signal_handler)
+# Create enhanced pipeline orchestrator with injected signal handler
+orchestrator = EnhancedPipelineOrchestrator(config, db)
 
 # Configure pipeline stages
 analysis_method = '{analysis_method}'

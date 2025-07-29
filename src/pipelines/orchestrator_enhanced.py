@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Type
 from datetime import datetime
 
-from src.config import Config
+from src.config.config import Config
 from src.database.connection import DatabaseManager
 from src.database.schema import DatabaseSchema
 from src.infrastructure.logging import (
