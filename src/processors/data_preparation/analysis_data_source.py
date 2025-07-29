@@ -147,8 +147,17 @@ class DatabaseAnalysisDataset(BaseDataset):
         
         self.db = db_manager
         self.experiment_id = experiment_id
-        self.table_name = kwargs.get('table_name', 'merged_features')
+        # Validate table name to prevent SQL injection
+        self.table_name = self._validate_table_name(kwargs.get('table_name', 'merged_features'))
         self._cursor_name = f"analysis_cursor_{experiment_id[:8]}"
+    
+    def _validate_table_name(self, table_name: str) -> str:
+        """Validate table name to prevent SQL injection."""
+        import re
+        # Allow only alphanumeric, underscore, and schema.table format
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$', table_name):
+            raise ValueError(f"Invalid table name: {table_name}")
+        return table_name
     
     def load_info(self) -> DatasetInfo:
         """Load dataset info from database."""

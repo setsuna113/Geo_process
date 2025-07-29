@@ -45,13 +45,19 @@ class BaseAnalyzer(IAnalyzer, ABC):
             db_connection: Optional database connection
             **kwargs: Additional parameters for subclasses
         """
-        # Handle both dict and Config object patterns
-        if hasattr(config, 'config'):
-            self.config = config.config  # Config object's internal dict
+        # Handle both dict and Config object patterns safely
+        if hasattr(config, 'config') and isinstance(config.config, dict):
+            # This is a Config object with internal dict
+            self.config = config.config
             self.config_obj = config
-        else:
+        elif isinstance(config, dict):
+            # This is already a dict
             self.config = config
             self.config_obj = None
+        else:
+            # Assume it's a Config-like object
+            self.config = config
+            self.config_obj = config
             
         self.db = db_connection
         

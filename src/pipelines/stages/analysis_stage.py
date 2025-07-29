@@ -91,6 +91,7 @@ class AnalysisStage(PipelineStage):
             # Step 1: Load dataset
             logger.debug("Loading dataset")
             dataset = self._load_dataset(context)
+            self._dataset = dataset  # Store for cleanup
             dataset_info = dataset.load_info()
             
             logger.info(
@@ -219,7 +220,10 @@ class AnalysisStage(PipelineStage):
             import tempfile
             with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp:
                 df.to_parquet(tmp.name, index=False)
-                return ParquetAnalysisDataset(Path(tmp.name))
+                dataset = ParquetAnalysisDataset(Path(tmp.name))
+                # Store temp file path for cleanup
+                dataset._temp_file = tmp.name
+                return dataset
         
         else:
             raise ValueError(f"Unknown data source: {data_source}")
@@ -253,6 +257,16 @@ class AnalysisStage(PipelineStage):
     def cleanup(self, context):
         """Clean up resources after execution."""
         logger.debug("Starting cleanup")
+        
+        # Clean up temporary files from CSV conversion
+        if hasattr(self, '_dataset') and hasattr(self._dataset, '_temp_file'):
+            try:
+                import os
+                if os.path.exists(self._dataset._temp_file):
+                    os.unlink(self._dataset._temp_file)
+                    logger.debug(f"Removed temporary file: {self._dataset._temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file: {e}")
         
         # Clean up analyzer
         if self._analyzer:
