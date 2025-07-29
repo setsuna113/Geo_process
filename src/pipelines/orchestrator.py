@@ -92,6 +92,10 @@ class PipelineOrchestrator:
         self.progress_tracker = ProgressTracker()
         self.quality_checker = QualityChecker(config)
         
+        # Validation monitoring
+        self.validation_results: Dict[str, List[Dict]] = {}  # stage_name -> validation results
+        self.validation_metrics: Dict[str, Dict[str, int]] = {}  # stage_name -> metrics
+        
         # Recovery components - using unified checkpoint system
         self.checkpoint_manager = get_checkpoint_manager()
         self.failure_handler = FailureHandler(config)
@@ -224,6 +228,10 @@ class PipelineOrchestrator:
             
             # Finalize
             self.status = PipelineStatus.COMPLETED
+            
+            # Report validation summary
+            self._report_final_validation_summary()
+            
             self._finalize_pipeline(results)
             
             return results
@@ -429,6 +437,9 @@ class PipelineOrchestrator:
             
             execution_time = time.time() - start_time
             stage.status = StageStatus.COMPLETED
+            
+            # Track validation results if available
+            self._track_validation_results(stage, result)
             
             # Post-execution processing
             self._post_stage_processing(stage, result, execution_time)
@@ -1102,3 +1113,122 @@ class PipelineOrchestrator:
                 'checkpoint_interval': self.config.get('pipeline.checkpoint_interval', 300)
             }
         }
+    
+    def _track_validation_results(self, stage: PipelineStage, result: StageResult) -> None:
+        """Track validation results from stage execution."""
+        stage_name = stage.name
+        
+        # Initialize tracking for this stage if not exists
+        if stage_name not in self.validation_results:
+            self.validation_results[stage_name] = []
+            self.validation_metrics[stage_name] = {
+                'total_checks': 0,
+                'total_errors': 0,
+                'total_warnings': 0,
+                'failed_checks': 0
+            }
+        
+        # Extract validation results from stage result
+        validation_data = []
+        
+        # Check for validation results in stage result data
+        if result.data and 'validation_results' in result.data:
+            validation_data = result.data['validation_results']
+        
+        # Check for validation results in context (set by processors)
+        elif self.context:
+            context_key = f"{stage_name}_validation_results"
+            if context_key in self.context.shared_data:
+                validation_data = self.context.shared_data[context_key]
+        
+        # Process validation data if available
+        if validation_data:
+            self.validation_results[stage_name].extend(validation_data)
+            
+            # Update metrics
+            for v in validation_data:
+                validation_result = v.get('result')
+                if validation_result:
+                    self.validation_metrics[stage_name]['total_checks'] += 1
+                    self.validation_metrics[stage_name]['total_errors'] += getattr(validation_result, 'error_count', 0)
+                    self.validation_metrics[stage_name]['total_warnings'] += getattr(validation_result, 'warning_count', 0)
+                    if not getattr(validation_result, 'is_valid', True):
+                        self.validation_metrics[stage_name]['failed_checks'] += 1
+        
+        # Extract validation metrics from stage result metrics
+        if result.metrics:
+            for key in ['validation_checks', 'validation_errors', 'validation_warnings', 'validation_failures']:
+                if key in result.metrics:
+                    metric_name = key.replace('validation_', 'total_')
+                    if metric_name == 'total_failures':
+                        metric_name = 'failed_checks'
+                    if metric_name == 'total_checks':
+                        self.validation_metrics[stage_name][metric_name] = result.metrics[key]
+                    else:
+                        self.validation_metrics[stage_name][metric_name] += result.metrics.get(key, 0)
+        
+        # Log validation summary for this stage
+        metrics = self.validation_metrics[stage_name]
+        if metrics['total_checks'] > 0:
+            logger.info(f"Stage {stage_name} validation summary: "
+                       f"{metrics['total_checks']} checks, "
+                       f"{metrics['failed_checks']} failures, "
+                       f"{metrics['total_errors']} errors, "
+                       f"{metrics['total_warnings']} warnings")
+    
+    def get_validation_summary(self) -> Dict[str, Any]:
+        """Get comprehensive validation summary across all stages."""
+        total_metrics = {
+            'total_checks': 0,
+            'total_errors': 0,
+            'total_warnings': 0,
+            'failed_checks': 0
+        }
+        
+        # Aggregate across all stages
+        for stage_metrics in self.validation_metrics.values():
+            for key in total_metrics:
+                total_metrics[key] += stage_metrics.get(key, 0)
+        
+        # Calculate success rate
+        success_rate = 0.0
+        if total_metrics['total_checks'] > 0:
+            successful_checks = total_metrics['total_checks'] - total_metrics['failed_checks']
+            success_rate = (successful_checks / total_metrics['total_checks']) * 100
+        
+        return {
+            'overall_metrics': total_metrics,
+            'success_rate_percent': success_rate,
+            'stage_breakdown': self.validation_metrics.copy(),
+            'has_errors': total_metrics['total_errors'] > 0,
+            'has_warnings': total_metrics['total_warnings'] > 0,
+            'all_stages_passed': total_metrics['failed_checks'] == 0
+        }
+    
+    def _report_final_validation_summary(self) -> None:
+        """Report final validation summary at pipeline completion."""
+        summary = self.get_validation_summary()
+        
+        logger.info("=== PIPELINE VALIDATION SUMMARY ===")
+        logger.info(f"Total validation checks: {summary['overall_metrics']['total_checks']}")
+        logger.info(f"Failed checks: {summary['overall_metrics']['failed_checks']}")
+        logger.info(f"Total errors: {summary['overall_metrics']['total_errors']}")
+        logger.info(f"Total warnings: {summary['overall_metrics']['total_warnings']}")
+        logger.info(f"Success rate: {summary['success_rate_percent']:.1f}%")
+        
+        if not summary['all_stages_passed']:
+            logger.warning("Some validation checks failed - review results for data quality issues")
+        
+        # Report by stage
+        for stage_name, metrics in summary['stage_breakdown'].items():
+            if metrics['total_checks'] > 0:
+                logger.info(f"Stage '{stage_name}': {metrics['total_checks']} checks, "
+                           f"{metrics['failed_checks']} failures, "
+                           f"{metrics['total_errors']} errors, "
+                           f"{metrics['total_warnings']} warnings")
+        
+        logger.info("=== END PIPELINE VALIDATION SUMMARY ===")
+        
+        # Store summary in context for experiment tracking
+        if self.context:
+            self.context.set('validation_summary', summary)

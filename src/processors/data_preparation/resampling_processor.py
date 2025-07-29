@@ -24,6 +24,10 @@ from src.domain.resampling.engines.base_resampler import ResamplingConfig
 from src.domain.resampling.engines.numpy_resampler import NumpyResampler
 from src.domain.resampling.engines.gdal_resampler import GDALResampler
 from src.domain.resampling.cache_manager import ResamplingCacheManager
+from src.domain.validators.coordinate_integrity import (
+    BoundsConsistencyValidator, CoordinateTransformValidator, ParquetValueValidator
+)
+from src.abstractions.interfaces.validator import ValidationSeverity
 
 
 @dataclass
@@ -64,6 +68,17 @@ class ResamplingProcessor(BaseProcessor):
         logger.info("✅ DEBUG: RasterCatalog created")
         self.cache_manager = ResamplingCacheManager()
         self.memory_manager = get_memory_manager()
+        
+        # Initialize validators
+        self.bounds_validator = BoundsConsistencyValidator(tolerance=1e-6)
+        self.transform_validator = CoordinateTransformValidator(max_error_meters=5.0)  # More lenient for resampling
+        self.value_validator = ParquetValueValidator(
+            max_null_percentage=15.0,  # More lenient for resampled data
+            outlier_std_threshold=3.0
+        )
+        
+        # Validation results tracking
+        self.validation_results: List[Dict] = []
         
         # Get resampling configuration
         self.resampling_config = config.get('resampling', {})
@@ -172,6 +187,10 @@ class ResamplingProcessor(BaseProcessor):
             )
             
             logger.info(f"✅ Resampling pipeline completed: {len(resampled_datasets)}/{len(enabled_datasets)} datasets")
+            
+            # Report validation summary
+            self._report_validation_summary()
+            
             return resampled_datasets
             
         except Exception as e:
@@ -237,6 +256,13 @@ class ResamplingProcessor(BaseProcessor):
             )
             logger.info(f"🔍 DEBUG: _get_or_register_raster completed")
             logger.debug(f"🔍 _get_or_register_raster completed")
+            
+            # Validate source bounds
+            self._validate_source_bounds(raster_entry, dataset_name)
+            
+            # Validate coordinate transformation if needed
+            source_crs = raster_entry.crs or 'EPSG:4326'
+            self._validate_coordinate_transformation(source_crs, dataset_name)
             
             # Check if skip-resampling is enabled and resolution matches
             logger.info(f"🔍 DEBUG: Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
@@ -334,6 +360,13 @@ class ResamplingProcessor(BaseProcessor):
                 result_data = self._resample_single(
                     raster_entry, method, progress_callback
                 )
+            
+            # Validate resampled data
+            self._validate_resampled_data(result_data, dataset_name)
+            
+            # Validate output bounds consistency
+            calculated_bounds = self._calculate_output_bounds_from_data(result_data, raster_entry.bounds)
+            self._validate_output_bounds(calculated_bounds, raster_entry.bounds, dataset_name)
             
             # Create resampled dataset info
             resampled_info = ResampledDatasetInfo(
@@ -1076,3 +1109,193 @@ class ResamplingProcessor(BaseProcessor):
             return True, None
         except ValueError as e:
             return False, str(e)
+    
+    # Validation methods
+    def _validate_source_bounds(self, raster_entry, dataset_name: str) -> None:
+        """Validate source raster bounds."""
+        validation_data = {
+            'bounds': raster_entry.bounds,
+            'crs': raster_entry.crs or 'EPSG:4326'
+        }
+        
+        result = self.bounds_validator.validate(validation_data)
+        self.validation_results.append({
+            'stage': 'source_bounds',
+            'dataset': dataset_name,
+            'result': result
+        })
+        
+        if not result.is_valid:
+            error_messages = [issue.message for issue in result.issues 
+                            if issue.severity == ValidationSeverity.ERROR]
+            logger.error(f"Source bounds validation failed for {dataset_name}: {error_messages}")
+            if result.has_errors:
+                raise ValueError(f"Invalid source bounds for dataset {dataset_name}: {error_messages}")
+        
+        # Log warnings
+        warnings = [issue.message for issue in result.issues 
+                   if issue.severity == ValidationSeverity.WARNING]
+        for warning in warnings:
+            logger.warning(f"Source bounds validation warning for {dataset_name}: {warning}")
+    
+    def _validate_coordinate_transformation(self, source_crs: str, dataset_name: str) -> None:
+        """Validate coordinate transformation from source to target CRS."""
+        if source_crs == self.target_crs:
+            logger.info(f"No CRS transformation needed for {dataset_name}")
+            return
+        
+        # Create sample points for transformation validation
+        sample_points = [
+            (0.0, 0.0),      # Origin
+            (1.0, 1.0),      # Unit point
+            (-1.0, -1.0),    # Negative point
+            (180.0, 85.0),   # Near-pole point (if geographic)
+        ]
+        
+        validation_data = {
+            'source_crs': source_crs,
+            'target_crs': self.target_crs,
+            'sample_points': sample_points
+        }
+        
+        result = self.transform_validator.validate(validation_data)
+        self.validation_results.append({
+            'stage': 'coordinate_transform',
+            'dataset': dataset_name,
+            'result': result
+        })
+        
+        if not result.is_valid:
+            error_messages = [issue.message for issue in result.issues 
+                            if issue.severity == ValidationSeverity.ERROR]
+            logger.error(f"Coordinate transformation validation failed for {dataset_name}: {error_messages}")
+            if result.has_errors:
+                raise ValueError(f"Invalid coordinate transformation for dataset {dataset_name}: {error_messages}")
+        
+        # Log warnings
+        warnings = [issue.message for issue in result.issues 
+                   if issue.severity == ValidationSeverity.WARNING]
+        for warning in warnings:
+            logger.warning(f"Coordinate transformation validation warning for {dataset_name}: {warning}")
+    
+    def _validate_resampled_data(self, resampled_data: np.ndarray, dataset_name: str) -> None:
+        """Validate resampled data quality."""
+        if resampled_data is None:
+            return
+        
+        # Convert to DataFrame for validation
+        data_flat = resampled_data.flatten()
+        data_flat = data_flat[~np.isnan(data_flat)]  # Remove NaN values
+        
+        if len(data_flat) == 0:
+            logger.warning(f"All resampled data is NaN for {dataset_name}")
+            return
+        
+        import pandas as pd
+        df = pd.DataFrame({dataset_name: data_flat})
+        
+        result = self.value_validator.validate(df)
+        self.validation_results.append({
+            'stage': 'resampled_data',
+            'dataset': dataset_name,
+            'result': result
+        })
+        
+        if not result.is_valid:
+            error_messages = [issue.message for issue in result.issues 
+                            if issue.severity == ValidationSeverity.ERROR]
+            logger.error(f"Resampled data validation failed for {dataset_name}: {error_messages}")
+            # Don't raise error for data quality issues - just log
+        
+        # Log warnings and info
+        warnings = [issue.message for issue in result.issues 
+                   if issue.severity == ValidationSeverity.WARNING]
+        for warning in warnings:
+            logger.warning(f"Resampled data validation warning for {dataset_name}: {warning}")
+        
+        # Log data statistics
+        logger.info(f"Resampled data stats for {dataset_name}: "
+                   f"min={data_flat.min():.4f}, max={data_flat.max():.4f}, "
+                   f"mean={data_flat.mean():.4f}, std={data_flat.std():.4f}")
+    
+    def _validate_output_bounds(self, calculated_bounds: Tuple[float, float, float, float], 
+                               expected_bounds: Tuple[float, float, float, float], 
+                               dataset_name: str) -> None:
+        """Validate output bounds consistency."""
+        validation_data = {
+            'bounds': calculated_bounds,
+            'metadata_bounds': expected_bounds,
+            'crs': self.target_crs
+        }
+        
+        result = self.bounds_validator.validate(validation_data)
+        self.validation_results.append({
+            'stage': 'output_bounds',
+            'dataset': dataset_name,
+            'result': result
+        })
+        
+        if not result.is_valid:
+            error_messages = [issue.message for issue in result.issues 
+                            if issue.severity == ValidationSeverity.ERROR]
+            logger.error(f"Output bounds validation failed for {dataset_name}: {error_messages}")
+            # Don't raise error for bounds mismatch - just log for investigation
+        
+        # Log warnings
+        warnings = [issue.message for issue in result.issues 
+                   if issue.severity == ValidationSeverity.WARNING]
+        for warning in warnings:
+            logger.warning(f"Output bounds validation warning for {dataset_name}: {warning}")
+    
+    def get_validation_results(self) -> List[Dict]:
+        """Get all validation results for external reporting."""
+        return self.validation_results.copy()
+    
+    def _report_validation_summary(self) -> None:
+        """Report summary of all validation results."""
+        if not self.validation_results:
+            logger.info("No validation results to report")
+            return
+        
+        total_validations = len(self.validation_results)
+        failed_validations = sum(1 for v in self.validation_results if not v['result'].is_valid)
+        
+        total_errors = sum(v['result'].error_count for v in self.validation_results)
+        total_warnings = sum(v['result'].warning_count for v in self.validation_results)
+        
+        logger.info("=== RESAMPLING VALIDATION SUMMARY ===")
+        logger.info(f"Total validations: {total_validations}")
+        logger.info(f"Failed validations: {failed_validations}")
+        logger.info(f"Total errors: {total_errors}")
+        logger.info(f"Total warnings: {total_warnings}")
+        
+        # Report by stage
+        stages = {}
+        for v in self.validation_results:
+            stage = v['stage']
+            if stage not in stages:
+                stages[stage] = {'count': 0, 'errors': 0, 'warnings': 0}
+            stages[stage]['count'] += 1
+            stages[stage]['errors'] += v['result'].error_count
+            stages[stage]['warnings'] += v['result'].warning_count
+        
+        for stage, metrics in stages.items():
+            logger.info(f"Stage '{stage}': {metrics['count']} validations, "
+                       f"{metrics['errors']} errors, {metrics['warnings']} warnings")
+        
+        logger.info("=== END RESAMPLING VALIDATION SUMMARY ===")
+    
+    def _calculate_output_bounds_from_data(self, data: np.ndarray, original_bounds: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+        """Calculate output bounds based on resampled data shape and target resolution."""
+        if data is None:
+            return original_bounds
+        
+        height, width = data.shape
+        
+        # Calculate bounds based on target resolution
+        minx = original_bounds[0]
+        maxy = original_bounds[3]
+        maxx = minx + width * self.target_resolution
+        miny = maxy - height * self.target_resolution
+        
+        return (minx, miny, maxx, maxy)

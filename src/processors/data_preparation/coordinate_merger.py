@@ -9,6 +9,10 @@ import logging
 from src.base.processor import BaseProcessor
 from src.database.connection import DatabaseManager
 from src.domain.raster.catalog import RasterCatalog
+from src.domain.validators.coordinate_integrity import (
+    BoundsConsistencyValidator, CoordinateTransformValidator, ParquetValueValidator
+)
+from src.abstractions.interfaces.validator import ValidationSeverity
 
 logger = logging.getLogger(__name__)
 
@@ -27,30 +31,61 @@ class CoordinateMerger(BaseProcessor):
         self.db = db
         self.catalog = RasterCatalog(db, config)
         
+        # Initialize validators
+        self.bounds_validator = BoundsConsistencyValidator(tolerance=1e-6)
+        self.transform_validator = CoordinateTransformValidator(max_error_meters=1.0)
+        self.value_validator = ParquetValueValidator(
+            max_null_percentage=10.0,
+            outlier_std_threshold=3.0
+        )
+        
+        # Validation results tracking
+        self.validation_results: List[Dict] = []
+        
     def create_ml_ready_parquet(self, 
                                resampled_datasets: List[Dict], 
                                output_dir: Path) -> Path:
         """Main entry point - creates parquet from database tables."""
         
-        # Step 1: Load coordinate data from each dataset
+        logger.info("Starting coordinate merger with validation")
+        self.validation_results.clear()
+        
+        # Step 1: Validate input datasets and load coordinate data
         all_dfs = []
         for dataset_info in resampled_datasets:
+            # Validate dataset bounds
+            self._validate_dataset_bounds(dataset_info)
+            
             df = self._load_dataset_coordinates(dataset_info)
             if df is not None:
+                # Validate loaded coordinates
+                self._validate_coordinate_data(df, dataset_info['name'])
                 all_dfs.append(df)
         
         if not all_dfs:
             raise ValueError("No coordinate data found in any dataset")
         
-        # Step 2: Merge all datasets
+        # Step 2: Validate spatial consistency before merging
+        self._validate_spatial_consistency(all_dfs, resampled_datasets)
+        
+        # Step 3: Merge all datasets
         merged_df = self._merge_coordinate_datasets(all_dfs)
         
-        # Step 3: Save as parquet
+        # Step 4: Validate merged result
+        self._validate_merged_data(merged_df)
+        
+        # Step 5: Save as parquet
         output_path = output_dir / 'ml_ready_aligned_data.parquet'
         merged_df.to_parquet(output_path, index=False)
         
+        # Step 6: Final validation of saved file
+        self._validate_output_file(output_path)
+        
         logger.info(f"Created ML-ready parquet with {len(merged_df):,} rows and {len(merged_df.columns)} columns")
         logger.info(f"Columns: {list(merged_df.columns)}")
+        
+        # Report validation summary
+        self._report_validation_summary()
         
         return output_path
     
@@ -160,6 +195,195 @@ class CoordinateMerger(BaseProcessor):
         merged = merged.sort_values(['y', 'x']).reset_index(drop=True)
         
         return merged
+    
+    # Validation methods
+    def _validate_dataset_bounds(self, dataset_info: Dict) -> None:
+        """Validate bounds consistency for a dataset."""
+        bounds = dataset_info.get('bounds')
+        if not bounds:
+            logger.error(f"No bounds found for dataset {dataset_info['name']}")
+            return
+        
+        validation_data = {
+            'bounds': bounds,
+            'crs': dataset_info.get('crs', 'EPSG:4326')
+        }
+        
+        result = self.bounds_validator.validate(validation_data)
+        self.validation_results.append({
+            'stage': 'dataset_bounds',
+            'dataset': dataset_info['name'],
+            'result': result
+        })
+        
+        if not result.is_valid:
+            error_messages = [issue.message for issue in result.issues 
+                            if issue.severity == ValidationSeverity.ERROR]
+            logger.error(f"Bounds validation failed for {dataset_info['name']}: {error_messages}")
+            if result.has_errors:
+                raise ValueError(f"Invalid bounds for dataset {dataset_info['name']}: {error_messages}")
+        
+        # Log warnings
+        warnings = [issue.message for issue in result.issues 
+                   if issue.severity == ValidationSeverity.WARNING]
+        for warning in warnings:
+            logger.warning(f"Bounds validation warning for {dataset_info['name']}: {warning}")
+    
+    def _validate_coordinate_data(self, df: pd.DataFrame, dataset_name: str) -> None:
+        """Validate coordinate data after loading."""
+        if df.empty:
+            return
+        
+        # Validate coordinate ranges
+        if 'x' in df.columns and 'y' in df.columns:
+            # Check for reasonable coordinate ranges (adjust based on your domain)
+            x_range = (df['x'].min(), df['x'].max())
+            y_range = (df['y'].min(), df['y'].max())
+            
+            # Log coordinate ranges for inspection
+            logger.info(f"Dataset {dataset_name} coordinate ranges: "
+                       f"X: [{x_range[0]:.6f}, {x_range[1]:.6f}], "
+                       f"Y: [{y_range[0]:.6f}, {y_range[1]:.6f}]")
+            
+            # Check for suspicious coordinate values
+            if abs(x_range[0]) > 180 or abs(x_range[1]) > 180:
+                if abs(x_range[0]) < 1000000:  # Not projected coordinates
+                    logger.warning(f"Dataset {dataset_name} has suspicious X coordinates: {x_range}")
+            
+            if abs(y_range[0]) > 90 or abs(y_range[1]) > 90:
+                if abs(y_range[0]) < 1000000:  # Not projected coordinates
+                    logger.warning(f"Dataset {dataset_name} has suspicious Y coordinates: {y_range}")
+        
+        # Validate using ParquetValueValidator
+        result = self.value_validator.validate(df)
+        self.validation_results.append({
+            'stage': 'coordinate_data',
+            'dataset': dataset_name,
+            'result': result
+        })
+        
+        if not result.is_valid:
+            error_messages = [issue.message for issue in result.issues 
+                            if issue.severity == ValidationSeverity.ERROR]
+            logger.error(f"Coordinate data validation failed for {dataset_name}: {error_messages}")
+        
+        # Log warnings
+        warnings = [issue.message for issue in result.issues 
+                   if issue.severity == ValidationSeverity.WARNING]
+        for warning in warnings:
+            logger.warning(f"Coordinate data validation warning for {dataset_name}: {warning}")
+    
+    def _validate_spatial_consistency(self, dfs: List[pd.DataFrame], dataset_infos: List[Dict]) -> None:
+        """Validate spatial consistency between datasets before merging."""
+        if len(dfs) < 2:
+            return
+        
+        logger.info("Validating spatial consistency between datasets")
+        
+        # Check coordinate overlaps
+        for i, df1 in enumerate(dfs):
+            for j, df2 in enumerate(dfs[i+1:], i+1):
+                dataset1 = dataset_infos[i]['name']
+                dataset2 = dataset_infos[j]['name']
+                
+                # Find common coordinates
+                if 'x' in df1.columns and 'y' in df1.columns and 'x' in df2.columns and 'y' in df2.columns:
+                    # Round coordinates for comparison
+                    df1_coords = set(zip(df1['x'].round(6), df1['y'].round(6)))
+                    df2_coords = set(zip(df2['x'].round(6), df2['y'].round(6)))
+                    
+                    common_coords = df1_coords & df2_coords
+                    overlap_percentage = len(common_coords) / min(len(df1_coords), len(df2_coords)) * 100
+                    
+                    logger.info(f"Spatial overlap between {dataset1} and {dataset2}: "
+                               f"{len(common_coords):,} points ({overlap_percentage:.1f}%)")
+                    
+                    if overlap_percentage < 10:
+                        logger.warning(f"Low spatial overlap between {dataset1} and {dataset2}: "
+                                     f"{overlap_percentage:.1f}%")
+    
+    def _validate_merged_data(self, merged_df: pd.DataFrame) -> None:
+        """Validate the merged dataset."""
+        logger.info("Validating merged dataset")
+        
+        result = self.value_validator.validate(merged_df)
+        self.validation_results.append({
+            'stage': 'merged_data',
+            'dataset': 'merged',
+            'result': result
+        })
+        
+        if not result.is_valid:
+            error_messages = [issue.message for issue in result.issues 
+                            if issue.severity == ValidationSeverity.ERROR]
+            logger.error(f"Merged data validation failed: {error_messages}")
+            if result.has_errors:
+                raise ValueError(f"Merged data validation failed: {error_messages}")
+        
+        # Log data quality metrics
+        total_cells = len(merged_df)
+        non_null_data_cols = [col for col in merged_df.columns if col not in ['x', 'y']]
+        
+        for col in non_null_data_cols:
+            non_null_count = merged_df[col].notna().sum()
+            coverage = non_null_count / total_cells * 100
+            logger.info(f"Data coverage for {col}: {non_null_count:,}/{total_cells:,} ({coverage:.1f}%)")
+    
+    def _validate_output_file(self, output_path: Path) -> None:
+        """Validate the saved Parquet file."""
+        try:
+            # Read back and validate
+            saved_df = pd.read_parquet(output_path)
+            logger.info(f"Successfully validated saved file: {len(saved_df):,} rows, {len(saved_df.columns)} columns")
+            
+            # Quick validation check
+            if saved_df.empty:
+                raise ValueError("Saved Parquet file is empty")
+            
+            if 'x' not in saved_df.columns or 'y' not in saved_df.columns:
+                raise ValueError("Saved Parquet file missing coordinate columns")
+                
+        except Exception as e:
+            logger.error(f"Failed to validate output file {output_path}: {e}")
+            raise
+    
+    def _report_validation_summary(self) -> None:
+        """Report summary of all validation results."""
+        if not self.validation_results:
+            logger.info("No validation results to report")
+            return
+        
+        total_validations = len(self.validation_results)
+        failed_validations = sum(1 for v in self.validation_results if not v['result'].is_valid)
+        
+        total_errors = sum(v['result'].error_count for v in self.validation_results)
+        total_warnings = sum(v['result'].warning_count for v in self.validation_results)
+        
+        logger.info("=== VALIDATION SUMMARY ===")
+        logger.info(f"Total validations: {total_validations}")
+        logger.info(f"Failed validations: {failed_validations}")
+        logger.info(f"Total errors: {total_errors}")
+        logger.info(f"Total warnings: {total_warnings}")
+        
+        # Report by stage
+        stages = {}
+        for v in self.validation_results:
+            stage = v['stage']
+            if stage not in stages:
+                stages[stage] = {'count': 0, 'errors': 0, 'warnings': 0}
+            stages[stage]['count'] += 1
+            stages[stage]['errors'] += v['result'].error_count
+            stages[stage]['warnings'] += v['result'].warning_count
+        
+        for stage, metrics in stages.items():
+            logger.info(f"Stage '{stage}': {metrics['count']} validations, "
+                       f"{metrics['errors']} errors, {metrics['warnings']} warnings")
+        
+        logger.info("=== END VALIDATION SUMMARY ===")
+    
+    def get_validation_results(self) -> List[Dict]:
+        """Get all validation results for external reporting."""
+        return self.validation_results.copy()
     
     # BaseProcessor abstract method implementations
     def process_single(self, item: Dict) -> Dict:
