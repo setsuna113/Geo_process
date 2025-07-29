@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 class GridOperations:
     """Handles grid definition and cell operations."""
     
+    def __init__(self, db_manager):
+        """Initialize with database manager."""
+        self.db = db_manager
+    
     @handle_database_error("store_grid_definition")
     def store_grid_definition(self, name: str, grid_type: str, resolution: int,
                              bounds: Optional[str] = None, 
@@ -26,7 +30,7 @@ class GridOperations:
         
         crs = grid_config.get('crs', 'EPSG:4326')  # Default fallback
         
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO grids (name, grid_type, resolution, crs, bounds, metadata)
                 VALUES (%(name)s, %(grid_type)s, %(resolution)s, %(crs)s, 
@@ -50,7 +54,7 @@ class GridOperations:
         if not cells_data:
             return 0
             
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             # Prepare data for bulk insert
             cell_records = []
             for cell in cells_data:
@@ -75,14 +79,14 @@ class GridOperations:
     @handle_database_error("get_grid_by_name")
     def get_grid_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get grid definition by name."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("SELECT * FROM grids WHERE name = %s", (name,))
             return cursor.fetchone()
     
     @handle_database_error("get_grid_cells")
     def get_grid_cells(self, grid_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get grid cells for a grid."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = """
                 SELECT cell_id, ST_AsText(geometry) as geometry_wkt, 
                        area_km2, ST_AsText(centroid) as centroid_wkt
@@ -102,7 +106,7 @@ class GridOperations:
     @handle_database_error("delete_grid")
     def delete_grid(self, name: str) -> bool:
         """Delete grid and all related data."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             # First get grid ID
             cursor.execute("SELECT id FROM grids WHERE name = %s", (name,))
             grid = cursor.fetchone()
@@ -144,7 +148,7 @@ class GridOperations:
     
     def get_grid_status(self, grid_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get grid processing status."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             if grid_name:
                 cursor.execute("""
                     SELECT g.name, g.grid_type, g.resolution,

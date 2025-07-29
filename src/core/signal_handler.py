@@ -30,6 +30,9 @@ class SignalHandler:
         self._handlers: Dict[str, List[Callable]] = {}
         self._handler_lock = threading.RLock()
         
+        # Thread-safe snapshot for signal context (avoid locks in signal handlers)
+        self._handlers_snapshot: List[Callable] = []
+        
         # Original signal handlers
         self._original_handlers: Dict[signal.Signals, Any] = {}
         
@@ -58,6 +61,9 @@ class SignalHandler:
                 self._handlers[name] = []
             self._handlers[name].append(handler)
             
+            # Update thread-safe snapshot
+            self._update_handlers_snapshot()
+            
             # Register system signal handlers if not done
             if not self._signals_registered:
                 self._register_system_handlers()
@@ -66,6 +72,16 @@ class SignalHandler:
         """Unregister a signal handler."""
         with self._handler_lock:
             self._handlers.pop(name, None)
+            # Update thread-safe snapshot
+            self._update_handlers_snapshot()
+    
+    def _update_handlers_snapshot(self) -> None:
+        """Update the handlers snapshot for thread-safe signal context access."""
+        # Must be called with _handler_lock held
+        all_handlers = []
+        for handler_list in self._handlers.values():
+            all_handlers.extend(handler_list)
+        self._handlers_snapshot = all_handlers
     
     def register_shutdown_callback(self, callback: Callable[[], None]) -> None:
         """Register callback for shutdown."""
@@ -147,14 +163,13 @@ class SignalHandler:
         self._shutdown_in_progress = True
         logger.info(f"Received shutdown signal: {sig.name if hasattr(sig, 'name') else sig}")
         
-        # Notify all registered handlers (avoid locks in signal context)
+        # Notify all registered handlers using thread-safe snapshot
         try:
-            for handler_list in self._handlers.values():
-                for handler in handler_list:
-                    try:
-                        handler(sig)
-                    except Exception as e:
-                        print(f"Error in signal handler: {e}")
+            for handler in self._handlers_snapshot:
+                try:
+                    handler(sig)
+                except Exception as e:
+                    print(f"Error in signal handler: {e}")
         except Exception:
             # Ignore errors to prevent crashes in signal context
             pass
@@ -180,16 +195,14 @@ class SignalHandler:
         elif sig == signal.SIGUSR2:
             self._handle_resume_signal()
         
-        # Note: Avoid threading locks in signal context
-        # Notify registered handlers without locks (signal handlers should be simple)
+        # Notify registered handlers using thread-safe snapshot
         try:
-            for handler_list in self._handlers.values():
-                for handler in handler_list:
-                    try:
-                        handler(sig)
-                    except Exception as e:
-                        # Can't use logger in signal context safely
-                        print(f"Error in signal handler: {e}")
+            for handler in self._handlers_snapshot:
+                try:
+                    handler(sig)
+                except Exception as e:
+                    # Can't use logger in signal context safely
+                    print(f"Error in signal handler: {e}")
         except Exception:
             # Ignore errors to prevent crashes in signal context
             pass

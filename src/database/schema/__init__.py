@@ -72,32 +72,70 @@ class DatabaseSchema:
         """Validate grid config - delegated to grid operations."""
         return self.grid_ops.validate_grid_config(*args, **kwargs)
 
-    # TODO: Add delegation methods for other operations as modules are created
-    # For now, keep placeholder methods to avoid breaking existing code
+    # Compatibility methods that delegate to monolithic schema
+    # These will be replaced as modules are fully implemented
+    def _get_monolithic_schema(self):
+        """Get the working monolithic schema for delegation."""
+        if not hasattr(self, '_monolithic_schema'):
+            from .. import schema as monolithic_module
+            self._monolithic_schema = monolithic_module.DatabaseSchema(self.db)
+        return self._monolithic_schema
+        
     def create_schema(self) -> bool:
-        """Create database schema - placeholder."""
-        # TODO: Implement across all operation modules
-        return True
+        """Create database schema - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().create_schema()
         
     def drop_schema(self, confirm: bool = False) -> bool:
-        """Drop database schema - placeholder."""
-        # TODO: Implement across all operation modules
-        return True
+        """Drop database schema - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().drop_schema(confirm)
         
     def store_species_range(self, *args, **kwargs):
-        """Store species range - placeholder for species operations."""
-        # TODO: Delegate to species_ops when created
-        pass
+        """Store species range - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().store_species_range(*args, **kwargs)
+        
+    def store_species_intersections_batch(self, *args, **kwargs):
+        """Store species intersections batch - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().store_species_intersections_batch(*args, **kwargs)
+        
+    def get_species_ranges(self, *args, **kwargs):
+        """Get species ranges - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().get_species_ranges(*args, **kwargs)
+        
+    def store_feature(self, *args, **kwargs):
+        """Store feature - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().store_feature(*args, **kwargs)
         
     def store_features_batch(self, *args, **kwargs):
-        """Store features batch - placeholder for feature operations."""
-        # TODO: Delegate to feature_ops when created
-        pass
+        """Store features batch - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().store_features_batch(*args, **kwargs)
         
     def store_climate_data_batch(self, *args, **kwargs):
-        """Store climate data batch - placeholder for feature operations."""
-        # TODO: Delegate to feature_ops when created
-        pass
+        """Store climate data batch - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().store_climate_data_batch(*args, **kwargs)
+        
+    def get_features(self, *args, **kwargs):
+        """Get features - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().get_features(*args, **kwargs)
+        
+    def create_experiment(self, *args, **kwargs):
+        """Create experiment - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().create_experiment(*args, **kwargs)
+        
+    def update_experiment_status(self, *args, **kwargs):
+        """Update experiment status - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().update_experiment_status(*args, **kwargs)
+        
+    def get_experiment(self, *args, **kwargs):
+        """Get experiment - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().get_experiment(*args, **kwargs)
+        
+    def store_resampling_cache_batch(self, *args, **kwargs):
+        """Store resampling cache batch - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().store_resampling_cache_batch(*args, **kwargs)
+        
+    def get_cached_resampling_values(self, *args, **kwargs):
+        """Get cached resampling values - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().get_cached_resampling_values(*args, **kwargs)
 
 
 # Create default instance for backward compatibility
