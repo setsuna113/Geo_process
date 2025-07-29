@@ -170,7 +170,18 @@ class NumpyResampler(BaseResampler):
                          target_bounds: Tuple[float, float, float, float],
                          target_shape: Tuple[int, int],
                          progress_callback: Optional[Callable[[float], None]] = None) -> ResamplingResult:
-        """Chunked resampling for memory efficiency."""
+        """Chunked resampling for memory efficiency.
+        
+        DEPRECATED: This method still creates full output array in memory.
+        Use resample_windowed() for true memory-efficient processing.
+        """
+        import warnings
+        warnings.warn(
+            "_resample_chunked() is deprecated as it creates full output array in memory. "
+            "Use resample_windowed() for true memory-efficient processing.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         logger.info(f"Starting chunked resampling with chunk size: {self.chunk_size}")
         
         # Initialize output array

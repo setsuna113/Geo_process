@@ -204,6 +204,9 @@ class ResamplingProcessor(BaseProcessor):
         """
         Resample single dataset with chunked loading and memory management.
         
+        DEPRECATED: This method loads entire datasets into memory for passthrough cases. 
+        Use resample_dataset_memory_aware() instead for memory-efficient processing.
+        
         Args:
             dataset_config: Dataset configuration
             progress_callback: Progress callback
@@ -211,6 +214,13 @@ class ResamplingProcessor(BaseProcessor):
         Returns:
             ResampledDatasetInfo
         """
+        import warnings
+        warnings.warn(
+            "resample_dataset() is deprecated and may load entire datasets into memory. "
+            "Use resample_dataset_memory_aware() for memory-efficient processing.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         logger.info(f"🔍 DEBUG: resample_dataset() called for {dataset_config.get('name', 'unknown')}")
         logger.debug(f"🔍 resample_dataset() called for {dataset_config.get('name', 'unknown')}")
         from src.config.dataset_utils import DatasetPathResolver
@@ -958,7 +968,18 @@ class ResamplingProcessor(BaseProcessor):
         return resampled_info
 
     def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: Optional[np.ndarray]):
-        """Store resampled dataset in database."""
+        """Store resampled dataset in database.
+        
+        DEPRECATED: This method requires the entire dataset in memory.
+        Use windowed storage methods for memory-efficient processing.
+        """
+        import warnings
+        warnings.warn(
+            "_store_resampled_dataset() is deprecated as it requires entire dataset in memory. "
+            "Use windowed storage methods for memory-efficient processing.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         # For consistency, store all data in DB (including passthrough)
         # This ensures lazy loading works uniformly for all datasets
         if data is None:

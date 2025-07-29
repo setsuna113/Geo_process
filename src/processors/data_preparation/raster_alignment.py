@@ -64,6 +64,17 @@ class AlignmentReport:
         return [issue for issue in self.issues if issue.fixable]
 
 @dataclass
+class GridAlignment:
+    """Grid alignment information between datasets."""
+    reference_dataset: str
+    aligned_dataset: str
+    x_shift: float  # Shift in x direction (degrees or meters)
+    y_shift: float  # Shift in y direction (degrees or meters)
+    requires_shift: bool
+    shift_pixels_x: float  # Shift in pixels
+    shift_pixels_y: float  # Shift in pixels
+
+@dataclass
 class AlignmentConfig:
     """Configuration for alignment checking and fixing."""
     resolution_tolerance: float = 1e-6
@@ -705,3 +716,139 @@ class RasterAligner:
         """Copy raster file to new location."""
         import shutil
         shutil.copy2(input_path, output_path)
+    
+    def calculate_grid_shifts(self, 
+                            dataset_infos: List[Any],
+                            reference_idx: int = 0) -> List[GridAlignment]:
+        """
+        Calculate shift vectors for aligning datasets without loading data.
+        
+        Args:
+            dataset_infos: List of ResampledDatasetInfo objects
+            reference_idx: Index of reference dataset
+            
+        Returns:
+            List of GridAlignment objects with shift information
+        """
+        if len(dataset_infos) < 2:
+            return []
+            
+        reference = dataset_infos[reference_idx]
+        ref_resolution = reference.target_resolution
+        ref_bounds = reference.bounds
+        
+        # Calculate reference grid origin
+        ref_origin_x = ref_bounds[0]  # min_x
+        ref_origin_y = ref_bounds[3]  # max_y (raster origin is top-left)
+        
+        alignments = []
+        
+        for i, dataset in enumerate(dataset_infos):
+            if i == reference_idx:
+                # Reference aligns with itself
+                alignments.append(GridAlignment(
+                    reference_dataset=reference.name,
+                    aligned_dataset=dataset.name,
+                    x_shift=0.0,
+                    y_shift=0.0,
+                    requires_shift=False,
+                    shift_pixels_x=0.0,
+                    shift_pixels_y=0.0
+                ))
+                continue
+            
+            # Calculate dataset grid origin
+            ds_origin_x = dataset.bounds[0]
+            ds_origin_y = dataset.bounds[3]
+            
+            # Calculate misalignment in coordinate units
+            x_misalign = ds_origin_x - ref_origin_x
+            y_misalign = ds_origin_y - ref_origin_y
+            
+            # Calculate misalignment in pixels
+            x_misalign_pixels = x_misalign / ref_resolution
+            y_misalign_pixels = y_misalign / ref_resolution
+            
+            # Check if misalignment is a whole pixel
+            x_pixel_fraction = x_misalign_pixels - round(x_misalign_pixels)
+            y_pixel_fraction = y_misalign_pixels - round(y_misalign_pixels)
+            
+            # If fractional pixel offset exists, calculate shift needed
+            if abs(x_pixel_fraction) > 0.01 or abs(y_pixel_fraction) > 0.01:
+                # Shift needed to align to reference grid
+                x_shift = -x_pixel_fraction * ref_resolution
+                y_shift = -y_pixel_fraction * ref_resolution
+                
+                alignments.append(GridAlignment(
+                    reference_dataset=reference.name,
+                    aligned_dataset=dataset.name,
+                    x_shift=x_shift,
+                    y_shift=y_shift,
+                    requires_shift=True,
+                    shift_pixels_x=x_pixel_fraction,
+                    shift_pixels_y=y_pixel_fraction
+                ))
+                
+                logger.info(f"Dataset {dataset.name} requires shift: "
+                          f"({x_shift:.6f}, {y_shift:.6f}) degrees")
+            else:
+                # Already aligned
+                alignments.append(GridAlignment(
+                    reference_dataset=reference.name,
+                    aligned_dataset=dataset.name,
+                    x_shift=0.0,
+                    y_shift=0.0,
+                    requires_shift=False,
+                    shift_pixels_x=0.0,
+                    shift_pixels_y=0.0
+                ))
+                
+        return alignments
+    
+    def create_aligned_coordinate_query(self,
+                                      table_name: str,
+                                      alignment: GridAlignment,
+                                      chunk_bounds: Tuple[float, float, float, float],
+                                      name_column: str = None) -> str:
+        """
+        Create SQL query that applies alignment shift.
+        
+        Args:
+            table_name: Database table name
+            alignment: Grid alignment information
+            chunk_bounds: (min_x, min_y, max_x, max_y) for chunk
+            name_column: Optional column name for value (default: 'value')
+            
+        Returns:
+            SQL query string with alignment applied
+        """
+        value_col = name_column if name_column else 'value'
+        
+        if not alignment.requires_shift:
+            # No shift needed
+            return f"""
+                SELECT 
+                    x_coord as x,
+                    y_coord as y,
+                    value as {value_col}
+                FROM {table_name}
+                WHERE x_coord >= {chunk_bounds[0]}
+                  AND x_coord < {chunk_bounds[2]}
+                  AND y_coord >= {chunk_bounds[1]}
+                  AND y_coord < {chunk_bounds[3]}
+                  AND value IS NOT NULL
+            """
+        else:
+            # Apply shift during query
+            return f"""
+                SELECT 
+                    x_coord + {alignment.x_shift} as x,
+                    y_coord + {alignment.y_shift} as y,
+                    value as {value_col}
+                FROM {table_name}
+                WHERE x_coord >= {chunk_bounds[0] - alignment.x_shift}
+                  AND x_coord < {chunk_bounds[2] - alignment.x_shift}
+                  AND y_coord >= {chunk_bounds[1] - alignment.y_shift}
+                  AND y_coord < {chunk_bounds[3] - alignment.y_shift}
+                  AND value IS NOT NULL
+            """

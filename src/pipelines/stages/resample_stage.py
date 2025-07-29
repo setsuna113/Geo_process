@@ -103,9 +103,23 @@ class ResampleStage(PipelineStage):
                         else:
                             logger.info(f"Existing dataset {dataset_config['name']} has different resolution, reprocessing")
                     
+                    # Check if memory-aware processing is enabled
+                    use_memory_aware = context.config.get('resampling.enable_memory_aware_processing', False)
+                    
+                    # Use needs_resampling flag from load stage if available
+                    needs_resampling = dataset_info.get('needs_resampling', True)
+                    if not needs_resampling:
+                        logger.info(f"Dataset {dataset_config['name']} already at target resolution (detected in load stage)")
+                    
                     # Resample dataset (this will handle skip-resampling automatically)
                     logger.info(f"Processing dataset: {dataset_config['name']}")
-                    resampled_info = processor.resample_dataset(dataset_config)
+                    
+                    if use_memory_aware:
+                        # Use memory-aware processing
+                        resampled_info = processor.resample_dataset_memory_aware(dataset_config)
+                    else:
+                        # Use legacy processing
+                        resampled_info = processor.resample_dataset(dataset_config)
                     resampled_datasets.append(resampled_info)
                     
                     # Track whether it was actually resampled or skipped via passthrough

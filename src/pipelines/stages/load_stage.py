@@ -82,11 +82,37 @@ class DataLoadStage(PipelineStage):
                     # Register in catalog if needed
                     raster_info = {"name": normalized_config["name"], "path": str(dataset_path)}
                     
+                    # Check if resampling is needed by comparing resolutions
+                    needs_resampling = True  # Default to true
+                    source_resolution = None
+                    
+                    try:
+                        # Get raster metadata to check resolution
+                        import rasterio
+                        with rasterio.open(dataset_path) as src:
+                            # Get resolution in degrees (assuming geographic CRS)
+                            source_resolution = abs(src.transform[0])  # pixel width in degrees
+                            
+                            # Get target resolution from config
+                            target_resolution = context.config.get('resampling.target_resolution_degrees', 0.0416667)
+                            tolerance = context.config.get('resampling.resolution_tolerance', 0.001)
+                            
+                            # Check if resolution matches (within tolerance)
+                            if abs(source_resolution - target_resolution) < tolerance:
+                                needs_resampling = False
+                                logger.info(f"Dataset {normalized_config['name']} resolution {source_resolution:.6f}° matches target {target_resolution:.6f}° (within tolerance {tolerance})")
+                            else:
+                                logger.info(f"Dataset {normalized_config['name']} resolution {source_resolution:.6f}° differs from target {target_resolution:.6f}°, resampling needed")
+                    except Exception as e:
+                        logger.warning(f"Could not check resolution for {normalized_config['name']}: {e}")
+                    
                     loaded_datasets.append({
                         'name': normalized_config['name'],
                         'path': str(dataset_path),
                         'config': normalized_config,
-                        'raster_info': raster_info
+                        'raster_info': raster_info,
+                        'needs_resampling': needs_resampling,
+                        'source_resolution': source_resolution
                     })
                     
                     metrics['loaded_successfully'] += 1
