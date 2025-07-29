@@ -14,7 +14,7 @@ import xarray as xr
 
 from src.base.analyzer import BaseAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
-from src.config import config
+from src.config import Config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -27,12 +27,19 @@ class GWPCAAnalyzer(BaseAnalyzer):
     across geographic space using aggregated blocks for computational efficiency.
     """
     
-    def __init__(self, db_connection: Optional[DatabaseManager] = None):
-        # Use global config instance
+    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
+        """
+        Initialize GWPCA analyzer with standardized constructor.
+        
+        Args:
+            config: Configuration object
+            db_connection: Optional database connection
+        """
+        # Initialize base analyzer with config
         super().__init__(config, db_connection)
         
-        # GWPCA specific config
-        gwpca_config = config.get('spatial_analysis', {}).get('gwpca', {})
+        # GWPCA specific config using safe_get_config from base
+        gwpca_config = self.safe_get_config('spatial_analysis.gwpca', {})
         self.default_bandwidth_method = gwpca_config.get('bandwidth_method', 'AICc')
         self.default_adaptive = gwpca_config.get('adaptive', True)
         self.default_n_components = gwpca_config.get('n_components', 2)

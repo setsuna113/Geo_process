@@ -11,7 +11,7 @@ import libpysal
 
 from src.base.analyzer import BaseAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
-from src.config import config
+from src.config import Config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -24,12 +24,19 @@ class MaxPAnalyzer(BaseAnalyzer):
     ensuring each region meets a minimum area threshold.
     """
     
-    def __init__(self, db_connection: Optional[DatabaseManager] = None):
-        # Use global config instance
+    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
+        """
+        Initialize MaxP analyzer with standardized constructor.
+        
+        Args:
+            config: Configuration object
+            db_connection: Optional database connection
+        """
+        # Initialize base analyzer with config
         super().__init__(config, db_connection)
         
-        # Max-p specific config
-        maxp_config = config.get('spatial_analysis', {}).get('maxp', {})
+        # Max-p specific config using safe_get_config from base
+        maxp_config = self.safe_get_config('spatial_analysis.maxp', {})
         
         # Default area thresholds for different ecological scales
         self.ecological_scales = {
@@ -281,10 +288,21 @@ class MaxPAnalyzer(BaseAnalyzer):
             
             # Calculate grid size based on floor constraint
             pixels_per_side = int(np.sqrt(floor_pixels))
+            n_pixels = len(data)
+            height = width = int(np.sqrt(n_pixels))
+            
+            # Ensure we don't create regions smaller than floor constraint
+            max_regions = n_pixels // floor_pixels
+            if max_regions < 1:
+                logger.warning(f"Floor constraint ({floor_pixels}) too large for data size ({n_pixels})")
+                # Return single region
+                return np.zeros(n_pixels, dtype=int)
+            
             return self._fallback_regionalization(
-                int(np.sqrt(len(data))), 
-                int(np.sqrt(len(data))),
-                pixels_per_side
+                height, 
+                width,
+                pixels_per_side,
+                floor_pixels
             )
     
     def _run_perturbation_analysis(self, data: np.ndarray, weights: libpysal.weights.W,
@@ -512,18 +530,34 @@ class MaxPAnalyzer(BaseAnalyzer):
         return homogeneity
     
     def _fallback_regionalization(self, height: int, width: int, 
-                                grid_size: int) -> np.ndarray:
-        """Simple grid-based regionalization as fallback."""
+                                grid_size: int, floor_pixels: int) -> np.ndarray:
+        """Simple grid-based regionalization as fallback that respects floor constraint."""
         logger.warning("Using fallback grid-based regionalization")
         
         labels = np.zeros(height * width, dtype=int)
         region_id = 0
         
-        for i in range(0, height, grid_size):
-            for j in range(0, width, grid_size):
-                for ii in range(i, min(i + grid_size, height)):
-                    for jj in range(j, min(j + grid_size, width)):
+        # Ensure grid_size creates regions at least as large as floor_pixels
+        min_grid_size = int(np.ceil(np.sqrt(floor_pixels)))
+        actual_grid_size = max(grid_size, min_grid_size)
+        
+        if actual_grid_size != grid_size:
+            logger.info(f"Adjusted grid size from {grid_size} to {actual_grid_size} to meet floor constraint")
+        
+        for i in range(0, height, actual_grid_size):
+            for j in range(0, width, actual_grid_size):
+                # Count pixels in this region
+                region_pixels = 0
+                for ii in range(i, min(i + actual_grid_size, height)):
+                    for jj in range(j, min(j + actual_grid_size, width)):
                         labels[ii * width + jj] = region_id
+                        region_pixels += 1
+                
+                # Verify floor constraint is met
+                if region_pixels < floor_pixels and region_pixels > 0:
+                    logger.debug(f"Region {region_id} has {region_pixels} pixels, below floor of {floor_pixels}")
+                
                 region_id += 1
         
+        logger.info(f"Created {region_id} regions with grid size {actual_grid_size}")
         return labels

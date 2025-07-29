@@ -17,7 +17,7 @@ from src.spatial_analysis.memory_aware_processor import (
     MemoryAwareProcessor, 
     check_memory_usage
 )
-from src.config import config
+from src.config import Config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -30,32 +30,31 @@ class SOMAnalyzer(BaseAnalyzer):
     preserving topological relationships.
     """
     
-    def __init__(self, db_connection: Optional[DatabaseManager] = None):
-        # Create memory-aware data processor for SOM
-        try:
-            from src.processors.spatial_analysis.data_processor import SpatialDataProcessor
-            data_processor = SpatialDataProcessor(config)
-        except ImportError:
-            logger.warning("SpatialDataProcessor not available, using fallback")
-            data_processor = None
+    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
+        """
+        Initialize SOM analyzer with standardized constructor.
         
-        # Initialize with data processor injection for memory awareness
-        super().__init__(config, db_connection=db_connection, data_processor=data_processor)
+        Args:
+            config: Configuration object
+            db_connection: Optional database connection
+        """
+        # Initialize base analyzer with config
+        super().__init__(config, db_connection)
 
         if MiniSom is None:
             raise ImportError("minisom is required for SOM analysis. Install with: pip install minisom")
         
-        # SOM-specific config
-        som_config = config.get('spatial_analysis', {}).get('som', {})
+        # SOM-specific config using safe_get_config from base
+        som_config = self.safe_get_config('spatial_analysis.som', {})
         self.default_grid_size = som_config.get('grid_size', [10, 10])
         self.default_iterations = som_config.get('iterations', 1000)
         self.default_sigma = som_config.get('sigma', 1.0)
         self.default_learning_rate = som_config.get('learning_rate', 0.5)
         self.default_neighborhood = som_config.get('neighborhood_function', 'gaussian')
         
-        # Memory-aware processing config
-        self.subsampling_config = config.get('processing', {}).get('subsampling', {})
-        self.som_analysis_config = config.get('som_analysis', {})
+        # Memory-aware processing config using safe_get_config
+        self.subsampling_config = self.safe_get_config('processing.subsampling', {})
+        self.som_analysis_config = self.safe_get_config('som_analysis', {})
         self.max_pixels_in_memory = self.som_analysis_config.get('max_pixels_in_memory', 1000000)
         self.memory_overhead_factor = self.som_analysis_config.get('memory_overhead_factor', 3.0)
         self.use_memory_mapping = self.som_analysis_config.get('use_memory_mapping', True)

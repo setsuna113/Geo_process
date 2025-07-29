@@ -2,7 +2,7 @@
 """Base analyzer implementation with common functionality for all analysis types."""
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Union, Tuple, List
+from typing import Dict, Any, Optional, Union, Tuple, List, Callable
 import logging
 import numpy as np
 import xarray as xr
@@ -13,6 +13,7 @@ import time
 from src.abstractions.interfaces.analyzer import (
     IAnalyzer, AnalysisResult, AnalysisMetadata
 )
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +45,19 @@ class BaseAnalyzer(IAnalyzer, ABC):
             db_connection: Optional database connection
             **kwargs: Additional parameters for subclasses
         """
-        # Handle both dict and Config object patterns
-        if hasattr(config, 'config'):
-            self.config = config.config  # Config object's internal dict
+        # Handle both dict and Config object patterns safely
+        if hasattr(config, 'config') and isinstance(config.config, dict):
+            # This is a Config object with internal dict
+            self.config = config.config
             self.config_obj = config
-        else:
+        elif isinstance(config, dict):
+            # This is already a dict
             self.config = config
             self.config_obj = None
+        else:
+            # Assume it's a Config-like object
+            self.config = config
+            self.config_obj = config
             
         self.db = db_connection
         
@@ -60,6 +67,12 @@ class BaseAnalyzer(IAnalyzer, ABC):
         # Optional components (lazy initialized)
         self._array_converter = None
         self._normalizer = None
+        
+        # Progress callback
+        self._progress_callback = None
+        
+        # Configuration for saving results
+        self.save_results_enabled = self.safe_get_config('analysis.save_results.enabled', True)
         
         # Initialize any additional components from kwargs
         self._init_components(**kwargs)
@@ -219,6 +232,88 @@ class BaseAnalyzer(IAnalyzer, ABC):
             
         except Exception:
             return default
+    
+    def _update_progress(self, current: int, total: int, message: str):
+        """
+        Update progress through callback if set.
+        
+        Args:
+            current: Current step number
+            total: Total number of steps
+            message: Progress message
+        """
+        if self._progress_callback:
+            try:
+                self._progress_callback(current, total, message)
+            except Exception as e:
+                logger.warning(f"Progress callback error: {e}")
+    
+    def set_progress_callback(self, callback: Callable[[int, int, str], None]) -> None:
+        """
+        Set callback for progress updates.
+        
+        Args:
+            callback: Function that accepts (current, total, message)
+        """
+        self._progress_callback = callback
+    
+    def save_results(self, result: AnalysisResult, output_name: str, 
+                     output_dir: Path = None) -> Path:
+        """
+        Default implementation for saving results.
+        
+        Args:
+            result: Analysis result to save
+            output_name: Base name for output files
+            output_dir: Directory to save results (optional)
+            
+        Returns:
+            Path to the primary saved file
+        """
+        import pickle
+        import json
+        
+        # Use default output directory if not provided
+        if output_dir is None:
+            output_dir = Path(self.safe_get_config('analysis.save_results.output_dir', 'outputs/analysis'))
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get configured formats
+        formats = self.safe_get_config('analysis.save_results.formats', ['pkl'])
+        saved_paths = []
+        
+        # Save in each configured format
+        if 'pkl' in formats:
+            pkl_path = output_dir / f"{output_name}.pkl"
+            with open(pkl_path, 'wb') as f:
+                pickle.dump(result, f)
+            saved_paths.append(pkl_path)
+            logger.info(f"Saved pickle format to: {pkl_path}")
+        
+        if 'json' in formats:
+            json_path = output_dir / f"{output_name}.json"
+            # Convert to JSON-serializable format
+            json_data = {
+                'metadata': result.metadata.__dict__,
+                'statistics': result.statistics,
+                'labels_shape': result.labels.shape,
+                'labels_dtype': str(result.labels.dtype)
+            }
+            with open(json_path, 'w') as f:
+                json.dump(json_data, f, indent=2)
+            saved_paths.append(json_path)
+            logger.info(f"Saved JSON metadata to: {json_path}")
+        
+        if 'npy' in formats:
+            npy_path = output_dir / f"{output_name}_labels.npy"
+            np.save(npy_path, result.labels)
+            saved_paths.append(npy_path)
+            logger.info(f"Saved labels array to: {npy_path}")
+        
+        # Return primary saved path (first format)
+        return saved_paths[0] if saved_paths else None
     
     # Default implementations for IAnalyzer methods
     # Subclasses should override these

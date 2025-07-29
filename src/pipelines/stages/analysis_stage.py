@@ -6,10 +6,17 @@ import logging
 from pathlib import Path
 import pandas as pd
 import xarray as xr
+import gc
 
 from .base_stage import PipelineStage, StageResult
+from .analyzer_factory import AnalyzerFactory
+from src.infrastructure.logging import get_logger
+from src.processors.data_preparation.analysis_data_source import (
+    ParquetAnalysisDataset, DatabaseAnalysisDataset
+)
+from src.base.dataset import BaseDataset
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class AnalysisStage(PipelineStage):
@@ -24,6 +31,7 @@ class AnalysisStage(PipelineStage):
         """
         super().__init__()
         self.analysis_method = analysis_method.lower()
+        self._analyzer = None
         self._validate_method()
     
     @property
@@ -47,194 +55,257 @@ class AnalysisStage(PipelineStage):
     
     def _validate_method(self):
         """Validate analysis method is supported."""
-        supported_methods = {'som', 'maxp_regions', 'gwpca'}
-        if self.analysis_method not in supported_methods:
+        available_methods = AnalyzerFactory.available_methods()
+        if self.analysis_method not in available_methods:
             raise ValueError(
                 f"Unsupported analysis method: {self.analysis_method}. "
-                f"Supported: {supported_methods}"
+                f"Available: {available_methods}"
             )
     
     def validate(self) -> Tuple[bool, List[str]]:
         """Validate analysis configuration."""
         errors = []
         
-        # Check if analyzer module exists
+        # Validate factory can create analyzer
         try:
-            self._get_analyzer_class()
-        except ImportError as e:
-            errors.append(f"Analyzer not available: {e}")
+            available = AnalyzerFactory.available_methods()
+            if self.analysis_method not in available:
+                errors.append(f"Analysis method '{self.analysis_method}' not available")
+        except Exception as e:
+            errors.append(f"Factory validation failed: {e}")
         
         return len(errors) == 0, errors
     
     def execute(self, context) -> StageResult:
-        """Execute spatial analysis."""
-        logger.info(f"Starting {self.analysis_method} analysis")
+        """Execute analysis with full integration."""
+        logger.info(
+            f"Starting {self.analysis_method} analysis",
+            extra={
+                'experiment_id': context.experiment_id,
+                'stage': self.name,
+                'method': self.analysis_method
+            }
+        )
         
         try:
-            # Determine data source (CSV or database)
-            data_source = context.config.get('analysis.data_source', 'database')
+            # Step 1: Load dataset
+            logger.debug("Loading dataset")
+            dataset = self._load_dataset(context)
+            self._dataset = dataset  # Store for cleanup
+            dataset_info = dataset.load_info()
             
-            # Load data
-            if data_source == 'csv':
-                data = self._load_from_csv(context)
-            else:
-                data = self._load_from_database(context)
+            logger.info(
+                f"Dataset loaded: {dataset_info.record_count:,} records, "
+                f"{dataset_info.size_mb:.2f} MB"
+            )
             
-            if data is None:
-                return StageResult(
-                    success=False,
-                    data={},
-                    metrics={},
-                    warnings=['No data available for analysis']
+            # Step 2: Create analyzer via factory
+            logger.debug("Creating analyzer via factory")
+            self._analyzer = AnalyzerFactory.create(
+                self.analysis_method,
+                context.config,
+                context.db
+            )
+            
+            # Step 3: Set up progress tracking
+            self._setup_progress_tracking(context)
+            
+            # Step 4: Get parameters
+            params = self._get_analysis_params(context)
+            logger.debug(f"Analysis parameters: {params}")
+            
+            # Step 5: Perform analysis
+            logger.info("Starting analysis computation")
+            results = self._analyzer.analyze(dataset, **params)
+            
+            # Step 6: Save results if configured
+            saved_path = None
+            if context.config.get('analysis.save_results.enabled', True):
+                output_dir = context.output_dir / 'analysis' / self.analysis_method
+                saved_path = self._analyzer.save_results(
+                    results,
+                    f"{self.analysis_method}_{context.experiment_id}",
+                    output_dir
+                )
+                context.set(f'{self.analysis_method}_output_path', str(saved_path))
+                
+                logger.info(f"Results saved to: {saved_path}")
+            
+            # Step 7: Store in context if configured
+            if context.config.get('analysis.keep_results_in_memory', False):
+                context.set(f'{self.analysis_method}_results', results)
+            
+            # Step 8: Extract metrics
+            metrics = self._extract_metrics(results, params)
+            if saved_path:
+                metrics['output_path'] = str(saved_path)
+            
+            # Step 9: Update progress to complete
+            if hasattr(context, 'progress_tracker') and context.progress_tracker:
+                context.progress_tracker.update_progress(
+                    node_id=f"analysis/{self.analysis_method}",
+                    completed_units=100,
+                    status="completed"
                 )
             
-            # Get analyzer
-            analyzer = self._create_analyzer(context)
-            
-            # Get analysis parameters
-            params = self._get_analysis_params(context)
-            
-            # Run analysis
-            logger.info(f"Running {self.analysis_method} with parameters: {params}")
-            results = analyzer.analyze(data=data, **params)
-            
-            # Save results
-            output_name = f"{self.analysis_method}_Analysis_{context.experiment_id}"
-            saved_path = analyzer.save_results(results, output_name)
-            
-            # Store results in context
-            context.set(f'{self.analysis_method}_results', results)
-            context.set(f'{self.analysis_method}_output_path', saved_path)
-            
-            # Prepare metrics
-            metrics = self._extract_metrics(results, params)
-            metrics['output_path'] = str(saved_path)
+            logger.info(
+                f"Analysis completed successfully",
+                extra={'metrics': metrics}
+            )
             
             return StageResult(
                 success=True,
-                data={f'{self.analysis_method}_results_path': str(saved_path)},
+                data={
+                    'analysis_method': self.analysis_method,
+                    'output_path': str(saved_path) if saved_path else None
+                },
                 metrics=metrics
             )
             
         except Exception as e:
-            logger.error(f"{self.analysis_method} analysis failed: {e}")
+            logger.error(
+                f"{self.analysis_method} analysis failed: {e}",
+                exc_info=True,
+                extra={
+                    'experiment_id': context.experiment_id,
+                    'stage': self.name,
+                    'error_type': type(e).__name__
+                }
+            )
+            
+            # Update progress to failed
+            if hasattr(context, 'progress_tracker') and context.progress_tracker:
+                context.progress_tracker.update_progress(
+                    node_id=f"analysis/{self.analysis_method}",
+                    completed_units=0,
+                    status="failed",
+                    metadata={"error": str(e)}
+                )
+            
             raise
     
-    def _load_from_csv(self, context) -> Optional[Any]:
-        """Load data from exported CSV."""
-        # Get exported file path from context
-        export_path = context.get('exported_csv_path')
+    def _load_dataset(self, context) -> BaseDataset:
+        """Load dataset using appropriate source."""
+        data_source = context.config.get('analysis.data_source', 'parquet')
         
-        if not export_path or not Path(export_path).exists():
-            logger.warning("No exported CSV found, falling back to database")
-            return self._load_from_database(context)
+        if data_source == 'parquet':
+            parquet_path = Path(context.get('ml_ready_path'))
+            if not parquet_path or not parquet_path.exists():
+                raise FileNotFoundError(f"Parquet file not found: {parquet_path}")
+            
+            return ParquetAnalysisDataset(
+                parquet_path,
+                chunk_size=context.config.get('analysis.chunk_size', 10000)
+            )
         
-        logger.info(f"Loading data from CSV: {export_path}")
+        elif data_source == 'database':
+            return DatabaseAnalysisDataset(
+                context.db,
+                experiment_id=context.experiment_id,
+                chunk_size=context.config.get('analysis.chunk_size', 10000)
+            )
         
-        try:
-            # Read CSV
-            df = pd.read_csv(export_path)
+        elif data_source == 'csv':
+            # Legacy CSV support
+            csv_path = Path(context.get('exported_csv_path'))
+            if not csv_path or not csv_path.exists():
+                raise FileNotFoundError(f"CSV file not found: {csv_path}")
             
-            # Convert to format expected by analyzers
-            # For spatial analysis, we need coordinates and features
+            # Create a simple CSV dataset wrapper
+            # This is a fallback for backward compatibility
+            import pandas as pd
+            df = pd.read_csv(csv_path)
             
-            # Extract coordinates
-            if 'x' in df.columns and 'y' in df.columns:
-                coords = df[['x', 'y']].values
-            else:
-                logger.error("CSV missing coordinate columns")
-                return None
-            
-            # Extract feature columns (everything except cell_id, x, y)
-            feature_cols = [col for col in df.columns 
-                           if col not in ['cell_id', 'x', 'y']]
-            
-            if not feature_cols:
-                logger.error("No feature columns found in CSV")
-                return None
-            
-            features = df[feature_cols].values
-            
-            # Create xarray dataset for compatibility
-            data = xr.Dataset({
-                'features': xr.DataArray(
-                    features,
-                    dims=['location', 'feature'],
-                    coords={
-                        'location': range(len(features)),
-                        'feature': feature_cols
-                    }
-                ),
-                'x': xr.DataArray(coords[:, 0] if hasattr(coords, '__getitem__') else [c[0] for c in coords], dims=['location']),
-                'y': xr.DataArray(coords[:, 1] if hasattr(coords, '__getitem__') else [c[1] for c in coords], dims=['location'])
-            })
-            
-            # Store coordinates in context for spatial methods
-            context.set('spatial_coordinates', coords)
-            
-            return data
-            
-        except Exception as e:
-            logger.error(f"Failed to load CSV: {e}")
-            return None
+            # Convert to parquet temporarily for uniform handling
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp:
+                df.to_parquet(tmp.name, index=False)
+                dataset = ParquetAnalysisDataset(Path(tmp.name))
+                # Store temp file path for cleanup
+                dataset._temp_file = tmp.name
+                return dataset
+        
+        else:
+            raise ValueError(f"Unknown data source: {data_source}")
     
-    def _load_from_database(self, context) -> Optional[Any]:
-        """Load merged dataset from database/context."""
-        # Try to get from context first (in-memory)
-        merged_dataset = context.get('merged_dataset')
-        
-        if merged_dataset is not None:
-            logger.info("Using in-memory merged dataset")
+    def _setup_progress_tracking(self, context):
+        """Set up progress tracking integration."""
+        if hasattr(context, 'progress_tracker') and context.progress_tracker:
+            # Create progress node
+            context.progress_tracker.create_node(
+                node_id=f"analysis/{self.analysis_method}",
+                parent_id="analysis",
+                level="step",
+                name=f"{self.analysis_method} analysis",
+                total_units=100
+            )
             
-            # Extract coordinates for spatial analysis
-            if 'x' in merged_dataset.coords and 'y' in merged_dataset.coords:
-                x_vals = merged_dataset.coords['x'].values
-                y_vals = merged_dataset.coords['y'].values
+            # Create callback
+            def progress_callback(current: int, total: int, message: str):
+                context.progress_tracker.update_progress(
+                    node_id=f"analysis/{self.analysis_method}",
+                    completed_units=int((current / total) * 100),
+                    status="running",
+                    metadata={"message": message, "current": current, "total": total}
+                )
                 
-                # Create coordinate pairs
-                import numpy as np
-                xx, yy = np.meshgrid(x_vals, y_vals)
-                coords = np.column_stack([xx.ravel(), yy.ravel()])
-                context.set('spatial_coordinates', coords)
+                # Also log for debugging
+                logger.debug(f"Analysis progress: {message} ({current}/{total})")
             
-            return merged_dataset
-        
-        # Otherwise load from database
-        logger.info("Loading merged dataset from database")
-        
-        # This would be implemented based on your database schema
-        # For now, returning None to indicate not implemented
-        logger.warning("Database loading not implemented in analysis stage")
-        return None
+            self._analyzer.set_progress_callback(progress_callback)
     
-    def _get_analyzer_class(self):
-        """Get the appropriate analyzer class."""
-        if self.analysis_method == 'som':
-            from src.spatial_analysis.som.som_trainer import SOMAnalyzer
-            return SOMAnalyzer
-        elif self.analysis_method == 'maxp_regions':
+    def cleanup(self, context):
+        """Clean up resources after execution."""
+        logger.debug("Starting cleanup")
+        
+        # Clean up temporary files from CSV conversion
+        if hasattr(self, '_dataset') and hasattr(self._dataset, '_temp_file'):
             try:
-                from src.spatial_analysis.regionalization.maxp_regions import MaxPRegionsAnalyzer
-                return MaxPRegionsAnalyzer
-            except ImportError:
-                raise ImportError(f"MaxP regions analysis not available - missing module")
-        elif self.analysis_method == 'gwpca':
-            try:
-                from src.spatial_analysis.multivariate.gwpca import GWPCAAnalyzer
-                return GWPCAAnalyzer
-            except ImportError:
-                raise ImportError(f"GWPCA analysis not available - missing module")
-        else:
-            raise ValueError(f"Unknown analysis method: {self.analysis_method}")
+                import os
+                if os.path.exists(self._dataset._temp_file):
+                    os.unlink(self._dataset._temp_file)
+                    logger.debug(f"Removed temporary file: {self._dataset._temp_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file: {e}")
+        
+        # Clean up analyzer
+        if self._analyzer:
+            if hasattr(self._analyzer, 'cleanup'):
+                try:
+                    self._analyzer.cleanup()
+                except Exception as e:
+                    logger.warning(f"Analyzer cleanup failed: {e}")
+            self._analyzer = None
+        
+        # Remove large data from context
+        if context.config.get('analysis.memory.cleanup_after_stage', True):
+            keys_to_remove = [
+                f'{self.analysis_method}_results',
+                'merged_dataset',
+                'spatial_coordinates',
+                'exported_csv_path'  # If loaded from CSV
+            ]
+            
+            removed_count = 0
+            for key in keys_to_remove:
+                if key in context.shared_data:
+                    del context.shared_data[key]
+                    removed_count += 1
+            
+            if removed_count > 0:
+                logger.debug(f"Removed {removed_count} items from context")
+        
+        # Force garbage collection
+        collected = gc.collect()
+        
+        logger.info(
+            f"Cleanup completed",
+            extra={
+                'stage': self.name,
+                'gc_collected': collected
+            }
+        )
     
-    def _create_analyzer(self, context):
-        """Create analyzer instance."""
-        analyzer_class = self._get_analyzer_class()
-        # SOMAnalyzer only takes db_connection as optional argument
-        if self.analysis_method == 'som':
-            return analyzer_class(db_connection=context.db)
-        else:
-            return analyzer_class(context.config, context.db)
     
     def _get_analysis_params(self, context) -> Dict[str, Any]:
         """Get analysis-specific parameters."""
