@@ -6,8 +6,9 @@ from ..interfaces import DatabaseInterface
 from .grid_operations import GridOperations
 
 # TODO: Import other operation modules as they are created
+# These imports will be enabled as modules are implemented:
 # from .species_operations import SpeciesOperations
-# from .feature_operations import FeatureOperations
+# from .feature_operations import FeatureOperations  
 # from .experiment_tracking import ExperimentTracking
 # from .raster_cache import RasterCache
 
@@ -136,10 +137,34 @@ class DatabaseSchema:
     def get_cached_resampling_values(self, *args, **kwargs):
         """Get cached resampling values - delegates to monolithic implementation."""
         return self._get_monolithic_schema().get_cached_resampling_values(*args, **kwargs)
+        
+    def store_resampled_dataset(self, *args, **kwargs):
+        """Store resampled dataset - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().store_resampled_dataset(*args, **kwargs)
+        
+    def get_resampled_datasets(self, *args, **kwargs):
+        """Get resampled datasets - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().get_resampled_datasets(*args, **kwargs)
+        
+    def create_resampled_data_table(self, *args, **kwargs):
+        """Create resampled data table - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().create_resampled_data_table(*args, **kwargs)
+        
+    def drop_resampled_data_table(self, *args, **kwargs):
+        """Drop resampled data table - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().drop_resampled_data_table(*args, **kwargs)
+        
+    def get_passthrough_datasets(self, *args, **kwargs):
+        """Get passthrough datasets - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().get_passthrough_datasets(*args, **kwargs)
+        
+    def get_experiments(self, *args, **kwargs):
+        """Get experiments - delegates to monolithic implementation."""
+        return self._get_monolithic_schema().get_experiments(*args, **kwargs)
 
 
 # Create default instance for backward compatibility
-# This will be removed once all imports are updated to inject dependencies
+# NOTE: This global instance will be removed once all imports are updated to use dependency injection
 def _create_default_schema():
     """Create default schema instance for backward compatibility."""
     try:
