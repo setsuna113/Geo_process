@@ -1,7 +1,7 @@
 """Database schema operations and data access layer."""
 
 from pathlib import Path
-from .connection import DatabaseManager, db
+from .interfaces import DatabaseInterface
 from src.config import config
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Union
@@ -14,14 +14,22 @@ logger = logging.getLogger(__name__)
 class DatabaseSchema:
     """Database schema operations and data access interface."""
     
-    def __init__(self):
+    def __init__(self, db_manager: Optional[DatabaseInterface] = None):
         self.schema_file = Path(__file__).parent / "schema.sql"
+        
+        # Use provided database manager or get the global instance
+        if db_manager:
+            self.db = db_manager
+        else:
+            # Import only when needed to avoid circular dependency
+            from .connection import db
+            self.db = db
     
     # Schema Management
     def create_schema(self) -> bool:
         """Create database schema from SQL file."""
         try:
-            db.execute_sql_file(self.schema_file)
+            self.db.execute_sql_file(self.schema_file)
             logger.info("✅ Database schema created successfully")
             return True
         except Exception as e:
@@ -34,7 +42,7 @@ class DatabaseSchema:
             raise ValueError("Must set confirm=True to drop schema")
         
         try:
-            with db.get_cursor() as cursor:
+            with self.db.get_cursor() as cursor:
                 cursor.execute("""
                     DROP VIEW IF EXISTS experiment_summary CASCADE;
                     DROP VIEW IF EXISTS grid_processing_status CASCADE;
@@ -69,7 +77,7 @@ class DatabaseSchema:
         
         crs = grid_config.get('crs', 'EPSG:4326')  # Default fallback
         
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO grids (name, grid_type, resolution, crs, bounds, metadata)
                 VALUES (%(name)s, %(grid_type)s, %(resolution)s, %(crs)s, 
@@ -89,7 +97,7 @@ class DatabaseSchema:
     
     def store_grid_cells_batch(self, grid_id: str, cells_data: List[Dict]) -> int:
         """Bulk insert grid cells."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             # Prepare data for bulk insert
             cell_records = []
             for cell in cells_data:
@@ -114,13 +122,13 @@ class DatabaseSchema:
     
     def get_grid_by_name(self, name: str) -> Optional[Dict[str, Any]]:
         """Get grid by name."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("SELECT * FROM grids WHERE name = %s", (name,))
             return cursor.fetchone()
     
     def get_grid_cells(self, grid_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get grid cells for a grid."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = """
                 SELECT cell_id, ST_AsText(geometry) as geometry_wkt, 
                        area_km2, ST_AsText(centroid) as centroid_wkt
@@ -136,7 +144,7 @@ class DatabaseSchema:
     
     def delete_grid(self, name: str) -> bool:
         """Delete grid and all related data."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("DELETE FROM grids WHERE name = %s", (name,))
             deleted = cursor.rowcount > 0
             if deleted:
@@ -148,7 +156,7 @@ class DatabaseSchema:
     # Species Operations (for species/ and processors/ modules)
     def store_species_range(self, species_data: Dict[str, Any]) -> str:
         """Store species range data from .gpkg file."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO species_ranges 
                 (species_name, scientific_name, genus, family, order_name, class_name, 
@@ -184,7 +192,7 @@ class DatabaseSchema:
     
     def store_species_intersections_batch(self, intersections: List[Dict]) -> int:
         """Bulk store species-grid intersections."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             intersection_records = []
             for inter in intersections:
                 intersection_records.append((
@@ -221,7 +229,7 @@ class DatabaseSchema:
     def get_species_ranges(self, category: Optional[str] = None, 
                           source_file: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get species ranges with optional filtering."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM species_ranges WHERE 1=1"
             params = []
             
@@ -242,7 +250,7 @@ class DatabaseSchema:
                      feature_name: str, feature_value: float,
                      metadata: Optional[Dict] = None) -> str:
         """Store computed feature."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO features 
                 (grid_id, cell_id, feature_type, feature_name, feature_value, computation_metadata)
@@ -259,7 +267,7 @@ class DatabaseSchema:
     
     def store_features_batch(self, features: List[Dict]) -> int:
         """Bulk store features."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             feature_records = []
             for feat in features:
                 feature_records.append((
@@ -286,7 +294,7 @@ class DatabaseSchema:
     
     def store_climate_data_batch(self, climate_data: List[Dict]) -> int:
         """Bulk store climate data."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             climate_records = []
             for data in climate_data:
                 climate_records.append((
@@ -312,7 +320,7 @@ class DatabaseSchema:
     
     def get_features(self, grid_id: str, feature_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get features for a grid."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM features WHERE grid_id = %s"
             params = [grid_id]
             
@@ -330,7 +338,7 @@ class DatabaseSchema:
                                data_type: str, resampling_method: str, band_name: str,
                                data_table_name: str, metadata: Dict) -> int:
         """Store resampled dataset metadata."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO resampled_datasets 
                 (name, source_path, target_resolution, target_crs, bounds, 
@@ -349,7 +357,7 @@ class DatabaseSchema:
     
     def get_resampled_datasets(self, filters: Optional[Dict] = None) -> List[Dict]:
         """Retrieve resampled datasets with optional filters."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = """
                 SELECT id, name, source_path, target_resolution, target_crs, 
                        bounds, shape_height, shape_width, data_type, 
@@ -380,7 +388,7 @@ class DatabaseSchema:
     
     def create_resampled_data_table(self, table_name: str):
         """Create table for storing resampled dataset values."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS {table_name} (
                     row_idx INTEGER NOT NULL,
@@ -393,7 +401,7 @@ class DatabaseSchema:
     
     def drop_resampled_data_table(self, table_name: str):
         """Drop resampled data table."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
             logger.info(f"Dropped resampled data table: {table_name}")
     
@@ -408,7 +416,7 @@ class DatabaseSchema:
         Returns:
             List of passthrough dataset info
         """
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT id, name, source_path, target_resolution, target_crs, 
                        bounds, shape_height, shape_width, data_type, 
@@ -438,7 +446,7 @@ class DatabaseSchema:
         if passthrough_only and resampled_only:
             raise ValueError("Cannot specify both passthrough_only and resampled_only")
         
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = """
                 SELECT id, name, source_path, target_resolution, target_crs, 
                        bounds, shape_height, shape_width, data_type, 
@@ -472,7 +480,7 @@ class DatabaseSchema:
             True if updated successfully
         """
         try:
-            with db.get_cursor() as cursor:
+            with self.db.get_cursor() as cursor:
                 # Get existing metadata
                 cursor.execute("""
                     SELECT metadata FROM resampled_datasets WHERE name = %s
@@ -505,7 +513,7 @@ class DatabaseSchema:
     # Experiment and Job Tracking (for pipeline/ modules)
     def create_experiment(self, name: str, description: str, config: Dict) -> str:
         """Create new experiment, handling duplicates gracefully."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             try:
                 cursor.execute("""
                     INSERT INTO experiments (name, description, config, created_by)
@@ -537,7 +545,7 @@ class DatabaseSchema:
                                 results: Optional[Dict] = None, 
                                 error_message: Optional[str] = None):
         """Update experiment status."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             completed_at = datetime.now() if status == 'completed' else None
             cursor.execute("""
                 UPDATE experiments 
@@ -548,7 +556,7 @@ class DatabaseSchema:
     def create_processing_job(self, job_type: str, job_name: str, parameters: Dict,
                              parent_experiment_id: Optional[str] = None) -> str:
         """Create processing job."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO processing_jobs (job_type, job_name, parameters, parent_experiment_id)
                 VALUES (%s, %s, %s, %s)
@@ -561,7 +569,7 @@ class DatabaseSchema:
     def update_job_progress(self, job_id: str, progress_percent: float, 
                            status: Optional[str] = None, log_message: Optional[str] = None):
         """Update job progress."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             updates = ["progress_percent = %s"]
             params: List[Any] = [progress_percent]
             
@@ -588,7 +596,7 @@ class DatabaseSchema:
     # Utility and Query Methods
     def get_schema_info(self) -> Dict[str, Any]:
         """Get comprehensive schema information."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             # Table info
             cursor.execute("""
                 SELECT 
@@ -630,7 +638,7 @@ class DatabaseSchema:
     
     def get_grid_status(self, grid_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get grid processing status."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM grid_processing_status"
             params = []
             
@@ -644,7 +652,7 @@ class DatabaseSchema:
     
     def get_species_richness(self, grid_id: str, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get species richness summary."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM species_richness_summary WHERE grid_id = %s"
             params = [grid_id]
             
@@ -668,7 +676,7 @@ class DatabaseSchema:
     # Raster Operations (for raster/ modules)
     def store_raster_source(self, raster_data: Dict[str, Any]) -> str:
         """Store raster source metadata."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO raster_sources 
                 (name, file_path, data_type, pixel_size_degrees, spatial_extent, 
@@ -692,7 +700,7 @@ class DatabaseSchema:
     def get_raster_sources(self, active_only: bool = True, 
                           processing_status: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get raster sources with optional filtering."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM raster_sources WHERE 1=1"
             params = []
             
@@ -710,7 +718,7 @@ class DatabaseSchema:
     def update_raster_processing_status(self, raster_id: str, status: str, 
                                        metadata: Optional[Dict] = None):
         """Update raster processing status."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 UPDATE raster_sources 
                 SET processing_status = %s, updated_at = CURRENT_TIMESTAMP,
@@ -720,7 +728,7 @@ class DatabaseSchema:
 
     def store_raster_tiles_batch(self, raster_id: str, tiles_data: List[Dict]) -> int:
         """Bulk store raster tiles."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             tile_records = []
             for tile in tiles_data:
                 tile_records.append((
@@ -752,7 +760,7 @@ class DatabaseSchema:
 
     def get_raster_tiles_for_bounds(self, raster_id: str, bounds_wkt: str) -> List[Dict[str, Any]]:
         """Get raster tiles that intersect with given bounds."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM raster_tiles 
                 WHERE raster_source_id = %s 
@@ -763,7 +771,7 @@ class DatabaseSchema:
 
     def store_resampling_cache_batch(self, cache_data: List[Dict]) -> int:
         """Bulk store resampling cache entries."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cache_records = []
             for cache in cache_data:
                 cache_records.append((
@@ -799,7 +807,7 @@ class DatabaseSchema:
                                    cell_ids: List[str], method: str, 
                                    band_number: int) -> Dict[str, float]:
         """Get cached resampling values for specific cells."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 UPDATE resampling_cache 
                 SET last_accessed = CURRENT_TIMESTAMP, access_count = access_count + 1
@@ -815,7 +823,7 @@ class DatabaseSchema:
                            grid_id: Optional[str] = None, tile_id: Optional[str] = None,
                            parameters: Optional[Dict] = None, priority: int = 0) -> str:
         """Add a task to the processing queue."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO processing_queue 
                 (queue_type, raster_source_id, grid_id, tile_id, parameters, priority)
@@ -829,7 +837,7 @@ class DatabaseSchema:
 
     def get_next_processing_task(self, queue_type: str, worker_id: str) -> Optional[Dict[str, Any]]:
         """Get next processing task with worker assignment."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 UPDATE processing_queue 
                 SET status = 'processing', worker_id = %s, started_at = CURRENT_TIMESTAMP
@@ -847,7 +855,7 @@ class DatabaseSchema:
     def complete_processing_task(self, task_id: str, success: bool = True, 
                                error_message: Optional[str] = None):
         """Mark processing task as completed or failed."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             if success:
                 cursor.execute("""
                     UPDATE processing_queue 
@@ -864,7 +872,7 @@ class DatabaseSchema:
 
     def get_raster_processing_status(self, raster_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get raster processing status overview."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM raster_processing_status"
             params = []
             
@@ -879,7 +887,7 @@ class DatabaseSchema:
     def get_cache_efficiency_summary(self, raster_id: Optional[str] = None, 
                                    grid_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get cache efficiency statistics."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM cache_efficiency_summary WHERE 1=1"
             params = []
             
@@ -897,14 +905,14 @@ class DatabaseSchema:
 
     def cleanup_old_cache(self, days_old: int = 30, min_access_count: int = 1) -> int:
         """Clean up old and rarely accessed cache entries."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("SELECT cleanup_resampling_cache(%s, %s)", 
                           (days_old, min_access_count))
             return cursor.fetchone()['cleanup_resampling_cache']
 
     def get_processing_queue_summary(self) -> List[Dict[str, Any]]:
         """Get processing queue statistics."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("SELECT * FROM processing_queue_summary ORDER BY queue_type, status")
             return cursor.fetchall()
 
@@ -935,7 +943,7 @@ class DatabaseSchema:
         
         cleanup_results = {}
         
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             for table in allowed_tables:
                 try:
                     # Check if table exists
@@ -1042,7 +1050,7 @@ class DatabaseSchema:
         import json
         metadata_key = config.testing.get('test_data_markers', {}).get('metadata_key', '__test_data__')
         
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             # Check for different JSON column names based on table
             json_column = None
             if 'metadata' in self._get_table_columns(cursor, table):
@@ -1078,7 +1086,7 @@ class DatabaseSchema:
                          file_path: str, file_size_bytes: int,
                          compression_type: Optional[str] = None) -> str:
         """Create a checkpoint record."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO pipeline_checkpoints 
                 (checkpoint_id, level, parent_id, processor_name, data_summary,
@@ -1097,7 +1105,7 @@ class DatabaseSchema:
                                validation_result: Optional[Dict] = None,
                                error_message: Optional[str] = None):
         """Update checkpoint status and validation info."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 UPDATE pipeline_checkpoints 
                 SET status = %s, validation_checksum = %s, validation_result = %s,
@@ -1110,7 +1118,7 @@ class DatabaseSchema:
     
     def get_checkpoint(self, checkpoint_id: str) -> Optional[Dict[str, Any]]:
         """Get checkpoint by ID."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM pipeline_checkpoints 
                 WHERE checkpoint_id = %s
@@ -1119,7 +1127,7 @@ class DatabaseSchema:
     
     def get_latest_checkpoint(self, processor_name: str, level: str) -> Optional[Dict[str, Any]]:
         """Get latest checkpoint for a processor at a specific level."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM pipeline_checkpoints 
                 WHERE processor_name = %s AND level = %s AND status = 'valid'
@@ -1133,7 +1141,7 @@ class DatabaseSchema:
                         parent_id: Optional[str] = None,
                         status: Optional[str] = None) -> List[Dict[str, Any]]:
         """List checkpoints with optional filtering."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM pipeline_checkpoints WHERE 1=1"
             params = []
             
@@ -1156,7 +1164,7 @@ class DatabaseSchema:
     
     def cleanup_old_checkpoints(self, days_old: int, keep_minimum: Dict[str, int]) -> int:
         """Clean up old checkpoints while preserving minimum counts per level."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 WITH ranked_checkpoints AS (
                     SELECT id, level, created_at,
@@ -1189,7 +1197,7 @@ class DatabaseSchema:
                              parent_job_id: str, total_items: int,
                              parameters: Optional[Dict] = None) -> str:
         """Create a processing step record."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO processing_steps 
                 (step_name, processor_name, parent_job_id, total_items,
@@ -1207,7 +1215,7 @@ class DatabaseSchema:
                              error_messages: Optional[List[str]] = None,
                              checkpoint_id: Optional[str] = None):
         """Update processing step progress."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             updates = ["processed_items = %s", "failed_items = %s"]
             params = [processed_items, failed_items]
             
@@ -1237,7 +1245,7 @@ class DatabaseSchema:
     
     def get_processing_steps(self, parent_job_id: str) -> List[Dict[str, Any]]:
         """Get all processing steps for a job."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM processing_steps 
                 WHERE parent_job_id = %s
@@ -1250,7 +1258,7 @@ class DatabaseSchema:
                                     file_size_bytes: int, processor_name: str,
                                     parent_job_id: Optional[str] = None) -> str:
         """Create file processing status record."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 INSERT INTO file_processing_status 
                 (file_path, file_type, file_size_bytes, processor_name,
@@ -1270,7 +1278,7 @@ class DatabaseSchema:
                                     checkpoint_id: Optional[str] = None,
                                     error_message: Optional[str] = None):
         """Update file processing status."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             updates = ["status = %s"]
             params = [status]
             
@@ -1311,7 +1319,7 @@ class DatabaseSchema:
                                  parent_job_id: Optional[str] = None,
                                  status: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get file processing status with optional filtering."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             query = "SELECT * FROM file_processing_status WHERE 1=1"
             params = []
             
@@ -1333,7 +1341,7 @@ class DatabaseSchema:
     
     def get_resumable_files(self, processor_name: str) -> List[Dict[str, Any]]:
         """Get files that can be resumed from checkpoints."""
-        with db.get_cursor() as cursor:
+        with self.db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT * FROM file_processing_status 
                 WHERE processor_name = %s 

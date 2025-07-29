@@ -6,6 +6,7 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 from pathlib import Path
 from src.config import config
+from .interfaces import DatabaseInterface
 import logging
 import time
 import re
@@ -17,7 +18,7 @@ from typing import Optional, Generator, Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-class DatabaseManager:
+class DatabaseManager(DatabaseInterface):
     """Database connection manager with connection pooling and retry logic."""
     
     def __init__(self):
@@ -503,10 +504,12 @@ class DatabaseManager:
                 
                 if not cur.fetchone()[0]:
                     logger.info("🔧 Database schema missing, creating automatically...")
-                    from .schema import DatabaseSchema
-                    schema = DatabaseSchema()
-                    schema.create_all_tables()
-                    logger.info("✅ Database schema created automatically")
+                    schema_instance = self._get_schema_instance()
+                    if schema_instance:
+                        schema_instance.create_all_tables()
+                        logger.info("✅ Database schema created automatically")
+                    else:
+                        logger.error("❌ Failed to create schema - schema instance not available")
                 else:
                     # Check schema integrity and repair if needed
                     self._check_and_repair_schema()
@@ -606,6 +609,16 @@ class DatabaseManager:
                 
         except Exception as e:
             logger.warning(f"Existing data check failed: {e} - continuing anyway")
+
+    def _get_schema_instance(self):
+        """Get schema instance using lazy loading to avoid circular dependency."""
+        try:
+            # Import only when needed to avoid circular dependency
+            from .schema import DatabaseSchema
+            return DatabaseSchema()
+        except ImportError as e:
+            logger.error(f"Failed to import DatabaseSchema: {e}")
+            return None
 
     def close_pool(self):
         """Close all connections in the pool."""

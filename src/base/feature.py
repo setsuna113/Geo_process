@@ -7,9 +7,9 @@ from enum import Enum
 import numpy as np
 import logging
 
-from ..core.registry import component_registry
+# Registry import removed - unused import violating base layer architecture
 from src.config import config
-from ..database.schema import schema
+# Database schema import removed - using dependency injection to avoid architectural violation
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ class BaseFeature(ABC):
                  feature_type: str,
                  normalize: bool = False,
                  store_results: bool = True,
+                 schema=None,
                  **kwargs):
         """
         Initialize feature extractor.
@@ -66,11 +67,13 @@ class BaseFeature(ABC):
             feature_type: Type of feature (e.g., 'species_richness', 'climate')
             normalize: Whether to normalize features
             store_results: Whether to store results in database
+            schema: Database schema instance (injected to avoid architectural violation)
             **kwargs: Feature-specific parameters
         """
         self.feature_type = feature_type
         self.normalize = normalize
         self.store_results = store_results
+        self.schema = schema  # Injected dependency to avoid architectural violation
         self.config = self._merge_config(kwargs)
         
     def _merge_config(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -205,8 +208,8 @@ class BaseFeature(ABC):
             })
             feature_dicts.append(feature_dict)
             
-        if feature_dicts:
-            schema.store_features_batch(feature_dicts)
+        if feature_dicts and self.schema:
+            self.schema.store_features_batch(feature_dicts)
             
     def compute_statistics(self, features: Dict[str, List[FeatureResult]]) -> Dict[str, Any]:
         """Compute statistics across all features."""

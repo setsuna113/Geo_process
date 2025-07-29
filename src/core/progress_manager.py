@@ -562,13 +562,18 @@ def database_progress_callback(db_connection) -> Callable:
     return callback
 
 
-# Global progress manager instance
-_progress_manager: Optional[ProgressManager] = None
-
-
-def get_progress_manager() -> ProgressManager:
-    """Get the global progress manager instance."""
-    global _progress_manager
-    if _progress_manager is None:
-        _progress_manager = ProgressManager()
-    return _progress_manager
+# Factory function for creating progress manager instances
+# Note: Global state removed - use dependency injection or create instances explicitly
+def create_progress_manager() -> ProgressManager:
+    """
+    Create a new progress manager instance.
+    
+    Note: This replaces the global singleton pattern. Applications should:
+    1. Create instances explicitly when needed
+    2. Use dependency injection containers
+    3. Pass instances through constructors
+    
+    Returns:
+        New ProgressManager instance
+    """
+    return ProgressManager()

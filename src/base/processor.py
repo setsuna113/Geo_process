@@ -15,17 +15,161 @@ import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-from ..core.registry import component_registry
+# Registry import removed - unused import violating base layer architecture
 from src.config import config as global_config
-from ..database.schema import schema
+# Database schema import removed - using dependency injection to avoid architectural violation
 from .memory_tracker import get_memory_tracker
-from ..core.progress_manager import get_progress_manager
-from ..core.progress_events import get_event_bus
+# Progress manager and event bus imports removed - using dependency injection to avoid architectural violation
+# from ..core.progress_manager import ProgressManager, create_progress_manager
+# from ..core.progress_events import EventBus, create_event_bus, create_processing_progress, EventType
 # from ..core.checkpoint_manager import get_checkpoint_manager  # OLD - DEPRECATED
 from ..checkpoints import get_checkpoint_manager, CheckpointLevel
-from ..core.signal_handler import get_signal_handler
+from ..core.signal_handler import SignalHandler, create_signal_handler
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class ProcessorConfig:
+    """Configuration object for BaseProcessor to reduce constructor parameters."""
+    batch_size: int = 1000
+    max_workers: Optional[int] = None
+    store_results: bool = True
+    memory_limit_mb: Optional[int] = None
+    tile_size: Optional[int] = None
+    supports_chunking: bool = True
+    enable_progress: bool = True
+    enable_checkpoints: bool = True
+    checkpoint_interval: int = 100
+    timeout_seconds: Optional[float] = None
+    
+    @classmethod
+    def from_config(cls, config_dict: Optional[Dict[str, Any]] = None, processor_name: str = "") -> 'ProcessorConfig':
+        """Create ProcessorConfig from config dictionary."""
+        if not config_dict:
+            return cls()
+        
+        # Get processor-specific config
+        processor_config = config_dict.get(f'processors.{processor_name}', {})
+        global_processor_config = config_dict.get('processors', {})
+        
+        # Merge configs with processor-specific taking precedence
+        merged_config = {**global_processor_config, **processor_config}
+        
+        # Map config keys to ProcessorConfig fields
+        return cls(
+            batch_size=merged_config.get('batch_size', 1000),
+            max_workers=merged_config.get('max_workers'),
+            store_results=merged_config.get('store_results', True),
+            memory_limit_mb=merged_config.get('memory_limit_mb'),
+            tile_size=merged_config.get('tile_size'),
+            supports_chunking=merged_config.get('supports_chunking', True),
+            enable_progress=merged_config.get('enable_progress', True),
+            enable_checkpoints=merged_config.get('enable_checkpoints', True),
+            checkpoint_interval=merged_config.get('checkpoint_interval', 100),
+            timeout_seconds=merged_config.get('timeout_seconds')
+        )
+
+
+@dataclass 
+class ProcessorDependencies:
+    """Dependency injection container for BaseProcessor to eliminate constructor coupling."""
+    signal_handler: Optional[SignalHandler] = None
+    progress_manager = None  # Type hint avoided to prevent circular imports
+    event_bus = None  # Type hint avoided to prevent circular imports
+    database_schema = None  # Type hint avoided to prevent circular imports
+    config = None  # Type hint avoided to prevent circular imports
+    
+    @classmethod
+    def create_default(cls) -> 'ProcessorDependencies':
+        """Create dependencies with sensible defaults."""
+        return cls(
+            signal_handler=create_signal_handler(),
+            config=global_config
+        )
+    
+    def with_signal_handler(self, handler: SignalHandler) -> 'ProcessorDependencies':
+        """Builder method to set signal handler."""
+        self.signal_handler = handler
+        return self
+    
+    def with_progress_manager(self, manager) -> 'ProcessorDependencies':
+        """Builder method to set progress manager."""
+        self.progress_manager = manager
+        return self
+    
+    def with_event_bus(self, bus) -> 'ProcessorDependencies':
+        """Builder method to set event bus."""
+        self.event_bus = bus
+        return self
+    
+    def with_database_schema(self, schema) -> 'ProcessorDependencies':
+        """Builder method to set database schema."""
+        self.database_schema = schema
+        return self
+    
+    def with_config(self, config) -> 'ProcessorDependencies':
+        """Builder method to set config."""
+        self.config = config
+        return self
+
+
+class ProcessorBuilder:
+    """Builder pattern for creating processors with complex configurations."""
+    
+    def __init__(self, processor_class):
+        """Initialize builder with processor class."""
+        self.processor_class = processor_class
+        self.config = ProcessorConfig()
+        self.dependencies = ProcessorDependencies.create_default()
+        self.custom_kwargs = {}
+    
+    def with_config(self, config: ProcessorConfig) -> 'ProcessorBuilder':
+        """Set processor configuration."""
+        self.config = config
+        return self
+    
+    def with_dependencies(self, dependencies: ProcessorDependencies) -> 'ProcessorBuilder':
+        """Set processor dependencies."""
+        self.dependencies = dependencies
+        return self
+    
+    def with_batch_size(self, batch_size: int) -> 'ProcessorBuilder':
+        """Set batch size."""
+        self.config.batch_size = batch_size
+        return self
+    
+    def with_memory_limit(self, limit_mb: int) -> 'ProcessorBuilder':
+        """Set memory limit."""
+        self.config.memory_limit_mb = limit_mb
+        return self
+    
+    def enable_progress(self, enabled: bool = True) -> 'ProcessorBuilder':
+        """Enable/disable progress tracking."""
+        self.config.enable_progress = enabled
+        return self
+    
+    def enable_checkpoints(self, enabled: bool = True) -> 'ProcessorBuilder':
+        """Enable/disable checkpoints."""
+        self.config.enable_checkpoints = enabled
+        return self
+    
+    def with_custom_options(self, **kwargs) -> 'ProcessorBuilder':
+        """Add custom processor-specific options."""
+        self.custom_kwargs.update(kwargs)
+        return self
+    
+    def build(self):
+        """Build the processor instance."""
+        return self.processor_class(
+            processor_config=self.config,
+            signal_handler=self.dependencies.signal_handler,
+            progress_manager=self.dependencies.progress_manager,
+            event_bus=self.dependencies.event_bus,
+            database_schema=self.dependencies.database_schema,
+            config=self.dependencies.config,
+            **self.custom_kwargs
+        )
+
 
 @dataclass
 class ProcessingResult:
@@ -114,43 +258,77 @@ class BaseProcessor(ABC):
     """
     
     def __init__(self, 
-                    batch_size: int = 1000,
-                    max_workers: Optional[int] = None,
-                    store_results: bool = True,
-                    memory_limit_mb: Optional[int] = None,
-                    tile_size: Optional[int] = None,
-                    supports_chunking: bool = True,
-                    config=None,
-                    # New parameters
-                    enable_progress: bool = True,
-                    enable_checkpoints: bool = True,
-                    checkpoint_interval: int = 100,
-                    timeout_seconds: Optional[float] = None,
-                    **kwargs):
+                 processor_config: Optional[ProcessorConfig] = None,
+                 dependencies: Optional[ProcessorDependencies] = None,
+                 # Legacy parameters for backward compatibility
+                 signal_handler: Optional[SignalHandler] = None,
+                 progress_manager=None,
+                 event_bus=None,
+                 database_schema=None,
+                 config=None,
+                 **kwargs):
         """
-        Initialize enhanced base processor.
+        Initialize enhanced base processor with reduced parameter explosion.
         
         Args:
-            batch_size: Size of batches for processing
-            max_workers: Maximum parallel workers (None for auto)
-            store_results: Whether to store results in database
-            memory_limit_mb: Memory limit from processor config
-            tile_size: Tile size for tile-based processing
-            supports_chunking: Whether processor supports chunking
-            enable_progress: Enable progress tracking
-            enable_checkpoints: Enable checkpoint support
-            checkpoint_interval: Items between checkpoints
-            timeout_seconds: Processing timeout
-            **kwargs: Additional processor-specific parameters
+            processor_config: Configuration object containing all processor settings
+            dependencies: Dependency injection container with all required services
+            signal_handler: LEGACY - Signal handler instance (use dependencies instead)
+            progress_manager: LEGACY - Progress manager instance (use dependencies instead)
+            event_bus: LEGACY - Event bus instance (use dependencies instead)
+            database_schema: LEGACY - Database schema instance (use dependencies instead)
+            config: LEGACY - Config parameter (use dependencies instead)
+            **kwargs: Additional processor-specific parameters and legacy parameter overrides
         """
-        # Existing initialization
-        self.batch_size = batch_size
-        self.max_workers = max_workers or (psutil.cpu_count() or 4) - 1
-        self.store_results = store_results
-        config_source = config if config is not None else global_config
-        self.memory_limit_mb = memory_limit_mb or (config_source.get('processors.memory_limit_mb', 1024) if config_source else 1024)
-        self.tile_size = tile_size or (config_source.get('processors.tile_size', 512) if config_source else 512)
-        self.supports_chunking = supports_chunking
+        # Handle dependency injection vs legacy parameters
+        if dependencies is None:
+            # Create dependencies from legacy parameters for backward compatibility
+            dependencies = ProcessorDependencies(
+                signal_handler=signal_handler,
+                progress_manager=progress_manager,
+                event_bus=event_bus,
+                database_schema=database_schema,
+                config=config or global_config
+            )
+        
+        # Handle processor config creation
+        config_source = dependencies.config or global_config
+        
+        if processor_config is None:
+            # Extract legacy parameters from kwargs for backward compatibility
+            legacy_params = {
+                'batch_size': kwargs.pop('batch_size', 1000),
+                'max_workers': kwargs.pop('max_workers', None),
+                'store_results': kwargs.pop('store_results', True),
+                'memory_limit_mb': kwargs.pop('memory_limit_mb', None),
+                'tile_size': kwargs.pop('tile_size', None),
+                'supports_chunking': kwargs.pop('supports_chunking', True),
+                'enable_progress': kwargs.pop('enable_progress', True),
+                'enable_checkpoints': kwargs.pop('enable_checkpoints', True),
+                'checkpoint_interval': kwargs.pop('checkpoint_interval', 100),
+                'timeout_seconds': kwargs.pop('timeout_seconds', None)
+            }
+            
+            # Create config from parameters and config file
+            if config_source:
+                processor_config = ProcessorConfig.from_config(
+                    config_source._data if hasattr(config_source, '_data') else {},
+                    self.__class__.__name__
+                )
+                # Override with legacy parameters
+                for key, value in legacy_params.items():
+                    if value is not None:
+                        setattr(processor_config, key, value)
+            else:
+                processor_config = ProcessorConfig(**{k: v for k, v in legacy_params.items() if v is not None})
+        
+        # Apply configuration
+        self.batch_size = processor_config.batch_size
+        self.max_workers = processor_config.max_workers or (psutil.cpu_count() or 4) - 1
+        self.store_results = processor_config.store_results
+        self.memory_limit_mb = processor_config.memory_limit_mb or (config_source.get('processors.memory_limit_mb', 1024) if config_source else 1024)
+        self.tile_size = processor_config.tile_size or (config_source.get('processors.tile_size', 512) if config_source else 512)
+        self.supports_chunking = processor_config.supports_chunking
         
         # Legacy memory tracker for backward compatibility
         self.memory_tracker = LegacyMemoryTracker()
@@ -173,21 +351,28 @@ class BaseProcessor(ABC):
         # Memory pressure handling
         self._enhanced_memory_tracker.add_pressure_callback(self._handle_memory_pressure)
         
-        # NEW: Progress management
-        self.enable_progress = enable_progress
-        self._progress_manager = get_progress_manager() if enable_progress else None
-        self._event_bus = get_event_bus() if enable_progress else None
+        # Store configuration and dependencies for easy access
+        self.processor_config = processor_config
+        self.dependencies = dependencies
+        
+        # NEW: Progress management - using dependency injection
+        self.enable_progress = processor_config.enable_progress
+        self._progress_manager = dependencies.progress_manager if processor_config.enable_progress else None
+        self._event_bus = dependencies.event_bus if processor_config.enable_progress else None
         self._progress_node_id: Optional[str] = None
         
+        # Database operations - using dependency injection
+        self._database_schema = dependencies.database_schema
+        
         # NEW: Checkpoint management
-        self.enable_checkpoints = enable_checkpoints
-        self.checkpoint_interval = checkpoint_interval
-        self._checkpoint_manager = get_checkpoint_manager() if enable_checkpoints else None
+        self.enable_checkpoints = processor_config.enable_checkpoints
+        self.checkpoint_interval = processor_config.checkpoint_interval
+        self._checkpoint_manager = get_checkpoint_manager() if processor_config.enable_checkpoints else None
         self._last_checkpoint_items = 0
         self._checkpoint_data: Dict[str, Any] = {}
         
-        # NEW: Signal handling
-        self._signal_handler = get_signal_handler()
+        # NEW: Signal handling - support dependency injection
+        self._signal_handler = dependencies.signal_handler or create_signal_handler()
         self._processing_lock = threading.Lock()
         self._is_processing = False
         self._should_stop = threading.Event()
@@ -195,11 +380,115 @@ class BaseProcessor(ABC):
         self._pause_event.set()  # Not paused by default
         
         # NEW: Timeout support
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = processor_config.timeout_seconds
         self._timeout_timer: Optional[threading.Timer] = None
         
         # Register signal handlers
         self._register_signal_handlers()
+    
+    def cleanup(self) -> None:
+        """Clean up resources to prevent memory leaks and ensure proper shutdown."""
+        try:
+            # Signal cleanup start
+            logger.debug(f"Starting cleanup for {self.__class__.__name__} processor")
+            
+            # Stop any active processing
+            if self._is_processing:
+                self._should_stop.set()
+                logger.debug("Signaled processing to stop")
+            
+            # Remove pressure callback to prevent reference cycles
+            if hasattr(self, '_enhanced_memory_tracker') and self._enhanced_memory_tracker:
+                try:
+                    callbacks = getattr(self._enhanced_memory_tracker, '_pressure_callbacks', [])
+                    callbacks[:] = [cb for cb in callbacks if getattr(cb, '__self__', None) is not self]
+                    logger.debug("Removed memory pressure callbacks")
+                except Exception as e:
+                    logger.warning(f"Failed to remove memory pressure callbacks: {e}")
+            
+            # Clean up memory mapped files
+            try:
+                self.cleanup_memory_mapped_files()
+                logger.debug("Cleaned up memory mapped files")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup memory mapped files: {e}")
+            
+            # Clear progress callbacks and managers
+            self._progress_callback = None
+            if self._progress_manager:
+                # Complete any active progress nodes
+                if self._progress_node_id:
+                    try:
+                        self._progress_manager.complete(
+                            self._progress_node_id, 
+                            "cleanup", 
+                            {"reason": "processor cleanup"}
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to complete progress node: {e}")
+                    self._progress_node_id = None
+            
+            # Unregister from signal handler
+            if self._signal_handler and hasattr(self._signal_handler, 'unregister_handler'):
+                try:
+                    self._signal_handler.unregister_handler('processor')
+                    logger.debug("Unregistered from signal handler")
+                except Exception as e:
+                    logger.warning(f"Failed to unregister signal handler: {e}")
+            
+            # Cancel timeout timer
+            if self._timeout_timer:
+                try:
+                    self._timeout_timer.cancel()
+                    self._timeout_timer = None
+                    logger.debug("Cancelled timeout timer")
+                except Exception as e:
+                    logger.warning(f"Failed to cancel timeout timer: {e}")
+            
+            # Clear checkpoint data and manager
+            try:
+                self._checkpoint_data.clear()
+                # Don't clear the checkpoint manager itself as it may be shared
+                logger.debug("Cleared checkpoint data")
+            except Exception as e:
+                logger.warning(f"Failed to clear checkpoint data: {e}")
+            
+            # Clear event flags
+            try:
+                self._should_stop.clear()
+                self._pause_event.set()  # Ensure not paused
+                logger.debug("Reset event flags")
+            except Exception as e:
+                logger.warning(f"Failed to reset event flags: {e}")
+            
+            # Force garbage collection for memory cleanup
+            try:
+                if self._enhanced_memory_tracker:
+                    self._enhanced_memory_tracker.force_garbage_collection()
+                    logger.debug("Forced garbage collection")
+            except Exception as e:
+                logger.warning(f"Failed to force garbage collection: {e}")
+            
+            logger.info(f"Successfully cleaned up {self.__class__.__name__} processor")
+            
+        except Exception as e:
+            logger.error(f"Error during processor cleanup: {e}")
+    
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit with cleanup."""
+        self.cleanup()
+        return False  # Don't suppress exceptions
+    
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        try:
+            self.cleanup()
+        except Exception:
+            pass  # Avoid exceptions in destructor
         
     def _merge_config(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """Merge kwargs with passed config or default config."""
@@ -304,15 +593,20 @@ class BaseProcessor(ABC):
         
         # Publish start event
         if self._event_bus:
-            event = create_processing_progress(
-                operation_name=operation_name,
-                processed=0,
-                total=total_items,
-                source=self.__class__.__name__,
-                node_id=self._progress_node_id
-            )
-            event.event_type = EventType.PROCESSING_START
-            self._event_bus.publish(event)
+            try:
+                # Import only when needed to avoid architectural violations
+                from ..core.progress_events import create_processing_progress, EventType
+                event = create_processing_progress(
+                    operation_name=operation_name,
+                    processed=0,
+                    total=total_items,
+                    source=self.__class__.__name__,
+                    node_id=self._progress_node_id
+                )
+                event.event_type = EventType.PROCESSING_START
+                self._event_bus.publish(event)
+            except ImportError:
+                logger.warning("Progress events not available - skipping event publishing")
     
     def update_progress(self, items_processed: int, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Update progress for current operation."""
@@ -327,14 +621,18 @@ class BaseProcessor(ABC):
         
         # Publish progress event
         if self._event_bus:
-            event = create_processing_progress(
-                operation_name=self._progress_node_id,
-                processed=items_processed,
-                total=100,  # Will be overridden by node data
-                source=self.__class__.__name__,
-                node_id=self._progress_node_id
-            )
-            self._event_bus.publish(event)
+            try:
+                from ..core.progress_events import create_processing_progress
+                event = create_processing_progress(
+                    operation_name=self._progress_node_id,
+                    processed=items_processed,
+                    total=100,  # Will be overridden by node data
+                    source=self.__class__.__name__,
+                    node_id=self._progress_node_id
+                )
+                self._event_bus.publish(event)
+            except ImportError:
+                pass  # Event publishing not available
         
         # Call legacy progress callback if set
         if self._progress_callback:
@@ -350,16 +648,20 @@ class BaseProcessor(ABC):
         
         # Publish complete event
         if self._event_bus:
-            event_type = EventType.PROCESSING_COMPLETE if status == "completed" else EventType.PROCESSING_ERROR
-            event = create_processing_progress(
-                operation_name=self._progress_node_id,
-                processed=100,
-                total=100,
-                source=self.__class__.__name__,
-                node_id=self._progress_node_id
-            )
-            event.event_type = event_type
-            self._event_bus.publish(event)
+            try:
+                from ..core.progress_events import create_processing_progress, EventType
+                event_type = EventType.PROCESSING_COMPLETE if status == "completed" else EventType.PROCESSING_ERROR
+                event = create_processing_progress(
+                    operation_name=self._progress_node_id,
+                    processed=100,
+                    total=100,
+                    source=self.__class__.__name__,
+                    node_id=self._progress_node_id
+                )
+                event.event_type = event_type
+                self._event_bus.publish(event)
+            except ImportError:
+                pass  # Event publishing not available
         
         self._progress_node_id = None
 

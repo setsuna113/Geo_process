@@ -10,12 +10,11 @@ from shapely.geometry import Polygon, Point
 import numpy as np
 
 from ..base import BaseGrid, GridCell
-from ..core.registry import component_registry
+# Registry import removed to avoid circular dependency - using lazy registration
 from .bounds_manager import BoundsManager, BoundsDefinition
 
 logger = logging.getLogger(__name__)
 
-@component_registry.grids.register_decorator()
 class HexagonalGrid(BaseGrid):
     """
     Hexagonal grid system using Uber's H3 library.

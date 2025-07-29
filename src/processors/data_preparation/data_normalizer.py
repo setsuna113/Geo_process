@@ -11,7 +11,7 @@ from typing import Union as TypingUnion
 import json
 
 from src.config import config
-from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
+from src.base.processor import BaseProcessor
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
