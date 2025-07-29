@@ -17,8 +17,8 @@ from .services import (
     CacheMonitor, 
     CacheCleaner
 )
-from ..config.config import config
-from ..core.progress_events import get_event_bus
+from src.config import config
+from src.core.progress_events import get_event_bus
 
 logger = logging.getLogger(__name__)
 

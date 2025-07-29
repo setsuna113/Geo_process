@@ -12,7 +12,7 @@ from .base_resampler import BaseResampler, ResamplingResult
 from ..strategies.area_weighted import AreaWeightedStrategy
 from ..strategies.sum_aggregation import SumAggregationStrategy
 from ..strategies.majority_vote import MajorityVoteStrategy
-from ...base.memory_manager import get_memory_manager
+from src.base.memory_manager import get_memory_manager
 
 logger = logging.getLogger(__name__)
 

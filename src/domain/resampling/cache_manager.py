@@ -11,9 +11,9 @@ import time
 import threading
 from datetime import datetime, timedelta
 
-from ..database.schema import schema
-from ..config.config import config
-from ..core.progress_events import get_event_bus, create_processing_progress, EventType
+from src.database.schema import schema
+from src.config import config
+from src.core.progress_events import get_event_bus, create_processing_progress, EventType
 
 logger = logging.getLogger(__name__)
 

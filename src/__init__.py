@@ -12,10 +12,8 @@ __description__ = "Geoprocessing tools for biodiversity analysis"
 # Main modules
 from . import config
 from . import database
-from . import grid_systems
 
 __all__ = [
     'config',
-    'database', 
-    'grid_systems',
+    'database',
 ]

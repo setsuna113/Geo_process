@@ -71,7 +71,7 @@ class CacheValidator:
     
     def _validate_database_cache(self, raster_id: str, grid_id: str) -> Dict[str, Any]:
         """Validate database cache entries."""
-        from ...database.schema import schema
+        from src.database.schema import schema
         
         results = {
             'total_entries': 0,
@@ -90,7 +90,7 @@ class CacheValidator:
         """Validate file cache entries."""
         from .file_cache_service import FileCacheService
         from pathlib import Path
-        from ...config.config import config
+        from src.config import config
         
         results = {
             'total_entries': 0,

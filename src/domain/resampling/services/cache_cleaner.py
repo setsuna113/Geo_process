@@ -6,7 +6,7 @@ from typing import Dict, List, Any
 import logging
 from pathlib import Path
 
-from ...config.config import config
+from src.config import config
 
 logger = logging.getLogger(__name__)
 

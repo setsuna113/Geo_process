@@ -7,8 +7,8 @@ import numpy as np
 import logging
 from pathlib import Path
 
-from ...database.schema import schema
-from ...config.config import config
+from src.database.schema import schema
+from src.config import config
 
 logger = logging.getLogger(__name__)
 
