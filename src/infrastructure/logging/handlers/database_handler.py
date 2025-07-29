@@ -140,7 +140,7 @@ class DatabaseLogHandler(logging.Handler):
                 tb = getattr(record, 'traceback', None)
                 perf = getattr(record, 'performance', {})
                 
-                # Build record dict
+                # Build record dict - lazy serialization
                 log_data = {
                     'experiment_id': context.get('experiment_id'),
                     'job_id': context.get('job_id'),
@@ -149,14 +149,23 @@ class DatabaseLogHandler(logging.Handler):
                     'level': record.levelname,
                     'logger_name': record.name,
                     'message': record.getMessage(),
-                    'context': json.dumps(context),
+                    'context': context,  # Don't serialize yet
                     'traceback': tb,
-                    'performance': json.dumps(perf) if perf else None
+                    'performance': perf  # Don't serialize yet
                 }
                 values.append(log_data)
             
-            # Bulk insert with connection from pool
+            # Serialize only when needed and bulk insert
             with self.db.get_cursor() as cursor:
+                # Serialize context and performance data
+                serialized_values = []
+                for log_data in values:
+                    serialized = log_data.copy()
+                    # Serialize JSON fields
+                    serialized['context'] = json.dumps(log_data['context']) if log_data['context'] else '{}'
+                    serialized['performance'] = json.dumps(log_data['performance']) if log_data['performance'] else None
+                    serialized_values.append(serialized)
+                
                 cursor.executemany("""
                     INSERT INTO pipeline_logs 
                     (experiment_id, job_id, node_id, timestamp, level, 
@@ -165,7 +174,7 @@ class DatabaseLogHandler(logging.Handler):
                             %(timestamp)s, %(level)s, %(logger_name)s, 
                             %(message)s, %(context)s::jsonb, %(traceback)s, 
                             %(performance)s::jsonb)
-                """, values)
+                """, serialized_values)
             
             self._records_written += len(values)
             
@@ -224,9 +233,26 @@ class DatabaseLogHandler(logging.Handler):
         # Give worker time to finish
         if self._worker_thread.is_alive():
             self._worker_thread.join(timeout=10)
+            
+            # Force terminate if still alive
+            if self._worker_thread.is_alive():
+                sys.stderr.write(
+                    "WARNING: DatabaseLogHandler worker thread did not stop cleanly. "
+                    "Some logs may be lost.\n"
+                )
+                # Clear the queue to prevent memory leak
+                try:
+                    while not self.queue.empty():
+                        self.queue.get_nowait()
+                        self._records_dropped += 1
+                except:
+                    pass
         
-        # Final flush
-        self.flush()
+        # Final flush attempt
+        try:
+            self.flush()
+        except Exception as e:
+            sys.stderr.write(f"Error during final flush: {e}\n")
         
         # Log statistics
         if self._records_dropped > 0 or self._write_errors > 0:

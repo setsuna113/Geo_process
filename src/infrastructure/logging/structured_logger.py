@@ -210,8 +210,9 @@ class StructuredLogger(logging.Logger):
         return get_logger(child_name)
 
 
-# Global logger cache
+# Global logger cache with size limit
 _logger_cache: Dict[str, StructuredLogger] = {}
+_logger_cache_max_size = 1000  # Prevent unbounded growth
 
 
 def get_logger(name: str) -> StructuredLogger:
@@ -229,6 +230,14 @@ def get_logger(name: str) -> StructuredLogger:
     """
     if name in _logger_cache:
         return _logger_cache[name]
+    
+    # Check cache size and clean if needed
+    if len(_logger_cache) >= _logger_cache_max_size:
+        # Remove oldest entries (simple FIFO for now)
+        # In production, consider using functools.lru_cache
+        keys_to_remove = list(_logger_cache.keys())[:len(_logger_cache) // 4]
+        for key in keys_to_remove:
+            del _logger_cache[key]
     
     # Temporarily set logger class
     original_class = logging.getLoggerClass()

@@ -131,10 +131,16 @@ class UnifiedMonitor:
                 )
                 
             except Exception as e:
-                # Mark as failed
+                # Mark as failed - safely get current progress
+                try:
+                    node_info = self.progress_backend.get_node(self.experiment_id, node_id)
+                    completed_units = node_info.get('completed_units', 0) if node_info else 0
+                except:
+                    completed_units = 0
+                
                 self.progress_backend.update_progress(
                     self.experiment_id, node_id, 
-                    self.progress_backend.get_node(self.experiment_id, node_id)['completed_units'],
+                    completed_units,
                     'failed',
                     metadata={'error': str(e)}
                 )

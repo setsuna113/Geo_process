@@ -271,9 +271,15 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Trigger to update parent progress when child changes
+-- Only trigger on significant changes to reduce load
 CREATE TRIGGER update_parent_progress_trigger
 AFTER INSERT OR UPDATE OF progress_percent, status ON pipeline_progress
 FOR EACH ROW
+WHEN (
+    NEW.status IS DISTINCT FROM OLD.status OR 
+    ABS(COALESCE(NEW.progress_percent, 0) - COALESCE(OLD.progress_percent, 0)) > 5 OR
+    OLD.progress_percent IS NULL
+)
 EXECUTE FUNCTION update_parent_progress();
 
 -- ==============================================================================
