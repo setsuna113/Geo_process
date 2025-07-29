@@ -836,15 +836,20 @@ class PipelineOrchestrator:
     
     def _start_monitoring(self):
         """Start monitoring threads."""
+        print("🧵 DEBUG: Creating monitor thread...")
         self._monitor_thread = threading.Thread(
             target=self._monitoring_loop,
             daemon=True
         )
+        print("🧵 DEBUG: Starting monitor thread...")
         self._monitor_thread.start()
         
         # Start individual monitors
+        print("💾 DEBUG: Starting memory monitor...")
         self.memory_monitor.start()
+        print("📊 DEBUG: Starting progress tracker...")
         self.progress_tracker.start()
+        print("✅ DEBUG: All monitors started")
     
     def _stop_monitoring(self):
         """Stop monitoring threads."""

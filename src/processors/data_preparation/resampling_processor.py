@@ -835,6 +835,7 @@ class ResamplingProcessor(BaseProcessor):
         return item
     
     def load_passthrough_data(self, info: ResampledDatasetInfo) -> Optional[np.ndarray]:
+        print(f"🔄 DEBUG: load_passthrough_data called for {info.name}")
         """
         Load data directly from original file for passthrough datasets.
         
