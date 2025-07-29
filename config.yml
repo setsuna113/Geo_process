@@ -36,6 +36,20 @@ resampling:
   preserve_sum: true  # Important for richness data
   cache_resampled: true
   engine: 'numpy'  # 'numpy' or 'gdal'
+  
+  # Memory-aware processing settings
+  enable_memory_aware_processing: true  # Enable windowed processing
+  window_size: 2048  # Process in 2048x2048 windows
+  window_overlap: 128  # Overlap for avoiding edge artifacts
+  skip_data_loading_for_passthrough: true  # Don't load data for passthrough
+  
+  # Resolution matching
+  allow_skip_resampling: true  # Skip resampling if resolution matches
+  resolution_tolerance: 0.001  # Tolerance for resolution matching
+  
+  # Feature flags for gradual rollout
+  use_legacy_passthrough: false  # Set to true to use old behavior
+  use_legacy_resampling: false  # Set to true to use old behavior
 
 # Multiple dataset definitions for unified processing
 # Each dataset now has its own path - no central data_dir needed!

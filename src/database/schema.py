@@ -909,6 +909,143 @@ class DatabaseSchema:
             cursor.execute("SELECT cleanup_resampling_cache(%s, %s)", 
                           (days_old, min_access_count))
             return cursor.fetchone()['cleanup_resampling_cache']
+    
+    # Windowed Storage Methods (for memory-efficient processing)
+    def insert_raster_chunk(self, table_name: str, chunk_data: List[Tuple],
+                          batch_size: int = 1000) -> int:
+        """Insert a chunk of raster data with proper indexing.
+        
+        Args:
+            table_name: Target table name
+            chunk_data: List of tuples (row_idx, col_idx, x_coord, y_coord, value)
+            batch_size: Batch size for inserts
+            
+        Returns:
+            Number of rows inserted
+        """
+        from psycopg2.extras import execute_values
+        
+        with self.db.get_cursor() as cursor:
+            # Ensure table exists with proper schema
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    row_idx INTEGER,
+                    col_idx INTEGER,
+                    x_coord DOUBLE PRECISION,
+                    y_coord DOUBLE PRECISION,
+                    value DOUBLE PRECISION,
+                    PRIMARY KEY (row_idx, col_idx)
+                );
+                
+                CREATE INDEX IF NOT EXISTS {table_name}_spatial_idx 
+                ON {table_name} (x_coord, y_coord);
+                
+                CREATE INDEX IF NOT EXISTS {table_name}_value_idx 
+                ON {table_name} (value) 
+                WHERE value IS NOT NULL;
+            """)
+            
+            # Batch insert with conflict handling
+            execute_values(
+                cursor,
+                f"""
+                INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) 
+                VALUES %s
+                ON CONFLICT (row_idx, col_idx) 
+                DO UPDATE SET 
+                    value = EXCLUDED.value,
+                    x_coord = EXCLUDED.x_coord,
+                    y_coord = EXCLUDED.y_coord
+                """,
+                chunk_data,
+                page_size=batch_size
+            )
+            
+            return len(chunk_data)
+    
+    def create_windowed_storage_table(self, table_name: str) -> None:
+        """Create optimized table for windowed raster storage.
+        
+        Args:
+            table_name: Name of table to create
+        """
+        with self.db.get_cursor() as cursor:
+            cursor.execute(f"""
+                -- Drop if exists to ensure clean state
+                DROP TABLE IF EXISTS {table_name} CASCADE;
+                
+                -- Create table with optimized structure
+                CREATE TABLE {table_name} (
+                    row_idx INTEGER NOT NULL,
+                    col_idx INTEGER NOT NULL,
+                    x_coord DOUBLE PRECISION NOT NULL,
+                    y_coord DOUBLE PRECISION NOT NULL,
+                    value DOUBLE PRECISION,
+                    PRIMARY KEY (row_idx, col_idx)
+                );
+                
+                -- Spatial index for coordinate-based queries
+                CREATE INDEX {table_name}_spatial_idx 
+                ON {table_name} USING GIST (
+                    ST_MakePoint(x_coord, y_coord)
+                );
+                
+                -- Value index for filtering
+                CREATE INDEX {table_name}_value_idx 
+                ON {table_name} (value) 
+                WHERE value IS NOT NULL;
+                
+                -- Row/col composite index for range queries
+                CREATE INDEX {table_name}_rowcol_idx 
+                ON {table_name} (row_idx, col_idx);
+                
+                -- Add table comment
+                COMMENT ON TABLE {table_name} IS 
+                'Windowed storage table for memory-efficient raster processing';
+            """)
+            
+            logger.info(f"Created windowed storage table: {table_name}")
+    
+    def get_raster_chunk_bounds(self, table_name: str) -> Optional[Dict[str, Any]]:
+        """Get spatial bounds and metadata for a windowed raster table.
+        
+        Args:
+            table_name: Table name
+            
+        Returns:
+            Dictionary with bounds and metadata
+        """
+        with self.db.get_cursor() as cursor:
+            cursor.execute(f"""
+                SELECT 
+                    MIN(x_coord) as min_x,
+                    MAX(x_coord) as max_x,
+                    MIN(y_coord) as min_y,
+                    MAX(y_coord) as max_y,
+                    COUNT(*) as pixel_count,
+                    COUNT(DISTINCT row_idx) as height,
+                    COUNT(DISTINCT col_idx) as width,
+                    AVG(value) as mean_value,
+                    MIN(value) as min_value,
+                    MAX(value) as max_value
+                FROM {table_name}
+                WHERE value IS NOT NULL
+            """)
+            
+            result = cursor.fetchone()
+            if result and result['pixel_count'] > 0:
+                return {
+                    'bounds': (result['min_x'], result['min_y'], 
+                              result['max_x'], result['max_y']),
+                    'shape': (result['height'], result['width']),
+                    'pixel_count': result['pixel_count'],
+                    'statistics': {
+                        'mean': result['mean_value'],
+                        'min': result['min_value'],
+                        'max': result['max_value']
+                    }
+                }
+            return None
 
     def get_processing_queue_summary(self) -> List[Dict[str, Any]]:
         """Get processing queue statistics."""

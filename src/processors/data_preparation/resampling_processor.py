@@ -28,6 +28,7 @@ from src.domain.validators.coordinate_integrity import (
     BoundsConsistencyValidator, CoordinateTransformValidator, ParquetValueValidator
 )
 from src.abstractions.interfaces.validator import ValidationSeverity
+from src.processors.data_preparation.windowed_storage import WindowedStorageManager
 
 
 @dataclass
@@ -280,7 +281,15 @@ class ResamplingProcessor(BaseProcessor):
                     if progress_callback:
                         progress_callback(f"Skipping resampling (resolution match)", 50)
                     
-                    # Create passthrough dataset info
+                    # Check if memory-aware processing is enabled
+                    use_memory_aware = self.config.get('resampling.enable_memory_aware_processing', False)
+                    
+                    if use_memory_aware:
+                        # Use memory-aware passthrough that doesn't load data
+                        logger.info(f"Using memory-aware passthrough for {dataset_name}")
+                        return self._handle_passthrough_memory_aware(raster_entry, normalized_config, progress_callback)
+                    
+                    # Create passthrough dataset info (legacy path)
                     passthrough_info = self._create_passthrough_dataset_info(raster_entry, normalized_config)
                     
                     if progress_callback:
@@ -764,6 +773,94 @@ class ResamplingProcessor(BaseProcessor):
         logger.info(f"   Resolution: {actual_resolution:.6f}° (source), Shape: {passthrough_info.shape}")
         
         return passthrough_info
+    
+    def _handle_passthrough_memory_aware(self, raster_entry: RasterEntry, dataset_config: dict,
+                                       progress_callback: Optional[Callable[[str, float], None]] = None) -> ResampledDatasetInfo:
+        """Handle passthrough dataset without loading data into memory.
+        
+        This method creates metadata and uses windowed storage to copy data
+        directly to the database without loading the entire dataset.
+        
+        Args:
+            raster_entry: Raster catalog entry
+            dataset_config: Dataset configuration
+            progress_callback: Optional progress callback
+            
+        Returns:
+            ResampledDatasetInfo for the passthrough dataset
+        """
+        logger.info(f"Processing passthrough dataset (memory-aware): {dataset_config['name']}")
+        
+        # Create passthrough metadata
+        passthrough_info = self._create_passthrough_dataset_info(raster_entry, dataset_config)
+        
+        # Register metadata in database
+        self._register_dataset_metadata(passthrough_info)
+        
+        # Create table for windowed storage
+        table_name = f"passthrough_{passthrough_info.name.replace('-', '_')}"
+        
+        # Use windowed storage manager
+        storage_manager = WindowedStorageManager(
+            window_size=self.config.get('resampling.window_size', 2048)
+        )
+        
+        # Create the storage table
+        storage_manager.create_storage_table(table_name, self.db)
+        
+        if progress_callback:
+            progress_callback("Starting windowed passthrough storage", 30)
+        
+        # Stream copy data using windowed storage
+        stats = storage_manager.store_passthrough_windowed(
+            str(raster_entry.path),
+            table_name,
+            self.db,
+            raster_entry.bounds,
+            progress_callback
+        )
+        
+        logger.info(f"✅ Memory-aware passthrough completed for {dataset_config['name']}")
+        logger.info(f"   Stored {stats['stored_pixels']:,} pixels in {stats['processed_windows']} windows")
+        
+        # Update metadata with storage info
+        passthrough_info.metadata.update({
+            'storage_table': table_name,
+            'storage_stats': stats,
+            'memory_aware': True
+        })
+        
+        return passthrough_info
+    
+    def _register_dataset_metadata(self, info: ResampledDatasetInfo) -> None:
+        """Register dataset metadata in database without storing data.
+        
+        Args:
+            info: Dataset information to register
+        """
+        from src.database.schema import schema
+        
+        # Prepare metadata
+        metadata = info.metadata.copy()
+        metadata['registered_at'] = datetime.now().isoformat()
+        
+        # Store metadata entry
+        schema.store_resampled_dataset(
+            name=info.name,
+            source_path=str(info.source_path),
+            target_resolution=info.target_resolution,
+            target_crs=info.target_crs,
+            bounds=info.bounds,
+            shape_height=info.shape[0],
+            shape_width=info.shape[1],
+            data_type=info.data_type,
+            resampling_method=info.resampling_method,
+            band_name=info.band_name,
+            data_table_name=metadata.get('storage_table'),
+            metadata=metadata
+        )
+        
+        logger.info(f"Registered dataset metadata: {info.name}")
 
     def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: Optional[np.ndarray]):
         """Store resampled dataset in database."""
