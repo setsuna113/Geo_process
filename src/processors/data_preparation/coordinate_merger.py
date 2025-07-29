@@ -44,18 +44,42 @@ class CoordinateMerger(BaseProcessor):
         
     def create_ml_ready_parquet(self, 
                                resampled_datasets: List[Dict], 
-                               output_dir: Path) -> Path:
-        """Main entry point - creates parquet from database tables."""
+                               output_dir: Path,
+                               chunk_size: Optional[int] = None) -> Path:
+        """Main entry point - creates parquet from database tables.
         
-        logger.info("Starting coordinate merger with validation")
+        Args:
+            resampled_datasets: List of dataset info dicts
+            output_dir: Output directory for parquet file
+            chunk_size: If provided, use chunked processing for memory efficiency
+        """
+        
+        logger.info(f"Starting coordinate merger with validation (chunk_size={chunk_size})")
         self.validation_results.clear()
         
-        # Step 1: Validate input datasets and load coordinate data
+        # Validate all datasets first
+        for dataset_info in resampled_datasets:
+            self._validate_dataset_bounds(dataset_info)
+        
+        if chunk_size:
+            # Use chunked processing for large datasets
+            return self._create_ml_ready_parquet_chunked(
+                resampled_datasets, output_dir, chunk_size
+            )
+        else:
+            # Original in-memory processing
+            return self._create_ml_ready_parquet_inmemory(
+                resampled_datasets, output_dir
+            )
+    
+    def _create_ml_ready_parquet_inmemory(self, 
+                                         resampled_datasets: List[Dict], 
+                                         output_dir: Path) -> Path:
+        """Original in-memory processing (for smaller datasets)."""
+        
+        # Step 1: Load coordinate data
         all_dfs = []
         for dataset_info in resampled_datasets:
-            # Validate dataset bounds
-            self._validate_dataset_bounds(dataset_info)
-            
             df = self._load_dataset_coordinates(dataset_info)
             if df is not None:
                 # Validate loaded coordinates
@@ -89,6 +113,235 @@ class CoordinateMerger(BaseProcessor):
         
         return output_path
     
+    def _create_ml_ready_parquet_chunked(self,
+                                       resampled_datasets: List[Dict],
+                                       output_dir: Path,
+                                       chunk_size: int) -> Path:
+        """Chunked processing for memory-efficient merging of large datasets."""
+        
+        logger.info(f"Using chunked processing with chunk_size={chunk_size}")
+        
+        # Get bounds that encompass all datasets
+        overall_bounds = self._get_overall_bounds(resampled_datasets)
+        min_x, min_y, max_x, max_y = overall_bounds
+        
+        # Get the finest resolution among all datasets
+        min_resolution = min(d['resolution'] for d in resampled_datasets)
+        
+        # Calculate grid dimensions
+        width = max_x - min_x
+        height = max_y - min_y
+        chunks_x = max(1, int(width / (chunk_size * min_resolution)))
+        chunks_y = max(1, int(height / (chunk_size * min_resolution)))
+        
+        chunk_width = width / chunks_x
+        chunk_height = height / chunks_y
+        
+        logger.info(f"Processing {chunks_x} x {chunks_y} chunks")
+        
+        # Initialize output file with first chunk to get schema
+        output_path = output_dir / 'ml_ready_aligned_data.parquet'
+        first_chunk = True
+        total_rows = 0
+        
+        # Process each chunk
+        for i in range(chunks_x):
+            for j in range(chunks_y):
+                # Define chunk bounds
+                chunk_min_x = min_x + i * chunk_width
+                chunk_max_x = min_x + (i + 1) * chunk_width
+                chunk_min_y = min_y + j * chunk_height
+                chunk_max_y = min_y + (j + 1) * chunk_height
+                chunk_bounds = (chunk_min_x, chunk_min_y, chunk_max_x, chunk_max_y)
+                
+                logger.info(f"Processing chunk ({i},{j}) with bounds: {chunk_bounds}")
+                
+                # Load data for this chunk from all datasets
+                chunk_dfs = []
+                for dataset_info in resampled_datasets:
+                    df = self._load_dataset_coordinates_bounded(
+                        dataset_info, chunk_bounds
+                    )
+                    if df is not None and not df.empty:
+                        chunk_dfs.append(df)
+                
+                if not chunk_dfs:
+                    continue
+                
+                # Merge chunk data
+                merged_chunk = self._merge_coordinate_datasets(chunk_dfs)
+                
+                if merged_chunk.empty:
+                    continue
+                
+                # Write chunk to parquet
+                if first_chunk:
+                    # Create new file with first chunk
+                    merged_chunk.to_parquet(output_path, index=False)
+                    first_chunk = False
+                else:
+                    # Append to existing file
+                    import pyarrow.parquet as pq
+                    import pyarrow as pa
+                    
+                    # Read existing data
+                    existing_table = pq.read_table(output_path)
+                    new_table = pa.Table.from_pandas(merged_chunk)
+                    
+                    # Concatenate tables
+                    combined_table = pa.concat_tables([existing_table, new_table])
+                    
+                    # Write back
+                    pq.write_table(combined_table, output_path)
+                
+                total_rows += len(merged_chunk)
+                logger.info(f"Chunk ({i},{j}) added {len(merged_chunk)} rows")
+        
+        if first_chunk:
+            raise ValueError("No data found in any chunks")
+        
+        # Final validation
+        self._validate_output_file(output_path)
+        
+        logger.info(f"Created ML-ready parquet with {total_rows:,} total rows")
+        self._report_validation_summary()
+        
+        return output_path
+    
+    def _get_overall_bounds(self, resampled_datasets: List[Dict]) -> Tuple[float, float, float, float]:
+        """Get bounds that encompass all datasets."""
+        min_x = float('inf')
+        min_y = float('inf')
+        max_x = float('-inf')
+        max_y = float('-inf')
+        
+        for dataset in resampled_datasets:
+            bounds = dataset.get('bounds')
+            if bounds:
+                if isinstance(bounds, list):
+                    bounds = tuple(bounds)
+                d_min_x, d_min_y, d_max_x, d_max_y = bounds
+                min_x = min(min_x, d_min_x)
+                min_y = min(min_y, d_min_y)
+                max_x = max(max_x, d_max_x)
+                max_y = max(max_y, d_max_y)
+        
+        return (min_x, min_y, max_x, max_y)
+    
+    def _load_dataset_coordinates_bounded(self, 
+                                        dataset_info: Dict,
+                                        bounds: Tuple[float, float, float, float]) -> Optional[pd.DataFrame]:
+        """Load coordinates within specified bounds."""
+        
+        # Get actual bounds from the dataset info
+        dataset_bounds = dataset_info.get('bounds')
+        if not dataset_bounds:
+            logger.error(f"No bounds found for dataset {dataset_info['name']}")
+            return None
+        
+        if isinstance(dataset_bounds, list):
+            dataset_bounds = tuple(dataset_bounds)
+        
+        # Check if bounds overlap
+        d_min_x, d_min_y, d_max_x, d_max_y = dataset_bounds
+        b_min_x, b_min_y, b_max_x, b_max_y = bounds
+        
+        if (d_max_x < b_min_x or d_min_x > b_max_x or
+            d_max_y < b_min_y or d_min_y > b_max_y):
+            # No overlap
+            return None
+        
+        # Load with spatial filter
+        if dataset_info.get('passthrough', False):
+            return self._load_passthrough_coordinates_bounded(
+                dataset_info['name'],
+                dataset_info['table_name'],
+                dataset_bounds,
+                dataset_info['resolution'],
+                bounds
+            )
+        else:
+            return self._load_resampled_coordinates_bounded(
+                dataset_info['name'],
+                dataset_info['table_name'],
+                bounds,
+                dataset_bounds,
+                dataset_info['resolution']
+            )
+    
+    def _load_passthrough_coordinates_bounded(self, name: str, table_name: str,
+                                            dataset_bounds: Tuple, resolution: float,
+                                            query_bounds: Tuple) -> pd.DataFrame:
+        """Load passthrough coordinates within bounds."""
+        
+        min_x, min_y, max_x, max_y = dataset_bounds
+        q_min_x, q_min_y, q_max_x, q_max_y = query_bounds
+        
+        # Check if table has coordinate columns
+        if self._table_has_coordinates(table_name):
+            # Use coordinate columns with spatial filter
+            query = f"""
+                SELECT x_coord as x, y_coord as y, value AS {name.replace('-', '_')}
+                FROM {table_name}
+                WHERE value IS NOT NULL AND value != 0
+                AND x_coord >= {q_min_x} AND x_coord <= {q_max_x}
+                AND y_coord >= {q_min_y} AND y_coord <= {q_max_y}
+            """
+        else:
+            # Legacy format - convert indices with spatial filter
+            query = f"""
+                WITH coords AS (
+                    SELECT 
+                        {min_x} + (col_idx + 0.5) * {resolution} AS x,
+                        {max_y} - (row_idx + 0.5) * {resolution} AS y,
+                        value AS {name.replace('-', '_')}
+                    FROM {table_name}
+                    WHERE value IS NOT NULL AND value != 0
+                )
+                SELECT * FROM coords
+                WHERE x >= {q_min_x} AND x <= {q_max_x}
+                AND y >= {q_min_y} AND y <= {q_max_y}
+            """
+        
+        with self.db.get_connection() as conn:
+            df = pd.read_sql(query, conn)
+        
+        return df
+    
+    def _load_resampled_coordinates_bounded(self, name: str, table_name: str,
+                                          query_bounds: Tuple,
+                                          dataset_bounds: Optional[Tuple] = None,
+                                          resolution: Optional[float] = None) -> pd.DataFrame:
+        """Load resampled coordinates within bounds."""
+        
+        q_min_x, q_min_y, q_max_x, q_max_y = query_bounds
+        
+        # Check if table has coordinate columns
+        if self._table_has_coordinates(table_name):
+            # New format with spatial filter
+            query = f"""
+                SELECT x_coord as x, y_coord as y, value AS {name.replace('-', '_')}
+                FROM {table_name}
+                WHERE value IS NOT NULL AND value != 0
+                AND x_coord >= {q_min_x} AND x_coord <= {q_max_x}
+                AND y_coord >= {q_min_y} AND y_coord <= {q_max_y}
+            """
+        else:
+            # Legacy format - need bounds and resolution
+            if not dataset_bounds or not resolution:
+                logger.error(f"Table {table_name} lacks coordinates and no bounds/resolution provided")
+                return pd.DataFrame()
+            
+            # Use passthrough method with bounds
+            return self._load_passthrough_coordinates_bounded(
+                name, table_name, dataset_bounds, resolution, query_bounds
+            )
+        
+        with self.db.get_connection() as conn:
+            df = pd.read_sql(query, conn)
+        
+        return df
+    
     def _load_dataset_coordinates(self, dataset_info: Dict) -> Optional[pd.DataFrame]:
         """Load coordinates from passthrough or resampled table."""
         
@@ -119,19 +372,30 @@ class CoordinateMerger(BaseProcessor):
                                     bounds: Tuple, resolution: float) -> pd.DataFrame:
         """Convert row/col indices to coordinates using actual raster bounds."""
         
-        min_x, min_y, max_x, max_y = bounds
-        
-        logger.info(f"Loading passthrough data for {name} with bounds: {bounds}")
-        
-        # SQL query that does coordinate conversion
-        query = f"""
-            SELECT 
-                {min_x} + (col_idx + 0.5) * {resolution} AS x,
-                {max_y} - (row_idx + 0.5) * {resolution} AS y,
-                value AS {name.replace('-', '_')}
-            FROM {table_name}
-            WHERE value IS NOT NULL AND value != 0
-        """
+        # Check if table already has coordinate columns (e.g., from migration)
+        if self._table_has_coordinates(table_name):
+            # Use coordinate columns directly
+            query = f"""
+                SELECT x_coord as x, y_coord as y, value AS {name.replace('-', '_')}
+                FROM {table_name}
+                WHERE value IS NOT NULL AND value != 0
+            """
+            logger.info(f"Loading passthrough data for {name} using existing coordinate columns")
+        else:
+            # Legacy format - convert indices to coordinates on the fly
+            min_x, min_y, max_x, max_y = bounds
+            
+            logger.info(f"Loading passthrough data for {name} with bounds: {bounds} (converting indices)")
+            
+            # SQL query that does coordinate conversion
+            query = f"""
+                SELECT 
+                    {min_x} + (col_idx + 0.5) * {resolution} AS x,
+                    {max_y} - (row_idx + 0.5) * {resolution} AS y,
+                    value AS {name.replace('-', '_')}
+                FROM {table_name}
+                WHERE value IS NOT NULL AND value != 0
+            """
         
         with self.db.get_connection() as conn:
             df = pd.read_sql(query, conn)
@@ -139,30 +403,45 @@ class CoordinateMerger(BaseProcessor):
         logger.info(f"Loaded {len(df):,} coordinate points for {name}")
         return df
     
-    def _load_resampled_coordinates(self, name: str, table_name: str) -> pd.DataFrame:
-        """Load already converted coordinates from resampled table."""
-        
-        # Check table structure first
-        with self.db.get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
+    def _table_has_coordinates(self, table_name: str) -> bool:
+        """Check if table has x_coord and y_coord columns."""
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(f"""
                     SELECT column_name 
                     FROM information_schema.columns 
-                    WHERE table_name = %s AND table_schema = 'public'
+                    WHERE table_name = %s 
+                    AND column_name IN ('x_coord', 'y_coord')
                 """, (table_name,))
-                columns = [row[0] for row in cur.fetchall()]
+                columns = cursor.fetchall()
+                # Should have both x_coord and y_coord columns
+                return len(columns) == 2
+        except Exception as e:
+            logger.warning(f"Error checking table columns for {table_name}: {e}")
+            return False
+    
+    def _load_resampled_coordinates(self, name: str, table_name: str,
+                                   bounds: Optional[Tuple] = None,
+                                   resolution: Optional[float] = None) -> pd.DataFrame:
+        """Load coordinates from resampled table (handles both formats)."""
         
-        if 'x' in columns and 'y' in columns:
-            # Standard coordinate structure
+        # Check if table has coordinate columns
+        if self._table_has_coordinates(table_name):
+            # New format with x_coord, y_coord columns
             query = f"""
-                SELECT x, y, value AS {name.replace('-', '_')}
+                SELECT x_coord as x, y_coord as y, value AS {name.replace('-', '_')}
                 FROM {table_name}
                 WHERE value IS NOT NULL AND value != 0
             """
         else:
-            # This shouldn't happen for resampled data, but handle it anyway
-            logger.warning(f"Resampled table {table_name} missing x,y columns")
-            return None
+            # Legacy format - need bounds and resolution for conversion
+            if not bounds or not resolution:
+                logger.error(f"Table {table_name} lacks coordinates and no bounds/resolution provided")
+                return None
+                
+            # Use same conversion as passthrough
+            return self._load_passthrough_coordinates(name, table_name, bounds, resolution)
         
         with self.db.get_connection() as conn:
             df = pd.read_sql(query, conn)
