@@ -1,8 +1,9 @@
-"""Grid operations for database schema."""
+# src/database/schema/grid_operations.py
+"""Grid and cell operations for spatial grid systems."""
 
-from typing import Dict, Any, List, Optional
-import json
 import logging
+import json
+from typing import Dict, Any, List, Optional
 from ..connection import db
 from ..exceptions import handle_database_error, safe_fetch_id, DatabaseNotFoundError
 from src.config import config
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class GridOperations:
-    """Grid-related database operations."""
+    """Handles grid definition and cell operations."""
     
     @handle_database_error("store_grid_definition")
     def store_grid_definition(self, name: str, grid_type: str, resolution: int,
@@ -46,6 +47,9 @@ class GridOperations:
     @handle_database_error("store_grid_cells_batch")
     def store_grid_cells_batch(self, grid_id: str, cells_data: List[Dict]) -> int:
         """Bulk insert grid cells."""
+        if not cells_data:
+            return 0
+            
         with db.get_cursor() as cursor:
             # Prepare data for bulk insert
             cell_records = []
@@ -57,8 +61,7 @@ class GridOperations:
                     cell.get('area_km2'),
                     cell.get('centroid_wkt')
                 ))
-
-            # Bulk insert with conflict resolution
+                
             cursor.executemany("""
                 INSERT INTO grid_cells (grid_id, cell_id, geometry, area_km2, centroid)
                 VALUES (%s, %s, ST_GeomFromText(%s, 4326), %s, ST_GeomFromText(%s, 4326))
@@ -71,11 +74,12 @@ class GridOperations:
     
     @handle_database_error("get_grid_by_name")
     def get_grid_by_name(self, name: str) -> Optional[Dict[str, Any]]:
-        """Get grid by name."""
+        """Get grid definition by name."""
         with db.get_cursor() as cursor:
             cursor.execute("SELECT * FROM grids WHERE name = %s", (name,))
             return cursor.fetchone()
     
+    @handle_database_error("get_grid_cells")
     def get_grid_cells(self, grid_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Get grid cells for a grid."""
         with db.get_cursor() as cursor:
@@ -92,6 +96,7 @@ class GridOperations:
             cursor.execute(query, (grid_id,))
             return cursor.fetchall()
     
+    @handle_database_error("delete_grid")
     def delete_grid(self, name: str) -> bool:
         """Delete grid and all related data."""
         with db.get_cursor() as cursor:
@@ -141,3 +146,65 @@ class GridOperations:
                     ORDER BY g.created_at DESC
                 """)
             return cursor.fetchall()
+            return None
+
+    def get_grid_cells(self, grid_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get grid cells for a specific grid."""
+        try:
+            with self.db.get_cursor() as cursor:
+                query = """
+                    SELECT cell_id, ST_AsText(geometry) as geometry_wkt, properties
+                    FROM grid_cells 
+                    WHERE grid_id = %s
+                """
+                params = [grid_id]
+                
+                if limit:
+                    query += " LIMIT %s"
+                    params.append(limit)
+                
+                cursor.execute(query, params)
+                return cursor.fetchall()
+        except Exception as e:
+            logger.error(f"Failed to get grid cells for {grid_id}: {e}")
+            return []
+
+    def delete_grid(self, name: str) -> bool:
+        """Delete grid and all associated data."""
+        try:
+            with self.db.get_cursor() as cursor:
+                # First get grid ID
+                cursor.execute("SELECT id FROM grids WHERE name = %s", (name,))
+                grid = cursor.fetchone()
+                if not grid:
+                    logger.warning(f"Grid {name} not found for deletion")
+                    return False
+                
+                grid_id = grid['id']
+                
+                # Delete in order: cells, then grid
+                cursor.execute("DELETE FROM grid_cells WHERE grid_id = %s", (grid_id,))
+                cursor.execute("DELETE FROM grids WHERE id = %s", (grid_id,))
+                
+                logger.info(f"Deleted grid {name} and all associated data")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to delete grid {name}: {e}")
+            return False
+
+    def validate_grid_config(self, grid_type: str, resolution: int) -> bool:
+        """Validate grid configuration parameters."""
+        # Basic validation
+        if not grid_type or grid_type not in ['cubic', 'hexagonal']:
+            logger.error(f"Invalid grid type: {grid_type}")
+            return False
+            
+        if resolution <= 0:
+            logger.error(f"Invalid resolution: {resolution}")
+            return False
+            
+        # Check for reasonable resolution limits
+        if resolution < 100 or resolution > 1000000:
+            logger.warning(f"Resolution {resolution}m may be impractical")
+            
+        return True

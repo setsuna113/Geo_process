@@ -12,7 +12,7 @@ import tempfile
 import shutil
 
 from src.config import config
-from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
+from src.base.processor import BaseProcessor
 from src.base.memory_manager import get_memory_manager
 from src.domain.raster.catalog import RasterCatalog, RasterEntry
 from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader

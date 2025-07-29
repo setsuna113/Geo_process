@@ -73,11 +73,11 @@ config = Config()
 db = DatabaseManager()
 
 # Initialize signal handler first
-from src.core.signal_handler import get_signal_handler
-signal_handler = get_signal_handler()
+from src.core.signal_handler import create_signal_handler
+signal_handler = create_signal_handler()
 
-# Create pipeline orchestrator
-orchestrator = PipelineOrchestrator(config, db)
+# Create pipeline orchestrator with injected signal handler
+orchestrator = PipelineOrchestrator(config, db, signal_handler)
 
 # Configure pipeline stages
 analysis_method = '{analysis_method}'

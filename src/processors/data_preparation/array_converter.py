@@ -12,7 +12,7 @@ import pandas as pd
 from pathlib import Path
 
 from src.config import config
-from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
+from src.base.processor import BaseProcessor
 
 logger = logging.getLogger(__name__)
 

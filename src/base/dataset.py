@@ -10,7 +10,7 @@ import logging
 import json
 import numpy as np
 
-from ..core.registry import component_registry
+# Registry import removed - unused import violating base layer architecture
 from src.config import config
 from .raster_source import RasterTile
 

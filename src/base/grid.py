@@ -8,9 +8,9 @@ from shapely.ops import transform
 import pyproj
 import logging
 
-from ..core.registry import component_registry
+# Registry import removed - unused import violating base layer architecture
 from src.config import config
-from ..database.schema import schema
+# Database schema import removed - using dependency injection to avoid architectural violation
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ class BaseGrid(ABC):
                  resolution: int,
                  bounds: Optional[Tuple[float, float, float, float]] = None,
                  crs: str = "EPSG:4326",
+                 schema=None,
                  **kwargs):
         """
         Initialize grid system.
@@ -70,11 +71,13 @@ class BaseGrid(ABC):
             resolution: Grid resolution in meters
             bounds: (minx, miny, maxx, maxy) in CRS units
             crs: Coordinate reference system
+            schema: Database schema instance (injected to avoid architectural violation)
             **kwargs: Grid-specific parameters
         """
         self.resolution = resolution
         self.bounds = bounds or self._get_default_bounds()
-        self.crs = crs
+        self.crs = crs  
+        self.schema = schema  # Injected dependency to avoid architectural violation
         self.config = self._merge_config(kwargs)
         
         # Setup projection transformers
@@ -188,7 +191,8 @@ class BaseGrid(ABC):
             'config': self.config
         }
         
-        self.grid_id = schema.store_grid_definition(
+        if self.schema:
+            self.grid_id = self.schema.store_grid_definition(
             name=name,
             grid_type=grid_type,
             resolution=self.resolution,
@@ -207,7 +211,8 @@ class BaseGrid(ABC):
         for i in range(0, len(cells), batch_size):
             batch = cells[i:i + batch_size]
             cells_data = [cell.to_dict() for cell in batch]
-            schema.store_grid_cells_batch(self.grid_id, cells_data)
+            if self.schema:
+                self.schema.store_grid_cells_batch(self.grid_id, cells_data)
             logger.info(f"Stored {min(i + batch_size, len(cells))}/{len(cells)} cells")
             
         return self.grid_id

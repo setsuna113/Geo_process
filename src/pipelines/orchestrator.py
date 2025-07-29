@@ -24,7 +24,7 @@ from src.pipelines.monitors.quality_checker import QualityChecker
 # from src.pipelines.recovery.checkpoint_manager import CheckpointManager  # OLD - DEPRECATED
 from src.checkpoints import get_checkpoint_manager, CheckpointLevel
 from src.pipelines.recovery.failure_handler import FailureHandler
-from src.core.signal_handler import get_signal_handler
+from src.core.signal_handler import SignalHandler, create_signal_handler
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ class PipelineOrchestrator:
     - Graceful failure handling
     """
     
-    def __init__(self, config: Config, db_connection: DatabaseManager):
+    def __init__(self, config: Config, db_connection: DatabaseManager, signal_handler: Optional[SignalHandler] = None):
         self.config = config
         self.db = db_connection
         
@@ -96,8 +96,8 @@ class PipelineOrchestrator:
         self.checkpoint_manager = get_checkpoint_manager()
         self.failure_handler = FailureHandler(config)
         
-        # Signal handling for pause/resume
-        self.signal_handler = get_signal_handler()
+        # Signal handling for pause/resume - support dependency injection
+        self.signal_handler = signal_handler or create_signal_handler()
         self.signal_handler.register_pause_callback(self.pause_pipeline)
         self.signal_handler.register_resume_callback(self.resume_pipeline)
         

@@ -19,41 +19,31 @@ class SignalHandler:
     - Pause/resume on SIGUSR1/SIGUSR2
     - Progress report trigger
     - Integration with checkpoint system
+    
+    Note: Singleton pattern removed to support dependency injection.
+    Use dependency injection container or pass instances explicitly.
     """
-    
-    _instance: Optional['SignalHandler'] = None
-    _lock = threading.RLock()
-    
-    def __new__(cls):
-        """Singleton pattern."""
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-            return cls._instance
     
     def __init__(self):
         """Initialize signal handler."""
-        if not hasattr(self, '_initialized'):
-            self._initialized = True
-            
-            # Signal handlers registry
-            self._handlers: Dict[str, List[Callable]] = {}
-            self._handler_lock = threading.RLock()
-            
-            # Original signal handlers
-            self._original_handlers: Dict[signal.Signals, Any] = {}
-            
-            # State
-            self._signals_registered = False
-            self._shutdown_in_progress = False
-            self._pause_requested = False
-            
-            # Callbacks
-            self._shutdown_callbacks: List[Callable] = []
-            self._pause_callbacks: List[Callable] = []
-            self._resume_callbacks: List[Callable] = []
-            
-            logger.info("Signal handler initialized")
+        # Signal handlers registry
+        self._handlers: Dict[str, List[Callable]] = {}
+        self._handler_lock = threading.RLock()
+        
+        # Original signal handlers
+        self._original_handlers: Dict[signal.Signals, Any] = {}
+        
+        # State
+        self._signals_registered = False
+        self._shutdown_in_progress = False
+        self._pause_requested = False
+        
+        # Callbacks
+        self._shutdown_callbacks: List[Callable] = []
+        self._pause_callbacks: List[Callable] = []
+        self._resume_callbacks: List[Callable] = []
+        
+        logger.info("Signal handler initialized")
     
     def register_handler(self, name: str, handler: Callable[[signal.Signals], None]) -> None:
         """
@@ -251,13 +241,18 @@ class SignalHandler:
         self._signals_registered = False
 
 
-# Global signal handler instance
-_signal_handler: Optional[SignalHandler] = None
-
-
-def get_signal_handler() -> SignalHandler:
-    """Get the global signal handler instance."""
-    global _signal_handler
-    if _signal_handler is None:
-        _signal_handler = SignalHandler()
-    return _signal_handler
+# Factory function for creating signal handler instances
+# Note: Global state removed - use dependency injection or create instances explicitly
+def create_signal_handler() -> SignalHandler:
+    """
+    Create a new signal handler instance.
+    
+    Note: This replaces the global singleton pattern. Applications should:
+    1. Create instances explicitly when needed
+    2. Use dependency injection containers
+    3. Pass instances through constructors
+    
+    Returns:
+        New SignalHandler instance
+    """
+    return SignalHandler()

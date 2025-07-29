@@ -15,15 +15,16 @@ import threading
 from dataclasses import dataclass, asdict
 from datetime import datetime
 
-from ..core.registry import component_registry
+# Registry import removed - unused import violating base layer architecture
 from src.config import config as global_config
-from ..database.schema import schema
+# Database schema import removed - using dependency injection to avoid architectural violation
 from .memory_tracker import get_memory_tracker
-from ..core.progress_manager import get_progress_manager
-from ..core.progress_events import get_event_bus
+# Progress manager and event bus imports removed - using dependency injection to avoid architectural violation
+# from ..core.progress_manager import ProgressManager, create_progress_manager
+# from ..core.progress_events import EventBus, create_event_bus
 # from ..core.checkpoint_manager import get_checkpoint_manager  # OLD - DEPRECATED
 from ..checkpoints import get_checkpoint_manager, CheckpointLevel
-from ..core.signal_handler import get_signal_handler
+from ..core.signal_handler import SignalHandler, create_signal_handler
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +127,10 @@ class BaseProcessor(ABC):
                     enable_checkpoints: bool = True,
                     checkpoint_interval: int = 100,
                     timeout_seconds: Optional[float] = None,
+                    signal_handler: Optional[SignalHandler] = None,
+                    progress_manager=None,
+                    event_bus=None,
+                    database_schema=None,
                     **kwargs):
         """
         Initialize enhanced base processor.
@@ -141,6 +146,10 @@ class BaseProcessor(ABC):
             enable_checkpoints: Enable checkpoint support
             checkpoint_interval: Items between checkpoints
             timeout_seconds: Processing timeout
+            signal_handler: Signal handler instance (None to create new one)
+            progress_manager: Progress manager instance (injected to avoid architectural violation)
+            event_bus: Event bus instance (injected to avoid architectural violation)
+            database_schema: Database schema instance (injected to avoid architectural violation)
             **kwargs: Additional processor-specific parameters
         """
         # Existing initialization
@@ -173,11 +182,14 @@ class BaseProcessor(ABC):
         # Memory pressure handling
         self._enhanced_memory_tracker.add_pressure_callback(self._handle_memory_pressure)
         
-        # NEW: Progress management
+        # NEW: Progress management - using dependency injection
         self.enable_progress = enable_progress
-        self._progress_manager = get_progress_manager() if enable_progress else None
-        self._event_bus = get_event_bus() if enable_progress else None
+        self._progress_manager = progress_manager if enable_progress else None
+        self._event_bus = event_bus if enable_progress else None
         self._progress_node_id: Optional[str] = None
+        
+        # Database operations - using dependency injection
+        self._database_schema = database_schema
         
         # NEW: Checkpoint management
         self.enable_checkpoints = enable_checkpoints
@@ -186,8 +198,8 @@ class BaseProcessor(ABC):
         self._last_checkpoint_items = 0
         self._checkpoint_data: Dict[str, Any] = {}
         
-        # NEW: Signal handling
-        self._signal_handler = get_signal_handler()
+        # NEW: Signal handling - support dependency injection
+        self._signal_handler = signal_handler or create_signal_handler()
         self._processing_lock = threading.Lock()
         self._is_processing = False
         self._should_stop = threading.Event()

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from src.config import config as global_config
-from src.infrastructure.processors.base_processor import EnhancedBaseProcessor as BaseProcessor
+from src.base.processor import BaseProcessor
 from src.domain.raster.loaders.geotiff_loader import GeoTIFFLoader
 from src.domain.raster.loaders.base_loader import RasterWindow
 from src.database.connection import DatabaseManager

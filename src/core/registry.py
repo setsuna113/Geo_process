@@ -165,15 +165,16 @@ class EnhancedRegistry:
     def _auto_register_grid_components(self):
         """Auto-register grid components to avoid circular imports."""
         try:
-            # Import and register CubicGrid and HexagonalGrid
-            from ..grid_systems.cubic_grid import CubicGrid
-            from ..grid_systems.hexagonal_grid import HexagonalGrid
+            # Use lazy imports to avoid circular dependencies
+            # Only import when explicitly requested (on-demand loading)
             
             if "CubicGrid" not in self._components:
+                from ..grid_systems.cubic_grid import CubicGrid
                 self.register(CubicGrid)
                 logger.debug("Auto-registered CubicGrid")
             
             if "HexagonalGrid" not in self._components:
+                from ..grid_systems.hexagonal_grid import HexagonalGrid
                 self.register(HexagonalGrid)
                 logger.debug("Auto-registered HexagonalGrid")
                 

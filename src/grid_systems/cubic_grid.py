@@ -7,14 +7,13 @@ from shapely import wkt
 import math
 
 from ..base import BaseGrid, GridCell
-from ..core.registry import component_registry
+# Registry import removed to avoid circular dependency - using lazy registration
 from ..database.schema import schema
 from ..database.connection import db
 from .bounds_manager import BoundsManager, BoundsDefinition
 
 logger = logging.getLogger(__name__)
 
-@component_registry.grids.register_decorator()
 class CubicGrid(BaseGrid):
     """
     Cubic grid system implementation using PostGIS ST_SquareGrid.
