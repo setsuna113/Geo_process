@@ -334,3 +334,85 @@ class WindowedStorageManager:
             conn.commit()
             
         logger.info(f"Created storage table: {table_name}")
+    
+    def validate_coordinate_accuracy(self, table_name: str, db_connection,
+                                   bounds: Tuple[float, float, float, float],
+                                   resolution: float,
+                                   sample_size: int = 100) -> Dict[str, Any]:
+        """Validate that stored coordinates match expected values.
+        
+        Args:
+            table_name: Table to validate
+            db_connection: Database connection
+            bounds: Expected geographic bounds
+            resolution: Expected pixel resolution
+            sample_size: Number of samples to check
+            
+        Returns:
+            Validation results dictionary
+        """
+        min_x, min_y, max_x, max_y = bounds
+        
+        with db_connection.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Sample some points
+            cursor.execute(f"""
+                SELECT row_idx, col_idx, x_coord, y_coord
+                FROM {table_name}
+                WHERE value IS NOT NULL
+                LIMIT %s
+            """, (sample_size,))
+            
+            errors = []
+            max_error = 0.0
+            
+            for row in cursor.fetchall():
+                row_idx, col_idx, x_coord, y_coord = row
+                
+                # Calculate expected coordinates
+                expected_x = min_x + (col_idx + 0.5) * resolution
+                expected_y = max_y - (row_idx + 0.5) * resolution
+                
+                # Check error
+                x_error = abs(x_coord - expected_x)
+                y_error = abs(y_coord - expected_y)
+                
+                if x_error > 1e-6 or y_error > 1e-6:
+                    errors.append({
+                        'row_idx': row_idx,
+                        'col_idx': col_idx,
+                        'x_error': x_error,
+                        'y_error': y_error
+                    })
+                    
+                max_error = max(max_error, x_error, y_error)
+            
+            # Check bounds
+            cursor.execute(f"""
+                SELECT 
+                    MIN(x_coord) as min_x,
+                    MAX(x_coord) as max_x,
+                    MIN(y_coord) as min_y,
+                    MAX(y_coord) as max_y
+                FROM {table_name}
+                WHERE value IS NOT NULL
+            """)
+            
+            actual_bounds = cursor.fetchone()
+            
+            return {
+                'valid': len(errors) == 0,
+                'max_error': max_error,
+                'error_count': len(errors),
+                'sample_size': sample_size,
+                'errors': errors[:10],  # First 10 errors
+                'expected_bounds': bounds,
+                'actual_bounds': actual_bounds,
+                'bounds_match': (
+                    abs(actual_bounds[0] - min_x) < resolution and
+                    abs(actual_bounds[1] - max_x) < resolution and
+                    abs(actual_bounds[2] - min_y) < resolution and
+                    abs(actual_bounds[3] - max_y) < resolution
+                ) if actual_bounds[0] is not None else False
+            }
