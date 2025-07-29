@@ -416,3 +416,23 @@ class RasterCatalog:
             json.dump(report, f, indent=2)
         
         logger.info(f"Catalog report written to {output_path}")
+    
+    def get_raster_bounds(self, file_path: Path) -> Tuple[float, float, float, float]:
+        """Get actual bounds from raster file using lightweight extraction."""
+        logger.info(f"Extracting bounds for {file_path.name}")
+        
+        # Use lightweight extractor to get bounds quickly
+        metadata = self.lightweight_extractor.extract_essential_metadata(file_path)
+        spatial_info = metadata.get('spatial_info', {})
+        bounds = spatial_info.get('bounds')
+        
+        if not bounds:
+            # Fallback to rasterio if lightweight extraction fails
+            import rasterio
+            with rasterio.open(file_path) as src:
+                bounds = src.bounds
+                # Convert to list format [west, south, east, north]
+                bounds = [bounds.left, bounds.bottom, bounds.right, bounds.top]
+        
+        # Convert list to tuple
+        return tuple(bounds)

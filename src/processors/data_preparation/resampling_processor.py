@@ -739,6 +739,14 @@ class ResamplingProcessor(BaseProcessor):
         if data is None:
             raise ValueError(f"Data cannot be None for dataset {info.name}")
         
+        # CRITICAL FIX: Get actual bounds from raster file for all datasets
+        actual_bounds = self.catalog.get_raster_bounds(info.source_path)
+        
+        # Update info with actual bounds and store in metadata for reference
+        info.bounds = actual_bounds
+        info.metadata['actual_bounds'] = list(actual_bounds)
+        info.metadata['bounds'] = list(actual_bounds)  # For backward compatibility
+        
         try:
             with self.db.get_connection() as conn:
                 cur = conn.cursor()
@@ -750,6 +758,8 @@ class ResamplingProcessor(BaseProcessor):
                 else:
                     table_name = f"resampled_{info.name.replace('-', '_')}"
                     logger.info(f"Storing resampled dataset {info.name} to database table {table_name}")
+                
+                logger.info(f"Using actual raster bounds: {actual_bounds}")
                 
                 # Insert or update metadata
                 cur.execute("""
@@ -1052,6 +1062,7 @@ class ResamplingProcessor(BaseProcessor):
         except Exception as e:
             logger.error(f"Failed to load resampled data for {dataset_name}: {e}")
             return None
+
 
     def validate_input(self, item: Any) -> Tuple[bool, Optional[str]]:
         """Validate input item."""
