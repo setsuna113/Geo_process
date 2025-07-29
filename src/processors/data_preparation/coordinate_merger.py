@@ -5,7 +5,6 @@ from typing import List, Dict, Optional, Tuple
 import pandas as pd
 import numpy as np
 from pathlib import Path
-import logging
 from src.base.processor import BaseProcessor
 from src.database.connection import DatabaseManager
 from src.domain.raster.catalog import RasterCatalog
@@ -13,8 +12,10 @@ from src.domain.validators.coordinate_integrity import (
     BoundsConsistencyValidator, CoordinateTransformValidator, ParquetValueValidator
 )
 from src.abstractions.interfaces.validator import ValidationSeverity
+from src.infrastructure.logging import get_logger
+from src.infrastructure.logging.decorators import log_stage, log_operation
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CoordinateMerger(BaseProcessor):
@@ -42,6 +43,7 @@ class CoordinateMerger(BaseProcessor):
         # Validation results tracking
         self.validation_results: List[Dict] = []
         
+    @log_stage("coordinate_merge")
     def create_ml_ready_parquet(self, 
                                resampled_datasets: List[Dict], 
                                output_dir: Path,
@@ -72,6 +74,7 @@ class CoordinateMerger(BaseProcessor):
                 resampled_datasets, output_dir
             )
     
+    @log_operation("merge_inmemory")
     def _create_ml_ready_parquet_inmemory(self, 
                                          resampled_datasets: List[Dict], 
                                          output_dir: Path) -> Path:
@@ -113,6 +116,7 @@ class CoordinateMerger(BaseProcessor):
         
         return output_path
     
+    @log_operation("merge_chunked")
     def _create_ml_ready_parquet_chunked(self,
                                        resampled_datasets: List[Dict],
                                        output_dir: Path,
@@ -145,8 +149,14 @@ class CoordinateMerger(BaseProcessor):
         total_rows = 0
         
         # Process each chunk
+        total_chunks = chunks_x * chunks_y
+        chunk_idx = 0
+        
         for i in range(chunks_x):
             for j in range(chunks_y):
+                chunk_idx += 1
+                progress = chunk_idx / total_chunks * 100
+                
                 # Define chunk bounds
                 chunk_min_x = min_x + i * chunk_width
                 chunk_max_x = min_x + (i + 1) * chunk_width
@@ -154,7 +164,7 @@ class CoordinateMerger(BaseProcessor):
                 chunk_max_y = min_y + (j + 1) * chunk_height
                 chunk_bounds = (chunk_min_x, chunk_min_y, chunk_max_x, chunk_max_y)
                 
-                logger.info(f"Processing chunk ({i},{j}) with bounds: {chunk_bounds}")
+                logger.info(f"Processing chunk ({i},{j}) [{chunk_idx}/{total_chunks}, {progress:.1f}%]")
                 
                 # Load data for this chunk from all datasets
                 chunk_dfs = []
@@ -195,7 +205,13 @@ class CoordinateMerger(BaseProcessor):
                     pq.write_table(combined_table, output_path)
                 
                 total_rows += len(merged_chunk)
-                logger.info(f"Chunk ({i},{j}) added {len(merged_chunk)} rows")
+                logger.info(f"Chunk ({i},{j}) added {len(merged_chunk)} rows", 
+                          extra={
+                              'chunk_index': chunk_idx,
+                              'chunk_bounds': chunk_bounds,
+                              'rows_added': len(merged_chunk),
+                              'total_rows': total_rows
+                          })
         
         if first_chunk:
             raise ValueError("No data found in any chunks")

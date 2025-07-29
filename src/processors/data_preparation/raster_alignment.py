@@ -6,7 +6,6 @@ This module provides comprehensive tools for detecting, analyzing, and correctin
 spatial alignment issues between rasters.
 """
 
-import logging
 from typing import Dict, Any, List, Optional, Tuple, Union
 from pathlib import Path
 from enum import Enum
@@ -17,8 +16,10 @@ from rasterio.warp import reproject, Resampling, calculate_default_transform
 from rasterio.transform import from_bounds
 import xarray as xr
 import rioxarray
+from src.infrastructure.logging import get_logger
+from src.infrastructure.logging.decorators import log_operation
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 class AlignmentStrategy(Enum):
     """Strategies for handling alignment issues."""
@@ -717,6 +718,7 @@ class RasterAligner:
         import shutil
         shutil.copy2(input_path, output_path)
     
+    @log_operation("calculate_grid_shifts")
     def calculate_grid_shifts(self, 
                             dataset_infos: List[Any],
                             reference_idx: int = 0) -> List[GridAlignment]:
