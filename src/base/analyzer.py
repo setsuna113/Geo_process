@@ -65,6 +65,9 @@ class BaseAnalyzer(IAnalyzer, ABC):
         # Progress callback
         self._progress_callback = None
         
+        # Configuration for saving results
+        self.save_results_enabled = self.safe_get_config('analysis.save_results.enabled', True)
+        
         # Initialize any additional components from kwargs
         self._init_components(**kwargs)
         
