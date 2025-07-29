@@ -1046,6 +1046,100 @@ class DatabaseSchema:
                     }
                 }
             return None
+    
+    def migrate_legacy_table_to_coordinates(self, table_name: str, 
+                                          bounds: Tuple[float, float, float, float],
+                                          resolution: float) -> bool:
+        """Migrate legacy table to include coordinate columns.
+        
+        Args:
+            table_name: Table to migrate
+            bounds: Geographic bounds (min_x, min_y, max_x, max_y)
+            resolution: Pixel resolution in degrees
+            
+        Returns:
+            True if migration successful
+        """
+        logger.info(f"Migrating table {table_name} to include coordinates")
+        
+        try:
+            with self.db.get_cursor() as cursor:
+                # Check if migration already done
+                cursor.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = %s 
+                    AND column_name IN ('x_coord', 'y_coord')
+                """, (table_name,))
+                
+                existing_cols = [row['column_name'] for row in cursor.fetchall()]
+                
+                if 'x_coord' in existing_cols and 'y_coord' in existing_cols:
+                    logger.info(f"Table {table_name} already has coordinate columns")
+                    return True
+                
+                # Add coordinate columns
+                cursor.execute(f"""
+                    ALTER TABLE {table_name} 
+                    ADD COLUMN IF NOT EXISTS x_coord DOUBLE PRECISION,
+                    ADD COLUMN IF NOT EXISTS y_coord DOUBLE PRECISION
+                """)
+                
+                # Calculate coordinates from indices
+                min_x, min_y, max_x, max_y = bounds
+                
+                # Update coordinates based on row/col indices
+                # Note: row 0 is at max_y (top), increasing rows go down
+                cursor.execute(f"""
+                    UPDATE {table_name}
+                    SET 
+                        x_coord = {min_x} + (col_idx + 0.5) * {resolution},
+                        y_coord = {max_y} - (row_idx + 0.5) * {resolution}
+                    WHERE x_coord IS NULL OR y_coord IS NULL
+                """)
+                
+                # Create spatial index
+                cursor.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_spatial_idx 
+                    ON {table_name} USING GIST (
+                        ST_MakePoint(x_coord, y_coord)
+                    )
+                """)
+                
+                # Add coordinate indexes
+                cursor.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_x_coord_idx ON {table_name}(x_coord);
+                    CREATE INDEX IF NOT EXISTS {table_name}_y_coord_idx ON {table_name}(y_coord);
+                """)
+                
+                self.db.commit()
+                logger.info(f"Successfully migrated table {table_name}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to migrate table {table_name}: {e}")
+            self.db.rollback()
+            return False
+    
+    def ensure_table_has_coordinates(self, table_name: str) -> bool:
+        """Check if table has coordinate columns.
+        
+        Args:
+            table_name: Table to check
+            
+        Returns:
+            True if table has x_coord and y_coord columns
+        """
+        with self.db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) as col_count
+                FROM information_schema.columns 
+                WHERE table_name = %s 
+                AND column_name IN ('x_coord', 'y_coord')
+            """, (table_name,))
+            
+            result = cursor.fetchone()
+            return result['col_count'] == 2
 
     def get_processing_queue_summary(self) -> List[Dict[str, Any]]:
         """Get processing queue statistics."""
