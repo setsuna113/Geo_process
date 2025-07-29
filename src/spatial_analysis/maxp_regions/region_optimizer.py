@@ -11,7 +11,7 @@ import libpysal
 
 from src.base.analyzer import BaseAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
-from src.config import config
+from src.config import Config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -24,12 +24,19 @@ class MaxPAnalyzer(BaseAnalyzer):
     ensuring each region meets a minimum area threshold.
     """
     
-    def __init__(self, db_connection: Optional[DatabaseManager] = None):
-        # Use global config instance
+    def __init__(self, config: Config, db_connection: Optional[DatabaseManager] = None):
+        """
+        Initialize MaxP analyzer with standardized constructor.
+        
+        Args:
+            config: Configuration object
+            db_connection: Optional database connection
+        """
+        # Initialize base analyzer with config
         super().__init__(config, db_connection)
         
-        # Max-p specific config
-        maxp_config = config.get('spatial_analysis', {}).get('maxp', {})
+        # Max-p specific config using safe_get_config from base
+        maxp_config = self.safe_get_config('spatial_analysis.maxp', {})
         
         # Default area thresholds for different ecological scales
         self.ecological_scales = {

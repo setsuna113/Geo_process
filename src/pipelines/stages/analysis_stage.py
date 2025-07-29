@@ -214,8 +214,8 @@ class AnalysisStage(PipelineStage):
             return SOMAnalyzer
         elif self.analysis_method == 'maxp_regions':
             try:
-                from src.spatial_analysis.regionalization.maxp_regions import MaxPRegionsAnalyzer
-                return MaxPRegionsAnalyzer
+                from src.spatial_analysis.maxp_regions.region_optimizer import MaxPAnalyzer
+                return MaxPAnalyzer
             except ImportError:
                 raise ImportError(f"MaxP regions analysis not available - missing module")
         elif self.analysis_method == 'gwpca':
