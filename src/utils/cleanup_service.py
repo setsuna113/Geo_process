@@ -162,7 +162,7 @@ class CleanupService:
                 checkpoint_dirs = self.checkpoint_manager.get_checkpoint_dirs()
             else:
                 # Fallback to default checkpoint directory
-                checkpoint_dir = Path(self.config.get('checkpoints.base_dir', 'checkpoints'))
+                checkpoint_dir = Path(self.config.get('checkpoints.base_dir', 'checkpoint_outputs'))
                 if checkpoint_dir.exists():
                     checkpoint_dirs = [checkpoint_dir]
             
