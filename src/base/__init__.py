@@ -48,7 +48,7 @@ from .feature import BaseFeature, FeatureResult
 from .dataset import BaseDataset, DatasetInfo
 
 # Checkpoint system abstractions
-from .checkpoint_types import (
+from src.foundations.types.checkpoint_types import (
     CheckpointData, CheckpointMetadata, CheckpointLevel, CheckpointStatus,
     CheckpointFilter, StorageConfig, StorageBackend,
     CheckpointError, CheckpointNotFoundError, CheckpointCorruptedError,
