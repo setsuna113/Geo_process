@@ -10,6 +10,13 @@ from typing import Tuple, List, Optional, Iterator
 from pathlib import Path
 import yaml
 
+try:
+    from src.infrastructure.logging import get_logger
+except ImportError:
+    import logging
+    def get_logger(name):
+        return logging.getLogger(name)
+
 
 class CoordinateGenerator:
     """Generates coordinate grids matching the existing pipeline."""
@@ -23,7 +30,7 @@ class CoordinateGenerator:
             logger: Logger instance
         """
         self.target_resolution = target_resolution
-        self.logger = logger
+        self.logger = logger if logger else get_logger(__name__)
         
     def generate_coordinate_grid(self, 
                                bounds: Tuple[float, float, float, float],
@@ -53,12 +60,9 @@ class CoordinateGenerator:
         
         total_points = len(x_coords) * len(y_coords)
         
-        if self.logger:
-            self.logger.info(f"Coordinate grid: {len(x_coords)} x {len(y_coords)} = {total_points} points")
-            self.logger.info(f"Resolution: {self.target_resolution} degrees")
-            self.logger.info(f"Bounds: {bounds}")
-        else:
-            print(f"Coordinate grid: {len(x_coords)} x {len(y_coords)} = {total_points} points")
+        self.logger.info(f"Coordinate grid: {len(x_coords)} x {len(y_coords)} = {total_points} points")
+        self.logger.info(f"Resolution: {self.target_resolution} degrees")
+        self.logger.info(f"Bounds: {bounds}")
         
         if chunk_size and total_points > chunk_size:
             if self.logger:
@@ -68,7 +72,16 @@ class CoordinateGenerator:
             return self._generate_full_grid(x_coords, y_coords)
     
     def _generate_full_grid(self, x_coords: np.ndarray, y_coords: np.ndarray) -> pd.DataFrame:
-        """Generate full coordinate grid at once."""
+        """Generate full coordinate grid with memory management."""
+        total_points = len(x_coords) * len(y_coords)
+        
+        # For large grids, use chunked generation to avoid memory issues
+        if total_points > 1000000:  # 1M points threshold
+            if self.logger:
+                self.logger.warning(f"Large grid ({total_points:,} points) - using chunked generation")
+            return self._generate_chunked_grid(x_coords, y_coords, chunk_size=500000)
+        
+        # For smaller grids, use traditional meshgrid
         xx, yy = np.meshgrid(x_coords, y_coords)
         
         coords_df = pd.DataFrame({
@@ -89,21 +102,85 @@ class CoordinateGenerator:
         total_points = len(x_coords) * len(y_coords)
         rows_per_chunk = max(1, chunk_size // len(x_coords))
         
+        if self.logger:
+            self.logger.debug(f"Chunked generation: {len(y_coords)} rows, {rows_per_chunk} rows per chunk")
+        
         for i in range(0, len(y_coords), rows_per_chunk):
             y_chunk = y_coords[i:i + rows_per_chunk]
             
-            xx, yy = np.meshgrid(x_coords, y_chunk)
-            chunk_df = pd.DataFrame({
-                'x': xx.flatten(),
-                'y': yy.flatten()
-            })
+            # Use memory-efficient coordinate generation
+            chunk_coords = []
+            for y_val in y_chunk:
+                for x_val in x_coords:
+                    chunk_coords.append({'x': x_val, 'y': y_val})
             
+            chunk_df = pd.DataFrame(chunk_coords)
             all_chunks.append(chunk_df)
             
             if self.logger:
                 self.logger.debug(f"Generated chunk {len(all_chunks)} with {len(chunk_df)} points")
         
         return pd.concat(all_chunks, ignore_index=True)
+    
+    def generate_streaming_coordinates(self,
+                                     bounds: Tuple[float, float, float, float],
+                                     batch_size: int = 10000) -> Iterator[pd.DataFrame]:
+        """
+        Generate coordinates in streaming batches for very large datasets.
+        
+        Args:
+            bounds: (min_x, min_y, max_x, max_y) in degrees
+            batch_size: Points per batch
+            
+        Yields:
+            DataFrame batches with 'x' and 'y' columns
+        """
+        min_x, min_y, max_x, max_y = bounds
+        
+        # Generate coordinates arrays
+        n_x_points = int(np.round((max_x - min_x) / self.target_resolution))
+        n_y_points = int(np.round((max_y - min_y) / self.target_resolution))
+        
+        x_coords = np.linspace(min_x, min_x + n_x_points * self.target_resolution, 
+                              n_x_points, endpoint=False)
+        y_coords = np.linspace(min_y, min_y + n_y_points * self.target_resolution, 
+                              n_y_points, endpoint=False)
+        
+        total_points = len(x_coords) * len(y_coords)
+        
+        if self.logger:
+            self.logger.info(f"Streaming generation: {total_points:,} points in batches of {batch_size}")
+        
+        batch_coords = []
+        batch_count = 0
+        
+        for y_val in y_coords:
+            for x_val in x_coords:
+                batch_coords.append({'x': x_val, 'y': y_val})
+                
+                if len(batch_coords) >= batch_size:
+                    batch_count += 1
+                    batch_df = pd.DataFrame(batch_coords)
+                    batch_df.attrs['batch_id'] = batch_count
+                    batch_df.attrs['total_batches'] = int(np.ceil(total_points / batch_size))
+                    
+                    if self.logger:
+                        self.logger.debug(f"Generated streaming batch {batch_count} with {len(batch_df)} points")
+                    
+                    yield batch_df
+                    batch_coords = []
+        
+        # Yield remaining coordinates
+        if batch_coords:
+            batch_count += 1
+            batch_df = pd.DataFrame(batch_coords)
+            batch_df.attrs['batch_id'] = batch_count
+            batch_df.attrs['total_batches'] = batch_count
+            
+            if self.logger:
+                self.logger.debug(f"Generated final streaming batch {batch_count} with {len(batch_df)} points")
+            
+            yield batch_df
     
     def generate_coordinate_chunks(self,
                                  bounds: Tuple[float, float, float, float],
@@ -219,18 +296,21 @@ def load_config_resolution(config_path: str = "config.yml") -> float:
     try:
         config_file = Path(config_path)
         if not config_file.exists():
-            print(f"Warning: Config file {config_path} not found, using default resolution")
+            logger = get_logger(__name__)
+            logger.warning(f"Config file {config_path} not found, using default resolution")
             return 0.016667
         
         with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
         
         resolution = config.get('resampling', {}).get('target_resolution', 0.016667)
-        print(f"Loaded target resolution from config: {resolution}")
+        logger = get_logger(__name__)
+        logger.info(f"Loaded target resolution from config: {resolution}")
         return resolution
         
     except Exception as e:
-        print(f"Warning: Failed to load config {config_path}: {e}")
+        logger = get_logger(__name__)
+        logger.warning(f"Failed to load config {config_path}: {e}")
         return 0.016667
 
 
@@ -249,18 +329,21 @@ def get_processing_bounds(config_path: str = "config.yml",
     try:
         config_file = Path(config_path)
         if not config_file.exists():
-            print(f"Warning: Config file {config_path} not found, using global bounds")
+            logger = get_logger(__name__)
+            logger.warning(f"Config file {config_path} not found, using global bounds")
             return (-180, -90, 180, 90)
         
         with open(config_file, 'r') as f:
             config = yaml.safe_load(f)
         
         bounds = config.get('processing_bounds', {}).get(bounds_key, [-180, -90, 180, 90])
-        print(f"Loaded processing bounds '{bounds_key}': {bounds}")
+        logger = get_logger(__name__)
+        logger.info(f"Loaded processing bounds '{bounds_key}': {bounds}")
         return tuple(bounds)
         
     except Exception as e:
-        print(f"Warning: Failed to load bounds from config {config_path}: {e}")
+        logger = get_logger(__name__)
+        logger.warning(f"Failed to load bounds from config {config_path}: {e}")
         return (-180, -90, 180, 90)
 
 

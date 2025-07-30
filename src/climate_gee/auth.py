@@ -6,12 +6,19 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import json
 
+try:
+    from src.infrastructure.logging import get_logger
+except ImportError:
+    import logging
+    def get_logger(name):
+        return logging.getLogger(name)
+
 
 class GEEAuthenticator:
     """Handles Google Earth Engine authentication with multiple methods."""
     
     def __init__(self, logger=None):
-        self.logger = logger
+        self.logger = logger if logger else get_logger(__name__)
         self.ee = None
         self._authenticated = False
         
@@ -40,16 +47,10 @@ class GEEAuthenticator:
                 return self._authenticate_user_account(project_id)
                 
         except ImportError as e:
-            if self.logger:
-                self.logger.error(f"earthengine-api not installed: {e}")
-            else:
-                print(f"ERROR: earthengine-api not installed: {e}")
+            self.logger.error(f"earthengine-api not installed: {e}")
             return False
         except Exception as e:
-            if self.logger:
-                self.logger.error(f"GEE authentication failed: {e}")
-            else:
-                print(f"ERROR: GEE authentication failed: {e}")
+            self.logger.error(f"GEE authentication failed: {e}")
             return False
     
     def _authenticate_service_account(self, key_file: str, project_id: Optional[str]) -> bool:
@@ -74,10 +75,7 @@ class GEEAuthenticator:
             )
             
             self._authenticated = True
-            if self.logger:
-                self.logger.info(f"GEE authenticated with service account: {service_account}")
-            else:
-                print(f"GEE authenticated with service account: {service_account}")
+            self.logger.info(f"GEE authenticated with service account: {service_account}")
             
             return True
             
@@ -87,10 +85,7 @@ class GEEAuthenticator:
             if 'credentials' in safe_error.lower():
                 safe_error = "Authentication failed - check service account credentials"
             
-            if self.logger:
-                self.logger.error(f"Service account authentication failed: {safe_error}")
-            else:
-                print(f"ERROR: Service account authentication failed: {safe_error}")
+            self.logger.error(f"Service account authentication failed: {safe_error}")
             return False
     
     def _authenticate_user_account(self, project_id: Optional[str]) -> bool:
@@ -100,10 +95,7 @@ class GEEAuthenticator:
             try:
                 self.ee.Initialize(project=project_id)
                 self._authenticated = True
-                if self.logger:
-                    self.logger.info("GEE authenticated with existing user credentials")
-                else:
-                    print("GEE authenticated with existing user credentials")
+                self.logger.info("GEE authenticated with existing user credentials")
                 return True
             except Exception as e:
                 if self.logger:
@@ -111,27 +103,18 @@ class GEEAuthenticator:
                 # Continue to interactive authentication
             
             # Need to authenticate interactively
-            if self.logger:
-                self.logger.info("Starting interactive GEE authentication...")
-            else:
-                print("Starting interactive GEE authentication...")
+            self.logger.info("Starting interactive GEE authentication...")
             
             self.ee.Authenticate()
             self.ee.Initialize(project=project_id)
             
             self._authenticated = True
-            if self.logger:
-                self.logger.info("GEE user authentication completed")
-            else:
-                print("GEE user authentication completed")
+            self.logger.info("GEE user authentication completed")
             
             return True
             
         except Exception as e:
-            if self.logger:
-                self.logger.error(f"User authentication failed: {e}")
-            else:
-                print(f"ERROR: User authentication failed: {e}")
+            self.logger.error(f"User authentication failed: {e}")
             return False
     
     def is_authenticated(self) -> bool:
@@ -144,8 +127,7 @@ class GEEAuthenticator:
             self.ee.Number(1).getInfo()
             return True
         except Exception as e:
-            if self.logger:
-                self.logger.debug(f"Authentication test failed: {e}")
+            self.logger.debug(f"Authentication test failed: {e}")
             self._authenticated = False
             return False
     
@@ -181,18 +163,12 @@ class GEEAuthenticator:
             image = self.ee.Image("WORLDCLIM/V1/BIO").select("bio01")
             info = image.getInfo()
             
-            if self.logger:
-                self.logger.info("GEE connection test successful")
-            else:
-                print("GEE connection test successful")
+            self.logger.info("GEE connection test successful")
             
             return True
             
         except Exception as e:
-            if self.logger:
-                self.logger.error(f"GEE connection test failed: {e}")
-            else:
-                print(f"ERROR: GEE connection test failed: {e}")
+            self.logger.error(f"GEE connection test failed: {e}")
             return False
 
 
