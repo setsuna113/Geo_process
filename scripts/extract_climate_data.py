@@ -46,13 +46,47 @@ def setup_logging(log_level: str = 'INFO') -> any:
         return logging.getLogger(__name__)
 
 
+def validate_file_path(file_path: str, description: str) -> Path:
+    """Validate file path for security (prevent path traversal attacks)."""
+    try:
+        path = Path(file_path).resolve()
+        
+        # Check for path traversal attempts
+        if '..' in str(path) or str(path).startswith('/'):
+            # Allow absolute paths only if they don't contain traversal
+            if not str(path).startswith('/') and '..' in str(path):
+                raise ValueError(f"Path traversal not allowed in {description}")
+        
+        # Ensure the path exists for input files
+        if description.lower().startswith('input') and not path.exists():
+            raise FileNotFoundError(f"{description} file not found: {path}")
+            
+        return path
+        
+    except Exception as e:
+        raise ValueError(f"Invalid {description} path: {e}")
+
+
 def parse_bounds(bounds_str: str) -> Tuple[float, float, float, float]:
     """Parse bounds string to tuple."""
     try:
         parts = bounds_str.split(',')
         if len(parts) != 4:
             raise ValueError("Bounds must have 4 values: min_x,min_y,max_x,max_y")
-        return tuple(float(x.strip()) for x in parts)
+        
+        bounds = tuple(float(x.strip()) for x in parts)
+        
+        # Validate geographic bounds
+        min_x, min_y, max_x, max_y = bounds
+        if not (-180 <= min_x <= 180) or not (-180 <= max_x <= 180):
+            raise ValueError("Longitude must be between -180 and 180")
+        if not (-90 <= min_y <= 90) or not (-90 <= max_y <= 90):
+            raise ValueError("Latitude must be between -90 and 90")
+        if min_x >= max_x or min_y >= max_y:
+            raise ValueError("Invalid bounds: min values must be less than max values")
+            
+        return bounds
+        
     except Exception as e:
         raise ValueError(f"Invalid bounds format: {e}")
 
@@ -170,9 +204,13 @@ Examples:
     logger = setup_logging(args.log_level)
     logger.info("Starting GEE climate data extraction")
     
-    # Create output directory
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Validate and create output directory
+    try:
+        output_dir = validate_file_path(args.output, "output directory")
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Invalid output directory: {e}")
+        return 1
     
     try:
         # Check for resume
@@ -218,10 +256,27 @@ Examples:
         logger.info(f"  Chunk size: {chunk_size}")
         logger.info(f"  Output: {output_dir}")
         
+        # Validate file paths
+        validated_service_account = None
+        if args.service_account:
+            try:
+                validated_service_account = str(validate_file_path(args.service_account, "input service account key"))
+            except Exception as e:
+                logger.error(f"Invalid service account key path: {e}")
+                return 1
+        
+        validated_config = args.config
+        if args.config != 'config.yml':  # Only validate if not default
+            try:
+                validated_config = str(validate_file_path(args.config, "input config"))
+            except Exception as e:
+                logger.error(f"Invalid config file path: {e}")
+                return 1
+        
         # Setup GEE authentication
         logger.info("Setting up Google Earth Engine authentication...")
         auth = setup_gee_auth(
-            service_account_key=args.service_account,
+            service_account_key=validated_service_account,
             project_id=args.project_id,
             logger=logger
         )
@@ -237,7 +292,7 @@ Examples:
         
         # Create coordinate generator
         logger.info("Creating coordinate generator...")
-        resolution = load_config_resolution(args.config)
+        resolution = load_config_resolution(validated_config)
         coord_gen = CoordinateGenerator(target_resolution=resolution, logger=logger)
         
         # Create GEE extractor

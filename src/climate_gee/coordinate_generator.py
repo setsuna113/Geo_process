@@ -40,9 +40,16 @@ class CoordinateGenerator:
         """
         min_x, min_y, max_x, max_y = bounds
         
-        # Create coordinate arrays exactly like coordinate_merger.py
-        x_coords = np.arange(min_x, max_x, self.target_resolution)
-        y_coords = np.arange(min_y, max_y, self.target_resolution)
+        # Create coordinate arrays with improved precision handling
+        # Calculate number of points to avoid floating point precision errors
+        n_x_points = int(np.round((max_x - min_x) / self.target_resolution))
+        n_y_points = int(np.round((max_y - min_y) / self.target_resolution))
+        
+        # Generate coordinates using linspace for better precision
+        x_coords = np.linspace(min_x, min_x + n_x_points * self.target_resolution, 
+                              n_x_points, endpoint=False)
+        y_coords = np.linspace(min_y, min_y + n_y_points * self.target_resolution, 
+                              n_y_points, endpoint=False)
         
         total_points = len(x_coords) * len(y_coords)
         
@@ -113,8 +120,14 @@ class CoordinateGenerator:
         """
         min_x, min_y, max_x, max_y = bounds
         
-        x_coords = np.arange(min_x, max_x, self.target_resolution)
-        y_coords = np.arange(min_y, max_y, self.target_resolution)
+        # Use same precision-safe coordinate generation
+        n_x_points = int(np.round((max_x - min_x) / self.target_resolution))
+        n_y_points = int(np.round((max_y - min_y) / self.target_resolution))
+        
+        x_coords = np.linspace(min_x, min_x + n_x_points * self.target_resolution, 
+                              n_x_points, endpoint=False)
+        y_coords = np.linspace(min_y, min_y + n_y_points * self.target_resolution, 
+                              n_y_points, endpoint=False)
         
         # Calculate rows per chunk
         rows_per_chunk = max(1, chunk_size // len(x_coords))

@@ -82,10 +82,15 @@ class GEEAuthenticator:
             return True
             
         except Exception as e:
+            # Sanitize error message to avoid credential exposure
+            safe_error = str(e).replace(str(key_path), '[KEY_FILE]')
+            if 'credentials' in safe_error.lower():
+                safe_error = "Authentication failed - check service account credentials"
+            
             if self.logger:
-                self.logger.error(f"Service account authentication failed: {e}")
+                self.logger.error(f"Service account authentication failed: {safe_error}")
             else:
-                print(f"ERROR: Service account authentication failed: {e}")
+                print(f"ERROR: Service account authentication failed: {safe_error}")
             return False
     
     def _authenticate_user_account(self, project_id: Optional[str]) -> bool:
@@ -100,8 +105,10 @@ class GEEAuthenticator:
                 else:
                     print("GEE authenticated with existing user credentials")
                 return True
-            except:
-                pass
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"Existing credentials not valid, will attempt interactive auth: {e}")
+                # Continue to interactive authentication
             
             # Need to authenticate interactively
             if self.logger:
@@ -136,7 +143,9 @@ class GEEAuthenticator:
             # Test authentication with a simple operation
             self.ee.Number(1).getInfo()
             return True
-        except:
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Authentication test failed: {e}")
             self._authenticated = False
             return False
     

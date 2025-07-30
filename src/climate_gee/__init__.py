@@ -10,9 +10,11 @@ __version__ = "1.0.0"
 from .gee_extractor import GEEClimateExtractor
 from .coordinate_generator import CoordinateGenerator  
 from .parquet_converter import ParquetConverter
+from .auth import GEEAuthenticator
 
 __all__ = [
     'GEEClimateExtractor',
     'CoordinateGenerator', 
-    'ParquetConverter'
+    'ParquetConverter',
+    'GEEAuthenticator'
 ]

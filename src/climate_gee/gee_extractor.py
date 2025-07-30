@@ -176,138 +176,137 @@ class GEEClimateExtractor:
                           variables: List[str],
                           output_dir: Optional[str],
                           chunk_id: int) -> pd.DataFrame:
-        """Extract climate data for a single coordinate chunk."""
+        """Extract climate data for a single coordinate chunk using efficient batch sampling."""
         
-        # Create GEE FeatureCollection from coordinates
-        features = []
-        for _, row in coord_chunk.iterrows():
-            point = self.ee.Geometry.Point([row['x'], row['y']])
-            features.append(self.ee.Feature(point))
+        # Create list of coordinate points for sampling
+        points = [[row['x'], row['y']] for _, row in coord_chunk.iterrows()]
         
-        feature_collection = self.ee.FeatureCollection(features)
-        
-        # Sample all requested variables
-        sample_data = {}
+        # Initialize result DataFrame
+        result_df = coord_chunk.copy()
         
         for var_name in variables:
             if self.logger:
-                self.logger.debug(f"Sampling {var_name} for chunk {chunk_id}")
+                self.logger.debug(f"Sampling {var_name} for chunk {chunk_id} ({len(points)} points)")
             
-            # Sample the image at feature points
-            sampled = self.images[var_name].sampleRegions(
-                collection=feature_collection,
-                scale=1000,  # 1km resolution (WorldClim native)
-                geometries=True
-            )
-            
-            # Export to temporary CSV and download
-            csv_data = self._export_and_download_csv(sampled, var_name, chunk_id, output_dir)
-            sample_data[var_name] = csv_data
-        
-        # Merge all variables into single DataFrame
-        result_df = coord_chunk.copy()
-        
-        for var_name, var_data in sample_data.items():
-            if not var_data.empty:
-                # Apply scale factor
-                scale_factor = self.WORLDCLIM_DATASETS[var_name]['scale_factor']
-                var_data[var_name] = var_data[var_name] * scale_factor
+            try:
+                # Use efficient batch sampling
+                raw_values = self._sample_image_batch(
+                    self.images[var_name], 
+                    points, 
+                    scale=1000  # 1km resolution (WorldClim native)
+                )
                 
-                # Merge by coordinates (assuming same order)
-                if len(var_data) == len(result_df):
-                    result_df[var_name] = var_data[var_name].values
-                else:
-                    if self.logger:
-                        self.logger.warning(f"Size mismatch for {var_name}: expected {len(result_df)}, got {len(var_data)}")
+                # Apply scale factor to valid values
+                scale_factor = self.WORLDCLIM_DATASETS[var_name]['scale_factor']
+                scaled_values = []
+                
+                for raw_value in raw_values:
+                    if raw_value is not None and not np.isnan(raw_value):
+                        scaled_values.append(raw_value * scale_factor)
+                    else:
+                        scaled_values.append(np.nan)
+                
+                # Add values to result DataFrame
+                result_df[var_name] = scaled_values
+                
+                if self.logger:
+                    valid_count = sum(1 for v in scaled_values if not np.isnan(v))
+                    self.logger.debug(f"Extracted {valid_count}/{len(scaled_values)} valid values for {var_name}")
+                
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"Failed to sample {var_name} for chunk {chunk_id}: {e}")
+                # Fill with NaN values on failure
+                result_df[var_name] = np.nan
         
         return result_df
     
-    def _export_and_download_csv(self,
-                               feature_collection,
-                               var_name: str,
-                               chunk_id: int,
-                               output_dir: Optional[str]) -> pd.DataFrame:
-        """Export GEE FeatureCollection to CSV and download."""
+    def _sample_image_batch(self, 
+                          image: any, 
+                          points: List[List[float]], 
+                          scale: int = 1000) -> List[float]:
+        """
+        Efficiently sample image at multiple points using batch processing.
         
-        # Create temporary file for CSV export
-        if output_dir:
-            temp_dir = Path(output_dir)
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            csv_file = temp_dir / f"gee_{var_name}_chunk_{chunk_id}.csv"
-        else:
-            csv_file = Path(tempfile.gettempdir()) / f"gee_{var_name}_chunk_{chunk_id}.csv"
-        
+        Args:
+            image: GEE Image to sample
+            points: List of [lon, lat] coordinates
+            scale: Sampling scale in meters
+            
+        Returns:
+            List of sampled values (may contain NaN for invalid pixels)
+        """
         try:
-            # Start GEE export task
-            task = self.ee.batch.Export.table.toDrive(
+            # Create FeatureCollection from points for batch sampling
+            features = []
+            for i, point in enumerate(points):
+                geom = self.ee.Geometry.Point(point)
+                features.append(self.ee.Feature(geom, {'point_id': i}))
+            
+            feature_collection = self.ee.FeatureCollection(features)
+            
+            # Sample the image at all points
+            sampled = image.sampleRegions(
                 collection=feature_collection,
-                description=f"climate_{var_name}_chunk_{chunk_id}",
-                fileFormat='CSV'
+                scale=scale,
+                geometries=False
             )
             
-            task.start()
+            # Get the results as a list
+            sampled_list = sampled.getInfo()
             
-            # Wait for task completion
-            task_id = task.id
-            self._wait_for_task_completion(task_id, var_name, chunk_id)
+            # Extract values in correct order
+            values = [np.nan] * len(points)  # Initialize with NaN
             
-            # Download the CSV file from Google Drive
-            # Note: This is a simplified approach - in practice, you'd need
-            # to implement Google Drive API download or manual download
-            csv_data = self._download_csv_from_drive(task_id, csv_file)
+            if sampled_list and 'features' in sampled_list:
+                for feature in sampled_list['features']:
+                    if 'properties' in feature:
+                        props = feature['properties']
+                        point_id = props.get('point_id')
+                        
+                        # Get the band value (first band in image)
+                        band_names = list(props.keys())
+                        band_names = [b for b in band_names if b != 'point_id']
+                        
+                        if band_names and point_id is not None and 0 <= point_id < len(values):
+                            values[point_id] = props.get(band_names[0])
             
-            return csv_data
+            return values
             
         except Exception as e:
             if self.logger:
-                self.logger.error(f"CSV export failed for {var_name} chunk {chunk_id}: {e}")
-            
-            # Return empty DataFrame on failure
-            return pd.DataFrame()
+                self.logger.warning(f"Batch sampling failed, falling back to individual sampling: {e}")
+            # Fallback to individual sampling
+            return self._sample_image_individual(image, points, scale)
     
-    def _wait_for_task_completion(self, task_id: str, var_name: str, chunk_id: int, timeout: int = 300):
-        """Wait for GEE export task to complete."""
-        start_time = time.time()
+    def _sample_image_individual(self, 
+                               image: any, 
+                               points: List[List[float]], 
+                               scale: int = 1000) -> List[float]:
+        """Fallback method for individual point sampling."""
+        values = []
         
-        while time.time() - start_time < timeout:
-            task_status = self.ee.batch.Task.status(task_id)
-            state = task_status.get('state', 'UNKNOWN')
-            
-            if state == 'COMPLETED':
-                if self.logger:
-                    self.logger.debug(f"Task {task_id} completed successfully")
-                return
-            elif state == 'FAILED':
-                error_msg = task_status.get('error_message', 'Unknown error')
-                raise RuntimeError(f"GEE task failed: {error_msg}")
-            elif state in ['CANCELLED', 'CANCEL_REQUESTED']:
-                raise RuntimeError(f"GEE task was cancelled")
-            
-            # Still running, wait a bit more
-            time.sleep(10)
+        for point in points:
+            try:
+                geom = self.ee.Geometry.Point(point)
+                sampled = image.sample(geom, scale=scale).first()
+                value_info = sampled.getInfo()
+                
+                if value_info and 'properties' in value_info:
+                    # Get first property value (should be the band value)
+                    props = value_info['properties']
+                    band_values = [v for k, v in props.items() if k != 'system:index']
+                    if band_values:
+                        values.append(band_values[0])
+                    else:
+                        values.append(np.nan)
+                else:
+                    values.append(np.nan)
+                    
+            except Exception:
+                values.append(np.nan)
         
-        raise TimeoutError(f"GEE task {task_id} timed out after {timeout} seconds")
-    
-    def _download_csv_from_drive(self, task_id: str, local_file: Path) -> pd.DataFrame:
-        """
-        Download CSV from Google Drive.
-        
-        Note: This is a placeholder implementation. In practice, you would need to:
-        1. Use Google Drive API to download the file
-        2. Or instruct users to manually download from Drive
-        3. Or use alternative export methods (Cloud Storage, etc.)
-        """
-        
-        # Placeholder - in real implementation, download the actual CSV
-        if self.logger:
-            self.logger.warning(f"CSV download not implemented - returning empty DataFrame")
-            self.logger.info(f"Manual download required from Google Drive for task {task_id}")
-        else:
-            print(f"Warning: Manual CSV download required from Google Drive")
-            print(f"Task ID: {task_id}")
-        
-        # Return empty DataFrame as placeholder
-        return pd.DataFrame()
+        return values
     
     def get_variable_info(self) -> Dict[str, Dict]:
         """Get information about available WorldClim variables."""
