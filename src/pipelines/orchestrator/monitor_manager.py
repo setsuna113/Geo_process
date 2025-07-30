@@ -125,7 +125,7 @@ class MonitorManager:
             self.peak_memory = self.start_memory
             self.monitoring_active = True
             
-            logger.debug(f"Started memory monitoring for stage {self.stage.stage_name}")
+            logger.debug(f"Started memory monitoring for stage {self.stage.name}")
             
         def stop(self):
             """Stop memory monitoring and record metrics."""
@@ -147,10 +147,10 @@ class MonitorManager:
             }
             
             with self.monitor_manager._metrics_lock:
-                stage_key = f"stage_{self.stage.stage_name}_memory"
+                stage_key = f"stage_{self.stage.name}_memory"
                 self.monitor_manager.state.metrics[stage_key] = stage_metrics
                 
-            logger.debug(f"Memory monitoring stopped for stage {self.stage.stage_name}: {stage_metrics}")
+            logger.debug(f"Memory monitoring stopped for stage {self.stage.name}: {stage_metrics}")
             
         def update_peak_memory(self):
             """Update peak memory usage."""

@@ -1058,6 +1058,18 @@ class PipelineOrchestrator:
         self._pause_requested = True
         self.status = PipelineStatus.PAUSED
         
+        # Log pause event to monitoring system
+        if self.context and hasattr(self.context, 'db') and self.context.experiment_id:
+            try:
+                with self.context.db.get_cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO pipeline_events 
+                        (experiment_id, event_type, source, title, severity)
+                        VALUES (%s, 'pipeline_pause', 'orchestrator', 'Pipeline paused by signal', 'info')
+                    """, (self.context.experiment_id,))
+            except Exception as e:
+                logger.warning(f"Failed to log pause event: {e}")
+        
         # Pause all currently running stages
         for stage in self.stages:
             if stage.status == StageStatus.RUNNING:
@@ -1068,6 +1080,18 @@ class PipelineOrchestrator:
         logger.info("Resuming pipeline...")
         self._pause_requested = False
         self.status = PipelineStatus.RUNNING
+        
+        # Log resume event to monitoring system
+        if self.context and hasattr(self.context, 'db') and self.context.experiment_id:
+            try:
+                with self.context.db.get_cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO pipeline_events 
+                        (experiment_id, event_type, source, title, severity)
+                        VALUES (%s, 'pipeline_resume', 'orchestrator', 'Pipeline resumed after pause', 'info')
+                    """, (self.context.experiment_id,))
+            except Exception as e:
+                logger.warning(f"Failed to log resume event: {e}")
         
         # Resume all paused stages
         for stage in self.stages:

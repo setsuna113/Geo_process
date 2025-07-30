@@ -79,7 +79,7 @@ from src.core.signal_handler_enhanced import EnhancedSignalHandler
 signal_handler = EnhancedSignalHandler()
 
 # Create enhanced pipeline orchestrator with injected signal handler
-orchestrator = EnhancedPipelineOrchestrator(config, db)
+orchestrator = EnhancedPipelineOrchestrator(config, db, signal_handler)
 
 # Configure pipeline stages
 analysis_method = '{analysis_method}'

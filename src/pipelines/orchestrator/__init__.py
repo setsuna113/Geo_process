@@ -183,16 +183,17 @@ class PipelineOrchestrator:
                 with self.monitor_manager.memory_monitoring_context(stage):
                     # Set up progress callback
                     def progress_callback(progress_info):
-                        self.monitor_manager.handle_stage_progress(stage.stage_name, progress_info)
+                        self.monitor_manager.handle_stage_progress(stage.name, progress_info)
                         
                     # Execute the stage
                     result = self.stage_manager.execute_stage(stage, progress_callback=progress_callback)
-                    results[stage.stage_name] = result
+                    results[stage.name] = result
                     
                     if not result.success:
-                        logger.error(f"Stage {stage.stage_name} failed: {result.error_message}")
+                        error_msg = result.data.get('error', 'Unknown error') if hasattr(result, 'data') else 'Unknown error'
+                        logger.error(f"Stage {stage.name} failed: {error_msg}")
                         # TODO: Use recovery manager to handle failure
-                        raise RuntimeError(f"Stage {stage.stage_name} failed: {result.error_message}")
+                        raise RuntimeError(f"Stage {stage.name} failed: {error_msg}")
                         
             # Collect final metrics
             final_metrics = self.monitor_manager.get_current_metrics()

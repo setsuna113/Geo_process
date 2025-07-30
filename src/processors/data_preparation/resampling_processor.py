@@ -1,8 +1,8 @@
 # src/processors/data_preparation/resampling_processor.py
 """Enhanced processor for resampling datasets with chunked loading and progress support."""
-import logging
+from src.infrastructure.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 logger.debug("🔍 resampling_processor.py module loading...")
 from typing import Dict, Any, List, Optional, Tuple, Union, Callable
 from pathlib import Path
@@ -485,9 +485,11 @@ class ResamplingProcessor(BaseProcessor):
         
         try:
             # Get or register raster in catalog
+            path = dataset_config.get('path', dataset_config.get('resolved_path'))
             raster_entry = self._get_or_register_raster(
                 dataset_name,
-                dataset_config.get('path', dataset_config.get('resolved_path'))
+                Path(path) if isinstance(path, str) else path,
+                dataset_config.get('data_type', 'richness_data')
             )
             
             # Determine if passthrough is appropriate
@@ -1229,8 +1231,11 @@ class ResamplingProcessor(BaseProcessor):
         Returns:
             ResampledDatasetInfo if found, None otherwise
         """
+        logger.debug(f"🔄 get_resampled_dataset called for: {dataset_name}")
         try:
+            logger.debug("📚 Importing schema...")
             from src.database.schema import schema
+            logger.debug("✅ Schema imported successfully")
             
             # Query for the dataset
             datasets = schema.get_resampled_datasets({'name': dataset_name})

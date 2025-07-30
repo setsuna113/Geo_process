@@ -84,7 +84,9 @@ class ResampleStage(PipelineStage):
                     logger.info(f"Processing dataset {idx+1}/{len(loaded_datasets)}: {dataset_config['name']}")
                     
                     # Check if already resampled (including passthrough datasets)
+                    logger.debug(f"🔍 Checking for existing resampled dataset: {dataset_config['name']}")
                     existing = processor.get_resampled_dataset(dataset_config['name'])
+                    logger.debug(f"✅ get_resampled_dataset returned: {existing is not None}")
                     target_resolution = context.config.get('resampling.target_resolution')
                     tolerance = context.config.get('resampling.resolution_tolerance', 0.001)
                     

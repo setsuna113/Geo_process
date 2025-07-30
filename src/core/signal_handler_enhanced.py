@@ -29,11 +29,16 @@ class EnhancedSignalHandler(SignalHandler):
         Args:
             cleanup_callback: Optional cleanup function to call on shutdown
         """
-        super().__init__(cleanup_callback)
+        super().__init__()
         
         # Additional state for enhanced handling
         self._shutdown_context: Dict[str, Any] = {}
         self._unexpected_exit_handler = None
+        self._cleanup_callback = cleanup_callback
+        
+        # Register cleanup callback if provided
+        if cleanup_callback:
+            self.register_shutdown_callback(cleanup_callback)
         
         # Register enhanced handlers
         self._register_enhanced_handlers()
@@ -42,9 +47,8 @@ class EnhancedSignalHandler(SignalHandler):
     
     def _register_enhanced_handlers(self):
         """Register additional handlers for better error capture."""
-        # Override parent handlers with enhanced versions
-        for sig in self._handled_signals:
-            signal.signal(sig, self._enhanced_signal_handler)
+        # The parent class already registers signal handlers in _register_signals()
+        # We just need to register our exception hooks
         
         # Register unexpected exit handler
         sys.excepthook = self._handle_uncaught_exception
@@ -168,8 +172,9 @@ class EnhancedSignalHandler(SignalHandler):
         )
         
         # Call cleanup if not already shutting down
-        if not self._shutdown_requested:
-            self._shutdown_requested = True
+        if not self.is_shutdown_requested():
+            # Mark shutdown in parent class
+            self.shutdown()
             if self._cleanup_callback:
                 try:
                     logger.info("Executing emergency cleanup after uncaught exception")
