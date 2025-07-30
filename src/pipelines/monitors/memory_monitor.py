@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 class MemoryMonitor:
     """Monitor memory usage during pipeline execution."""
     
-    def __init__(self, config):
+    def __init__(self, config, db_manager=None):
         self.config = config
+        self.db = db_manager  # Store database reference
         self.memory_limit_gb = config.get('pipeline.memory_limit_gb', 16)
         self.warning_threshold = 0.8  # 80% of limit
         self.critical_threshold = 0.9  # 90% of limit
@@ -26,6 +27,11 @@ class MemoryMonitor:
         self._monitor_thread: Optional[threading.Thread] = None
         self.memory_history = deque(maxlen=1000)  # Keep last 1000 measurements
         self.peak_memory_gb = 0
+        
+        # Context tracking
+        self.experiment_id: Optional[str] = None
+        self.current_stage: Optional[str] = None
+        self.current_operation: Optional[str] = None
         
         # Callbacks
         self.warning_callbacks = []
@@ -73,6 +79,10 @@ class MemoryMonitor:
                 # Update peak memory
                 if current_usage['process_rss_gb'] > self.peak_memory_gb:
                     self.peak_memory_gb = current_usage['process_rss_gb']
+                
+                # Store to database if available
+                if self.db and self.experiment_id:
+                    self._store_memory_snapshot(current_usage)
                 
                 # Check thresholds
                 usage_ratio = current_usage['process_rss_gb'] / self.memory_limit_gb
@@ -173,3 +183,63 @@ class MemoryMonitor:
     def register_critical_callback(self, callback):
         """Register callback for critical memory alerts."""
         self.critical_callbacks.append(callback)
+    
+    def set_experiment_id(self, experiment_id: str):
+        """Set the experiment ID for tracking."""
+        self.experiment_id = experiment_id
+        logger.debug(f"Memory monitor tracking experiment: {experiment_id}")
+    
+    def set_stage(self, stage: str):
+        """Set current pipeline stage."""
+        self.current_stage = stage
+        logger.debug(f"Memory monitor tracking stage: {stage}")
+    
+    def set_operation(self, operation: str):
+        """Set current operation within stage."""
+        self.current_operation = operation
+        logger.debug(f"Memory monitor tracking operation: {operation}")
+    
+    def _store_memory_snapshot(self, usage: Dict[str, Any]):
+        """Store memory snapshot to database."""
+        if not self.db or not self.experiment_id:
+            return
+            
+        try:
+            import json
+            # Convert experiment_id to UUID format if needed
+            experiment_uuid = self.experiment_id
+            
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cur:
+                    # First check if experiment exists
+                    cur.execute("SELECT id FROM experiments WHERE id = %s::uuid", (experiment_uuid,))
+                    if not cur.fetchone():
+                        logger.warning(f"Experiment {experiment_uuid} not found in database")
+                        return
+                    
+                    # Use the existing pipeline_metrics table structure
+                    custom_metrics = {
+                        'memory_type': 'process_rss',
+                        'process_rss_gb': usage['process_rss_gb'],
+                        'process_vms_gb': usage.get('process_vms_gb', 0),
+                        'system_percent': usage['system_percent'],
+                        'system_available_gb': usage['system_available_gb'],
+                        'stage': self.current_stage,
+                        'operation': self.current_operation,
+                        'peak_memory_gb': self.peak_memory_gb
+                    }
+                    
+                    cur.execute("""
+                        INSERT INTO pipeline_metrics 
+                        (experiment_id, node_id, memory_mb, cpu_percent, custom_metrics)
+                        VALUES (%s::uuid, %s, %s, %s, %s)
+                    """, (
+                        experiment_uuid,
+                        f"memory_monitor_{self.current_stage or 'pipeline'}",
+                        usage['process_rss_gb'] * 1024,  # Convert GB to MB
+                        usage.get('system_percent', 0),
+                        json.dumps(custom_metrics)
+                    ))
+                    conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to store memory snapshot: {e}")
