@@ -99,8 +99,17 @@ class ResamplingProcessor(BaseProcessor):
         # Dataset configuration
         self.datasets_config = config.get('datasets', {}).get('target_datasets', [])
         
+        # Adaptive window size tracking
+        self._adaptive_window_size = None
+        
         logger.info(f"ResamplingProcessor initialized with target resolution: {self.target_resolution}")
         logger.info(f"Using {self.engine_type} engine with chunked processing")
+    
+    def _get_current_window_size(self) -> int:
+        """Get current window size, using adaptive size if set."""
+        if self._adaptive_window_size is not None:
+            return self._adaptive_window_size
+        return self.config.get('resampling.window_size', 2048)
     
     def resample_all_datasets(self, resume_from_checkpoint: Optional[str] = None) -> List[ResampledDatasetInfo]:
         """
@@ -426,7 +435,8 @@ class ResamplingProcessor(BaseProcessor):
             return resampled_info
     
     def resample_dataset_memory_aware(self, dataset_config: dict, 
-                                    progress_callback: Optional[Callable[[str, float], None]] = None) -> ResampledDatasetInfo:
+                                    progress_callback: Optional[Callable[[str, float], None]] = None,
+                                    context: Optional[Any] = None) -> ResampledDatasetInfo:
         """
         Memory-aware resampling that uses windowed processing for both passthrough and resampling.
         
@@ -434,16 +444,44 @@ class ResamplingProcessor(BaseProcessor):
         - Windowed processing for large datasets
         - No full dataset loading for passthrough cases
         - Efficient memory usage with configurable window sizes
+        - Adaptive window sizing based on memory pressure
         
         Args:
             dataset_config: Dataset configuration
             progress_callback: Progress callback
+            context: Optional pipeline context with memory monitor
             
         Returns:
             ResampledDatasetInfo with dataset metadata
         """
         dataset_name = dataset_config['name']
         logger.info(f"Starting memory-aware processing for {dataset_name}")
+        
+        # Get memory monitor if available
+        memory_monitor = None
+        if context and hasattr(context, 'memory_monitor'):
+            memory_monitor = context.memory_monitor
+        
+        # Store original window size
+        original_window_size = self.config.get('resampling.window_size', 2048)
+        self._adaptive_window_size = original_window_size
+        
+        # Define pressure callbacks
+        def on_memory_warning(usage):
+            self._adaptive_window_size = max(512, self._adaptive_window_size // 2)
+            logger.warning(f"Memory pressure (warning): reducing window size to {self._adaptive_window_size}")
+        
+        def on_memory_critical(usage):
+            self._adaptive_window_size = 256  # Minimum viable size
+            logger.error(f"Memory pressure (critical): window size set to minimum {self._adaptive_window_size}")
+            # Force garbage collection
+            import gc
+            gc.collect()
+        
+        # Register callbacks
+        if memory_monitor:
+            memory_monitor.register_warning_callback(on_memory_warning)
+            memory_monitor.register_critical_callback(on_memory_critical)
         
         try:
             # Get or register raster in catalog
@@ -467,6 +505,9 @@ class ResamplingProcessor(BaseProcessor):
         except Exception as e:
             logger.error(f"Memory-aware processing failed for {dataset_name}: {e}")
             raise
+        finally:
+            # Restore original window size
+            self._adaptive_window_size = original_window_size
     
     def _resample_chunked(self, 
                          raster_entry: RasterEntry,
@@ -864,9 +905,9 @@ class ResamplingProcessor(BaseProcessor):
         # Create table for windowed storage
         table_name = f"passthrough_{passthrough_info.name.replace('-', '_')}"
         
-        # Use windowed storage manager
+        # Use windowed storage manager with current window size
         storage_manager = WindowedStorageManager(
-            window_size=self.config.get('resampling.window_size', 2048)
+            window_size=self._get_current_window_size()
         )
         
         # Create the storage table
@@ -959,7 +1000,7 @@ class ResamplingProcessor(BaseProcessor):
                 bounds=raster_entry.bounds,
                 source_crs=raster_entry.crs or 'EPSG:4326',
                 target_crs=self.target_crs,
-                chunk_size=self.config.get('resampling.window_size', 2048),
+                chunk_size=self._get_current_window_size(),
                 preserve_sum=dataset_config['data_type'] == 'richness_data',
                 nodata_value=raster_entry.metadata.get('nodata_value')
             )

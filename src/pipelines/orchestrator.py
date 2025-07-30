@@ -50,6 +50,7 @@ class PipelineContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     shared_data: Dict[str, Any] = field(default_factory=dict)
     quality_metrics: Dict[str, Any] = field(default_factory=dict)
+    memory_monitor: Optional[MemoryMonitor] = field(default=None)
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get value from shared data."""
@@ -299,7 +300,8 @@ class PipelineOrchestrator:
                 'start_time': datetime.now().isoformat(),
                 'pipeline_version': '1.0.0',
                 **kwargs
-            }
+            },
+            memory_monitor=self.memory_monitor
         )
         
         # Initialize progress tracker

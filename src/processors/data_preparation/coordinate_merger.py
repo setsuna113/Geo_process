@@ -46,13 +46,15 @@ class CoordinateMerger(BaseProcessor):
     def create_merged_dataset(self,
                             resampled_datasets: List[Dict],
                             chunk_size: Optional[int] = None,
-                            return_as: str = 'xarray') -> any:
+                            return_as: str = 'xarray',
+                            context: Optional[any] = None) -> any:
         """Create merged dataset and return in-memory without writing to file.
         
         Args:
             resampled_datasets: List of dataset info dicts
             chunk_size: If provided, use chunked processing for memory efficiency
             return_as: 'xarray' or 'dataframe' - format to return
+            context: Optional pipeline context with memory monitor
             
         Returns:
             xarray.Dataset or pandas.DataFrame with merged data
@@ -61,6 +63,29 @@ class CoordinateMerger(BaseProcessor):
         
         logger.info(f"Creating merged dataset in memory (return_as={return_as})")
         self.validation_results.clear()
+        
+        # Get memory monitor
+        memory_monitor = context.memory_monitor if context and hasattr(context, 'memory_monitor') else None
+        
+        # Adaptive chunk size
+        base_chunk_size = chunk_size or self.config.get('merge.chunk_size', 5000)
+        self._adaptive_chunk_size = base_chunk_size
+        
+        def on_memory_warning(usage):
+            self._adaptive_chunk_size = max(1000, self._adaptive_chunk_size // 2)
+            logger.warning(f"Memory pressure (warning): reducing merge chunk size to {self._adaptive_chunk_size}")
+        
+        def on_memory_critical(usage):
+            self._adaptive_chunk_size = 500  # Minimum viable chunk size
+            logger.error(f"Memory pressure (critical): merge chunk size set to minimum {self._adaptive_chunk_size}")
+            # Force garbage collection
+            import gc
+            gc.collect()
+        
+        # Register callbacks
+        if memory_monitor:
+            memory_monitor.register_warning_callback(on_memory_warning)
+            memory_monitor.register_critical_callback(on_memory_critical)
         
         # Validate all datasets first
         for dataset_info in resampled_datasets:
@@ -136,10 +161,11 @@ class CoordinateMerger(BaseProcessor):
         for dataset_info in resampled_datasets:
             self._validate_dataset_bounds(dataset_info)
         
-        if chunk_size:
+        if chunk_size or hasattr(self, '_adaptive_chunk_size'):
             # Use chunked processing for large datasets
+            effective_chunk_size = getattr(self, '_adaptive_chunk_size', chunk_size) if hasattr(self, '_adaptive_chunk_size') else chunk_size
             return self._create_ml_ready_parquet_chunked(
-                resampled_datasets, output_dir, chunk_size
+                resampled_datasets, output_dir, effective_chunk_size
             )
         else:
             # Original in-memory processing

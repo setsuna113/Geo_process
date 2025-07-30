@@ -101,11 +101,12 @@ class MergeStage(PipelineStage):
             merger = CoordinateMerger(context.config, context.db)
             
             try:
-                # Create merged dataset in memory (not file)
+                # Create merged dataset in memory (not file) with context for adaptive behavior
                 merged_dataset = merger.create_merged_dataset(
                     dataset_dicts,
                     chunk_size=chunk_size,
-                    return_as='xarray'  # Return as xarray for compatibility with ExportStage
+                    return_as='xarray',  # Return as xarray for compatibility with ExportStage
+                    context=context
                 )
                 
                 # Get validation results

@@ -116,8 +116,8 @@ class ResampleStage(PipelineStage):
                     logger.info(f"Processing dataset: {dataset_config['name']}")
                     
                     if use_memory_aware:
-                        # Use memory-aware processing
-                        resampled_info = processor.resample_dataset_memory_aware(dataset_config)
+                        # Use memory-aware processing with context for adaptive behavior
+                        resampled_info = processor.resample_dataset_memory_aware(dataset_config, context=context)
                     else:
                         # Use legacy processing
                         resampled_info = processor.resample_dataset(dataset_config)
