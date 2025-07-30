@@ -19,6 +19,10 @@ class EnhancedProgressManager(ProgressManager):
     while maintaining backward compatibility.
     """
     
+    def __new__(cls, *args, **kwargs):
+        """Override parent's singleton pattern to allow instance creation."""
+        return object.__new__(cls)
+    
     def __init__(self, 
                  experiment_id: Optional[str] = None,
                  db_manager = None,

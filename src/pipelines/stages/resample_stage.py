@@ -2,9 +2,10 @@
 """Resampling stage."""
 
 from typing import List, Tuple
-import logging
+from src.infrastructure.logging import get_logger
+from src.infrastructure.logging.decorators import log_stage
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 from .base_stage import PipelineStage, StageResult
 logger.debug("🔍 About to import ResamplingProcessor")
@@ -46,10 +47,10 @@ class ResampleStage(PipelineStage):
         # Validation done in context
         return True, errors
     
+    @log_stage("resample")
     def execute(self, context) -> StageResult:
         """Execute resampling for all datasets."""
         logger.info("Starting resample stage")
-        logger.info("🔍 DEBUG: ResampleStage.execute() called - entering try block")
         
         try:
             # Get loaded datasets from previous stage

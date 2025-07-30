@@ -245,6 +245,35 @@ features:
   richness_types: ['present', 'absent', 'fossil']
 
 # =============================================================================
+# MERGE STAGE CONFIGURATION
+# =============================================================================
+merge:
+  enable_chunked_processing: true
+  chunk_size: 5000  # rows per chunk
+  enable_validation: true
+  alignment_tolerance: 0.01  # degrees
+
+# =============================================================================
+# EXPORT STAGE CONFIGURATION
+# =============================================================================
+export:
+  formats: ['csv', 'parquet']  # Export both formats by default
+  compress: true
+  chunk_size: 10000
+  include_metadata: true
+  enable_streaming: true  # New option for streaming export
+
+# =============================================================================
+# MONITORING AND LOGGING CONFIGURATION
+# =============================================================================
+monitoring:
+  enable_database_logging: true
+  log_batch_size: 100
+  log_flush_interval: 5
+  enable_metrics: true
+  metrics_interval: 10
+
+# =============================================================================
 # OUTPUT AND LOGGING CONFIGURATION
 # =============================================================================
 output_formats:

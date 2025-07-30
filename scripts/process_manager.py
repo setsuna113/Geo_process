@@ -16,7 +16,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.core.process_controller_enhanced import EnhancedProcessController
-from src.core.progress_manager import get_progress_manager
+from src.core.enhanced_progress_manager import get_enhanced_progress_manager as get_progress_manager
 from src.checkpoints import get_checkpoint_manager
 from src.config.config import Config
 from src.database.connection import DatabaseManager

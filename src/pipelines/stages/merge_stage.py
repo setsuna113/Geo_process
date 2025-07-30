@@ -101,10 +101,11 @@ class MergeStage(PipelineStage):
             merger = CoordinateMerger(context.config, context.db)
             
             try:
-                ml_ready_path = merger.create_ml_ready_parquet(
+                # Create merged dataset in memory (not file)
+                merged_dataset = merger.create_merged_dataset(
                     dataset_dicts,
-                    context.output_dir,
-                    chunk_size=chunk_size
+                    chunk_size=chunk_size,
+                    return_as='xarray'  # Return as xarray for compatibility with ExportStage
                 )
                 
                 # Get validation results
@@ -126,21 +127,25 @@ class MergeStage(PipelineStage):
                 if failed_validations > 0:
                     warnings.append(f"{failed_validations} validation checks failed during merge")
                 
-                # Update context with results
-                context.set('ml_ready_path', str(ml_ready_path))
+                # Update context with merged dataset for ExportStage
+                context.set('merged_dataset', merged_dataset)
                 context.set('merge_validation_results', validation_results)
+                
+                # Calculate dataset size estimate
+                estimated_size_mb = (merged_dataset.nbytes if hasattr(merged_dataset, 'nbytes') else 0) / (1024**2)
                 
                 # Return success metrics with validation info
                 return StageResult(
                     success=True,
                     data={
-                        'ml_ready_path': str(ml_ready_path),
-                        'file_size_mb': ml_ready_path.stat().st_size / (1024**2),
+                        'dataset_shape': dict(merged_dataset.dims),
+                        'variables': list(merged_dataset.data_vars),
+                        'estimated_size_mb': estimated_size_mb,
                         'alignment_report': alignment_report
                     },
                     metrics={
                         'datasets_merged': len(resampled_datasets),
-                        'output_format': 'parquet',
+                        'output_format': 'xarray',  # Now returning xarray, not file
                         'validation_checks': len(validation_results),
                         'validation_errors': total_errors,
                         'validation_warnings': total_warnings,

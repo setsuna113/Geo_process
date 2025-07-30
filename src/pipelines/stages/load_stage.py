@@ -2,14 +2,15 @@
 """Data loading stage."""
 
 from typing import List, Tuple
-import logging
 from pathlib import Path
 
 from .base_stage import PipelineStage, StageResult
 from src.domain.raster.catalog import RasterCatalog
 from src.config.dataset_utils import DatasetPathResolver
+from src.infrastructure.logging import get_logger
+from src.infrastructure.logging.decorators import log_stage
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DataLoadStage(PipelineStage):
@@ -35,10 +36,9 @@ class DataLoadStage(PipelineStage):
         # For now, just return success
         return True, errors
     
+    @log_stage("data_load")
     def execute(self, context) -> StageResult:
         """Load and validate datasets."""
-        logger.debug("🔍 DataLoadStage.execute() called")
-        logger.info("🔍 DEBUG: DataLoadStage.execute() called")
         logger.info("Starting data load stage")
         
         try:

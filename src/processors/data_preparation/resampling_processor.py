@@ -207,6 +207,9 @@ class ResamplingProcessor(BaseProcessor):
         DEPRECATED: This method loads entire datasets into memory for passthrough cases. 
         Use resample_dataset_memory_aware() instead for memory-efficient processing.
         
+        .. deprecated:: 2.0
+           Use :meth:`resample_dataset_memory_aware` instead.
+        
         Args:
             dataset_config: Dataset configuration
             progress_callback: Progress callback
@@ -421,6 +424,49 @@ class ResamplingProcessor(BaseProcessor):
                 progress_callback(f"Completed {dataset_name}", 100)
             
             return resampled_info
+    
+    def resample_dataset_memory_aware(self, dataset_config: dict, 
+                                    progress_callback: Optional[Callable[[str, float], None]] = None) -> ResampledDatasetInfo:
+        """
+        Memory-aware resampling that uses windowed processing for both passthrough and resampling.
+        
+        This method replaces the legacy resample_dataset() and provides:
+        - Windowed processing for large datasets
+        - No full dataset loading for passthrough cases
+        - Efficient memory usage with configurable window sizes
+        
+        Args:
+            dataset_config: Dataset configuration
+            progress_callback: Progress callback
+            
+        Returns:
+            ResampledDatasetInfo with dataset metadata
+        """
+        dataset_name = dataset_config['name']
+        logger.info(f"Starting memory-aware processing for {dataset_name}")
+        
+        try:
+            # Get or register raster in catalog
+            raster_entry = self._get_or_register_raster(
+                dataset_name,
+                dataset_config.get('path', dataset_config.get('resolved_path'))
+            )
+            
+            # Determine if passthrough is appropriate
+            if self._check_resolution_match(raster_entry):
+                logger.info(f"Dataset {dataset_name} resolution matches target, using windowed passthrough")
+                return self._handle_passthrough_memory_aware(
+                    raster_entry, dataset_config, progress_callback
+                )
+            else:
+                logger.info(f"Dataset {dataset_name} needs resampling, using windowed processing")
+                return self._handle_resampling_memory_aware(
+                    raster_entry, dataset_config, progress_callback
+                )
+                
+        except Exception as e:
+            logger.error(f"Memory-aware processing failed for {dataset_name}: {e}")
+            raise
     
     def _resample_chunked(self, 
                          raster_entry: RasterEntry,

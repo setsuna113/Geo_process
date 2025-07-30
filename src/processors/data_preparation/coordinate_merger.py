@@ -43,6 +43,79 @@ class CoordinateMerger(BaseProcessor):
         # Validation results tracking
         self.validation_results: List[Dict] = []
         
+    def create_merged_dataset(self,
+                            resampled_datasets: List[Dict],
+                            chunk_size: Optional[int] = None,
+                            return_as: str = 'xarray') -> any:
+        """Create merged dataset and return in-memory without writing to file.
+        
+        Args:
+            resampled_datasets: List of dataset info dicts
+            chunk_size: If provided, use chunked processing for memory efficiency
+            return_as: 'xarray' or 'dataframe' - format to return
+            
+        Returns:
+            xarray.Dataset or pandas.DataFrame with merged data
+        """
+        import xarray as xr
+        
+        logger.info(f"Creating merged dataset in memory (return_as={return_as})")
+        self.validation_results.clear()
+        
+        # Validate all datasets first
+        for dataset_info in resampled_datasets:
+            self._validate_dataset_bounds(dataset_info)
+        
+        # Load and merge data
+        all_dfs = []
+        for dataset_info in resampled_datasets:
+            df = self._load_dataset_coordinates(dataset_info)
+            if df is not None:
+                self._validate_coordinate_data(df, dataset_info['name'])
+                all_dfs.append(df)
+        
+        if not all_dfs:
+            raise ValueError("No coordinate data found in any dataset")
+        
+        # Validate spatial consistency
+        self._validate_spatial_consistency(all_dfs, resampled_datasets)
+        
+        # Merge all datasets
+        merged_df = self._merge_coordinate_datasets(all_dfs)
+        
+        # Validate merged result
+        self._validate_merged_data(merged_df)
+        
+        # Convert to requested format
+        if return_as == 'dataframe':
+            return merged_df
+        elif return_as == 'xarray':
+            # Convert to xarray Dataset
+            # Set x and y as dimensions
+            ds = xr.Dataset()
+            
+            # Get unique coordinates
+            unique_x = sorted(merged_df['x'].unique())
+            unique_y = sorted(merged_df['y'].unique())
+            
+            # Create coordinate arrays
+            ds.coords['x'] = unique_x
+            ds.coords['y'] = unique_y
+            
+            # For each data variable, create a 2D array
+            data_vars = [col for col in merged_df.columns if col not in ['x', 'y']]
+            
+            for var in data_vars:
+                # Pivot data to 2D array
+                pivoted = merged_df.pivot(index='y', columns='x', values=var)
+                # Reindex to ensure all coordinates are present
+                pivoted = pivoted.reindex(index=unique_y, columns=unique_x)
+                ds[var] = (['y', 'x'], pivoted.values)
+            
+            return ds
+        else:
+            raise ValueError(f"Unknown return format: {return_as}")
+    
     @log_stage("coordinate_merge")
     def create_ml_ready_parquet(self, 
                                resampled_datasets: List[Dict], 
