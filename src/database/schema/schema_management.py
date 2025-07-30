@@ -95,3 +95,11 @@ class SchemaManagement:
                     'total_rows': sum(table_counts.values())
                 }
             }
+    
+    def create_all_tables(self) -> bool:
+        """Create all database tables (alias for create_schema)."""
+        return self.create_schema()
+    
+    def drop_all_tables(self, confirm: bool = False) -> bool:
+        """Drop all database tables (alias for drop_schema)."""
+        return self.drop_schema(confirm=confirm)
