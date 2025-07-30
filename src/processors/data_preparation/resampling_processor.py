@@ -1174,6 +1174,8 @@ class ResamplingProcessor(BaseProcessor):
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         row_idx INTEGER NOT NULL,
                         col_idx INTEGER NOT NULL,
+                        x_coord DOUBLE PRECISION,
+                        y_coord DOUBLE PRECISION,
                         value FLOAT,
                         PRIMARY KEY (row_idx, col_idx)
                     )
@@ -1189,7 +1191,16 @@ class ResamplingProcessor(BaseProcessor):
                     rows, cols = np.where(valid_mask)
                     values = data[valid_mask]
                     
-                    data_to_insert = [(int(r), int(c), float(v)) for r, c, v in zip(rows, cols, values)]
+                    # Calculate coordinates from bounds and indices
+                    minx, miny, maxx, maxy = actual_bounds
+                    resolution = info.target_resolution
+                    
+                    # Calculate x,y coordinates for each row,col
+                    data_to_insert = []
+                    for r, c, v in zip(rows, cols, values):
+                        x_coord = minx + (c + 0.5) * resolution
+                        y_coord = maxy - (r + 0.5) * resolution
+                        data_to_insert.append((int(r), int(c), float(x_coord), float(y_coord), float(v)))
                     
                     # Batch insert
                     from psycopg2.extras import execute_values
@@ -1197,7 +1208,7 @@ class ResamplingProcessor(BaseProcessor):
                     insert_start = time.time()
                     execute_values(
                         cur,
-                        f"INSERT INTO {table_name} (row_idx, col_idx, value) VALUES %s",
+                        f"INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) VALUES %s",
                         data_to_insert,
                         page_size=10000
                     )

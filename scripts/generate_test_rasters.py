@@ -83,30 +83,37 @@ def main():
     
     print(f"📁 Output directory: {output_dir}")
     
-    # Generate 4 test rasters with different patterns
+    # Generate 4 test rasters with different patterns and resolutions
+    # Using resolutions closer to our target (0.5°) to avoid extreme upsampling
     test_files = [
-        ('climate_temperature.tiff', 'gradient', 42),
-        ('climate_precipitation.tiff', 'random', 123),
-        ('landcover_forest.tiff', 'checkerboard', 456),
-        ('species_richness.tiff', 'hotspots', 789)
+        ('climate_temperature.tiff', 'gradient', 42, 200, 100, 0.9),    # 0.9° resolution
+        ('climate_precipitation.tiff', 'random', 123, 300, 150, 0.6),   # 0.6° resolution
+        ('landcover_forest.tiff', 'checkerboard', 456, 180, 90, 1.0),   # 1.0° resolution
+        ('species_richness.tiff', 'hotspots', 789, 360, 180, 0.5)       # 0.5° resolution (matches target)
     ]
     
-    for filename, pattern, seed in test_files:
+    for filename, pattern, seed, width, height, resolution in test_files:
         filepath = output_dir / filename
+        # Calculate bounds to maintain square pixels
+        lon_extent = width * resolution
+        lat_extent = height * resolution
+        bounds = (-lon_extent/2, -lat_extent/2, lon_extent/2, lat_extent/2)
+        
         create_test_raster(
             filepath,
-            width=100,
-            height=100,
-            bounds=(-180, -90, 180, 90),
+            width=width,
+            height=height,
+            bounds=bounds,
             pattern=pattern,
             seed=seed
         )
+        print(f"  Resolution: {resolution}° per pixel")
     
     print("\n✅ All test rasters created successfully!")
     
     # Verify files
     print("\n📊 File information:")
-    for filename, _, _ in test_files:
+    for filename, _, _, _, _, _ in test_files:
         filepath = output_dir / filename
         if filepath.exists():
             size_kb = filepath.stat().st_size / 1024

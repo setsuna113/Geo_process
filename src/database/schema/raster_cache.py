@@ -71,6 +71,8 @@ class RasterCache:
                 CREATE TABLE IF NOT EXISTS {table_name} (
                     row_idx INTEGER NOT NULL,
                     col_idx INTEGER NOT NULL,
+                    x_coord DOUBLE PRECISION,
+                    y_coord DOUBLE PRECISION,
                     value FLOAT,
                     PRIMARY KEY (row_idx, col_idx)
                 )

@@ -245,10 +245,22 @@ class PipelineOrchestrator:
                 e, self.context, self.get_current_stage()
             )
             
-            if recovery_attempted and self.failure_handler.can_recover():
-                logger.info("Attempting recovery...")
-                self.status = PipelineStatus.RECOVERING
-                return self._attempt_recovery()
+            # TODO: Recovery mechanism temporarily disabled - needs proper implementation
+            # The current recovery logic incorrectly reruns the entire pipeline instead of
+            # resuming from the last successful checkpoint. This causes duplicate outputs
+            # (e.g., multiple parquet files) and wastes resources.
+            # 
+            # Proper recovery should:
+            # 1. Load checkpoint from last successful stage
+            # 2. Resume from the NEXT stage (not restart entire pipeline)
+            # 3. Skip already completed stages
+            #
+            # Uncomment and fix after checkpoint module is properly implemented:
+            #
+            # if recovery_attempted and self.failure_handler.can_recover():
+            #     logger.info("Attempting recovery...")
+            #     self.status = PipelineStatus.RECOVERING
+            #     return self._attempt_recovery()
             
             raise
         
@@ -939,26 +951,30 @@ class PipelineOrchestrator:
         # Restore progress
         self.progress_tracker.restore_from_checkpoint(checkpoint.get('progress', {}))
     
-    def _attempt_recovery(self) -> Dict[str, Any]:
-        """Attempt to recover from failure."""
-        recovery_strategy = self.failure_handler.get_recovery_strategy()
-        
-        if recovery_strategy == 'retry':
-            # Retry from last checkpoint
-            process_id = self.context.experiment_id if self.context else "pipeline"
-            checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
-            if checkpoint_data:
-                self._restore_from_checkpoint(checkpoint_data.data)
-                return self._execute_pipeline()
-        
-        elif recovery_strategy == 'skip':
-            # Skip failed stage and continue
-            current_stage = self.get_current_stage()
-            if current_stage:
-                current_stage.status = StageStatus.SKIPPED
-                return self._execute_pipeline()
-        
-        raise RuntimeError("Recovery failed")
+    # TODO: Recovery method temporarily disabled - see comment in run_pipeline()
+    # This method incorrectly calls _execute_pipeline() which reruns the entire pipeline
+    # instead of properly resuming from checkpoints
+    #
+    # def _attempt_recovery(self) -> Dict[str, Any]:
+    #     """Attempt to recover from failure."""
+    #     recovery_strategy = self.failure_handler.get_recovery_strategy()
+    #     
+    #     if recovery_strategy == 'retry':
+    #         # Retry from last checkpoint
+    #         process_id = self.context.experiment_id if self.context else "pipeline"
+    #         checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
+    #         if checkpoint_data:
+    #             self._restore_from_checkpoint(checkpoint_data.data)
+    #             return self._execute_pipeline()
+    #     
+    #     elif recovery_strategy == 'skip':
+    #         # Skip failed stage and continue
+    #         current_stage = self.get_current_stage()
+    #         if current_stage:
+    #             current_stage.status = StageStatus.SKIPPED
+    #             return self._execute_pipeline()
+    #     
+    #     raise RuntimeError("Recovery failed")
     
     def _finalize_pipeline(self, results: Dict[str, Any]):
         """Finalize pipeline execution."""

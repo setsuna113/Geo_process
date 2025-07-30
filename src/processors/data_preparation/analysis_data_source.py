@@ -37,6 +37,28 @@ class ParquetAnalysisDataset(BaseDataset):
         self.parquet_file = None
         self._metadata = None
     
+    @property
+    def data_type(self) -> str:
+        """Return the data type of this dataset."""
+        return "tabular"
+    
+    def validate_record(self, record: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """
+        Validate a single record.
+        
+        Args:
+            record: Record to validate
+            
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        # Basic validation - ensure record is a dict with some data
+        if not isinstance(record, dict):
+            return False, "Record must be a dictionary"
+        if not record:
+            return False, "Record is empty"
+        return True, None
+    
     def load_info(self) -> DatasetInfo:
         """Load parquet metadata without reading data."""
         try:

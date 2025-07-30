@@ -32,15 +32,7 @@ merge:
   enable_chunked_processing: false
   chunk_size: 5000
 
-export:
-  # Export formats
-  formats: ['csv']  # Streaming only supports CSV
-  
-  # Compression
-  compress: false  # Set to true for gzip compression
-  
-  # Chunk size for writing
-  chunk_size: 10000
+# [REMOVED DUPLICATE - see line 314 for export configuration]
   
   # Include metadata file
   include_metadata: true
