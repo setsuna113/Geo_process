@@ -78,8 +78,11 @@ class DatabaseSchema:
     def _get_monolithic_schema(self):
         """Get the working monolithic schema for delegation."""
         if not hasattr(self, '_monolithic_schema'):
-            from .. import schema as monolithic_module
-            self._monolithic_schema = monolithic_module.DatabaseSchema(self.db)
+            # Use the helper module to load the monolithic schema
+            # This avoids the naming conflict between schema.py and schema/
+            from .._monolithic_loader import get_monolithic_schema_class
+            MonolithicDatabaseSchema = get_monolithic_schema_class()
+            self._monolithic_schema = MonolithicDatabaseSchema(self.db)
         return self._monolithic_schema
         
     def create_schema(self) -> bool:
@@ -161,6 +164,7 @@ class DatabaseSchema:
     def get_experiments(self, *args, **kwargs):
         """Get experiments - delegates to monolithic implementation."""
         return self._get_monolithic_schema().get_experiments(*args, **kwargs)
+    
 
 
 # Create default instance for backward compatibility
