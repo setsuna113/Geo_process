@@ -25,7 +25,28 @@ class MergeStage(PipelineStage):
     
     def validate(self) -> Tuple[bool, List[str]]:
         """Validate merge configuration."""
-        return True, []
+        errors = []
+        
+        # Check if streaming is enabled
+        if self.config.get('merge.enable_streaming', False):
+            # Verify export formats are compatible
+            export_formats = self.config.get('export.formats', ['csv'])
+            if isinstance(export_formats, str):
+                export_formats = [export_formats]
+            
+            # Currently streaming only supports CSV
+            unsupported = [fmt for fmt in export_formats if fmt != 'csv']
+            if unsupported:
+                errors.append(f"Streaming export only supports CSV format, but found: {unsupported}")
+        
+        # Validate chunk size
+        chunk_size = self.config.get('merge.streaming_chunk_size', 5000)
+        if chunk_size < 100:
+            errors.append(f"Streaming chunk size too small: {chunk_size} (minimum: 100)")
+        elif chunk_size > 1000000:
+            errors.append(f"Streaming chunk size too large: {chunk_size} (maximum: 1000000)")
+        
+        return len(errors) == 0, errors
     
     @log_stage("merge")
     def execute(self, context) -> StageResult:

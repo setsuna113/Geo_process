@@ -331,5 +331,11 @@ class ExportStage(PipelineStage):
             logger.error(f"Streaming export failed: {e}")
             # Clean up partial file if it exists
             if output_path.exists():
-                output_path.unlink()
+                try:
+                    output_path.unlink()
+                    logger.info(f"Cleaned up partial file: {output_path}")
+                except PermissionError:
+                    logger.warning(f"Could not delete partial file due to permissions: {output_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up partial file: {cleanup_error}")
             raise
