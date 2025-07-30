@@ -438,3 +438,45 @@ machine_learning:
         type: 'environmental'
         n_splits: 5
         stratify_by: 'latitude'
+  
+  # Research-oriented analysis configuration
+  research:
+    # Default nested model formulas for biodiversity hypotheses
+    default_formulas:
+      - 'F ~ avg_temp + avg_precip + seasonal_temp'
+      - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A'
+      - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A + P:seasonal_temp'
+    
+    # Permutation importance settings
+    permutation_importance:
+      n_repeats: 10
+      random_state: 42
+      model_to_test: 'model_2'  # Test if P and A have importance beyond climate
+    
+    # Interaction analysis settings
+    interaction_analysis:
+      primary_feature: 'P'
+      secondary_feature: 'seasonal_temp'
+      model_to_test: 'model_3'
+      grid_resolution: 25
+    
+    # Research experiments
+    experiments:
+      # Test the temperate mismatch hypothesis
+      temperate_mismatch:
+        input_parquet: 'outputs/test_biodiversity.parquet'
+        nested_formulas:
+          - 'F ~ avg_temp + avg_precip + seasonal_temp'
+          - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A'
+          - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A + P:seasonal_temp'
+        experiment_name: 'temperate_mismatch_test'
+      
+      # Extended analysis with more climate interactions
+      climate_interactions:
+        input_parquet: 'outputs/biodiversity_global.parquet'
+        nested_formulas:
+          - 'F ~ avg_temp + avg_precip'
+          - 'F ~ avg_temp + avg_precip + seasonal_temp'
+          - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A'
+          - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A + P:seasonal_temp + A:avg_temp'
+        experiment_name: 'extended_climate_analysis'

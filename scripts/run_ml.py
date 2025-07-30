@@ -60,15 +60,24 @@ class StandaloneMLRunner:
         
         return logging.getLogger(__name__)
     
-    def load_experiment_config(self, experiment_name: str) -> Dict[str, Any]:
+    def load_experiment_config(self, experiment_name: str, analysis_type: str = 'standard') -> Dict[str, Any]:
         """Load experiment configuration from config.yml."""
         ml_config = self.config.get('machine_learning', {})
-        experiments = ml_config.get('experiments', {})
+        
+        if analysis_type == 'research':
+            # Load from research experiments
+            research_config = ml_config.get('research', {})
+            experiments = research_config.get('experiments', {})
+            defaults = research_config.get('default_formulas', [])
+        else:
+            # Load from standard experiments
+            experiments = ml_config.get('experiments', {})
+            defaults = ml_config.get('defaults', {})
         
         if experiment_name not in experiments:
             available = list(experiments.keys())
             raise ValueError(
-                f"Experiment '{experiment_name}' not found. "
+                f"Experiment '{experiment_name}' not found in {analysis_type} experiments. "
                 f"Available experiments: {available}"
             )
         
@@ -76,12 +85,16 @@ class StandaloneMLRunner:
         exp_config = experiments[experiment_name].copy()
         
         # Merge with defaults
-        defaults = ml_config.get('defaults', {})
-        if defaults:
-            # Merge defaults (exp_config takes precedence)
-            merged_config = defaults.copy()
-            merged_config.update(exp_config)
-            return merged_config
+        if analysis_type == 'research':
+            # For research, add default formulas if not specified
+            if 'nested_formulas' not in exp_config and defaults:
+                exp_config['nested_formulas'] = defaults
+        else:
+            # For standard ML, merge with defaults dict
+            if defaults and isinstance(defaults, dict):
+                merged_config = defaults.copy()
+                merged_config.update(exp_config)
+                return merged_config
         
         return exp_config
     
@@ -283,12 +296,120 @@ class StandaloneMLRunner:
             self.logger.error(f"ML experiment failed: {e}")
             self.logger.error(traceback.format_exc())
             return False
+    
+    def run_research_analysis(self, ml_config: Dict[str, Any]) -> bool:
+        """Run research-oriented biodiversity analysis with nested models."""
+        try:
+            # Import research components
+            from src.machine_learning.research.biodiversity_analysis import BiodiversityResearchPipeline
+            import pandas as pd
+            
+            # Validate configuration
+            input_parquet = ml_config.get('input_parquet')
+            if not input_parquet:
+                self.logger.error("No input parquet file specified")
+                return False
+            
+            input_path = Path(input_parquet)
+            if not input_path.exists():
+                self.logger.error(f"Input file not found: {input_path}")
+                return False
+            
+            # Create output directory
+            output_base_config = self.config.get('output_paths', {}).get('results_dir', 'outputs')
+            if output_base_config.startswith('/scratch') and not Path('/scratch').exists():
+                output_base = Path('outputs')
+            else:
+                output_base = Path(output_base_config)
+            
+            exp_name = ml_config.get('experiment_name', f"research_{datetime.now():%Y%m%d_%H%M%S}")
+            output_dir = output_base / 'research_results' / exp_name
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            self.logger.info(f"Starting research analysis: {exp_name}")
+            self.logger.info(f"Input data: {input_path}")
+            self.logger.info(f"Output directory: {output_dir}")
+            
+            # Load data
+            self.logger.info("Loading dataset...")
+            data = pd.read_parquet(input_path)
+            self.logger.info(f"Loaded {len(data)} samples with {len(data.columns)} columns")
+            
+            # Initialize research pipeline
+            pipeline = BiodiversityResearchPipeline(output_dir=output_dir)
+            
+            # Prepare data with climate features
+            self.logger.info("Preparing data with climate features...")
+            prepared_data = pipeline.prepare_data(data)
+            
+            # Get nested model formulas from config or use defaults
+            formulas = ml_config.get('nested_formulas', [
+                'F ~ avg_temp + avg_precip + seasonal_temp',
+                'F ~ avg_temp + avg_precip + seasonal_temp + P + A',
+                'F ~ avg_temp + avg_precip + seasonal_temp + P + A + P:seasonal_temp'
+            ])
+            
+            # Run nested model analysis
+            self.logger.info("Running nested model analysis...")
+            nested_results = pipeline.run_nested_models(formulas)
+            
+            # Run permutation importance on Model 2 (with biodiversity predictors)
+            self.logger.info("Running permutation importance analysis...")
+            perm_results = pipeline.run_permutation_importance(model_key='model_2')
+            
+            # Run interaction analysis for temperate mismatch hypothesis
+            self.logger.info("Running interaction analysis (P × seasonal_temp)...")
+            interaction_results = pipeline.run_interaction_analysis(
+                feature1='P',
+                feature2='seasonal_temp',
+                model_key='model_3'
+            )
+            
+            # Test hypotheses
+            self.logger.info("Testing biodiversity hypotheses...")
+            hypothesis_results = pipeline.test_hypotheses()
+            
+            # Generate report
+            report = pipeline.generate_report()
+            self.logger.info("\n" + report)
+            
+            # Save final summary
+            summary = {
+                'experiment_name': exp_name,
+                'timestamp': datetime.now().isoformat(),
+                'n_samples': len(data),
+                'formulas': formulas,
+                'hypothesis_tests': hypothesis_results,
+                'output_directory': str(output_dir)
+            }
+            
+            summary_path = output_dir / 'analysis_summary.json'
+            with open(summary_path, 'w') as f:
+                json.dump(summary, f, indent=2)
+            
+            self.logger.info("Research analysis completed successfully!")
+            self.logger.info(f"Results saved to: {output_dir}")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Research analysis failed: {e}")
+            self.logger.error(traceback.format_exc())
+            return False
 
 
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
         description='Run standalone ML experiments on biodiversity data'
+    )
+    
+    # Analysis type
+    parser.add_argument(
+        '--analysis-type', '-a',
+        choices=['standard', 'research'],
+        default='standard',
+        help='Type of analysis to run (standard ML or research-oriented)'
     )
     
     # Experiment selection
@@ -357,8 +478,8 @@ def main():
     # Start with experiment config if specified
     if args.experiment:
         try:
-            ml_config = runner.load_experiment_config(args.experiment)
-            runner.logger.info(f"Loaded experiment config: {args.experiment}")
+            ml_config = runner.load_experiment_config(args.experiment, args.analysis_type)
+            runner.logger.info(f"Loaded {args.analysis_type} experiment config: {args.experiment}")
         except ValueError as e:
             runner.logger.error(str(e))
             sys.exit(1)
@@ -384,8 +505,11 @@ def main():
         runner.logger.error("No input parquet file specified. Use --input or --experiment")
         sys.exit(1)
     
-    # Run experiment
-    success = runner.run_ml_experiment(ml_config)
+    # Run experiment based on analysis type
+    if args.analysis_type == 'research':
+        success = runner.run_research_analysis(ml_config)
+    else:
+        success = runner.run_ml_experiment(ml_config)
     
     sys.exit(0 if success else 1)
 
