@@ -60,28 +60,28 @@ resampling:
 # =============================================================================
 datasets:
   target_datasets:
-    - name: "test-plants"
-      path: "/home/yl998/dev/geo/test_data/rasters/test-plants-richness.tif"
-      data_type: "richness_data"
-      band_name: "plants_richness"
+    - name: "climate_temperature"
+      path: "/home/yl998/dev/geo/data/test_rasters/climate_temperature.tiff"
+      data_type: "continuous"
+      band_name: "temperature"
       enabled: true
       
-    - name: "test-birds"
-      path: "/home/yl998/dev/geo/test_data/rasters/test-birds-richness.tif"
-      data_type: "richness_data"
-      band_name: "birds_richness"
+    - name: "climate_precipitation"
+      path: "/home/yl998/dev/geo/data/test_rasters/climate_precipitation.tiff"
+      data_type: "continuous"
+      band_name: "precipitation"
       enabled: true
       
-    - name: "test-mammals"
-      path: "/home/yl998/dev/geo/test_data/rasters/test-mammals-richness.tif"
-      data_type: "richness_data"
-      band_name: "mammals_richness"
+    - name: "landcover_forest"
+      path: "/home/yl998/dev/geo/data/test_rasters/landcover_forest.tiff"
+      data_type: "categorical"
+      band_name: "forest_cover"
       enabled: true
       
-    - name: "test-amphibians"
-      path: "/home/yl998/dev/geo/test_data/rasters/test-amphibians-richness.tif"
+    - name: "species_richness"
+      path: "/home/yl998/dev/geo/data/test_rasters/species_richness.tiff"
       data_type: "richness_data"
-      band_name: "amphibians_richness"
+      band_name: "species_richness"
       enabled: true
 
 # =============================================================================
