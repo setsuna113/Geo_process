@@ -67,7 +67,7 @@ from src.pipelines.stages.load_stage import DataLoadStage
 from src.pipelines.stages.resample_stage import ResampleStage
 from src.pipelines.stages.merge_stage import MergeStage
 from src.pipelines.stages.export_stage import ExportStage
-from src.pipelines.stages.analysis_stage import AnalysisStage
+# from src.pipelines.stages.analysis_stage import AnalysisStage  # Temporarily disabled
 from src.config.config import Config
 from src.database.connection import DatabaseManager
 
@@ -87,8 +87,8 @@ stages = [
     DataLoadStage,
     ResampleStage, 
     MergeStage,
-    ExportStage,
-    lambda: AnalysisStage(analysis_method)  # Use specified analysis method
+    ExportStage
+    # lambda: AnalysisStage(analysis_method)  # Temporarily disabled - pipeline terminates after export
 ]
 
 # Instantiate stages (handle lambda for AnalysisStage)

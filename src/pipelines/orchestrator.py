@@ -245,10 +245,22 @@ class PipelineOrchestrator:
                 e, self.context, self.get_current_stage()
             )
             
-            if recovery_attempted and self.failure_handler.can_recover():
-                logger.info("Attempting recovery...")
-                self.status = PipelineStatus.RECOVERING
-                return self._attempt_recovery()
+            # TODO: Recovery mechanism temporarily disabled - needs proper implementation
+            # The current recovery logic incorrectly reruns the entire pipeline instead of
+            # resuming from the last successful checkpoint. This causes duplicate outputs
+            # (e.g., multiple parquet files) and wastes resources.
+            # 
+            # Proper recovery should:
+            # 1. Load checkpoint from last successful stage
+            # 2. Resume from the NEXT stage (not restart entire pipeline)
+            # 3. Skip already completed stages
+            #
+            # Uncomment and fix after checkpoint module is properly implemented:
+            #
+            # if recovery_attempted and self.failure_handler.can_recover():
+            #     logger.info("Attempting recovery...")
+            #     self.status = PipelineStatus.RECOVERING
+            #     return self._attempt_recovery()
             
             raise
         
@@ -311,7 +323,6 @@ class PipelineOrchestrator:
     
     def _execute_pipeline(self) -> Dict[str, Any]:
         """Execute pipeline stages in dependency order."""
-        logger.debug(f"🚀 _execute_pipeline starting...")
         logger.debug("🚀 _execute_pipeline starting...")
         
         results = {}
@@ -320,10 +331,8 @@ class PipelineOrchestrator:
         # Get execution order
         execution_order = self._get_execution_order()
         logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
-        logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
         
         for i, stage_group in enumerate(execution_order):
-            logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
             logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
             
         for stage_group in execution_order:
@@ -419,18 +428,14 @@ class PipelineOrchestrator:
             else:
                 # Monitor memory during execution
                 logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
-                logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
                 
                 try:
                     with self._memory_monitoring_context(stage):
                         logger.debug(f"🚀 Entering stage.execute() for {stage.name}")
                         result = stage.execute(self.context)
                         logger.debug(f"✅ stage.execute() completed for {stage.name}")
-                        logger.debug(f"✅ stage.execute() completed for {stage.name}")
                 except Exception as e:
                     import traceback
-                    logger.error(f"❌ ERROR in stage {stage.name}: {str(e)}")
-                    logger.error(f"❌ TRACEBACK:\n{traceback.format_exc()}")
                     logger.error(f"Stage {stage.name} failed: {str(e)}")
                     logger.error(f"Traceback:\n{traceback.format_exc()}")
                     raise
@@ -820,6 +825,21 @@ class PipelineOrchestrator:
             
             # Store the dataset info in context as if we loaded them
             if self.context:
+                # Create loaded dataset info matching what LoadStage would produce
+                loaded_dataset_infos = []
+                for dataset_config in enabled_datasets:
+                    loaded_info = {
+                        'config': dataset_config,
+                        'path': dataset_config['path'],
+                        'name': dataset_config['name'],
+                        'data_type': dataset_config.get('data_type', 'continuous'),
+                        'band_name': dataset_config.get('band_name'),
+                        'enabled': True
+                    }
+                    loaded_dataset_infos.append(loaded_info)
+                
+                # Set all the context variables that LoadStage would set
+                self.context.set('loaded_datasets', loaded_dataset_infos)
                 self.context.set('target_datasets', enabled_datasets)
                 self.context.set('dataset_configs', enabled_datasets)
             
@@ -924,26 +944,30 @@ class PipelineOrchestrator:
         # Restore progress
         self.progress_tracker.restore_from_checkpoint(checkpoint.get('progress', {}))
     
-    def _attempt_recovery(self) -> Dict[str, Any]:
-        """Attempt to recover from failure."""
-        recovery_strategy = self.failure_handler.get_recovery_strategy()
-        
-        if recovery_strategy == 'retry':
-            # Retry from last checkpoint
-            process_id = self.context.experiment_id if self.context else "pipeline"
-            checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
-            if checkpoint_data:
-                self._restore_from_checkpoint(checkpoint_data.data)
-                return self._execute_pipeline()
-        
-        elif recovery_strategy == 'skip':
-            # Skip failed stage and continue
-            current_stage = self.get_current_stage()
-            if current_stage:
-                current_stage.status = StageStatus.SKIPPED
-                return self._execute_pipeline()
-        
-        raise RuntimeError("Recovery failed")
+    # TODO: Recovery method temporarily disabled - see comment in run_pipeline()
+    # This method incorrectly calls _execute_pipeline() which reruns the entire pipeline
+    # instead of properly resuming from checkpoints
+    #
+    # def _attempt_recovery(self) -> Dict[str, Any]:
+    #     """Attempt to recover from failure."""
+    #     recovery_strategy = self.failure_handler.get_recovery_strategy()
+    #     
+    #     if recovery_strategy == 'retry':
+    #         # Retry from last checkpoint
+    #         process_id = self.context.experiment_id if self.context else "pipeline"
+    #         checkpoint_data = self.checkpoint_manager.load_latest(process_id, CheckpointLevel.STAGE)
+    #         if checkpoint_data:
+    #             self._restore_from_checkpoint(checkpoint_data.data)
+    #             return self._execute_pipeline()
+    #     
+    #     elif recovery_strategy == 'skip':
+    #         # Skip failed stage and continue
+    #         current_stage = self.get_current_stage()
+    #         if current_stage:
+    #             current_stage.status = StageStatus.SKIPPED
+    #             return self._execute_pipeline()
+    #     
+    #     raise RuntimeError("Recovery failed")
     
     def _finalize_pipeline(self, results: Dict[str, Any]):
         """Finalize pipeline execution."""

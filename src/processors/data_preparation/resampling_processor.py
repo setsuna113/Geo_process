@@ -184,7 +184,15 @@ class ResamplingProcessor(BaseProcessor):
                         'index': i
                     }
                     self.save_checkpoint(checkpoint_id=f"error_{dataset_name}_{int(time.time())}")
-                    # Continue with other datasets
+                    
+                    # Check if this is a critical dataset that should fail fast
+                    critical_datasets = self.config.get('resampling.critical_datasets', [])
+                    if dataset_name in critical_datasets:
+                        logger.error(f"Critical dataset {dataset_name} failed - stopping pipeline")
+                        raise
+                    
+                    # Non-critical dataset - continue with others
+                    logger.warning(f"Non-critical dataset {dataset_name} failed - continuing with other datasets")
                     continue
             
             # Complete progress
@@ -284,7 +292,7 @@ class ResamplingProcessor(BaseProcessor):
             self._validate_source_bounds(raster_entry, dataset_name)
             
             # Validate coordinate transformation if needed
-            source_crs = raster_entry.crs or 'EPSG:4326'
+            source_crs = raster_entry.metadata.get('crs', 'EPSG:4326')
             self._validate_coordinate_transformation(source_crs, dataset_name)
             
             # Check if skip-resampling is enabled and resolution matches
@@ -657,7 +665,7 @@ class ResamplingProcessor(BaseProcessor):
             progress_callback("Creating resampler", 30)
         
         # Create resampler
-        resampler = self._create_resampler_engine(method, raster_entry.bounds)
+        resampler = self._create_resampler_engine(method, raster_entry)
         
         # Progress wrapper for resampler
         def resample_progress(percent: float):
@@ -677,6 +685,72 @@ class ResamplingProcessor(BaseProcessor):
             progress_callback("Resampling complete", 95)
         
         return result.data
+    
+    def _create_resampler_engine(self, method: str, raster_entry: RasterEntry):
+        """
+        Create resampler engine with configuration.
+        
+        This is an implementation method specific to ResamplingProcessor.
+        
+        Args:
+            method: Resampling method name
+            raster_entry: Raster catalog entry with metadata
+            
+        Returns:
+            Configured resampler instance (NumpyResampler or GDALResampler)
+        """
+        if self.engine_type == 'numpy':
+            from src.domain.resampling.engines.numpy_resampler import NumpyResampler
+            from src.domain.resampling.engines.base_resampler import ResamplingConfig
+            
+            # Create resampling config using actual raster metadata
+            resample_config = ResamplingConfig(
+                source_resolution=raster_entry.resolution_degrees,
+                target_resolution=self.target_resolution,
+                method=method,
+                bounds=raster_entry.bounds,
+                source_crs=raster_entry.metadata.get('crs', 'EPSG:4326'),
+                target_crs=self.target_crs,
+                chunk_size=self.chunk_config['tile_size'],
+                preserve_sum=method == 'sum',
+                nodata_value=raster_entry.nodata_value
+            )
+            
+            return NumpyResampler(resample_config)
+        
+        elif self.engine_type == 'gdal':
+            from src.domain.resampling.engines.gdal_resampler import GDALResampler
+            from src.domain.resampling.engines.base_resampler import ResamplingConfig
+            
+            # Similar config for GDAL
+            resample_config = ResamplingConfig(
+                source_resolution=raster_entry.resolution_degrees,
+                target_resolution=self.target_resolution,
+                method=method,
+                bounds=raster_entry.bounds,
+                source_crs=raster_entry.metadata.get('crs', 'EPSG:4326'),
+                target_crs=self.target_crs,
+                chunk_size=self.chunk_config['tile_size'],
+                preserve_sum=method == 'sum',
+                nodata_value=raster_entry.nodata_value
+            )
+            
+            return GDALResampler(resample_config)
+        
+        else:
+            raise ValueError(f"Unsupported resampling engine: {self.engine_type}")
+    
+    def _get_resampling_method(self, data_type: str) -> str:
+        """
+        Get resampling method for data type.
+        
+        Args:
+            data_type: Type of data (richness_data, continuous_data, categorical_data)
+            
+        Returns:
+            Resampling method name
+        """
+        return self.strategies.get(data_type, 'nearest')
     
     def _get_or_register_raster(self,
                                dataset_name: str,
@@ -737,33 +811,6 @@ class ResamplingProcessor(BaseProcessor):
         height = int(np.ceil((maxy - miny) / self.target_resolution))
         return (height, width)
     
-    def _create_resampler_engine(self, method: str, source_bounds: Tuple[float, float, float, float]) -> Union[NumpyResampler, GDALResampler]:
-        """Create resampler engine with appropriate configuration."""
-        # Create resampling config
-        resampling_config = ResamplingConfig(
-            source_resolution=self._estimate_source_resolution(source_bounds),
-            target_resolution=self.target_resolution,
-            method=method,
-            bounds=source_bounds,
-            source_crs=self.target_crs,
-            target_crs=self.target_crs,
-            chunk_size=self.chunk_config['tile_size'],
-            cache_results=self.resampling_config.get('cache_resampled', True),
-            validate_output=self.resampling_config.get('validate_output', True),
-            preserve_sum=self.resampling_config.get('preserve_sum', True)
-            # memory_limit_mb removed - not a valid field
-        )
-        
-        # Create engine
-        if self.engine_type == 'gdal':
-            return GDALResampler(resampling_config)
-        else:
-            return NumpyResampler(resampling_config)
-    
-    def _estimate_source_resolution(self, bounds: Tuple[float, float, float, float]) -> float:
-        """Estimate source resolution from bounds."""
-        minx, miny, maxx, maxy = bounds
-        return abs(maxx - minx) / 1000  # Rough estimate
     
     def _load_raster_data_with_timeout(self, 
                                       raster_path: Path,
@@ -1000,7 +1047,7 @@ class ResamplingProcessor(BaseProcessor):
                 target_resolution=self.target_resolution,
                 method=dataset_config.get('resampling_method', self._get_resampling_method(dataset_config['data_type'])),
                 bounds=raster_entry.bounds,
-                source_crs=raster_entry.crs or 'EPSG:4326',
+                source_crs=raster_entry.metadata.get('crs', 'EPSG:4326'),
                 target_crs=self.target_crs,
                 chunk_size=self._get_current_window_size(),
                 preserve_sum=dataset_config['data_type'] == 'richness_data',
@@ -1135,6 +1182,8 @@ class ResamplingProcessor(BaseProcessor):
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         row_idx INTEGER NOT NULL,
                         col_idx INTEGER NOT NULL,
+                        x_coord DOUBLE PRECISION,
+                        y_coord DOUBLE PRECISION,
                         value FLOAT,
                         PRIMARY KEY (row_idx, col_idx)
                     )
@@ -1150,7 +1199,16 @@ class ResamplingProcessor(BaseProcessor):
                     rows, cols = np.where(valid_mask)
                     values = data[valid_mask]
                     
-                    data_to_insert = [(int(r), int(c), float(v)) for r, c, v in zip(rows, cols, values)]
+                    # Calculate coordinates from bounds and indices
+                    minx, miny, maxx, maxy = actual_bounds
+                    resolution = info.target_resolution
+                    
+                    # Calculate x,y coordinates for each row,col
+                    data_to_insert = []
+                    for r, c, v in zip(rows, cols, values):
+                        x_coord = minx + (c + 0.5) * resolution
+                        y_coord = maxy - (r + 0.5) * resolution
+                        data_to_insert.append((int(r), int(c), float(x_coord), float(y_coord), float(v)))
                     
                     # Batch insert
                     from psycopg2.extras import execute_values
@@ -1158,7 +1216,7 @@ class ResamplingProcessor(BaseProcessor):
                     insert_start = time.time()
                     execute_values(
                         cur,
-                        f"INSERT INTO {table_name} (row_idx, col_idx, value) VALUES %s",
+                        f"INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) VALUES %s",
                         data_to_insert,
                         page_size=10000
                     )
@@ -1420,7 +1478,7 @@ class ResamplingProcessor(BaseProcessor):
         """Validate source raster bounds."""
         validation_data = {
             'bounds': raster_entry.bounds,
-            'crs': raster_entry.crs or 'EPSG:4326'
+            'crs': raster_entry.metadata.get('crs', 'EPSG:4326')
         }
         
         result = self.bounds_validator.validate(validation_data)

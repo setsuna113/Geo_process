@@ -1,16 +1,23 @@
 # src/database/schema/__init__.py
-"""Consolidated database schema interface."""
+"""Modular database schema interface.
 
+This module provides a fully modular database schema implementation,
+breaking down database operations into logical components.
+"""
+
+import os
 from typing import Optional
 from ..interfaces import DatabaseInterface
 from .grid_operations import GridOperations
-
-# TODO: Import other operation modules as they are created
-# These imports will be enabled as modules are implemented:
-# from .species_operations import SpeciesOperations
-# from .feature_operations import FeatureOperations  
-# from .experiment_tracking import ExperimentTracking
-# from .raster_cache import RasterCache
+from .species_operations import SpeciesOperations
+from .feature_operations import FeatureOperations
+from .experiment_tracking import ExperimentTracking
+from .raster_cache import RasterCache
+from .checkpoint_operations import CheckpointOperations
+from .schema_management import SchemaManagement
+from .windowed_storage import WindowedStorage
+from .processing_status import ProcessingStatus
+from .test_operations import TestOperations
 
 # Export database exceptions for external use
 from ..exceptions import (
@@ -18,163 +25,260 @@ from ..exceptions import (
     DatabaseConnectionError, DatabaseIntegrityError
 )
 
+__all__ = [
+    'DatabaseSchema', 'schema',
+    'DatabaseError', 'DatabaseNotFoundError', 'DatabaseDuplicateError',
+    'DatabaseConnectionError', 'DatabaseIntegrityError'
+]
+
 
 class DatabaseSchema:
-    """
-    Consolidated database schema interface.
+    """Unified database schema interface with modular operations.
     
-    This serves as a facade that delegates operations to specialized modules,
-    replacing the previous monolithic schema class.
+    This class aggregates all database operations from specialized modules,
+    providing a single interface for database interactions.
     """
     
-    def __init__(self, db_manager: Optional[DatabaseInterface] = None):
-        """Initialize with database manager."""
-        # Import only when needed to avoid circular dependency
-        if db_manager:
-            self.db = db_manager
+    def __init__(self, db: Optional[DatabaseInterface] = None):
+        """Initialize with database connection and operation modules."""
+        # Use provided db or get default from connection module
+        if db is None:
+            from ..connection import db as default_db
+            self.db = default_db
         else:
-            from ..connection import db
             self.db = db
-            
-        # Initialize operation modules
+        
+        # Initialize all operation modules
+        # Only GridOperations takes a db_manager parameter
         self.grid_ops = GridOperations(self.db)
-        # TODO: Initialize other operation modules
-        # self.species_ops = SpeciesOperations(self.db)
-        # self.feature_ops = FeatureOperations(self.db)
-        # self.experiment_ops = ExperimentTracking(self.db)
-        # self.raster_ops = RasterCache(self.db)
+        
+        # These modules use the global db from connection module
+        self.species_ops = SpeciesOperations()
+        self.feature_ops = FeatureOperations()
+        self.experiment_ops = ExperimentTracking()
+        self.raster_ops = RasterCache()
+        self.checkpoint_ops = CheckpointOperations()
+        self.schema_mgmt = SchemaManagement()
+        self.windowed_ops = WindowedStorage()
+        self.processing_ops = ProcessingStatus()
+        self.test_ops = TestOperations()
     
-    # Delegate grid operations to grid_ops module
+    # Grid Operations
     def store_grid_definition(self, *args, **kwargs):
-        """Store grid definition - delegated to grid operations."""
         return self.grid_ops.store_grid_definition(*args, **kwargs)
-        
-    def store_grid_cells_batch(self, *args, **kwargs):
-        """Store grid cells batch - delegated to grid operations."""
-        return self.grid_ops.store_grid_cells_batch(*args, **kwargs)
-        
-    def get_grid_by_name(self, *args, **kwargs):
-        """Get grid by name - delegated to grid operations."""
-        return self.grid_ops.get_grid_by_name(*args, **kwargs)
-        
-    def get_grid_cells(self, *args, **kwargs):
-        """Get grid cells - delegated to grid operations."""
-        return self.grid_ops.get_grid_cells(*args, **kwargs)
-        
-    def delete_grid(self, *args, **kwargs):
-        """Delete grid - delegated to grid operations."""
-        return self.grid_ops.delete_grid(*args, **kwargs)
-        
-    def get_grid_status(self, *args, **kwargs):
-        """Get grid status - delegated to grid operations."""  
-        return self.grid_ops.get_grid_status(*args, **kwargs)
-        
-    def validate_grid_config(self, *args, **kwargs):
-        """Validate grid config - delegated to grid operations."""
-        return self.grid_ops.validate_grid_config(*args, **kwargs)
-
-    # Compatibility methods that delegate to monolithic schema
-    # These will be replaced as modules are fully implemented
-    def _get_monolithic_schema(self):
-        """Get the working monolithic schema for delegation."""
-        if not hasattr(self, '_monolithic_schema'):
-            # Use the helper module to load the monolithic schema
-            # This avoids the naming conflict between schema.py and schema/
-            from .._monolithic_loader import get_monolithic_schema_class
-            MonolithicDatabaseSchema = get_monolithic_schema_class()
-            self._monolithic_schema = MonolithicDatabaseSchema(self.db)
-        return self._monolithic_schema
-        
-    def create_schema(self) -> bool:
-        """Create database schema - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().create_schema()
-        
-    def drop_schema(self, confirm: bool = False) -> bool:
-        """Drop database schema - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().drop_schema(confirm)
-        
-    def store_species_range(self, *args, **kwargs):
-        """Store species range - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().store_species_range(*args, **kwargs)
-        
-    def store_species_intersections_batch(self, *args, **kwargs):
-        """Store species intersections batch - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().store_species_intersections_batch(*args, **kwargs)
-        
-    def get_species_ranges(self, *args, **kwargs):
-        """Get species ranges - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().get_species_ranges(*args, **kwargs)
-        
-    def store_feature(self, *args, **kwargs):
-        """Store feature - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().store_feature(*args, **kwargs)
-        
-    def store_features_batch(self, *args, **kwargs):
-        """Store features batch - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().store_features_batch(*args, **kwargs)
-        
-    def store_climate_data_batch(self, *args, **kwargs):
-        """Store climate data batch - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().store_climate_data_batch(*args, **kwargs)
-        
-    def get_features(self, *args, **kwargs):
-        """Get features - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().get_features(*args, **kwargs)
-        
-    def create_experiment(self, *args, **kwargs):
-        """Create experiment - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().create_experiment(*args, **kwargs)
-        
-    def update_experiment_status(self, *args, **kwargs):
-        """Update experiment status - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().update_experiment_status(*args, **kwargs)
-        
-    def get_experiment(self, *args, **kwargs):
-        """Get experiment - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().get_experiment(*args, **kwargs)
-        
-    def store_resampling_cache_batch(self, *args, **kwargs):
-        """Store resampling cache batch - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().store_resampling_cache_batch(*args, **kwargs)
-        
-    def get_cached_resampling_values(self, *args, **kwargs):
-        """Get cached resampling values - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().get_cached_resampling_values(*args, **kwargs)
-        
-    def store_resampled_dataset(self, *args, **kwargs):
-        """Store resampled dataset - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().store_resampled_dataset(*args, **kwargs)
-        
-    def get_resampled_datasets(self, *args, **kwargs):
-        """Get resampled datasets - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().get_resampled_datasets(*args, **kwargs)
-        
-    def create_resampled_data_table(self, *args, **kwargs):
-        """Create resampled data table - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().create_resampled_data_table(*args, **kwargs)
-        
-    def drop_resampled_data_table(self, *args, **kwargs):
-        """Drop resampled data table - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().drop_resampled_data_table(*args, **kwargs)
-        
-    def get_passthrough_datasets(self, *args, **kwargs):
-        """Get passthrough datasets - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().get_passthrough_datasets(*args, **kwargs)
-        
-    def get_experiments(self, *args, **kwargs):
-        """Get experiments - delegates to monolithic implementation."""
-        return self._get_monolithic_schema().get_experiments(*args, **kwargs)
     
+    def store_grid_cells_batch(self, *args, **kwargs):
+        return self.grid_ops.store_grid_cells_batch(*args, **kwargs)
+    
+    def get_grid_by_name(self, *args, **kwargs):
+        return self.grid_ops.get_grid_by_name(*args, **kwargs)
+    
+    def get_grid_cells(self, *args, **kwargs):
+        return self.grid_ops.get_grid_cells(*args, **kwargs)
+    
+    def delete_grid(self, *args, **kwargs):
+        return self.grid_ops.delete_grid(*args, **kwargs)
+    
+    def validate_grid_config(self, *args, **kwargs):
+        return self.grid_ops.validate_grid_config(*args, **kwargs)
+    
+    def get_grid_status(self, *args, **kwargs):
+        return self.grid_ops.get_grid_status(*args, **kwargs)
+    
+    # Species Operations
+    def store_species_range(self, *args, **kwargs):
+        return self.species_ops.store_species_range(*args, **kwargs)
+    
+    def store_species_intersections_batch(self, *args, **kwargs):
+        return self.species_ops.store_species_intersections_batch(*args, **kwargs)
+    
+    def get_species_ranges(self, *args, **kwargs):
+        return self.species_ops.get_species_ranges(*args, **kwargs)
+    
+    def get_species_richness(self, *args, **kwargs):
+        return self.species_ops.get_species_richness(*args, **kwargs)
+    
+    # Feature Operations
+    def store_feature(self, *args, **kwargs):
+        return self.feature_ops.store_feature(*args, **kwargs)
+    
+    def store_features_batch(self, *args, **kwargs):
+        return self.feature_ops.store_features_batch(*args, **kwargs)
+    
+    def store_climate_data_batch(self, *args, **kwargs):
+        return self.feature_ops.store_climate_data_batch(*args, **kwargs)
+    
+    def get_features(self, *args, **kwargs):
+        return self.feature_ops.get_features(*args, **kwargs)
+    
+    # Experiment Tracking
+    def create_experiment(self, *args, **kwargs):
+        return self.experiment_ops.create_experiment(*args, **kwargs)
+    
+    def update_experiment_status(self, *args, **kwargs):
+        return self.experiment_ops.update_experiment_status(*args, **kwargs)
+    
+    def create_processing_job(self, *args, **kwargs):
+        return self.experiment_ops.create_processing_job(*args, **kwargs)
+    
+    def update_job_progress(self, *args, **kwargs):
+        return self.experiment_ops.update_job_progress(*args, **kwargs)
+    
+    def get_experiments(self, *args, **kwargs):
+        return self.experiment_ops.get_experiments(*args, **kwargs)
+    
+    # Raster Cache Operations
+    def store_resampled_dataset(self, *args, **kwargs):
+        return self.raster_ops.store_resampled_dataset(*args, **kwargs)
+    
+    def get_resampled_datasets(self, *args, **kwargs):
+        return self.raster_ops.get_resampled_datasets(*args, **kwargs)
+    
+    def create_resampled_data_table(self, *args, **kwargs):
+        return self.raster_ops.create_resampled_data_table(*args, **kwargs)
+    
+    def drop_resampled_data_table(self, *args, **kwargs):
+        return self.raster_ops.drop_resampled_data_table(*args, **kwargs)
+    
+    def store_raster_source(self, *args, **kwargs):
+        return self.raster_ops.store_raster_source(*args, **kwargs)
+    
+    def get_raster_sources(self, *args, **kwargs):
+        return self.raster_ops.get_raster_sources(*args, **kwargs)
+    
+    def update_raster_processing_status(self, *args, **kwargs):
+        return self.raster_ops.update_raster_processing_status(*args, **kwargs)
+    
+    def store_raster_tiles_batch(self, *args, **kwargs):
+        return self.raster_ops.store_raster_tiles_batch(*args, **kwargs)
+    
+    def get_raster_tiles_for_bounds(self, *args, **kwargs):
+        return self.raster_ops.get_raster_tiles_for_bounds(*args, **kwargs)
+    
+    def store_resampling_cache_batch(self, *args, **kwargs):
+        return self.raster_ops.store_resampling_cache_batch(*args, **kwargs)
+    
+    def get_cached_resampling_values(self, *args, **kwargs):
+        return self.raster_ops.get_cached_resampling_values(*args, **kwargs)
+    
+    def add_processing_task(self, *args, **kwargs):
+        return self.raster_ops.add_processing_task(*args, **kwargs)
+    
+    def get_next_processing_task(self, *args, **kwargs):
+        return self.raster_ops.get_next_processing_task(*args, **kwargs)
+    
+    def complete_processing_task(self, *args, **kwargs):
+        return self.raster_ops.complete_processing_task(*args, **kwargs)
+    
+    def get_passthrough_datasets(self, *args, **kwargs):
+        return self.raster_ops.get_passthrough_datasets(*args, **kwargs)
+    
+    def get_dataset_by_type(self, *args, **kwargs):
+        return self.raster_ops.get_dataset_by_type(*args, **kwargs)
+    
+    def update_dataset_metadata(self, *args, **kwargs):
+        return self.raster_ops.update_dataset_metadata(*args, **kwargs)
+    
+    def get_raster_processing_status(self, *args, **kwargs):
+        return self.raster_ops.get_raster_processing_status(*args, **kwargs)
+    
+    def get_cache_efficiency_summary(self, *args, **kwargs):
+        return self.raster_ops.get_cache_efficiency_summary(*args, **kwargs)
+    
+    def cleanup_old_cache(self, *args, **kwargs):
+        return self.raster_ops.cleanup_old_cache(*args, **kwargs)
+    
+    # Checkpoint Operations
+    def create_checkpoint(self, *args, **kwargs):
+        return self.checkpoint_ops.create_checkpoint(*args, **kwargs)
+    
+    def update_checkpoint_status(self, *args, **kwargs):
+        return self.checkpoint_ops.update_checkpoint_status(*args, **kwargs)
+    
+    def get_checkpoint(self, *args, **kwargs):
+        return self.checkpoint_ops.get_checkpoint(*args, **kwargs)
+    
+    def get_latest_checkpoint(self, *args, **kwargs):
+        return self.checkpoint_ops.get_latest_checkpoint(*args, **kwargs)
+    
+    def list_checkpoints(self, *args, **kwargs):
+        return self.checkpoint_ops.list_checkpoints(*args, **kwargs)
+    
+    def cleanup_old_checkpoints(self, *args, **kwargs):
+        return self.checkpoint_ops.cleanup_old_checkpoints(*args, **kwargs)
+    
+    # Schema Management
+    def create_schema(self, *args, **kwargs):
+        return self.schema_mgmt.create_schema(*args, **kwargs)
+    
+    def drop_schema(self, *args, **kwargs):
+        return self.schema_mgmt.drop_schema(*args, **kwargs)
+    
+    def get_schema_info(self, *args, **kwargs):
+        return self.schema_mgmt.get_schema_info(*args, **kwargs)
+    
+    def create_all_tables(self, *args, **kwargs):
+        return self.schema_mgmt.create_all_tables(*args, **kwargs)
+    
+    def drop_all_tables(self, *args, **kwargs):
+        return self.schema_mgmt.drop_all_tables(*args, **kwargs)
+    
+    # Windowed Storage Operations
+    def insert_raster_chunk(self, *args, **kwargs):
+        return self.windowed_ops.insert_raster_chunk(*args, **kwargs)
+    
+    def create_windowed_storage_table(self, *args, **kwargs):
+        return self.windowed_ops.create_windowed_storage_table(*args, **kwargs)
+    
+    def get_raster_chunk_bounds(self, *args, **kwargs):
+        return self.windowed_ops.get_raster_chunk_bounds(*args, **kwargs)
+    
+    def migrate_legacy_table_to_coordinates(self, *args, **kwargs):
+        return self.windowed_ops.migrate_legacy_table_to_coordinates(*args, **kwargs)
+    
+    def ensure_table_has_coordinates(self, *args, **kwargs):
+        return self.windowed_ops.ensure_table_has_coordinates(*args, **kwargs)
+    
+    # Processing Status Operations
+    def create_processing_step(self, *args, **kwargs):
+        return self.processing_ops.create_processing_step(*args, **kwargs)
+    
+    def update_processing_step(self, *args, **kwargs):
+        return self.processing_ops.update_processing_step(*args, **kwargs)
+    
+    def get_processing_steps(self, *args, **kwargs):
+        return self.processing_ops.get_processing_steps(*args, **kwargs)
+    
+    def create_file_processing_status(self, *args, **kwargs):
+        return self.processing_ops.create_file_processing_status(*args, **kwargs)
+    
+    def update_file_processing_status(self, *args, **kwargs):
+        return self.processing_ops.update_file_processing_status(*args, **kwargs)
+    
+    def get_file_processing_status(self, *args, **kwargs):
+        return self.processing_ops.get_file_processing_status(*args, **kwargs)
+    
+    def get_resumable_files(self, *args, **kwargs):
+        return self.processing_ops.get_resumable_files(*args, **kwargs)
+    
+    def get_processing_queue_summary(self, *args, **kwargs):
+        return self.processing_ops.get_processing_queue_summary(*args, **kwargs)
+    
+    # Test Operations
+    def cleanup_test_data(self, *args, **kwargs):
+        return self.test_ops.cleanup_test_data(*args, **kwargs)
+    
+    def mark_test_data(self, *args, **kwargs):
+        return self.test_ops.mark_test_data(*args, **kwargs)
 
 
 # Create default instance for backward compatibility
-# NOTE: This global instance will be removed once all imports are updated to use dependency injection
 def _create_default_schema():
     """Create default schema instance for backward compatibility."""
     try:
         return DatabaseSchema()
     except:
-        # If database is not available, return a mock object
+        # If database is not available, return None
         return None
 
 schema = _create_default_schema()

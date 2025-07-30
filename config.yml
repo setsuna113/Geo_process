@@ -4,6 +4,10 @@
 # FOR LOCAL TESTING: Comment out cluster paths and uncomment local paths
 # FOR CLUSTER: Use cluster paths as-is
 
+# Pipeline control - for testing
+pipeline:
+  allow_skip_stages: false  # DISABLED FOR TESTING - set to true for production
+
 # =============================================================================
 # PATHS CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
 # =============================================================================
@@ -28,15 +32,7 @@ merge:
   enable_chunked_processing: false
   chunk_size: 5000
 
-export:
-  # Export formats
-  formats: ['csv']  # Streaming only supports CSV
-  
-  # Compression
-  compress: false  # Set to true for gzip compression
-  
-  # Chunk size for writing
-  chunk_size: 10000
+# [REMOVED DUPLICATE - see line 314 for export configuration]
   
   # Include metadata file
   include_metadata: true
@@ -46,7 +42,7 @@ export:
 # =============================================================================
 resampling:
   # Target resolution for all datasets (in degrees for geographic data)
-  target_resolution: 0.016667  # ~5km at equator (adjust as needed)
+  target_resolution: 0.5  # 0.5 degrees for testing (original is too fine)
   target_crs: 'EPSG:4326'
   
   # Resampling strategy per data type
@@ -63,7 +59,7 @@ resampling:
   engine: 'numpy'  # 'numpy' or 'gdal'
   
   # Memory-aware processing settings
-  enable_memory_aware_processing: true  # Enable windowed processing
+  enable_memory_aware_processing: false  # Disable for testing
   window_size: 2048  # Process in 2048x2048 windows
   window_overlap: 128  # Overlap for avoiding edge artifacts
   skip_data_loading_for_passthrough: true  # Don't load data for passthrough
@@ -80,17 +76,43 @@ resampling:
 # Each dataset now has its own path - no central data_dir needed!
 datasets:
   target_datasets:
+    # TEST RASTERS - For testing pipeline
+    - name: "climate_temperature"
+      path: "/home/yl998/dev/geo/data/test_rasters/climate_temperature.tiff"
+      data_type: "continuous_data"
+      band_name: "temperature"
+      enabled: true
+      
+    - name: "climate_precipitation"
+      path: "/home/yl998/dev/geo/data/test_rasters/climate_precipitation.tiff"
+      data_type: "continuous_data"
+      band_name: "precipitation"
+      enabled: true
+      
+    - name: "landcover_forest"
+      path: "/home/yl998/dev/geo/data/test_rasters/landcover_forest.tiff"
+      data_type: "categorical_data"
+      band_name: "forest_cover"
+      enabled: true
+      
+    - name: "species_richness"
+      path: "/home/yl998/dev/geo/data/test_rasters/species_richness.tiff"
+      data_type: "richness_data"
+      band_name: "species_richness"
+      enabled: true
+      
+    # PRODUCTION RASTERS
     - name: "plants-richness"
       path: "/maps/mwd24/richness/daru-plants-richness.tif"  # Full production data
       data_type: "richness_data"
       band_name: "plants_richness"
-      enabled: true
+      enabled: false  # DISABLED FOR TESTING
       
     - name: "terrestrial-richness" 
       path: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"  # Full production data
       data_type: "richness_data"
       band_name: "terrestrial_richness"
-      enabled: true
+      enabled: false  # DISABLED FOR TESTING
       
     # EXAMPLE: Add 4-dataset configuration for cluster:
     - name: "marine-richness"
@@ -349,26 +371,27 @@ testing:
 # =============================================================================
 # PIPELINE CONTROL CONFIGURATION
 # =============================================================================
-pipeline:
-  # Master switch for stage skipping - USE WITH CAUTION!
-  allow_skip_stages: true  # Set to true only when you're sure data is fresh
-  
-  # Stage-specific skip settings
-  stages:
-    data_load:
-      skip_if_exists: true
-    resample:
-      skip_if_exists: true  # Set to true to use existing DB data
-      
-  # Data validation for skip decisions
-  data_validation:
-    max_age_hours: 24  # Consider data stale after this
-    check_source_timestamps: true  # Verify source files haven't changed
-    
-  # Other pipeline settings
-  cleanup_checkpoints_on_success: true
-  checkpoint_interval_stages: 1
-  lazy_merge_threshold_mb: 500
+# Moved to top of file to avoid conflicts
+# pipeline:
+#   # Master switch for stage skipping - USE WITH CAUTION!
+#   allow_skip_stages: true  # Set to true only when you're sure data is fresh
+#   
+#   # Stage-specific skip settings
+#   stages:
+#     data_load:
+#       skip_if_exists: true
+#     resample:
+#       skip_if_exists: true  # Set to true to use existing DB data
+#       
+#   # Data validation for skip decisions
+#   data_validation:
+#     max_age_hours: 24  # Consider data stale after this
+#     check_source_timestamps: true  # Verify source files haven't changed
+#     
+#   # Other pipeline settings
+#   cleanup_checkpoints_on_success: true
+#   checkpoint_interval_stages: 1
+#   lazy_merge_threshold_mb: 500
 
 # =============================================================================
 # MACHINE LEARNING CONFIGURATION
