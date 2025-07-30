@@ -323,7 +323,6 @@ class PipelineOrchestrator:
     
     def _execute_pipeline(self) -> Dict[str, Any]:
         """Execute pipeline stages in dependency order."""
-        logger.debug(f"🚀 _execute_pipeline starting...")
         logger.debug("🚀 _execute_pipeline starting...")
         
         results = {}
@@ -332,10 +331,8 @@ class PipelineOrchestrator:
         # Get execution order
         execution_order = self._get_execution_order()
         logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
-        logger.debug(f"📋 Execution order has {len(execution_order)} stage groups")
         
         for i, stage_group in enumerate(execution_order):
-            logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
             logger.debug(f"📌 Processing stage group {i+1}/{len(execution_order)}: {[s.name for s in stage_group]}")
             
         for stage_group in execution_order:
@@ -431,18 +428,14 @@ class PipelineOrchestrator:
             else:
                 # Monitor memory during execution
                 logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
-                logger.debug(f"🔧 About to call stage.execute() for {stage.name}")
                 
                 try:
                     with self._memory_monitoring_context(stage):
                         logger.debug(f"🚀 Entering stage.execute() for {stage.name}")
                         result = stage.execute(self.context)
                         logger.debug(f"✅ stage.execute() completed for {stage.name}")
-                        logger.debug(f"✅ stage.execute() completed for {stage.name}")
                 except Exception as e:
                     import traceback
-                    logger.error(f"❌ ERROR in stage {stage.name}: {str(e)}")
-                    logger.error(f"❌ TRACEBACK:\n{traceback.format_exc()}")
                     logger.error(f"Stage {stage.name} failed: {str(e)}")
                     logger.error(f"Traceback:\n{traceback.format_exc()}")
                     raise

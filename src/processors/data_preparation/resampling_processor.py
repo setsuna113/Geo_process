@@ -184,7 +184,15 @@ class ResamplingProcessor(BaseProcessor):
                         'index': i
                     }
                     self.save_checkpoint(checkpoint_id=f"error_{dataset_name}_{int(time.time())}")
-                    # Continue with other datasets
+                    
+                    # Check if this is a critical dataset that should fail fast
+                    critical_datasets = self.config.get('resampling.critical_datasets', [])
+                    if dataset_name in critical_datasets:
+                        logger.error(f"Critical dataset {dataset_name} failed - stopping pipeline")
+                        raise
+                    
+                    # Non-critical dataset - continue with others
+                    logger.warning(f"Non-critical dataset {dataset_name} failed - continuing with other datasets")
                     continue
             
             # Complete progress
