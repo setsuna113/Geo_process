@@ -369,3 +369,72 @@ pipeline:
   cleanup_checkpoints_on_success: true
   checkpoint_interval_stages: 1
   lazy_merge_threshold_mb: 500
+
+# =============================================================================
+# MACHINE LEARNING CONFIGURATION
+# =============================================================================
+machine_learning:
+  # Default settings for all ML runs
+  defaults:
+    model_type: 'linear_regression'
+    target_column: 'total_richness'
+    perform_cv: true
+    save_model: true
+    save_predictions: true
+    cv_strategy:
+      type: 'spatial_block'
+      n_splits: 5
+      block_size: 100
+    imputation_strategy:
+      type: 'spatial_knn'
+      n_neighbors: 10
+      spatial_weight: 0.6
+  
+  # Named ML experiments for reproducibility
+  experiments:
+    # Quick test with linear regression
+    test_linear:
+      input_parquet: 'outputs/biodiversity_test.parquet'
+      model_type: 'linear_regression'
+      cv_strategy:
+        type: 'spatial_block'
+        n_splits: 3
+        block_size: 200
+    
+    # Test with generated data
+    test_generated:
+      input_parquet: 'outputs/test_biodiversity.parquet'
+      model_type: 'linear_regression'
+      target_column: 'total_richness'
+      cv_strategy:
+        type: 'spatial_block'
+        n_splits: 3
+        block_size: 100
+    
+    # Production LightGBM model
+    production_lgb:
+      input_parquet: 'outputs/biodiversity_global.parquet'
+      model_type: 'lightgbm'
+      target_column: 'total_richness'
+      cv_strategy:
+        type: 'spatial_buffer'
+        n_splits: 5
+        buffer_distance: 50
+      feature_columns: null  # auto-detect
+    
+    # Richness prediction with no CV
+    quick_richness:
+      input_parquet: 'outputs/biodiversity_latest.parquet'
+      model_type: 'linear_regression'
+      target_column: 'plants_richness'
+      perform_cv: false
+      save_predictions: true
+    
+    # Regional model for specific area
+    europe_model:
+      input_parquet: 'outputs/biodiversity_europe.parquet'
+      model_type: 'lightgbm'
+      cv_strategy:
+        type: 'environmental'
+        n_splits: 5
+        stratify_by: 'latitude'

@@ -6,7 +6,7 @@ from enum import Enum
 import numpy as np
 from datetime import datetime
 
-from .analyzer import AnalysisResult, AnalysisMetadata
+from ..interfaces.analyzer import AnalysisResult, AnalysisMetadata
 
 
 @dataclass
@@ -45,15 +45,11 @@ class ModelMetadata:
 @dataclass
 class MLResult(AnalysisResult):
     """Extended analysis result for ML models."""
-    # Predictions
-    predictions: np.ndarray
+    # All fields must have defaults because parent class has fields with defaults
+    predictions: Optional[np.ndarray] = None
     prediction_uncertainty: Optional[np.ndarray] = None
-    
-    # Model reference
-    model_metadata: ModelMetadata = None
+    model_metadata: Optional[ModelMetadata] = None
     model_path: Optional[str] = None
-    
-    # Cross-validation results
     cv_results: Optional['CVResult'] = None
     
     # Feature analysis

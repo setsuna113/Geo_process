@@ -1,0 +1,159 @@
+# Machine Learning Configuration Examples
+# Copy these examples to your config.yml under machine_learning.experiments
+
+machine_learning:
+  # Example 1: Basic Linear Regression with Default Settings
+  experiments:
+    basic_linear:
+      input_parquet: 'outputs/biodiversity_sample.parquet'
+      # All other settings inherited from defaults
+    
+    # Example 2: Advanced LightGBM with Custom Features
+    advanced_lgb:
+      input_parquet: 'outputs/biodiversity_global_20240730.parquet'
+      model_type: 'lightgbm'
+      target_column: 'total_richness'
+      # Custom feature selection
+      feature_columns: [
+        'spatial_distance_to_equator',
+        'spatial_lat_squared',
+        'spatial_lon_squared',
+        'richness_shannon_diversity',
+        'richness_simpson_diversity'
+      ]
+      # LightGBM specific parameters
+      model_params:
+        num_leaves: 50
+        learning_rate: 0.05
+        n_estimators: 200
+        min_child_samples: 30
+      # Spatial buffer CV for better generalization
+      cv_strategy:
+        type: 'spatial_buffer'
+        n_splits: 5
+        buffer_distance: 75  # km
+    
+    # Example 3: Quick Model Without Cross-Validation
+    quick_predict:
+      input_parquet: 'outputs/biodiversity_latest.parquet'
+      model_type: 'linear_regression'
+      target_column: 'plants_richness'
+      perform_cv: false  # Skip CV for quick results
+      save_predictions: true
+      save_model: false  # Don't save model
+    
+    # Example 4: Regional Model with Environmental Stratification
+    regional_europe:
+      input_parquet: 'outputs/biodiversity_europe_20240730.parquet'
+      model_type: 'lightgbm'
+      target_column: 'total_richness'
+      # Environmental stratification for regional model
+      cv_strategy:
+        type: 'environmental'
+        n_splits: 5
+        stratify_by: 'latitude'  # Or could use 'temperature' if available
+      # Different imputation for regional data
+      imputation_strategy:
+        type: 'spatial_knn'
+        n_neighbors: 15  # More neighbors for sparse regional data
+        spatial_weight: 0.8  # Higher spatial weight
+    
+    # Example 5: Ensemble-Ready Configuration
+    ensemble_base_rf:
+      input_parquet: 'outputs/biodiversity_training.parquet'
+      model_type: 'random_forest'  # Would need to implement this
+      target_column: 'total_richness'
+      # Consistent CV for ensemble
+      cv_strategy:
+        type: 'spatial_block'
+        n_splits: 5
+        block_size: 100
+        random_state: 42  # Fixed seed for reproducibility
+      # Save for ensemble
+      save_model: true
+      save_predictions: true
+      output_prefix: 'ensemble_rf_'  # Prefix for output files
+    
+    # Example 6: Time Series Prediction (if temporal data available)
+    temporal_trend:
+      input_parquet: 'outputs/biodiversity_timeseries.parquet'
+      model_type: 'lightgbm'
+      target_column: 'richness_change'  # Predicting change over time
+      # Custom features for temporal analysis
+      feature_engineering:
+        include_lag_features: true
+        lag_periods: [1, 3, 5]  # Years
+        include_trend_features: true
+      # Time-aware CV (would need implementation)
+      cv_strategy:
+        type: 'temporal_block'
+        n_splits: 5
+        gap_size: 1  # Year gap between train/test
+    
+    # Example 7: High-Resolution Prediction
+    high_res_prediction:
+      input_parquet: 'outputs/biodiversity_highres_5km.parquet'
+      model_type: 'lightgbm'
+      target_column: 'total_richness'
+      # Memory-efficient settings for large data
+      processing:
+        chunk_prediction: true
+        chunk_size: 50000  # Predict in chunks
+      # Reduced CV for large dataset
+      cv_strategy:
+        type: 'spatial_block'
+        n_splits: 3  # Fewer folds for speed
+        block_size: 200  # Larger blocks
+      # Lighter model for speed
+      model_params:
+        num_leaves: 31
+        n_estimators: 100
+    
+    # Example 8: Feature Importance Study
+    feature_study:
+      input_parquet: 'outputs/biodiversity_features.parquet'
+      model_type: 'linear_regression'
+      target_column: 'total_richness'
+      # Include all available features
+      feature_columns: null  # Auto-detect all
+      # Multiple metrics for comparison
+      evaluation_metrics: ['r2', 'rmse', 'mae', 'mape']
+      # Save detailed importance analysis
+      save_feature_importance: true
+      importance_plot: true
+      # Permutation importance (would need implementation)
+      permutation_importance:
+        enabled: true
+        n_repeats: 10
+    
+    # Example 9: Production Model with Full Pipeline
+    production_v1:
+      input_parquet: 'outputs/biodiversity_global_latest.parquet'
+      model_type: 'lightgbm'
+      target_column: 'total_richness'
+      # Production settings
+      cv_strategy:
+        type: 'spatial_block'
+        n_splits: 5
+        block_size: 100
+      # Robust imputation
+      imputation_strategy:
+        type: 'spatial_knn'
+        n_neighbors: 10
+        spatial_weight: 0.6
+      # Model parameters tuned for production
+      model_params:
+        num_leaves: 40
+        learning_rate: 0.05
+        n_estimators: 150
+        min_child_samples: 20
+        reg_alpha: 0.1
+        reg_lambda: 0.1
+      # Save everything for deployment
+      save_model: true
+      save_predictions: true
+      save_preprocessors: true  # Save imputer and feature builder
+      save_metadata: true
+      # Versioning
+      model_version: 'v1.0.0'
+      description: 'Production model for global biodiversity prediction'

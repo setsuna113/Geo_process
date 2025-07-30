@@ -636,4 +636,9 @@ class DatabaseManager(DatabaseInterface):
         self.close_pool()
 
 # Global database manager instance
-db = DatabaseManager()
+# Skip initialization if running in standalone mode
+import os
+if os.environ.get('SKIP_DB_INIT') == 'true':
+    db = None  # ML standalone mode - no database needed
+else:
+    db = DatabaseManager()
