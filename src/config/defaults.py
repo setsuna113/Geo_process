@@ -455,6 +455,94 @@ DATA_CLEANING = {
     'outlier_std_threshold': 4,  # Standard deviations for outlier detection
 }
 
+# Machine Learning configuration
+MACHINE_LEARNING = {
+    'models': {
+        'linear_regression': {
+            'alpha': 1.0,  # Ridge regularization parameter
+            'fit_intercept': True,
+            'normalize': False,
+            'max_iter': 1000,
+            'solver': 'auto'
+        },
+        'lightgbm': {
+            'num_leaves': 31,
+            'learning_rate': 0.1,
+            'n_estimators': 100,
+            'reg_alpha': 0.0,  # L1 regularization
+            'reg_lambda': 0.0,  # L2 regularization
+            'min_child_samples': 20,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'objective': 'regression',
+            'metric': 'rmse',
+            'random_state': 42,
+            'n_jobs': -1,
+            'verbose': -1
+        }
+    },
+    'preprocessing': {
+        'imputation': {
+            'strategy': 'auto',  # 'auto', 'knn', 'iterative', 'mean', 'median'
+            'knn_neighbors': 5,
+            'missing_threshold': 0.3,  # Max missing rate before dropping feature
+            'spatial_aware': True,
+            'iterative_max_iter': 10
+        },
+        'scaling': {
+            'method': 'standard',  # 'standard', 'robust', 'minmax', 'none'
+            'clip_outliers': True,
+            'outlier_threshold': 4.0  # Standard deviations
+        },
+        'feature_selection': {
+            'variance_threshold': 0.01,
+            'correlation_threshold': 0.95,
+            'importance_threshold': 0.001
+        }
+    },
+    'validation': {
+        'cv_folds': 5,
+        'spatial_block_size_km': 100,
+        'buffer_distance_km': 50,
+        'stratify_by': 'latitude',  # 'latitude', 'biome', 'none'
+        'min_samples_per_fold': 100,
+        'test_size': 0.2  # For single train-test split
+    },
+    'feature_engineering': {
+        'richness_features': {
+            'compute_ratios': True,
+            'log_transform': True,
+            'diversity_metrics': ['shannon', 'simpson']
+        },
+        'spatial_features': {
+            'polynomial_degree': 2,
+            'include_interactions': True,
+            'binning_strategy': 'quantile',
+            'n_bins': 10
+        },
+        'ecological_features': {
+            'climate_interactions': True,
+            'seasonality_metrics': True,
+            'placeholder_ndvi': False  # For future implementation
+        }
+    },
+    'output': {
+        'save_predictions': True,
+        'save_model': True,
+        'save_feature_importance': True,
+        'formats': ['parquet', 'pickle'],
+        'predictions_dir': 'outputs/ml/predictions',
+        'models_dir': 'outputs/ml/models',
+        'metrics_dir': 'outputs/ml/metrics'
+    },
+    'performance': {
+        'chunk_size': 10000,  # Rows to process at once
+        'memory_limit_gb': 4.0,
+        'use_dask': False,  # For very large datasets
+        'cache_features': True
+    }
+}
+
 # Testing configuration - DISABLED by default for safety
 TESTING = {
     'enabled': os.getenv('FORCE_TEST_MODE', '').lower() in ('true', '1', 'yes'),  # Enable when forced

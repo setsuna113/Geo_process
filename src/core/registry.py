@@ -449,11 +449,22 @@ class ComponentRegistry:
         self.resamplers = self.factory.create_registry("resamplers")
         self.tile_processors = self.factory.create_registry("tile_processors")
         
+        # Machine Learning registries
+        self.ml_models = self.factory.create_registry("ml_models")
+        self.feature_builders = self.factory.create_registry("feature_builders")
+        self.imputation_strategies = self.factory.create_registry("imputation_strategies")
+        self.cv_strategies = self.factory.create_registry("cv_strategies")
+        
         # Add validators
         self.grids.add_validator(self._validate_grid_class)
         self.processors.add_validator(self._validate_processor_class)
         self.resamplers.add_validator(self._validate_resampler_class)
         self.tile_processors.add_validator(self._validate_tile_processor_class)
+        
+        # ML validators
+        self.ml_models.add_validator(self._validate_ml_model_class)
+        self.feature_builders.add_validator(self._validate_feature_builder_class)
+        self.cv_strategies.add_validator(self._validate_cv_strategy_class)
         
     def _validate_grid_class(self, cls: Type):
         """Validate grid classes have required methods."""
@@ -489,6 +500,33 @@ class ComponentRegistry:
             if not hasattr(cls, method):
                 raise ValueError(
                     f"Tile processor class {cls.__name__} missing required method: {method}"
+                )
+    
+    def _validate_ml_model_class(self, cls: Type):
+        """Validate ML model classes have required methods."""
+        required_methods = ['fit', 'predict', 'evaluate', 'save_model', 'load_model']
+        for method in required_methods:
+            if not hasattr(cls, method):
+                raise ValueError(
+                    f"ML model class {cls.__name__} missing required method: {method}"
+                )
+    
+    def _validate_feature_builder_class(self, cls: Type):
+        """Validate feature builder classes have required methods."""
+        required_methods = ['build_features', 'get_feature_names', 'get_required_columns']
+        for method in required_methods:
+            if not hasattr(cls, method):
+                raise ValueError(
+                    f"Feature builder class {cls.__name__} missing required method: {method}"
+                )
+    
+    def _validate_cv_strategy_class(self, cls: Type):
+        """Validate CV strategy classes have required methods."""
+        required_methods = ['split', 'get_n_splits']
+        for method in required_methods:
+            if not hasattr(cls, method):
+                raise ValueError(
+                    f"CV strategy class {cls.__name__} missing required method: {method}"
                 )
     
     def auto_register_module(self, module, registry_name: str, base_class: Optional[Type] = None):
@@ -590,6 +628,97 @@ class ComponentRegistry:
             # Check memory requirements
             if memory_limit and self._memory_usage_value(metadata.memory_usage) > self._memory_usage_value(memory_limit):
                 continue
+            
+            results.append(metadata)
+        
+        return results
+    
+    def find_models_for_task(self, 
+                           task_type: str,
+                           handles_missing: Optional[bool] = None,
+                           requires_scaling: Optional[bool] = None) -> List[ComponentMetadata]:
+        """
+        Find ML models suitable for a specific task type.
+        
+        Args:
+            task_type: Type of ML task ("regression", "classification", etc.)
+            handles_missing: Filter by ability to handle missing values
+            requires_scaling: Filter by scaling requirements
+            
+        Returns:
+            List of suitable model metadata
+        """
+        results = []
+        
+        for metadata in self.ml_models._components.values():
+            # Check task type
+            if hasattr(metadata, 'model_type') and metadata.model_type != task_type:
+                continue
+            
+            # Check missing value handling
+            if handles_missing is not None:
+                if hasattr(metadata, 'handles_missing_values'):
+                    if metadata.handles_missing_values != handles_missing:
+                        continue
+                elif handles_missing:
+                    # If we need missing handling but metadata doesn't specify, skip
+                    continue
+            
+            # Check scaling requirements
+            if requires_scaling is not None:
+                if hasattr(metadata, 'requires_scaling'):
+                    if metadata.requires_scaling != requires_scaling:
+                        continue
+            
+            results.append(metadata)
+        
+        return results
+    
+    def find_feature_builders_by_category(self, 
+                                        category: str) -> List[ComponentMetadata]:
+        """
+        Find feature builders by category.
+        
+        Args:
+            category: Feature category ("spatial", "ecological", "richness", etc.)
+            
+        Returns:
+            List of feature builder metadata
+        """
+        results = []
+        
+        for metadata in self.feature_builders._components.values():
+            if hasattr(metadata, 'feature_categories'):
+                if category in metadata.feature_categories:
+                    results.append(metadata)
+        
+        return results
+    
+    def find_spatial_cv_strategies(self,
+                                 spatial_aware: bool = True,
+                                 min_folds: Optional[int] = None) -> List[ComponentMetadata]:
+        """
+        Find cross-validation strategies.
+        
+        Args:
+            spatial_aware: Whether to filter for spatial-aware strategies
+            min_folds: Minimum number of folds supported
+            
+        Returns:
+            List of CV strategy metadata
+        """
+        results = []
+        
+        for metadata in self.cv_strategies._components.values():
+            # Check spatial awareness
+            if spatial_aware:
+                if not hasattr(metadata, 'spatial_aware') or not metadata.spatial_aware:
+                    continue
+            
+            # Check minimum folds
+            if min_folds is not None:
+                if hasattr(metadata, 'min_folds') and metadata.min_folds < min_folds:
+                    continue
             
             results.append(metadata)
         
@@ -711,4 +840,123 @@ def tile_processor(supports_streaming: bool = False,
     def decorator(cls):
         return register_tile_processor(cls, supports_streaming, supports_memory_mapping, 
                                      memory_usage, optimal_tile_size, **kwargs)
+    return decorator
+
+
+# ML-specific registration functions
+def register_ml_model(cls: Type[T],
+                     model_type: str,
+                     requires_scaling: bool = False,
+                     handles_missing_values: bool = False,
+                     memory_usage: MemoryUsage = MemoryUsage.MEDIUM,
+                     **kwargs) -> Type[T]:
+    """Convenience function to register an ML model."""
+    # Extend ComponentMetadata with ML-specific fields
+    metadata = ComponentMetadata(
+        name=cls.__name__,
+        component_class=cls,
+        memory_usage=memory_usage,
+        **kwargs
+    )
+    # Add ML-specific attributes
+    metadata.model_type = model_type
+    metadata.requires_scaling = requires_scaling
+    metadata.handles_missing_values = handles_missing_values
+    
+    return component_registry.ml_models.register(cls, metadata=metadata)
+
+
+def register_feature_builder(cls: Type[T],
+                           feature_categories: List[str],
+                           required_columns: Set[str],
+                           memory_usage: MemoryUsage = MemoryUsage.LOW,
+                           **kwargs) -> Type[T]:
+    """Convenience function to register a feature builder."""
+    metadata = ComponentMetadata(
+        name=cls.__name__,
+        component_class=cls,
+        memory_usage=memory_usage,
+        **kwargs
+    )
+    # Add feature builder specific attributes
+    metadata.feature_categories = set(feature_categories)
+    metadata.required_columns = required_columns
+    
+    return component_registry.feature_builders.register(cls, metadata=metadata)
+
+
+def register_cv_strategy(cls: Type[T],
+                        spatial_aware: bool = False,
+                        min_samples_per_fold: int = 10,
+                        **kwargs) -> Type[T]:
+    """Convenience function to register a CV strategy."""
+    metadata = ComponentMetadata(
+        name=cls.__name__,
+        component_class=cls,
+        memory_usage=MemoryUsage.LOW,
+        **kwargs
+    )
+    # Add CV-specific attributes
+    metadata.spatial_aware = spatial_aware
+    metadata.min_samples_per_fold = min_samples_per_fold
+    
+    return component_registry.cv_strategies.register(cls, metadata=metadata)
+
+
+def register_imputation_strategy(cls: Type[T],
+                               strategy_name: str,
+                               handles_spatial: bool = False,
+                               **kwargs) -> Type[T]:
+    """Convenience function to register an imputation strategy."""
+    metadata = ComponentMetadata(
+        name=cls.__name__,
+        component_class=cls,
+        memory_usage=MemoryUsage.LOW,
+        **kwargs
+    )
+    # Add imputation-specific attributes
+    metadata.strategy_name = strategy_name
+    metadata.handles_spatial = handles_spatial
+    
+    return component_registry.imputation_strategies.register(cls, metadata=metadata)
+
+
+# ML Decorator versions
+def ml_model(model_type: str,
+            requires_scaling: bool = False,
+            handles_missing_values: bool = False,
+            memory_usage: MemoryUsage = MemoryUsage.MEDIUM,
+            **kwargs):
+    """Decorator for registering ML models."""
+    def decorator(cls):
+        return register_ml_model(cls, model_type, requires_scaling, 
+                               handles_missing_values, memory_usage, **kwargs)
+    return decorator
+
+
+def feature_builder(*categories, required_columns: Set[str] = None,
+                   memory_usage: MemoryUsage = MemoryUsage.LOW, **kwargs):
+    """Decorator for registering feature builders."""
+    def decorator(cls):
+        return register_feature_builder(cls, list(categories), 
+                                      required_columns or set(), 
+                                      memory_usage, **kwargs)
+    return decorator
+
+
+def cv_strategy(spatial_aware: bool = False,
+               min_samples_per_fold: int = 10,
+               **kwargs):
+    """Decorator for registering CV strategies."""
+    def decorator(cls):
+        return register_cv_strategy(cls, spatial_aware, min_samples_per_fold, **kwargs)
+    return decorator
+
+
+def imputation_strategy(strategy_name: str,
+                       handles_spatial: bool = False,
+                       **kwargs):
+    """Decorator for registering imputation strategies."""
+    def decorator(cls):
+        return register_imputation_strategy(cls, strategy_name, handles_spatial, **kwargs)
     return decorator
