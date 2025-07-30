@@ -1,7 +1,7 @@
 # src/processors/data_preparation/coordinate_merger.py
 """Coordinate-based merger for passthrough and resampled data."""
 
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Iterator
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -46,13 +46,15 @@ class CoordinateMerger(BaseProcessor):
     def create_merged_dataset(self,
                             resampled_datasets: List[Dict],
                             chunk_size: Optional[int] = None,
-                            return_as: str = 'xarray') -> any:
+                            return_as: str = 'xarray',
+                            context: Optional[any] = None) -> any:
         """Create merged dataset and return in-memory without writing to file.
         
         Args:
             resampled_datasets: List of dataset info dicts
             chunk_size: If provided, use chunked processing for memory efficiency
             return_as: 'xarray' or 'dataframe' - format to return
+            context: Optional pipeline context with memory monitor
             
         Returns:
             xarray.Dataset or pandas.DataFrame with merged data
@@ -61,6 +63,29 @@ class CoordinateMerger(BaseProcessor):
         
         logger.info(f"Creating merged dataset in memory (return_as={return_as})")
         self.validation_results.clear()
+        
+        # Get memory monitor
+        memory_monitor = context.memory_monitor if context and hasattr(context, 'memory_monitor') else None
+        
+        # Adaptive chunk size
+        base_chunk_size = chunk_size or self.config.get('merge.chunk_size', 5000)
+        self._adaptive_chunk_size = base_chunk_size
+        
+        def on_memory_warning(usage):
+            self._adaptive_chunk_size = max(1000, self._adaptive_chunk_size // 2)
+            logger.warning(f"Memory pressure (warning): reducing merge chunk size to {self._adaptive_chunk_size}")
+        
+        def on_memory_critical(usage):
+            self._adaptive_chunk_size = 500  # Minimum viable chunk size
+            logger.error(f"Memory pressure (critical): merge chunk size set to minimum {self._adaptive_chunk_size}")
+            # Force garbage collection
+            import gc
+            gc.collect()
+        
+        # Register callbacks
+        if memory_monitor:
+            memory_monitor.register_warning_callback(on_memory_warning)
+            memory_monitor.register_critical_callback(on_memory_critical)
         
         # Validate all datasets first
         for dataset_info in resampled_datasets:
@@ -136,10 +161,11 @@ class CoordinateMerger(BaseProcessor):
         for dataset_info in resampled_datasets:
             self._validate_dataset_bounds(dataset_info)
         
-        if chunk_size:
+        if chunk_size or hasattr(self, '_adaptive_chunk_size'):
             # Use chunked processing for large datasets
+            effective_chunk_size = getattr(self, '_adaptive_chunk_size', chunk_size) if hasattr(self, '_adaptive_chunk_size') else chunk_size
             return self._create_ml_ready_parquet_chunked(
-                resampled_datasets, output_dir, chunk_size
+                resampled_datasets, output_dir, effective_chunk_size
             )
         else:
             # Original in-memory processing
@@ -761,3 +787,197 @@ class CoordinateMerger(BaseProcessor):
     def validate_input(self, item: Dict) -> Tuple[bool, Optional[str]]:
         """Validate input - not used for this processor."""
         return True, None
+    
+    def iter_merged_chunks(self, 
+                          resampled_datasets: List[Dict],
+                          chunk_size: int = 5000) -> Iterator[pd.DataFrame]:
+        """
+        Iterate over merged data chunks without loading full dataset.
+        
+        This method enables streaming export by processing data in chunks,
+        significantly reducing memory usage for large datasets.
+        
+        Args:
+            resampled_datasets: List of dataset info dicts with table names
+            chunk_size: Number of rows per chunk
+            
+        Yields:
+            DataFrame chunks of merged data
+        """
+        logger.info(f"Starting streaming merge with chunk_size={chunk_size}")
+        
+        # Use adaptive chunk size if available
+        effective_chunk_size = getattr(self, '_adaptive_chunk_size', chunk_size)
+        
+        # Determine coordinate ranges from all datasets
+        common_bounds = self._determine_common_bounds(resampled_datasets)
+        if not common_bounds:
+            logger.warning("No common bounds found for streaming merge")
+            return
+            
+        min_x, min_y, max_x, max_y = common_bounds
+        
+        # Get the target resolution (should be same for all resampled datasets)
+        resolutions = [d.get('resolution', 0.05) for d in resampled_datasets]
+        target_resolution = min(resolutions)  # Use finest resolution
+        
+        # Create coordinate arrays
+        x_coords = np.arange(min_x, max_x, target_resolution)
+        y_coords = np.arange(min_y, max_y, target_resolution)
+        
+        logger.info(f"Coordinate grid: {len(x_coords)} x {len(y_coords)} = {len(x_coords) * len(y_coords)} points")
+        logger.info(f"Processing in chunks of {effective_chunk_size} rows")
+        
+        # Process in y-coordinate chunks for better spatial locality
+        total_chunks = (len(y_coords) + effective_chunk_size - 1) // effective_chunk_size
+        chunk_num = 0
+        
+        for y_start_idx in range(0, len(y_coords), effective_chunk_size):
+            y_end_idx = min(y_start_idx + effective_chunk_size, len(y_coords))
+            y_chunk = y_coords[y_start_idx:y_end_idx]
+            chunk_num += 1
+            
+            logger.info(f"Processing chunk {chunk_num}/{total_chunks} (y indices {y_start_idx}:{y_end_idx})")
+            
+            # Build coordinate ranges for this chunk
+            y_min_chunk = float(y_chunk[0])
+            y_max_chunk = float(y_chunk[-1]) + target_resolution
+            
+            # Query each dataset for this coordinate range
+            chunk_data = {}
+            
+            for dataset in resampled_datasets:
+                table_name = dataset['table_name']
+                dataset_name = dataset['name']
+                
+                # Check if table has coordinate columns
+                if self._table_has_coordinates(table_name):
+                    # Use x_coord, y_coord columns
+                    query = f"""
+                        SELECT x_coord AS x, y_coord AS y, value 
+                        FROM {table_name}
+                        WHERE y_coord >= %s AND y_coord < %s
+                        ORDER BY y_coord, x_coord
+                    """
+                else:
+                    # Use x, y columns (legacy format)
+                    query = f"""
+                        SELECT x, y, value 
+                        FROM {table_name}
+                        WHERE y >= %s AND y < %s
+                        ORDER BY y, x
+                    """
+                
+                try:
+                    with self.db.get_connection() as conn:
+                        df = pd.read_sql_query(
+                            query, 
+                            conn,
+                            params=(y_min_chunk, y_max_chunk)
+                        )
+                    
+                    if not df.empty:
+                        chunk_data[dataset_name] = df
+                        logger.debug(f"Retrieved {len(df)} points from {dataset_name}")
+                    else:
+                        logger.warning(f"No data in chunk for {dataset_name}")
+                        
+                except Exception as e:
+                    logger.error(f"Error querying {table_name}: {e}")
+                    continue
+            
+            if chunk_data:
+                # Merge this chunk's data
+                merged_chunk = self._merge_coordinate_chunk(chunk_data, x_coords, y_chunk, target_resolution)
+                
+                if not merged_chunk.empty:
+                    # Validate chunk
+                    self._validate_chunk_data(merged_chunk, chunk_num)
+                    yield merged_chunk
+                else:
+                    logger.warning(f"Empty merged chunk {chunk_num}")
+            else:
+                logger.warning(f"No data retrieved for chunk {chunk_num}")
+    
+    def _merge_coordinate_chunk(self, 
+                               chunk_data: Dict[str, pd.DataFrame], 
+                               x_coords: np.ndarray,
+                               y_chunk: np.ndarray,
+                               resolution: float) -> pd.DataFrame:
+        """Merge data from multiple datasets for a coordinate chunk."""
+        # Create full coordinate grid for this chunk
+        xx, yy = np.meshgrid(x_coords, y_chunk)
+        coords_df = pd.DataFrame({
+            'x': xx.flatten(),
+            'y': yy.flatten()
+        })
+        
+        # Round coordinates to avoid floating point issues
+        coords_df['x'] = coords_df['x'].round(6)
+        coords_df['y'] = coords_df['y'].round(6)
+        
+        # Merge each dataset
+        for dataset_name, df in chunk_data.items():
+            # Round coordinates in dataset too
+            df = df.copy()
+            df['x'] = df['x'].round(6)
+            df['y'] = df['y'].round(6)
+            
+            # Rename value column
+            df = df.rename(columns={'value': dataset_name})
+            
+            # Merge on coordinates
+            coords_df = coords_df.merge(
+                df[['x', 'y', dataset_name]], 
+                on=['x', 'y'], 
+                how='left'
+            )
+        
+        # Remove rows where all data columns are null
+        data_columns = [col for col in coords_df.columns if col not in ['x', 'y']]
+        coords_df = coords_df.dropna(subset=data_columns, how='all')
+        
+        return coords_df
+    
+    def _validate_chunk_data(self, chunk_df: pd.DataFrame, chunk_num: int):
+        """Validate data in a chunk."""
+        # Check for coordinate uniqueness
+        duplicates = chunk_df.duplicated(subset=['x', 'y'])
+        if duplicates.any():
+            logger.warning(f"Chunk {chunk_num}: Found {duplicates.sum()} duplicate coordinates")
+        
+        # Check for data completeness
+        data_columns = [col for col in chunk_df.columns if col not in ['x', 'y']]
+        for col in data_columns:
+            null_count = chunk_df[col].isna().sum()
+            if null_count > 0:
+                null_pct = (null_count / len(chunk_df)) * 100
+                logger.debug(f"Chunk {chunk_num}: {col} has {null_count} ({null_pct:.1f}%) null values")
+    
+    def _determine_common_bounds(self, resampled_datasets: List[Dict]) -> Optional[Tuple[float, float, float, float]]:
+        """Determine common bounds across all datasets."""
+        if not resampled_datasets:
+            return None
+            
+        # Get bounds from first dataset
+        bounds = resampled_datasets[0].get('bounds')
+        if not bounds:
+            return None
+            
+        min_x, min_y, max_x, max_y = bounds
+        
+        # Find intersection with other datasets
+        for dataset in resampled_datasets[1:]:
+            d_bounds = dataset.get('bounds')
+            if d_bounds:
+                min_x = max(min_x, d_bounds[0])
+                min_y = max(min_y, d_bounds[1])
+                max_x = min(max_x, d_bounds[2])
+                max_y = min(max_y, d_bounds[3])
+        
+        # Check if valid intersection
+        if min_x >= max_x or min_y >= max_y:
+            logger.warning("No valid intersection of bounds across datasets")
+            return None
+            
+        return (min_x, min_y, max_x, max_y)

@@ -34,6 +34,7 @@ class EnhancedPipelineContext:
     logging_context: Optional[LoggingContext] = field(default=None, init=False)
     monitor: Optional[UnifiedMonitor] = field(default=None, init=False)
     progress_manager: Optional[Any] = field(default=None, init=False)
+    memory_monitor: Optional[Any] = field(default=None)
     
     def __post_init__(self):
         """Initialize monitoring and logging components."""
@@ -113,7 +114,7 @@ class EnhancedPipelineContext:
         Returns:
             EnhancedPipelineContext with same data
         """
-        return cls(
+        enhanced = cls(
             config=context.config,
             db=context.db,
             experiment_id=context.experiment_id,
@@ -121,5 +122,7 @@ class EnhancedPipelineContext:
             output_dir=context.output_dir,
             metadata=context.metadata.copy(),
             shared_data=context.shared_data.copy(),
-            quality_metrics=context.quality_metrics.copy()
+            quality_metrics=context.quality_metrics.copy(),
+            memory_monitor=getattr(context, 'memory_monitor', None)
         )
+        return enhanced

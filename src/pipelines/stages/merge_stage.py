@@ -25,12 +25,37 @@ class MergeStage(PipelineStage):
     
     def validate(self) -> Tuple[bool, List[str]]:
         """Validate merge configuration."""
-        return True, []
+        errors = []
+        
+        # Check if streaming is enabled
+        if self.config.get('merge.enable_streaming', False):
+            # Verify export formats are compatible
+            export_formats = self.config.get('export.formats', ['csv'])
+            if isinstance(export_formats, str):
+                export_formats = [export_formats]
+            
+            # Currently streaming only supports CSV
+            unsupported = [fmt for fmt in export_formats if fmt != 'csv']
+            if unsupported:
+                errors.append(f"Streaming export only supports CSV format, but found: {unsupported}")
+        
+        # Validate chunk size
+        chunk_size = self.config.get('merge.streaming_chunk_size', 5000)
+        if chunk_size < 100:
+            errors.append(f"Streaming chunk size too small: {chunk_size} (minimum: 100)")
+        elif chunk_size > 1000000:
+            errors.append(f"Streaming chunk size too large: {chunk_size} (maximum: 1000000)")
+        
+        return len(errors) == 0, errors
     
     @log_stage("merge")
     def execute(self, context) -> StageResult:
         """Orchestrate merge process."""
         logger.info("Starting merge stage orchestration")
+        
+        # Setup memory pressure callbacks if available
+        if hasattr(context, 'memory_monitor') and context.memory_monitor:
+            self._setup_memory_callbacks(context)
         
         try:
             # Get resampled datasets from context
@@ -97,15 +122,54 @@ class MergeStage(PipelineStage):
                 chunk_size = context.config.get('merge.chunk_size', 5000)
                 logger.info(f"Using chunked processing with chunk_size={chunk_size}")
             
+            # Check if streaming mode is enabled
+            enable_streaming = context.config.get('merge.enable_streaming', False)
+            export_formats = context.config.get('export.formats', ['csv'])
+            
             # Delegate all work to processor
             merger = CoordinateMerger(context.config, context.db)
             
             try:
-                # Create merged dataset in memory (not file)
+                # If streaming mode is enabled and we're only exporting to CSV, skip in-memory merge
+                if enable_streaming and export_formats == ['csv']:
+                    logger.info("Streaming mode enabled - configuring for memory-efficient export")
+                    
+                    # Store configuration for ExportStage
+                    context.set('merge_mode', 'streaming')
+                    context.set('merge_config', {
+                        'dataset_dicts': dataset_dicts,
+                        'chunk_size': chunk_size or context.config.get('merge.streaming_chunk_size', 5000),
+                        'merger': merger  # Store merger instance for use in ExportStage
+                    })
+                    
+                    # We don't create the merged dataset, just validate the inputs
+                    for dataset_dict in dataset_dicts:
+                        bounds = dataset_dict.get('bounds')
+                        if not bounds:
+                            raise ValueError(f"Dataset {dataset_dict['name']} missing bounds")
+                    
+                    # Return success without creating merged dataset
+                    return StageResult(
+                        success=True,
+                        data={
+                            'mode': 'streaming',
+                            'datasets': len(dataset_dicts),
+                            'chunk_size': chunk_size or context.config.get('merge.streaming_chunk_size', 5000)
+                        },
+                        metrics={
+                            'datasets_configured': len(resampled_datasets),
+                            'streaming_enabled': True,
+                            'datasets_requiring_alignment': alignment_metrics['datasets_requiring_alignment'],
+                            'max_alignment_shift_degrees': alignment_metrics['max_shift_degrees']
+                        }
+                    )
+                
+                # Otherwise, create merged dataset in memory as before
                 merged_dataset = merger.create_merged_dataset(
                     dataset_dicts,
                     chunk_size=chunk_size,
-                    return_as='xarray'  # Return as xarray for compatibility with ExportStage
+                    return_as='xarray',  # Return as xarray for compatibility with ExportStage
+                    context=context
                 )
                 
                 # Get validation results
@@ -187,3 +251,26 @@ class MergeStage(PipelineStage):
                 metrics={},
                 warnings=[f"Merge stage failed: {str(e)}"]
             )
+    
+    def _setup_memory_callbacks(self, context):
+        """Setup memory pressure callbacks for adaptive behavior."""
+        memory_monitor = context.memory_monitor
+        
+        # Warning callback - reduce chunk sizes
+        def on_memory_warning(usage):
+            logger.warning(f"Memory pressure warning: {usage:.1f}% used")
+            # Update config to use smaller chunks
+            current_chunk = context.config.get('merge.streaming_chunk_size', 5000)
+            new_chunk = max(1000, current_chunk // 2)
+            context.config.set('merge.streaming_chunk_size', new_chunk)
+            logger.info(f"Reduced streaming chunk size to {new_chunk}")
+        
+        # Critical callback - switch to streaming mode
+        def on_memory_critical(usage):
+            logger.critical(f"Memory pressure critical: {usage:.1f}% used")
+            # Force streaming mode
+            context.config.set('merge.enable_streaming', True)
+            logger.info("Switched to streaming mode due to memory pressure")
+        
+        memory_monitor.register_warning_callback(on_memory_warning)
+        memory_monitor.register_critical_callback(on_memory_critical)

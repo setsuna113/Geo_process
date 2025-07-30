@@ -7,7 +7,8 @@ from .models import LinearRegressionAnalyzer
 from .preprocessing.feature_engineering import (
     RichnessFeatureBuilder,
     SpatialFeatureBuilder,
-    EcologicalFeatureBuilder
+    EcologicalFeatureBuilder,
+    CompositeFeatureBuilder
 )
 
 # Import imputation
@@ -29,6 +30,7 @@ try:
         'RichnessFeatureBuilder',
         'SpatialFeatureBuilder',
         'EcologicalFeatureBuilder',
+        'CompositeFeatureBuilder',
         'SpatialKNNImputer',
         'SpatialBlockCV',
         'SpatialBufferCV',
@@ -40,6 +42,7 @@ except ImportError:
         'RichnessFeatureBuilder',
         'SpatialFeatureBuilder',
         'EcologicalFeatureBuilder',
+        'CompositeFeatureBuilder',
         'SpatialKNNImputer',
         'SpatialBlockCV',
         'SpatialBufferCV',

@@ -17,6 +17,31 @@
 # This data_files section is deprecated but kept for backward compatibility
 
 # =============================================================================
+# MEMORY OPTIMIZATION - STREAMING EXPORT
+# =============================================================================
+merge:
+  # Enable streaming mode for memory-efficient export
+  enable_streaming: false  # Set to true for large datasets
+  streaming_chunk_size: 5000  # Rows per chunk in streaming mode
+  
+  # Regular merge options
+  enable_chunked_processing: false
+  chunk_size: 5000
+
+export:
+  # Export formats
+  formats: ['csv']  # Streaming only supports CSV
+  
+  # Compression
+  compress: false  # Set to true for gzip compression
+  
+  # Chunk size for writing
+  chunk_size: 10000
+  
+  # Include metadata file
+  include_metadata: true
+
+# =============================================================================
 # RESAMPLING CONFIGURATION - NEW UNIFIED PIPELINE
 # =============================================================================
 resampling:

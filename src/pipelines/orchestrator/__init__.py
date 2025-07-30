@@ -40,6 +40,7 @@ class PipelineContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     shared_data: Dict[str, Any] = field(default_factory=dict)
     quality_metrics: Dict[str, Any] = field(default_factory=dict)
+    memory_monitor: Optional[Any] = None  # MemoryMonitor instance
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get value from shared data."""
@@ -122,6 +123,12 @@ class PipelineOrchestrator:
                 output_dir=output_dir
             )
             
+            # Start monitoring first to get memory monitor
+            self.monitor_manager.start_monitoring()
+            
+            # Add memory monitor to context
+            self.context.memory_monitor = self.monitor_manager.memory_monitor
+            
             # Inject context into stage manager
             self.stage_manager.context = self.context
             
@@ -129,9 +136,6 @@ class PipelineOrchestrator:
             is_valid, errors = self.validate_pipeline()
             if not is_valid:
                 raise RuntimeError(f"Pipeline validation failed: {errors}")
-                
-            # Start monitoring
-            self.monitor_manager.start_monitoring()
             
             try:
                 # Execute pipeline

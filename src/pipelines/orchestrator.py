@@ -50,6 +50,7 @@ class PipelineContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     shared_data: Dict[str, Any] = field(default_factory=dict)
     quality_metrics: Dict[str, Any] = field(default_factory=dict)
+    memory_monitor: Optional[MemoryMonitor] = field(default=None)
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get value from shared data."""
@@ -88,7 +89,7 @@ class PipelineOrchestrator:
         self.context: Optional[PipelineContext] = None
         
         # Monitoring components
-        self.memory_monitor = MemoryMonitor(config)
+        self.memory_monitor = MemoryMonitor(config, db_manager=db_connection)
         self.progress_tracker = ProgressTracker()
         self.quality_checker = QualityChecker(config)
         
@@ -273,6 +274,9 @@ class PipelineOrchestrator:
             }
         )
         
+        # Set experiment ID in memory monitor
+        self.memory_monitor.set_experiment_id(experiment_id)
+        
         # Setup directories
         if checkpoint_dir is None:
             checkpoint_dir = Path(self.config.get('paths.checkpoint_dir', 'checkpoint_outputs')) / experiment_id
@@ -299,7 +303,8 @@ class PipelineOrchestrator:
                 'start_time': datetime.now().isoformat(),
                 'pipeline_version': '1.0.0',
                 **kwargs
-            }
+            },
+            memory_monitor=self.memory_monitor
         )
         
         # Initialize progress tracker
@@ -370,6 +375,9 @@ class PipelineOrchestrator:
         # Update progress
         logger.debug(f"📊 Updating progress tracker for stage: {stage.name}")
         self.progress_tracker.start_stage(stage.name)
+        
+        # Set current stage in memory monitor
+        self.memory_monitor.set_stage(stage.name)
         
         # Pre-execution checks with memory awareness
         self._pre_stage_checks(stage)
@@ -472,6 +480,9 @@ class PipelineOrchestrator:
             # Update progress
             self.progress_tracker.complete_stage(stage.name)
             
+            # Clear stage from memory monitor
+            self.memory_monitor.set_stage(None)
+            
             return result
             
         except MemoryError as e:
@@ -495,6 +506,7 @@ class PipelineOrchestrator:
             stage.status = StageStatus.FAILED
             stage.error = str(e)
             self.progress_tracker.fail_stage(stage.name, str(e))
+            self.memory_monitor.set_stage(None)
             raise
             
         except Exception as e:
@@ -507,6 +519,9 @@ class PipelineOrchestrator:
             
             # Quality check on failure
             self.quality_checker.check_stage_failure(stage, e, self.context)
+            
+            # Clear stage from memory monitor
+            self.memory_monitor.set_stage(None)
             
             raise
 

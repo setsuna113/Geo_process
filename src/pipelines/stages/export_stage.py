@@ -4,6 +4,7 @@
 from typing import List, Tuple
 from datetime import datetime
 import time
+from pathlib import Path
 
 from .base_stage import PipelineStage, StageResult
 from src.processors.exporters.csv_exporter import CSVExporter, ExportConfig
@@ -38,6 +39,25 @@ class ExportStage(PipelineStage):
         """Export merged dataset to configured formats (CSV and/or Parquet)."""
         logger.info("Starting export stage")
         
+        try:
+            # Check if we're in streaming mode
+            merge_mode = context.get('merge_mode', 'in_memory')
+            
+            if merge_mode == 'streaming':
+                return self._execute_streaming(context)
+            else:
+                return self._execute_in_memory(context)
+                
+        except Exception as e:
+            logger.error(f"Export failed: {e}")
+            return StageResult(
+                success=False,
+                data={'error': str(e)},
+                metrics={}
+            )
+    
+    def _execute_in_memory(self, context) -> StageResult:
+        """Original in-memory export logic."""
         try:
             # Get merged dataset from context
             merged_dataset = context.get('merged_dataset')
@@ -213,4 +233,109 @@ class ExportStage(PipelineStage):
             
         except Exception as e:
             logger.error(f"Export stage failed: {e}")
+            raise
+    
+    def _execute_streaming(self, context) -> StageResult:
+        """Export using streaming to avoid loading full dataset into memory."""
+        logger.info("Starting streaming export")
+        
+        # Get merge configuration
+        merge_config = context.get('merge_config')
+        if not merge_config:
+            raise RuntimeError("No merge configuration found for streaming export")
+        
+        merger = merge_config['merger']
+        dataset_dicts = merge_config['dataset_dicts']
+        chunk_size = merge_config['chunk_size']
+        
+        # Only CSV export is supported in streaming mode
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        output_filename = f"merged_data_{context.experiment_id}_{timestamp}.csv"
+        output_path = context.output_dir / output_filename
+        
+        # Configure compression
+        compression = 'gzip' if context.config.get('export.compress', False) else None
+        if compression:
+            output_path = output_path.with_suffix('.csv.gz')
+        
+        # Track export progress
+        rows_exported = 0
+        chunk_count = 0
+        start_time = time.time()
+        first_chunk = True
+        
+        try:
+            # Open output file (with or without compression)
+            if compression == 'gzip':
+                import gzip
+                file_handle = gzip.open(output_path, 'wt', encoding='utf-8')
+            else:
+                file_handle = open(output_path, 'w', encoding='utf-8')
+            
+            with file_handle as f:
+                # Stream chunks from merger
+                for chunk_df in merger.iter_merged_chunks(dataset_dicts, chunk_size):
+                    chunk_count += 1
+                    
+                    # Write chunk to file
+                    chunk_df.to_csv(f, index=False, header=first_chunk)
+                    first_chunk = False
+                    
+                    rows_exported += len(chunk_df)
+                    
+                    # Log progress periodically
+                    if chunk_count % 10 == 0:
+                        elapsed = time.time() - start_time
+                        rate = rows_exported / elapsed if elapsed > 0 else 0
+                        logger.info(f"Streaming export progress: {rows_exported:,} rows, "
+                                  f"{chunk_count} chunks, {rate:.0f} rows/sec")
+            
+            # Calculate final metrics
+            duration = time.time() - start_time
+            file_size = output_path.stat().st_size
+            
+            logger.info(f"Streaming export complete: {rows_exported:,} rows in {duration:.1f}s")
+            logger.info(f"Output file: {output_path} ({file_size / (1024**2):.1f} MB)")
+            
+            # Log performance
+            logger.log_performance(
+                "streaming_csv_export",
+                duration,
+                rows=rows_exported,
+                chunks=chunk_count,
+                size_mb=file_size / (1024**2),
+                rate_rows_per_sec=rows_exported / duration if duration > 0 else 0
+            )
+            
+            # Store path for downstream stages
+            context.set('exported_csv_path', str(output_path))
+            
+            return StageResult(
+                success=True,
+                data={
+                    'exported_files': {'csv': str(output_path)},
+                    'formats': ['csv'],
+                    'mode': 'streaming'
+                },
+                metrics={
+                    'rows_exported': rows_exported,
+                    'chunks_processed': chunk_count,
+                    'file_size_mb': file_size / (1024**2),
+                    'duration_seconds': duration,
+                    'rows_per_second': rows_exported / duration if duration > 0 else 0,
+                    'streaming_enabled': True
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"Streaming export failed: {e}")
+            # Clean up partial file if it exists
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                    logger.info(f"Cleaned up partial file: {output_path}")
+                except PermissionError:
+                    logger.warning(f"Could not delete partial file due to permissions: {output_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up partial file: {cleanup_error}")
             raise
