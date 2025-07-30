@@ -32,9 +32,11 @@ metadata.json
 
 # ML artifacts
 ml_results/
+research_results/
 *.pkl
 models/
 
 # Test data
 test_*.parquet
 *_test.parquet
+test_biodiversity.parquet
