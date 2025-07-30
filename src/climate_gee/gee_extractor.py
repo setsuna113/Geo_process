@@ -16,6 +16,13 @@ import os
 from .auth import GEEAuthenticator
 from .coordinate_generator import CoordinateGenerator
 
+try:
+    from src.infrastructure.logging import get_logger
+except ImportError:
+    import logging
+    def get_logger(name):
+        return logging.getLogger(name)
+
 
 class GEEClimateExtractor:
     """Extracts climate data from Google Earth Engine WorldClim datasets."""
@@ -62,7 +69,7 @@ class GEEClimateExtractor:
         self.auth = authenticator
         self.coord_gen = coordinate_generator
         self.chunk_size = min(chunk_size, 5000)  # GEE limit
-        self.logger = logger
+        self.logger = logger if logger else get_logger(__name__)
         self.ee = None
         
         if not self.auth.is_authenticated():
@@ -83,17 +90,11 @@ class GEEClimateExtractor:
             for var_name, config in self.WORLDCLIM_DATASETS.items():
                 self.images[var_name] = base_image.select(config['band'])
                 
-            if self.logger:
-                self.logger.info(f"Loaded {len(self.images)} WorldClim variables")
-            else:
-                print(f"Loaded {len(self.images)} WorldClim variables")
+            self.logger.info(f"Loaded {len(self.images)} WorldClim variables")
                 
         except Exception as e:
             error_msg = f"Failed to load WorldClim images: {e}"
-            if self.logger:
-                self.logger.error(error_msg)
-            else:
-                print(f"ERROR: {error_msg}")
+            self.logger.error(error_msg)
             raise
     
     def extract_climate_data(self,
@@ -119,10 +120,7 @@ class GEEClimateExtractor:
         if invalid_vars:
             raise ValueError(f"Invalid variables: {invalid_vars}")
         
-        if self.logger:
-            self.logger.info(f"Extracting variables {variables} for bounds {bounds}")
-        else:
-            print(f"Extracting variables {variables} for bounds {bounds}")
+        self.logger.info(f"Extracting variables {variables} for bounds {bounds}")
         
         # Generate coordinate chunks
         coord_chunks = list(self.coord_gen.generate_coordinate_chunks(bounds, self.chunk_size))
@@ -136,10 +134,7 @@ class GEEClimateExtractor:
         for i, coord_chunk in enumerate(coord_chunks):
             chunk_id = i + 1
             
-            if self.logger:
-                self.logger.info(f"Processing chunk {chunk_id}/{total_chunks} ({len(coord_chunk)} points)")
-            else:
-                print(f"Processing chunk {chunk_id}/{total_chunks}")
+            self.logger.info(f"Processing chunk {chunk_id}/{total_chunks} ({len(coord_chunk)} points)")
             
             try:
                 chunk_result = self._extract_chunk_data(coord_chunk, variables, output_dir, chunk_id)
@@ -150,10 +145,7 @@ class GEEClimateExtractor:
                 
             except Exception as e:
                 error_msg = f"Failed to process chunk {chunk_id}: {e}"
-                if self.logger:
-                    self.logger.error(error_msg)
-                else:
-                    print(f"ERROR: {error_msg}")
+                self.logger.error(error_msg)
                 
                 # Continue with other chunks rather than failing completely
                 continue
@@ -164,10 +156,7 @@ class GEEClimateExtractor:
         # Combine all results
         final_result = pd.concat(all_results, ignore_index=True)
         
-        if self.logger:
-            self.logger.info(f"Extraction complete: {len(final_result)} points with {len(variables)} variables")
-        else:
-            print(f"Extraction complete: {len(final_result)} points")
+        self.logger.info(f"Extraction complete: {len(final_result)} points with {len(variables)} variables")
         
         return final_result
     
@@ -328,10 +317,7 @@ class GEEClimateExtractor:
         if variables is None:
             variables = ['bio01']  # Test with just temperature
         
-        if self.logger:
-            self.logger.info(f"Testing extraction with bounds {test_bounds}")
-        else:
-            print(f"Testing extraction with bounds {test_bounds}")
+        self.logger.info(f"Testing extraction with bounds {test_bounds}")
         
         return self.extract_climate_data(test_bounds, variables)
 

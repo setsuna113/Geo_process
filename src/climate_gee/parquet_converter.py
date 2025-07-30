@@ -11,6 +11,13 @@ from pathlib import Path
 import json
 import time
 
+try:
+    from src.infrastructure.logging import get_logger
+except ImportError:
+    import logging
+    def get_logger(name):
+        return logging.getLogger(name)
+
 
 class ParquetConverter:
     """Converts GEE CSV exports to pipeline-compatible parquet format."""
@@ -31,7 +38,7 @@ class ParquetConverter:
         Args:
             logger: Logger instance
         """
-        self.logger = logger
+        self.logger = logger if logger else get_logger(__name__)
         
     def convert_to_parquet(self,
                           climate_data: pd.DataFrame,
@@ -63,10 +70,7 @@ class ParquetConverter:
             output_filename = f"climate_data_{experiment_id}_{timestamp}.parquet"
             output_path = output_path.parent / output_filename
         
-        if self.logger:
-            self.logger.info(f"Converting {len(climate_data)} rows to parquet: {output_path}")
-        else:
-            print(f"Converting {len(climate_data)} rows to parquet")
+        self.logger.info(f"Converting {len(climate_data)} rows to parquet: {output_path}")
         
         # Prepare DataFrame with correct schema
         df = self._prepare_dataframe(climate_data, validate_schema)
@@ -101,13 +105,10 @@ class ParquetConverter:
             'schema': dict(df.dtypes.astype(str))
         }
         
-        if self.logger:
-            self.logger.info(f"Parquet conversion complete:")
-            self.logger.info(f"  Rows: {export_stats['total_rows']:,}")
-            self.logger.info(f"  Size: {export_stats['file_size_mb']:.2f} MB")
-            self.logger.info(f"  Duration: {export_stats['conversion_duration']:.2f}s")
-        else:
-            print(f"Conversion complete: {export_stats['total_rows']:,} rows, {export_stats['file_size_mb']:.2f} MB")
+        self.logger.info(f"Parquet conversion complete:")
+        self.logger.info(f"  Rows: {export_stats['total_rows']:,}")
+        self.logger.info(f"  Size: {export_stats['file_size_mb']:.2f} MB")
+        self.logger.info(f"  Duration: {export_stats['conversion_duration']:.2f}s")
         
         # Create metadata file if requested
         if include_metadata:
@@ -133,10 +134,7 @@ class ParquetConverter:
                 try:
                     result_df[column] = result_df[column].astype(dtype)
                 except Exception as e:
-                    if self.logger:
-                        self.logger.warning(f"Failed to convert {column} to {dtype}: {e}")
-                    else:
-                        print(f"Warning: Failed to convert {column} to {dtype}")
+                    self.logger.warning(f"Failed to convert {column} to {dtype}: {e}")
             else:
                 if column in ['bio01', 'bio04', 'bio12']:
                     if self.logger:
