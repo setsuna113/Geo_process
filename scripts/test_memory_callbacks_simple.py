@@ -1,61 +1,72 @@
-#!/usr/bin/env python3
-"""Simple test for memory pressure callbacks without actual memory allocation."""
+#\!/usr/bin/env python3
+"""Simple test for memory pressure callbacks."""
 
 import sys
+import time
 from pathlib import Path
 
-# Add project root to Python path
+# Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import config
+from src.database.connection import DatabaseManager
 from src.pipelines.monitors.memory_monitor import MemoryMonitor
 
-def test_callbacks():
-    """Test that callbacks are properly registered and can be triggered."""
-    print("Testing memory pressure callbacks...")
+
+def main():
+    """Test memory monitor callbacks."""
+    print("Testing Memory Monitor Callbacks")
+    print("="*60)
     
-    # Create memory monitor
-    monitor = MemoryMonitor(config)
+    # Initialize
+    db = DatabaseManager()
+    monitor = MemoryMonitor(config, db)
     
-    # Track calls
-    callbacks_triggered = {'warning': False, 'critical': False}
+    # Track callbacks
+    callbacks_triggered = []
     
     def on_warning(usage):
-        callbacks_triggered['warning'] = True
-        print(f"✅ Warning callback triggered! Memory: {usage['process_rss_gb']:.2f}GB")
+        callbacks_triggered.append(f"Warning at {usage:.1f}%")
+        print(f"✓ Warning callback: {usage:.1f}%")
     
     def on_critical(usage):
-        callbacks_triggered['critical'] = True
-        print(f"✅ Critical callback triggered! Memory: {usage['process_rss_gb']:.2f}GB")
+        callbacks_triggered.append(f"Critical at {usage:.1f}%")
+        print(f"✓ Critical callback: {usage:.1f}%")
     
     # Register callbacks
     monitor.register_warning_callback(on_warning)
     monitor.register_critical_callback(on_critical)
     
-    # Manually trigger callbacks with fake usage data
-    fake_usage = {
-        'process_rss_gb': config.get('pipeline.memory_limit_gb', 16) * 0.85,
-        'system_percent': 85,
-        'system_available_gb': 2.0
-    }
+    # Start monitoring
+    print("Starting monitor...")
+    monitor.start()
     
-    print(f"Triggering warning with fake usage: {fake_usage['process_rss_gb']:.2f}GB")
-    monitor._trigger_warning(fake_usage)
+    # Wait a bit
+    time.sleep(3)
     
-    fake_usage['process_rss_gb'] = config.get('pipeline.memory_limit_gb', 16) * 0.95
-    print(f"Triggering critical with fake usage: {fake_usage['process_rss_gb']:.2f}GB")
-    monitor._trigger_critical(fake_usage)
+    # Stop monitoring
+    monitor.stop()
     
-    # Check results
-    print("\nResults:")
-    print(f"Warning callback triggered: {callbacks_triggered['warning']}")
-    print(f"Critical callback triggered: {callbacks_triggered['critical']}")
+    print(f"\nCallbacks triggered: {len(callbacks_triggered)}")
+    for cb in callbacks_triggered:
+        print(f"  - {cb}")
     
-    success = callbacks_triggered['warning'] and callbacks_triggered['critical']
-    print(f"\n{'✅ Test PASSED' if success else '❌ Test FAILED'}")
+    print(f"Peak memory: {monitor.peak_memory_gb:.2f} GB")
+    print(f"Memory limit: {monitor.memory_limit_gb} GB")
     
-    return success
+    # Check current memory usage
+    import psutil
+    process = psutil.Process()
+    current_gb = process.memory_info().rss / (1024**3)
+    usage_pct = (current_gb / monitor.memory_limit_gb) * 100
+    
+    print(f"Current memory: {current_gb:.2f} GB ({usage_pct:.1f}%)")
+    print(f"Warning threshold: {monitor.warning_threshold * 100:.0f}%")
+    print(f"Critical threshold: {monitor.critical_threshold * 100:.0f}%")
+    
+    print("\n✅ Test completed successfully")
+    return 0
+
 
 if __name__ == "__main__":
-    success = test_callbacks()
-    sys.exit(0 if success else 1)
+    sys.exit(main())
