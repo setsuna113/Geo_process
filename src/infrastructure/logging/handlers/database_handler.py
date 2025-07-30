@@ -156,25 +156,27 @@ class DatabaseLogHandler(logging.Handler):
                 values.append(log_data)
             
             # Serialize only when needed and bulk insert
-            with self.db.get_cursor() as cursor:
-                # Serialize context and performance data
-                serialized_values = []
-                for log_data in values:
-                    serialized = log_data.copy()
-                    # Serialize JSON fields
-                    serialized['context'] = json.dumps(log_data['context']) if log_data['context'] else '{}'
-                    serialized['performance'] = json.dumps(log_data['performance']) if log_data['performance'] else None
-                    serialized_values.append(serialized)
-                
-                cursor.executemany("""
-                    INSERT INTO pipeline_logs 
-                    (experiment_id, job_id, node_id, timestamp, level, 
-                     logger_name, message, context, traceback, performance)
-                    VALUES (%(experiment_id)s, %(job_id)s, %(node_id)s, 
-                            %(timestamp)s, %(level)s, %(logger_name)s, 
-                            %(message)s, %(context)s::jsonb, %(traceback)s, 
-                            %(performance)s::jsonb)
-                """, serialized_values)
+            with self.db.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    # Serialize context and performance data
+                    serialized_values = []
+                    for log_data in values:
+                        serialized = log_data.copy()
+                        # Serialize JSON fields
+                        serialized['context'] = json.dumps(log_data['context']) if log_data['context'] else '{}'
+                        serialized['performance'] = json.dumps(log_data['performance']) if log_data['performance'] else None
+                        serialized_values.append(serialized)
+                    
+                    cursor.executemany("""
+                        INSERT INTO pipeline_logs 
+                        (experiment_id, job_id, node_id, timestamp, level, 
+                         logger_name, message, context, traceback, performance, created_at)
+                        VALUES (%(experiment_id)s, %(job_id)s, %(node_id)s, 
+                                %(timestamp)s, %(level)s, %(logger_name)s, 
+                                %(message)s, %(context)s::jsonb, %(traceback)s, 
+                                %(performance)s::jsonb, CURRENT_TIMESTAMP)
+                    """, serialized_values)
+                    conn.commit()
             
             self._records_written += len(values)
             

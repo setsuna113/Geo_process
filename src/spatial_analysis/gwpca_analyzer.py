@@ -14,7 +14,7 @@ import xarray as xr
 
 from src.base.analyzer import BaseAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
-from src.config import Config
+from src.config.config import Config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)

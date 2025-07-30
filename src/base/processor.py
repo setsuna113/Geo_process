@@ -679,7 +679,8 @@ class BaseProcessor(ABC):
     
     def _register_signal_handlers(self) -> None:
         """Register signal handlers for graceful shutdown."""
-        self._signal_handler.register_handler('processor', self._handle_processor_signal)
+        if self._signal_handler:
+            self._signal_handler.register_handler('processor', self._handle_processor_signal)
     
     def _handle_processor_signal(self, sig: signal.Signals) -> None:
         """Handle signals for this processor."""

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from src.config import Config
+from src.config.config import Config
 from src.database.connection import DatabaseManager
 from src.infrastructure.logging import LoggingContext
 from src.infrastructure.monitoring import UnifiedMonitor

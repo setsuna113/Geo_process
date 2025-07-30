@@ -5,7 +5,7 @@ from importlib import import_module
 import logging
 
 from src.abstractions.interfaces.analyzer import IAnalyzer
-from src.config import Config
+from src.config.config import Config
 from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
