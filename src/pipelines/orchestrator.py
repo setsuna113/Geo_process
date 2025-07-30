@@ -820,6 +820,21 @@ class PipelineOrchestrator:
             
             # Store the dataset info in context as if we loaded them
             if self.context:
+                # Create loaded dataset info matching what LoadStage would produce
+                loaded_dataset_infos = []
+                for dataset_config in enabled_datasets:
+                    loaded_info = {
+                        'config': dataset_config,
+                        'path': dataset_config['path'],
+                        'name': dataset_config['name'],
+                        'data_type': dataset_config.get('data_type', 'continuous'),
+                        'band_name': dataset_config.get('band_name'),
+                        'enabled': True
+                    }
+                    loaded_dataset_infos.append(loaded_info)
+                
+                # Set all the context variables that LoadStage would set
+                self.context.set('loaded_datasets', loaded_dataset_infos)
                 self.context.set('target_datasets', enabled_datasets)
                 self.context.set('dataset_configs', enabled_datasets)
             

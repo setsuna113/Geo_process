@@ -94,7 +94,7 @@ class DataLoadStage(PipelineStage):
                             source_resolution = abs(src.transform[0])  # pixel width in degrees
                             
                             # Get target resolution from config
-                            target_resolution = context.config.get('resampling.target_resolution_degrees', 0.0416667)
+                            target_resolution = context.config.get('resampling.target_resolution', 0.0416667)
                             tolerance = context.config.get('resampling.resolution_tolerance', 0.001)
                             
                             # Check if resolution matches (within tolerance)
