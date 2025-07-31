@@ -7,6 +7,7 @@
 # Pipeline control - for production
 pipeline:
   allow_skip_stages: false  # Set to true if you want to skip already processed stages
+  processing_bounds: 'tiny_test'  # Use tiny test region for quick debugging
 
 # =============================================================================
 # PATHS CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
@@ -56,7 +57,7 @@ resampling:
   validate_output: true
   preserve_sum: true  # Important for richness data
   cache_resampled: true
-  engine: 'numpy'  # 'numpy' or 'gdal'
+  engine: 'gdal'   # 'numpy' or 'gdal' - GDAL is faster for large rasters
   
   # Window processing settings (always enabled)
   window_size: 2048  # Process in 2048x2048 windows
@@ -140,7 +141,7 @@ datasets:
 # =============================================================================
 processing:
   # Memory and chunking settings - optimized for available resources
-  memory_limit_gb: 300             # Conservative with current usage at 771GB/1TB
+  memory_limit_gb: 80              # Conservative with only ~118GB available
   chunk_size: 5000                 # Larger chunks for efficiency
   enable_chunking: true
   checkpoint_interval: 5           # More frequent checkpoints
@@ -164,7 +165,7 @@ processing:
 # RASTER PROCESSING FOR HIGH-MEMORY SYSTEM
 # =============================================================================
 raster_processing:
-  memory_limit_mb: 300000  # 300GB in MB (conservative)
+  memory_limit_mb: 80000   # 80GB in MB (adjusted for available memory)
   max_chunk_size_mb: 2000  # 2GB - force chunking for large datasets
   parallel_workers: 150     # Match processing workers
   tile_size: 1024         # Reduced for better processing of high-res fungi datasets
@@ -187,7 +188,7 @@ raster_processing:
 # SOM ANALYSIS - OPTIMIZED FOR QUALITY ON HIGH-MEMORY SYSTEM
 # =============================================================================
 som_analysis:
-  max_pixels_in_memory: 500000000  # Handle full dataset in memory
+  max_pixels_in_memory: 100000000  # Reduced for available memory
   memory_overhead_factor: 2.0      # Reduced overhead with abundant RAM
   use_memory_mapping: false        # Keep everything in RAM for speed
   
