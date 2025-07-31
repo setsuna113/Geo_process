@@ -183,13 +183,55 @@ som_analysis:
   memory_overhead_factor: 2.0      # Reduced overhead with abundant RAM
   use_memory_mapping: false        # Keep everything in RAM for speed
   
-  # High-quality SOM settings
+  # High-quality SOM settings optimized for biodiversity data
   default_grid_size: [12, 12]      # Larger grid for better resolution
   iterations: 8000                 # More iterations for convergence
   sigma: 1.5                       # Standard deviation for neighborhood
   learning_rate: 0.5               # Learning rate
   neighborhood_function: 'gaussian'
   random_seed: 42
+  # Note: Manhattan distance is always used (objectively better for biodiversity data)
+  
+  # Dynamic convergence settings
+  enable_dynamic_convergence: true
+  convergence_method: 'unified'    # 'unified', 'multi_criteria', 'batch_unified'
+  convergence:
+    # Weight stabilization thresholds
+    weight_threshold: 1e-6
+    weight_stabilization_threshold: 1e-6
+    weight_stabilization_patience: 3
+    
+    # Quality thresholds
+    quantization_error_threshold: 1e-6
+    topographic_error_threshold: 0.01
+    convergence_threshold: 0.95     # Unified convergence index threshold
+    confidence_level: 0.95
+    
+    # Unified convergence index weights
+    alpha: 0.6  # Weight for embedding accuracy
+    beta: 0.4   # Weight for topographic accuracy
+    
+    # Convergence checking parameters
+    check_interval: 100
+    min_iterations: 500
+    patience: 5
+    convergence_window: 10
+    
+    # Advanced convergence options optimized for biodiversity data
+    # Note: Manhattan distance is always used (matches SOM training)
+    learning_rate_schedule: 'vlrsom'  # 'fixed', 'linear_decay', 'exponential_decay', 'vlrsom', 'adaptive'
+    require_both_criteria: true     # For batch_unified: require both weight stabilization AND quality
+  
+  # Spatial validation framework for rigorous biodiversity analysis
+  validation:
+    enabled: true                   # Enable spatial train/validate/test framework
+    spatial_split_strategy: 'latitudinal'  # 'latitudinal', 'longitudinal', 'continental', 'ecoregion', 'random_spatial', 'checkerboard'
+    train_ratio: 0.7               # 70% for training
+    validation_ratio: 0.15         # 15% for validation (early stopping)
+    test_ratio: 0.15               # 15% for final evaluation
+    patience: 10                   # Epochs without improvement before early stopping
+    min_improvement: 1e-5          # Minimum improvement to reset patience
+    save_checkpoints: true         # Save best model checkpoints
   
   subsample_ratio: 1.0             # Use full dataset when possible
   min_samples: 50000               # Minimum samples even for small datasets
@@ -503,3 +545,127 @@ machine_learning:
           - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A'
           - 'F ~ avg_temp + avg_precip + seasonal_temp + P + A + P:seasonal_temp + A:avg_temp'
         experiment_name: 'extended_climate_analysis'
+
+# =============================================================================
+# SPATIAL ANALYSIS CONFIGURATION
+# =============================================================================
+spatial_analysis:
+  # Default settings for all analysis runs
+  defaults:
+    data_source: 'parquet'  # parquet|database|csv
+    save_results: true
+    save_intermediate: false
+    keep_results_in_memory: false
+    chunk_size: 10000
+    memory_limit_gb: 8.0
+    enable_checkpointing: true
+    checkpoint_interval: 100  # Save checkpoint every N chunks
+    
+  # Named analysis experiments for reproducibility
+  experiments:
+    # Quick SOM test with unified convergence
+    test_som:
+      input_parquet: 'outputs/test_biodiversity.parquet'
+      method: 'som'
+      grid_size: [6, 6]
+      max_iterations: 2000
+      convergence_threshold: 1e-6
+      enable_dynamic_convergence: true
+      convergence_method: 'unified'
+      
+    # Production SOM analysis with advanced convergence
+    production_som:
+      input_parquet: 'outputs/biodiversity_global.parquet'
+      method: 'som'
+      grid_size: [12, 12]
+      max_iterations: 8000
+      convergence_threshold: 1e-7
+      enable_dynamic_convergence: true
+      convergence_method: 'unified'
+      sigma: 1.5
+      learning_rate: 0.5
+      
+    # Batch SOM test with batch unified convergence
+    test_batch_som:
+      input_parquet: 'outputs/test_biodiversity.parquet'
+      method: 'som'
+      grid_size: [8, 8]
+      max_iterations: 1000
+      enable_dynamic_convergence: true
+      convergence_method: 'batch_unified'  # Uses batch training + unified convergence index!
+      sigma: 1.0
+      learning_rate: 0.3
+      
+    # Advanced unified convergence test
+    test_advanced_som:
+      input_parquet: 'outputs/test_biodiversity.parquet'
+      method: 'som'
+      grid_size: [10, 10]
+      max_iterations: 2000
+      enable_dynamic_convergence: true
+      convergence_method: 'unified'  # Uses VLRSOM + unified convergence index!
+      sigma: 1.2
+      learning_rate: 0.4
+      
+    # GWPCA test
+    test_gwpca:
+      input_parquet: 'outputs/test_biodiversity.parquet'
+      method: 'gwpca'
+      n_components: 3
+      bandwidth: 'adaptive'
+      kernel: 'gaussian'
+      adaptive_bw: 50
+      
+    # Production GWPCA
+    production_gwpca:
+      input_parquet: 'outputs/biodiversity_global.parquet'
+      method: 'gwpca'
+      n_components: 5
+      bandwidth: 'adaptive'
+      kernel: 'gaussian'
+      adaptive_bw: 100
+      
+    # MaxP regionalization test
+    test_maxp:
+      input_parquet: 'outputs/test_biodiversity.parquet'
+      method: 'maxp_regions'
+      min_region_size: 10
+      spatial_weights: 'queen'
+      threshold_variable: 'total_richness'
+      method_type: 'ward'
+      random_seed: 42
+
+# Method-specific configurations (maintains backward compatibility)
+som_analysis:
+  max_pixels_in_memory: 1000000
+  memory_overhead_factor: 3.0
+  use_memory_mapping: true
+  default_grid_size: [10, 10]
+  iterations: 8000
+  sigma: 1.5
+  learning_rate: 0.5
+  neighborhood_function: 'gaussian'
+  random_seed: 42
+  
+  # Dynamic convergence settings
+  convergence:
+    enable_dynamic: true
+    weight_threshold: 1e-6
+    quantization_error_threshold: 1e-6
+    check_interval: 100  # Check every N iterations
+    min_iterations: 500  # Minimum iterations before checking
+    patience: 5  # Stop if no improvement for N checks
+
+gwpca_analysis:
+  n_components: 3
+  bandwidth: 'adaptive'
+  kernel: 'gaussian'
+  adaptive_bw: 50
+  standardize_data: true
+
+maxp_analysis:
+  n_regions: 10
+  min_region_size: 5
+  method: 'ward'
+  spatial_weights: 'queen'
+  random_seed: 42

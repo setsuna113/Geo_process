@@ -8,9 +8,8 @@ import numpy as np
 import tempfile
 import os
 import gc
-from minisom import MiniSom
-
 from src.base.analyzer import BaseAnalyzer
+from .manhattan_som import ManhattanSOMWrapper
 from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
 from src.spatial_analysis.memory_aware_processor import (
     SubsamplingStrategy, 
@@ -19,6 +18,10 @@ from src.spatial_analysis.memory_aware_processor import (
 )
 from src.config.config import Config
 from src.database.connection import DatabaseManager
+from .dynamic_convergence import DynamicConvergenceDetector
+from .advanced_convergence import AdvancedConvergenceDetector, create_advanced_convergence_detector
+from .batch_unified_convergence import BatchUnifiedConvergenceDetector, create_batch_convergence_detector
+from .biodiversity_som_validator import DataSplit
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +44,8 @@ class SOMAnalyzer(BaseAnalyzer):
         # Initialize base analyzer with config
         super().__init__(config, db_connection)
 
-        if MiniSom is None:
-            raise ImportError("minisom is required for SOM analysis. Install with: pip install minisom")
+        # Always use Manhattan distance for biodiversity data (objectively better)
+        logger.info("Using Manhattan distance SOM (optimized for biodiversity data)")
         
         # SOM-specific config using safe_get_config from base
         som_config = self.safe_get_config('spatial_analysis.som', {})
@@ -51,6 +54,14 @@ class SOMAnalyzer(BaseAnalyzer):
         self.default_sigma = som_config.get('sigma', 1.0)
         self.default_learning_rate = som_config.get('learning_rate', 0.5)
         self.default_neighborhood = som_config.get('neighborhood_function', 'gaussian')
+        
+        # Dynamic convergence configuration
+        self.enable_dynamic_convergence = som_config.get('enable_dynamic_convergence', True)
+        self.convergence_method = som_config.get('convergence_method', 'unified')  # 'unified', 'multi_criteria', 'batch_unified'
+        self.convergence_config = som_config.get('convergence', {})
+        
+        # Progress callback for convergence tracking
+        self.progress_callback = None
         
         # Memory-aware processing config using safe_get_config
         self.subsampling_config = self.safe_get_config('processing.subsampling', {})
@@ -74,7 +85,9 @@ class SOMAnalyzer(BaseAnalyzer):
             'learning_rate': self.default_learning_rate,
             'neighborhood_function': self.default_neighborhood,
             'random_seed': 42,
-            'topology': 'rectangular'
+            'topology': 'rectangular',
+            'enable_dynamic_convergence': self.enable_dynamic_convergence,
+            'convergence_method': self.convergence_method
         }
     
     def validate_parameters(self, parameters: Dict[str, Any]) -> Tuple[bool, List[str]]:
@@ -109,6 +122,12 @@ class SOMAnalyzer(BaseAnalyzer):
         if neighborhood not in valid_neighborhoods:
             issues.append(f"neighborhood_function must be one of {valid_neighborhoods}")
         
+        # Check convergence method
+        valid_convergence_methods = ['unified', 'multi_criteria', 'batch_unified']
+        convergence_method = parameters.get('convergence_method', 'unified')
+        if convergence_method not in valid_convergence_methods:
+            issues.append(f"convergence_method must be one of {valid_convergence_methods}")
+        
         return len(issues) == 0, issues
     
     def estimate_memory_requirements(self, data_shape: Tuple[int, ...], 
@@ -123,6 +142,117 @@ class SOMAnalyzer(BaseAnalyzer):
         memory_info['fits_in_memory'] = bool(som_overhead_gb < memory_info['available_gb'] * 0.6)
         
         return memory_info
+    
+    def set_progress_callback(self, callback):
+        """Set progress callback for convergence tracking."""
+        self.progress_callback = callback
+    
+    def train_with_dynamic_convergence(self,
+                                     data: np.ndarray,
+                                     som: Any,
+                                     params: Dict[str, Any]) -> Tuple[Any, Dict[str, Any]]:
+        """Train SOM with dynamic convergence detection."""
+        # Create convergence detector based on method
+        convergence_method = params.get('convergence_method', 'unified')
+        
+        if convergence_method == 'batch_unified':
+            convergence_detector = create_batch_convergence_detector(
+                **self.convergence_config
+            )
+        elif convergence_method == 'unified':
+            convergence_detector = create_advanced_convergence_detector(
+                method='unified',
+                **self.convergence_config
+            )
+        else:
+            # Multi-criteria fallback
+            convergence_detector = DynamicConvergenceDetector(
+                **self.convergence_config
+            )
+        
+        logger.info(f"Training SOM with {convergence_method} convergence detection")
+        
+        max_iterations = params['iterations']
+        actual_iterations = 0
+        converged = False
+        convergence_info = {}
+        
+        # Training loop with convergence checking
+        for iteration in range(max_iterations):
+            # Perform one iteration of training
+            if convergence_method == 'batch_unified':
+                # Batch training mode
+                som.train_batch(data, 1, random_order=False)
+                
+                # Check convergence every 10 iterations
+                if iteration > 0 and iteration % 10 == 0:
+                    result = convergence_detector.check_batch_convergence(
+                        som, data, iteration, max_iterations
+                    )
+                    converged = result.is_converged
+                    convergence_info = {
+                        'method': 'batch_unified',
+                        'weight_stabilized': result.weight_stabilized,
+                        'quality_converged': result.quality_converged,
+                        'convergence_reason': result.convergence_reason,
+                        'weight_change': result.weight_change,
+                        'unified_index': result.unified_result.convergence_index
+                    }
+            else:
+                # Sequential training mode
+                som.train_random(data, 1)
+                
+                # Check convergence
+                if convergence_detector.should_check_convergence(iteration):
+                    if hasattr(convergence_detector, 'check_advanced_convergence'):
+                        converged, conv_info = convergence_detector.check_advanced_convergence(
+                            som, data, iteration, max_iterations
+                        )
+                        convergence_info = conv_info
+                    else:
+                        converged, metrics = convergence_detector.check_convergence(
+                            som, data, iteration
+                        )
+                        convergence_info = {
+                            'method': 'multi_criteria',
+                            'weight_change': metrics.weight_change,
+                            'quantization_error': metrics.quantization_error,
+                            'topographic_error': metrics.topographic_error,
+                            'convergence_score': metrics.convergence_score
+                        }
+            
+            actual_iterations = iteration + 1
+            
+            # Progress callback
+            if self.progress_callback and iteration % 50 == 0:
+                self.progress_callback(
+                    iteration, max_iterations, 
+                    f"Training iteration {iteration}/{max_iterations}"
+                )
+            
+            # Check if converged
+            if converged:
+                logger.info(f"SOM converged after {actual_iterations} iterations")
+                break
+        
+        # Final convergence summary
+        if hasattr(convergence_detector, 'get_batch_summary'):
+            summary = convergence_detector.get_batch_summary()
+        elif hasattr(convergence_detector, 'get_advanced_summary'):
+            summary = convergence_detector.get_advanced_summary()
+        else:
+            summary = convergence_detector.get_convergence_summary()
+        
+        training_info = {
+            'converged': converged,
+            'actual_iterations': actual_iterations,
+            'max_iterations': max_iterations,
+            'convergence_method': convergence_method,
+            'convergence_info': convergence_info,
+            'convergence_summary': summary
+        }
+        
+        return som, training_info
     
     def train_with_subsampling(self, 
                               data: np.ndarray, 
@@ -170,10 +300,15 @@ class SOMAnalyzer(BaseAnalyzer):
             
             # Memory mapping with proper scope management (not needed for subsampled data)
             try:
-                
-                # Train on subsample
-                logger.info(f"Training SOM on {train_data.shape[0]:,} samples (subsampled from {n_samples:,})")
-                som.train_random(train_data, params['iterations'])
+                # Train with dynamic convergence if enabled
+                if params.get('enable_dynamic_convergence', True):
+                    logger.info(f"Training SOM on {train_data.shape[0]:,} samples (subsampled from {n_samples:,}) with dynamic convergence")
+                    som, training_info = self.train_with_dynamic_convergence(train_data, som, params)
+                else:
+                    # Traditional fixed iteration training
+                    logger.info(f"Training SOM on {train_data.shape[0]:,} samples (subsampled from {n_samples:,}) with fixed iterations")
+                    som.train_random(train_data, params['iterations'])
+                    training_info = {'converged': False, 'actual_iterations': params['iterations']}
                 
                 # Store sampling info with proper type conversion
                 sampling_info = {
@@ -181,7 +316,8 @@ class SOMAnalyzer(BaseAnalyzer):
                     'sample_indices': sample_indices,
                     'total_samples': int(n_samples),  # Ensure Python int
                     'train_samples': int(train_data.shape[0]),  # Ensure Python int
-                    'sampling_ratio': float(train_data.shape[0] / n_samples)  # Ensure Python float
+                    'sampling_ratio': float(train_data.shape[0] / n_samples),  # Ensure Python float
+                    'training_info': training_info
                 }
                 
                 # Force garbage collection
@@ -191,14 +327,22 @@ class SOMAnalyzer(BaseAnalyzer):
                 # Cleanup - minimal since we're using subsampled data directly
                 pass
         else:
-            # Train on full dataset
-            logger.info(f"Training SOM on full dataset ({n_samples:,} samples)")
-            som.train_random(data, params['iterations'])
+            # Train with dynamic convergence if enabled
+            if params.get('enable_dynamic_convergence', True):
+                logger.info(f"Training SOM on full dataset ({n_samples:,} samples) with dynamic convergence")
+                som, training_info = self.train_with_dynamic_convergence(data, som, params)
+            else:
+                # Traditional fixed iteration training
+                logger.info(f"Training SOM on full dataset ({n_samples:,} samples) with fixed iterations")
+                som.train_random(data, params['iterations'])
+                training_info = {'converged': False, 'actual_iterations': params['iterations']}
+            
             sampling_info = {
                 'used_subsampling': False,
                 'total_samples': int(n_samples),  # Ensure Python int
                 'train_samples': int(n_samples),  # Ensure Python int
-                'sampling_ratio': float(1.0)  # Ensure Python float
+                'sampling_ratio': float(1.0),  # Ensure Python float
+                'training_info': training_info
             }
         
         return som, sampling_info
@@ -321,6 +465,11 @@ class SOMAnalyzer(BaseAnalyzer):
             'random_seed': random_seed or params['random_seed']
         })
         
+        # Add dynamic convergence parameters from kwargs
+        params['enable_dynamic_convergence'] = kwargs.get('enable_dynamic_convergence', self.enable_dynamic_convergence)
+        params['convergence_method'] = kwargs.get('convergence_method', self.convergence_method)
+        params['convergence_threshold'] = kwargs.get('convergence_threshold', 1e-6)
+        
         # Validate parameters
         valid, issues = self.validate_parameters(params)
         if not valid:
@@ -342,9 +491,10 @@ class SOMAnalyzer(BaseAnalyzer):
         n_samples, n_features = prepared_data.shape
         logger.info(f"Training SOM on {n_samples} samples with {n_features} features")
         
-        # Initialize SOM
-        self._update_progress(2, 5, "Initializing SOM")
-        som = MiniSom(
+        # Initialize Manhattan distance SOM (objectively better for biodiversity data)
+        self._update_progress(2, 5, "Initializing Manhattan SOM")
+        
+        som = ManhattanSOMWrapper(
             x=params['grid_size'][0],
             y=params['grid_size'][1],
             input_len=n_features,
@@ -353,6 +503,7 @@ class SOMAnalyzer(BaseAnalyzer):
             neighborhood_function=params['neighborhood_function'],
             random_seed=params['random_seed']
         )
+        logger.info("Initialized Manhattan distance SOM (L1 norm) - optimized for species data")
         
         # Memory-aware training
         self._update_progress(3, 5, "Training SOM")
@@ -494,3 +645,99 @@ class SOMAnalyzer(BaseAnalyzer):
         _, counts = np.unique(labels, return_counts=True)
         # Use coefficient of variation
         return float(np.std(counts) / np.mean(counts))
+    
+    def _train_with_spatial_validation(self, 
+                                      data: np.ndarray,
+                                      som,
+                                      params: Dict[str, Any],
+                                      coordinates: np.ndarray) -> Tuple[Any, Dict[str, Any]]:
+        """Train SOM with spatial validation framework."""
+        logger.info("Starting SOM training with spatial validation framework")
+        
+        # Create spatial data splitter
+        splitter = create_spatial_splitter(
+            strategy=params['spatial_split_strategy'],
+            train_ratio=self.train_ratio,
+            validation_ratio=self.validation_ratio,
+            test_ratio=self.test_ratio
+        )
+        
+        # Split data spatially
+        data_split = splitter.split_data(data, coordinates)
+        
+        # Create SOM validator
+        validator = create_som_validator(
+            patience=self.validation_patience,
+            min_improvement=self.validation_min_improvement,
+            validation_interval=10,
+            max_epochs=params.get('iterations', 1000)
+        )
+        
+        # Train with validation-based early stopping using advanced convergence
+        training_results = validator.train_with_validation(
+            som=som, 
+            data_split=data_split,
+            convergence_method=params.get('convergence_method', 'unified'),
+            use_batch_training=(params.get('convergence_method') == 'batch_unified'),
+            progress_callback=self.progress_callback
+        )
+        
+        # Return training info with all details
+        training_info = {
+            'converged': training_results['converged'],
+            'best_epoch': training_results['best_epoch'],
+            'total_epochs': training_results['total_epochs'],
+            'training_time': training_results['training_time'],
+            'best_validation_qe': training_results['best_validation_qe'],
+            'overfitting_detected': training_results['overfitting_detected'],
+            'data_split': data_split,
+            'validation_history': training_results['validation_history'],
+            'spatial_split_metadata': data_split.split_metadata
+        }
+        
+        logger.info(f"Spatial validation training completed: "
+                   f"converged={training_results['converged']}, "
+                   f"epochs={training_results['total_epochs']}, "
+                   f"overfitting={training_results['overfitting_detected']}")
+        
+        return som, training_info
+    
+    def _perform_final_evaluation(self, 
+                                 som,
+                                 data_split: DataSplit,
+                                 full_data: np.ndarray,
+                                 coordinates: Optional[np.ndarray]) -> Dict[str, Any]:
+        """Perform comprehensive biodiversity evaluation on test set."""
+        logger.info("Performing final biodiversity evaluation on test set")
+        
+        # Create biodiversity evaluator
+        evaluator = create_biodiversity_evaluator(
+            coordinates=coordinates,
+            species_data=full_data  # Use full data as proxy for species data
+        )
+        
+        # Evaluate on test set
+        test_metrics = evaluator.evaluate_som(
+            som, data_split.test_data, data_split.test_coords
+        )
+        
+        # Also evaluate on validation set for comparison
+        validation_metrics = evaluator.evaluate_som(
+            som, data_split.validation_data, data_split.validation_coords
+        )
+        
+        evaluation_results = {
+            'test_metrics': test_metrics,
+            'validation_metrics': validation_metrics,
+            'test_sample_count': len(data_split.test_data),
+            'validation_sample_count': len(data_split.validation_data),
+            'evaluation_timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        
+        logger.info("Final biodiversity evaluation completed")
+        logger.info(f"Test set performance:")
+        logger.info(f"  Quantization Error: {test_metrics.quantization_error:.4f}")
+        logger.info(f"  Biogeographic Coherence: {test_metrics.biogeographic_coherence:.3f}")
+        logger.info(f"  Species Association Accuracy: {test_metrics.species_association_accuracy:.3f}")
+        
+        return evaluation_results
