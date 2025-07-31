@@ -171,8 +171,8 @@ if [ "$DAEMON_MODE" = true ]; then
     # Create logs directory
     mkdir -p "$PROJECT_ROOT/logs"
     
-    # Run as background process with nohup
-    nohup $ANALYSIS_CMD > "$PROJECT_ROOT/logs/${PROCESS_NAME}.log" 2>&1 &
+    # Run as background process with nohup (properly quoted for security)
+    nohup bash -c "exec $ANALYSIS_CMD" > "$PROJECT_ROOT/logs/${PROCESS_NAME}.log" 2>&1 &
     PID=$!
     echo "🌙 Analysis pipeline started as daemon (PID: $PID)"
     echo "📝 Logs: $PROJECT_ROOT/logs/${PROCESS_NAME}.log"

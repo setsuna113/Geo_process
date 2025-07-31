@@ -18,8 +18,9 @@ import traceback
 import yaml
 import gc
 
-# Set environment variable to skip database initialization
-os.environ['SKIP_DB_INIT'] = 'true'
+# Skip database initialization for standalone mode
+# Using explicit flag instead of environment variable to avoid masking initialization errors
+SKIP_DB_INIT = True
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -29,6 +30,7 @@ from src.processors.data_preparation.standalone_analysis_datasets import create_
 from src.processors.data_preparation.analysis_checkpoint import create_checkpointer
 from src.core.enhanced_progress_manager import EnhancedProgressManager
 from src.pipelines.stages.analyzer_factory import AnalyzerFactory
+from src.infrastructure.monitoring.unified_monitor import UnifiedMonitor
 
 
 class StandaloneAnalysisRunner:
@@ -46,6 +48,9 @@ class StandaloneAnalysisRunner:
             db_manager=None,     # No database dependency
             use_database=False   # Force memory-only backend
         )
+        
+        # Initialize unified monitoring system (uses memory backend without database)
+        self.monitor = UnifiedMonitor(self.config, db_manager=None)
     
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file."""
@@ -72,6 +77,36 @@ class StandaloneAnalysisRunner:
         )
         
         return logging.getLogger(__name__)
+    
+    def _resolve_output_path(self, configured_path: str) -> Path:
+        """Resolve output path with environment detection and fallbacks."""
+        path = Path(configured_path)
+        
+        # Handle system-specific paths with better detection
+        if configured_path.startswith('/scratch'):
+            # Check if we're in a high-performance computing environment
+            if Path('/scratch').exists() and Path('/scratch').is_dir():
+                return path
+            else:
+                self.logger.warning("Scratch filesystem not available, using local outputs directory")
+                return Path('outputs')
+        
+        # Handle other absolute paths
+        if path.is_absolute():
+            # Ensure parent directory is writable
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # Test write permissions
+                test_file = path.parent / '.write_test'
+                test_file.touch()
+                test_file.unlink()
+                return path
+            except (PermissionError, OSError) as e:
+                self.logger.warning(f"Cannot write to {path}: {e}, using local outputs directory")
+                return Path('outputs')
+        
+        # Relative paths are fine as-is
+        return path
     
     def load_experiment_config(self, experiment_name: str) -> Dict[str, Any]:
         """Load experiment configuration from config.yml."""
@@ -114,12 +149,9 @@ class StandaloneAnalysisRunner:
                 self.logger.error("No analysis method specified")
                 return False
             
-            # Create output directory
+            # Create output directory with proper path validation
             output_base_config = self.config.get('output_paths', {}).get('results_dir', 'outputs')
-            if output_base_config.startswith('/scratch') and not Path('/scratch').exists():
-                output_base = Path('outputs')
-            else:
-                output_base = Path(output_base_config)
+            output_base = self._resolve_output_path(output_base_config)
             
             exp_name = analysis_config.get('experiment_name', f"{analysis_method}_{datetime.now():%Y%m%d_%H%M%S}")
             output_dir = output_base / 'analysis_results' / analysis_method / exp_name
@@ -132,6 +164,9 @@ class StandaloneAnalysisRunner:
             
             # Set experiment ID for progress tracking
             self.progress_manager.set_experiment(exp_name)
+            
+            # Start unified monitoring (memory, CPU, system metrics)
+            self.monitor.start(exp_name)
             
             # Create dataset
             self.logger.info("Loading dataset...")
@@ -206,7 +241,7 @@ class StandaloneAnalysisRunner:
                 )
                 self.logger.info(f"Results saved to: {output_path}")
             
-            # Save metrics
+            # Save metrics 
             metrics = self._extract_metrics(results, params, dataset_info)
             metrics_path = output_dir / "metrics.json"
             with open(metrics_path, 'w') as f:
@@ -217,6 +252,9 @@ class StandaloneAnalysisRunner:
             if checkpointer:
                 checkpointer.cleanup_old_checkpoints(keep_last=3)
             
+            # Stop unified monitoring
+            self.monitor.stop()
+            
             # Force garbage collection
             gc.collect()
             
@@ -226,6 +264,11 @@ class StandaloneAnalysisRunner:
         except Exception as e:
             self.logger.error(f"Analysis experiment failed: {e}")
             self.logger.error(traceback.format_exc())
+            # Ensure monitoring is stopped even on failure
+            try:
+                self.monitor.stop()
+            except Exception as monitor_error:
+                self.logger.debug(f"Error stopping monitor: {monitor_error}")
             return False
     
     def _setup_progress_tracking(self, analysis_method: str, exp_name: str):

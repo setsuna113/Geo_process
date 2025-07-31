@@ -213,13 +213,14 @@ class ManhattanSOM:
                 logger.debug(f"Batch training epoch {epoch}/{num_epochs}")
     
     def quantization_error(self, data: np.ndarray) -> float:
-        """Calculate quantization error using Manhattan distance."""
-        total_error = 0.0
-        for sample in data:
-            bmu_distance = self.winner_distance(sample)
-            total_error += bmu_distance
+        """Calculate quantization error using Manhattan distance (vectorized)."""
+        if len(data) == 0:
+            return 0.0
         
-        return total_error / len(data)
+        # Vectorized calculation for better performance
+        # Calculate distances to all neurons for all samples at once
+        distances = np.array([self.winner_distance(sample) for sample in data])
+        return np.mean(distances)
     
     def topographic_error(self, data: np.ndarray) -> float:
         """Calculate topographic error."""

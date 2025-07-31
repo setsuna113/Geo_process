@@ -159,11 +159,23 @@ class BiodiversitySOMAnalyzer(BaseAnalyzer):
         features = df[feature_cols].values
         logger.info(f"Using {len(feature_cols)} feature columns: {feature_cols[:5]}...")
         
-        # Handle missing values
+        # Handle missing values with more appropriate strategy
         if np.any(np.isnan(features)):
             n_missing = np.sum(np.isnan(features))
-            logger.warning(f"Found {n_missing:,} missing values, replacing with 0")
-            features = np.nan_to_num(features, nan=0.0)
+            missing_percent = (n_missing / features.size) * 100
+            logger.warning(f"Found {n_missing:,} missing values ({missing_percent:.2f}% of data)")
+            
+            # Use column-wise median imputation instead of zero-filling
+            # This is more appropriate for biodiversity metrics
+            for col_idx in range(features.shape[1]):
+                col_data = features[:, col_idx]
+                nan_mask = np.isnan(col_data)
+                if np.any(nan_mask):
+                    col_median = np.nanmedian(col_data)
+                    # If all values in column are NaN, use 0 as fallback
+                    fill_value = col_median if not np.isnan(col_median) else 0.0
+                    features[nan_mask, col_idx] = fill_value
+                    logger.debug(f"Filled {np.sum(nan_mask)} NaN values in column {col_idx} with {fill_value:.4f}")
         
         return features, coordinates, feature_cols
     
@@ -266,16 +278,53 @@ class BiodiversitySOMAnalyzer(BaseAnalyzer):
         
         logger.info(f"VLRSOM training completed: converged={vlrsom_result.converged}")
         
-        # Generate cluster labels for all data
+        # Generate cluster labels for all data with memory optimization
         self._update_progress(5, 6, "Generating cluster labels")
         if data_split is not None:
-            # Predict on all data (train + val + test)
-            all_labels = np.zeros(n_samples, dtype=int)
-            all_labels[data_split.train_indices] = som.predict(data_split.train_data)
-            all_labels[data_split.validation_indices] = som.predict(data_split.validation_data)
-            all_labels[data_split.test_indices] = som.predict(data_split.test_data)
+            # For large datasets, process in chunks to reduce memory pressure
+            if n_samples > 100000:
+                logger.info(f"Processing {n_samples:,} samples in chunks to optimize memory usage")
+                all_labels = np.zeros(n_samples, dtype=np.int32)  # Use int32 instead of int for memory efficiency
+                
+                # Process train data in chunks
+                chunk_size = 10000
+                for i in range(0, len(data_split.train_indices), chunk_size):
+                    end_idx = min(i + chunk_size, len(data_split.train_indices))
+                    indices_chunk = data_split.train_indices[i:end_idx]
+                    data_chunk = data_split.train_data[i:end_idx]
+                    all_labels[indices_chunk] = som.predict(data_chunk)
+                
+                # Process validation data in chunks
+                for i in range(0, len(data_split.validation_indices), chunk_size):
+                    end_idx = min(i + chunk_size, len(data_split.validation_indices))
+                    indices_chunk = data_split.validation_indices[i:end_idx]
+                    data_chunk = data_split.validation_data[i:end_idx]
+                    all_labels[indices_chunk] = som.predict(data_chunk)
+                
+                # Process test data in chunks
+                for i in range(0, len(data_split.test_indices), chunk_size):
+                    end_idx = min(i + chunk_size, len(data_split.test_indices))
+                    indices_chunk = data_split.test_indices[i:end_idx]
+                    data_chunk = data_split.test_data[i:end_idx]
+                    all_labels[indices_chunk] = som.predict(data_chunk)
+            else:
+                # Original method for smaller datasets
+                all_labels = np.zeros(n_samples, dtype=np.int32)
+                all_labels[data_split.train_indices] = som.predict(data_split.train_data)
+                all_labels[data_split.validation_indices] = som.predict(data_split.validation_data)
+                all_labels[data_split.test_indices] = som.predict(data_split.test_data)
         else:
-            all_labels = som.predict(features)
+            # Process features in chunks if dataset is large
+            if len(features) > 100000:
+                logger.info(f"Processing {len(features):,} features in chunks to optimize memory usage")
+                all_labels = np.zeros(len(features), dtype=np.int32)
+                chunk_size = 10000
+                for i in range(0, len(features), chunk_size):
+                    end_idx = min(i + chunk_size, len(features))
+                    chunk_labels = som.predict(features[i:end_idx])
+                    all_labels[i:end_idx] = chunk_labels
+            else:
+                all_labels = som.predict(features)
         
         # Calculate statistics
         self._update_progress(6, 6, "Calculating statistics")

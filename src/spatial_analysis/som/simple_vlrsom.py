@@ -183,7 +183,11 @@ class SimpleVLRSOM:
         for iteration in range(self.max_iterations):
             # Perform one training iteration
             # Use stochastic training (one random sample per iteration)
-            sample_idx = np.random.randint(0, len(train_data))
+            # Protect against race conditions with bounds checking
+            data_len = len(train_data)
+            if data_len == 0:
+                break
+            sample_idx = np.random.randint(0, data_len)
             sample = train_data[sample_idx]
             
             # Train SOM with current learning rate

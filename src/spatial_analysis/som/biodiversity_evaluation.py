@@ -325,12 +325,34 @@ class BiodiversityEvaluator:
         if n_samples < 10:
             return 0.0
         
-        # Calculate distance matrix
-        distance_matrix = squareform(pdist(coordinates))
-        
-        # Find nearby pairs (within certain distance threshold)
-        distance_threshold = np.percentile(distance_matrix[distance_matrix > 0], 10)
-        nearby_pairs = distance_matrix <= distance_threshold
+        # For large datasets, use spatial indexing instead of full distance matrix
+        if n_samples > 10000:
+            # Use KDTree for efficient spatial queries
+            from sklearn.neighbors import NearestNeighbors
+            
+            # Find k nearest neighbors instead of full distance matrix
+            k = min(50, n_samples // 100)  # Adaptive k based on sample size
+            nbrs = NearestNeighbors(n_neighbors=k, algorithm='kd_tree').fit(coordinates)
+            _, indices = nbrs.kneighbors(coordinates)
+            
+            # Count matching labels among neighbors
+            same_cluster_count = 0
+            total_pairs = 0
+            
+            for i, neighbors in enumerate(indices):
+                for j in neighbors[1:]:  # Skip self (index 0)
+                    total_pairs += 1
+                    if labels[i] == labels[j]:
+                        same_cluster_count += 1
+            
+            return same_cluster_count / total_pairs if total_pairs > 0 else 0.0
+        else:
+            # Original method for smaller datasets
+            distance_matrix = squareform(pdist(coordinates))
+            
+            # Find nearby pairs (within certain distance threshold)
+            distance_threshold = np.percentile(distance_matrix[distance_matrix > 0], 10)
+            nearby_pairs = distance_matrix <= distance_threshold
         
         # Calculate proportion of nearby pairs with same cluster
         same_cluster_count = 0
