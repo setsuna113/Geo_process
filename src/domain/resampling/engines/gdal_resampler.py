@@ -3,7 +3,7 @@
 
 import numpy as np
 from osgeo import gdal, osr
-from typing import Union, Optional, Tuple, Callable
+from typing import Union, Optional, Tuple, Callable, Dict, Any
 import xarray as xr
 import logging
 import signal
@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from .base_resampler import BaseResampler, ResamplingResult
 from ..strategies.area_weighted import AreaWeightedStrategy
 from ..strategies.sum_aggregation import SumAggregationStrategy
+from ..strategies.average_aggregation import AverageAggregationStrategy
 from ..strategies.majority_vote import MajorityVoteStrategy
 from src.base.memory_manager import get_memory_manager
 
@@ -77,13 +78,15 @@ class GDALResampler(BaseResampler):
     
     def _register_strategies(self):
         """Register custom resampling strategies."""
+        # Custom strategies for non-GDAL methods
         self.strategies = {
             'area_weighted': AreaWeightedStrategy(),
             'sum': SumAggregationStrategy(),
-            'majority': MajorityVoteStrategy(),
-            # GDAL built-in methods
-            **{name: None for name in self.GDAL_METHODS}
+            'average': AverageAggregationStrategy(),
+            'majority': MajorityVoteStrategy()
         }
+        
+        # GDAL built-in methods are handled separately via GDAL_METHODS enum
     
     def resample(self, 
                  source_data: Union[np.ndarray, xr.DataArray],
@@ -113,14 +116,20 @@ class GDALResampler(BaseResampler):
             target_bounds = source_bounds
         
         # Check if we need custom strategy or can use GDAL
-        if self.config.method in self.GDAL_METHODS:
+        # Note: 'average' in strategies means our custom AverageAggregationStrategy
+        # while 'average' in GDAL_METHODS is GDAL's built-in average
+        if self.config.method in self.strategies:
+            # Use custom strategy
+            return self._resample_custom(
+                source_array, source_bounds, target_bounds, progress_callback
+            )
+        elif self.config.method in self.GDAL_METHODS:
+            # Use GDAL built-in method
             return self._resample_gdal_with_timeout(
                 source_array, source_bounds, target_bounds, progress_callback
             )
         else:
-            return self._resample_custom(
-                source_array, source_bounds, target_bounds, progress_callback
-            )
+            raise ValueError(f"Unknown resampling method: {self.config.method}")
     
     def _resample_gdal_with_timeout(self,
                                    source_array: np.ndarray,
@@ -536,3 +545,15 @@ class GDALResampler(BaseResampler):
         coverage_ds = None
         
         return coverage_map
+    
+    def resample_windowed(self,
+                         source_path: str,
+                         target_table: str,
+                         db_connection,
+                         progress_callback: Optional[Callable[[str, float], None]] = None) -> Dict[str, Any]:
+        """
+        Resample raster data using windowed processing.
+        
+        Currently not implemented for GDAL resampler - use standard resample method.
+        """
+        raise NotImplementedError("Windowed resampling not yet implemented for GDAL engine. Use numpy engine for windowed processing.")
