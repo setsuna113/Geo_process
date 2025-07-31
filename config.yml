@@ -271,7 +271,7 @@ database:
   host: 'localhost'
   port: 51051  # Cluster database port
   database: 'geo_cluster_db'       # Cluster database name
-  user: 'jason'                    # Cluster username
+  user: 'yl998'                    # Cluster username
   password: '123456'        # Cluster password
   
   max_connections: 20               # More connections for parallel processing
