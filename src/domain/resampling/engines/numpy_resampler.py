@@ -13,6 +13,7 @@ from datetime import datetime
 from .base_resampler import BaseResampler, ResamplingResult
 from ..strategies.area_weighted import AreaWeightedStrategy
 from ..strategies.sum_aggregation import SumAggregationStrategy
+from ..strategies.average_aggregation import AverageAggregationStrategy
 from ..strategies.majority_vote import MajorityVoteStrategy
 from src.base.memory_manager import get_memory_manager
 
@@ -50,6 +51,7 @@ class NumpyResampler(BaseResampler):
             'area_weighted': AreaWeightedStrategy(),
             'sum': BlockSumAggregationStrategy(),  # Use efficient block-based sum
             'sum_legacy': SumAggregationStrategy(),  # Keep old version as legacy
+            'average': AverageAggregationStrategy(),  # For SDM predictions
             'majority': MajorityVoteStrategy(),
             'nearest': self._nearest_neighbor,
             'bilinear': self._bilinear,

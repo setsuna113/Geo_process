@@ -26,6 +26,10 @@ class BlockSumAggregationStrategy:
         src_height, src_width = source.shape
         tgt_height, tgt_width = target_shape
         
+        # Handle empty arrays
+        if src_height == 0 or src_width == 0 or tgt_height == 0 or tgt_width == 0:
+            return np.zeros(target_shape, dtype=np.float64)
+        
         # Calculate the downsampling factors
         factor_y = src_height / tgt_height
         factor_x = src_width / tgt_width
