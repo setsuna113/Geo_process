@@ -57,7 +57,8 @@ class GDALResampler(BaseResampler):
         'min': gdal.GRA_Min,
         'median': gdal.GRA_Med,
         'q1': gdal.GRA_Q1,
-        'q3': gdal.GRA_Q3
+        'q3': gdal.GRA_Q3,
+        'sum': 'sum'  # GDAL 3.1+ native sum aggregation
     }
     
     def __init__(self, config):
@@ -221,12 +222,23 @@ class GDALResampler(BaseResampler):
             return 1  # Continue
         
         # Setup warp options with memory limit
-        warp_options = gdal.WarpOptions(
-            resampleAlg=gdal_method,
-            callback=gdal_progress if progress_callback else None,
-            warpMemoryLimit=self.config.memory_limit_mb * 1024 * 1024,
-            multithread=True
-        )
+        # Handle string-based methods for GDAL 3.1+
+        if isinstance(gdal_method, str):
+            # String-based method (e.g., 'sum')
+            warp_options = gdal.WarpOptions(
+                resampleAlg=gdal_method,
+                callback=gdal_progress if progress_callback else None,
+                warpMemoryLimit=self.config.memory_limit_mb * 1024 * 1024,
+                multithread=True
+            )
+        else:
+            # Enum-based method
+            warp_options = gdal.WarpOptions(
+                resampleAlg=gdal_method,
+                callback=gdal_progress if progress_callback else None,
+                warpMemoryLimit=self.config.memory_limit_mb * 1024 * 1024,
+                multithread=True
+            )
         
         # Perform resampling
         try:
