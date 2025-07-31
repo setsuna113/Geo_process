@@ -112,372 +112,6 @@ class ResamplingProcessor(BaseProcessor):
             return self._adaptive_window_size
         return self.config.get('resampling.window_size', 2048)
     
-    def resample_all_datasets(self, resume_from_checkpoint: Optional[str] = None) -> List[ResampledDatasetInfo]:
-        """
-        Resample all configured datasets with progress and checkpoint support.
-        
-        Args:
-            resume_from_checkpoint: Optional checkpoint ID to resume from
-            
-        Returns:
-            List of resampled dataset info
-        """
-        # Filter enabled datasets
-        enabled_datasets = [ds for ds in self.datasets_config if ds.get('enabled', True)]
-        
-        # Start progress tracking
-        self.start_progress("Resampling Datasets", len(enabled_datasets))
-        
-        # Resume from checkpoint if provided
-        start_index = 0
-        if resume_from_checkpoint:
-            checkpoint_data = self.load_checkpoint(resume_from_checkpoint)
-            start_index = checkpoint_data.get('last_completed_index', -1) + 1
-            logger.info(f"Resuming from dataset index {start_index}")
-        
-        resampled_datasets = []
-        
-        try:
-            for i, dataset_config in enumerate(enabled_datasets[start_index:], start_index):
-                # Check for cancellation
-                if self._should_stop.is_set():
-                    logger.info("Resampling cancelled by user")
-                    break
-                
-                # Wait if paused
-                self._pause_event.wait()
-                
-                dataset_name = dataset_config['name']
-                logger.info(f"Processing dataset {i+1}/{len(enabled_datasets)}: {dataset_name}")
-                
-                # Update progress
-                self.update_progress(i, metadata={
-                    'current_dataset': dataset_name,
-                    'datasets_completed': len(resampled_datasets)
-                })
-                
-                try:
-                    # Progress callback for sub-operations
-                    def dataset_progress(msg: str, percent: float):
-                        self.update_progress(i, metadata={
-                            'current_dataset': dataset_name,
-                            'dataset_progress': percent,
-                            'status': msg
-                        })
-                    
-                    resampled_info = self.resample_dataset(dataset_config, dataset_progress)
-                    resampled_datasets.append(resampled_info)
-                    
-                    # Save checkpoint after each dataset
-                    self._checkpoint_data = {
-                        'last_completed_index': i,
-                        'completed_datasets': [d.name for d in resampled_datasets],
-                        'total_datasets': len(enabled_datasets)
-                    }
-                    self.save_checkpoint()
-                    
-                except Exception as e:
-                    logger.error(f"Failed to resample {dataset_name}: {e}")
-                    # Save error state
-                    self._checkpoint_data['error'] = {
-                        'dataset': dataset_name,
-                        'error': str(e),
-                        'index': i
-                    }
-                    self.save_checkpoint(checkpoint_id=f"error_{dataset_name}_{int(time.time())}")
-                    
-                    # Check if this is a critical dataset that should fail fast
-                    critical_datasets = self.config.get('resampling.critical_datasets', [])
-                    if dataset_name in critical_datasets:
-                        logger.error(f"Critical dataset {dataset_name} failed - stopping pipeline")
-                        raise
-                    
-                    # Non-critical dataset - continue with others
-                    logger.warning(f"Non-critical dataset {dataset_name} failed - continuing with other datasets")
-                    continue
-            
-            # Complete progress
-            self.complete_progress(
-                status="completed" if not self._should_stop.is_set() else "cancelled",
-                metadata={
-                    'total_resampled': len(resampled_datasets),
-                    'total_attempted': len(enabled_datasets)
-                }
-            )
-            
-            logger.info(f"✅ Resampling pipeline completed: {len(resampled_datasets)}/{len(enabled_datasets)} datasets")
-            
-            # Report validation summary
-            self._report_validation_summary()
-            
-            return resampled_datasets
-            
-        except Exception as e:
-            logger.error(f"Resampling pipeline failed: {e}")
-            self.complete_progress(status="failed", metadata={'error': str(e)})
-            raise
-    
-    def resample_dataset(self, dataset_config: dict, 
-                        progress_callback: Optional[Callable[[str, float], None]] = None) -> ResampledDatasetInfo:
-        """
-        Resample single dataset with chunked loading and memory management.
-        
-        DEPRECATED: This method loads entire datasets into memory for passthrough cases. 
-        Use resample_dataset_memory_aware() instead for memory-efficient processing.
-        
-        .. deprecated:: 2.0
-           Use :meth:`resample_dataset_memory_aware` instead.
-        
-        Args:
-            dataset_config: Dataset configuration
-            progress_callback: Progress callback
-            
-        Returns:
-            ResampledDatasetInfo
-        """
-        import warnings
-        warnings.warn(
-            "resample_dataset() is deprecated and may load entire datasets into memory. "
-            "Use resample_dataset_memory_aware() for memory-efficient processing.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        logger.info(f"🔍 DEBUG: resample_dataset() called for {dataset_config.get('name', 'unknown')}")
-        logger.debug(f"🔍 resample_dataset() called for {dataset_config.get('name', 'unknown')}")
-        logger.info(f"🔍 TRACE: Python file location: {__file__}")
-        logger.info(f"🔍 TRACE: Method called at: {datetime.now().isoformat()}")
-        from src.config.dataset_utils import DatasetPathResolver
-        
-        # Memory allocation tracking
-        logger.info(f"🔍 DEBUG: Entering memory context for {dataset_config['name']}")
-        logger.debug(f"🔍 Entering memory context for {dataset_config['name']}")
-        with self.memory_manager.memory_context(
-            f"resample_{dataset_config['name']}", 
-            estimated_mb=self.chunk_config['max_chunk_size_mb']
-        ):
-            logger.info(f"🔍 DEBUG: Inside memory context, creating DatasetPathResolver")
-            logger.debug(f"🔍 Inside memory context, creating DatasetPathResolver")
-            # Resolve dataset path
-            resolver = DatasetPathResolver(self.config)
-            logger.info(f"🔍 DEBUG: DatasetPathResolver created, validating config")
-            logger.debug(f"🔍 DatasetPathResolver created, validating config")
-            normalized_config = resolver.validate_dataset_config(dataset_config)
-            logger.info(f"🔍 DEBUG: Config validated, extracting paths")
-            logger.debug(f"🔍 Config validated, extracting paths")
-            
-            dataset_name = normalized_config['name']
-            raster_path = Path(normalized_config['resolved_path'])
-            data_type = normalized_config['data_type']
-            band_name = normalized_config['band_name']
-            
-            logger.info(f"🔍 DEBUG: Paths extracted - dataset: {dataset_name}, path: {raster_path}")
-            logger.debug(f"🔍 Paths extracted - dataset: {dataset_name}, path: {raster_path}")
-            
-            logger.info(f"Resampling dataset: {dataset_name}")
-            if progress_callback:
-                progress_callback(f"Initializing {dataset_name}", 5)
-            
-            # Get resampling method
-            method = self.strategies.get(data_type, 'bilinear')
-            logger.info(f"🔍 DEBUG: Resampling method: {method}")
-            logger.debug(f"🔍 Resampling method: {method}")
-            
-            # Get or register raster in catalog
-            logger.info(f"🔍 DEBUG: About to call _get_or_register_raster")
-            logger.debug(f"🔍 About to call _get_or_register_raster")
-            raster_entry = self._get_or_register_raster(
-                dataset_name, raster_path, data_type, progress_callback
-            )
-            logger.info(f"🔍 DEBUG: _get_or_register_raster completed")
-            logger.debug(f"🔍 _get_or_register_raster completed")
-            
-            # Debug: Check what type raster_entry actually is
-            logger.info(f"🔍 DEBUG: raster_entry type: {type(raster_entry)}")
-            if isinstance(raster_entry, tuple):
-                logger.error(f"ERROR: raster_entry is a tuple! Length: {len(raster_entry)}")
-                # Try to recover by creating RasterEntry from tuple
-                if len(raster_entry) >= 11:  # RasterEntry has at least 11 fields
-                    try:
-                        # Reconstruct RasterEntry from tuple
-                        raster_entry = RasterEntry(
-                            id=str(raster_entry[0]),
-                            name=raster_entry[1],
-                            path=Path(raster_entry[2]) if not isinstance(raster_entry[2], Path) else raster_entry[2],
-                            dataset_type=raster_entry[3],
-                            resolution_degrees=float(raster_entry[4]),
-                            bounds=tuple(raster_entry[5]) if not isinstance(raster_entry[5], tuple) else raster_entry[5],
-                            data_type=raster_entry[6],
-                            nodata_value=raster_entry[7],
-                            file_size_mb=float(raster_entry[8]),
-                            last_validated=raster_entry[9],
-                            is_active=bool(raster_entry[10]),
-                            metadata=raster_entry[11] if len(raster_entry) > 11 else {}
-                        )
-                        logger.warning(f"Recovered RasterEntry from tuple for {raster_entry.name}")
-                    except Exception as e:
-                        logger.error(f"Failed to recover RasterEntry from tuple: {e}")
-                        raise TypeError(f"Cannot convert tuple to RasterEntry: {raster_entry}")
-                else:
-                    raise TypeError(f"Expected RasterEntry but got tuple with {len(raster_entry)} elements")
-            
-            # Validate source bounds
-            self._validate_source_bounds(raster_entry, dataset_name)
-            
-            # Validate coordinate transformation if needed
-            source_crs = raster_entry.metadata.get('crs', 'EPSG:4326')
-            self._validate_coordinate_transformation(source_crs, dataset_name)
-            
-            # Check if skip-resampling is enabled and resolution matches
-            logger.info(f"🔍 DEBUG: Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
-            logger.debug(f"🔍 Checking skip-resampling - enabled: {self.config.get('resampling.allow_skip_resampling', False)}")
-            if self.config.get('resampling.allow_skip_resampling', False):
-                logger.info(f"🔍 DEBUG: About to check resolution match")
-                logger.debug(f"🔍 About to check resolution match")
-                if self._check_resolution_match(raster_entry):
-                    logger.info(f"🔍 DEBUG: Resolution matches! Will skip resampling")
-                    logger.debug(f"🔍 Resolution matches! Will skip resampling")
-                    print(f"🚨 IMMEDIATE: About to log skipping message", flush=True)
-                    logger.info(f"🚀 Skipping resampling for {dataset_name} - resolution matches target")
-                    print(f"🚨 IMMEDIATE: Logged skipping message", flush=True)
-                    
-                    if progress_callback:
-                        progress_callback(f"Skipping resampling (resolution match)", 50)
-                    
-                    # Check if memory-aware processing is enabled
-                    use_memory_aware = self.config.get('resampling.enable_memory_aware_processing', False)
-                    
-                    if use_memory_aware:
-                        # Use memory-aware passthrough that doesn't load data
-                        logger.info(f"Using memory-aware passthrough for {dataset_name}")
-                        return self._handle_passthrough_memory_aware(raster_entry, normalized_config, progress_callback)
-                    
-                    # Create passthrough dataset info (legacy path)
-                    passthrough_info = self._create_passthrough_dataset_info(raster_entry, normalized_config)
-                    
-                    if progress_callback:
-                        progress_callback(f"Loading passthrough data for storage", 70)
-                    
-                    # Load the actual data for database storage
-                    # Even for passthrough, we need to store in DB for consistent lazy processing
-                    logger.info(f"Loading raster data from {raster_path} (this may take time for large files)")
-                    logger.info(f"About to open raster file: {raster_path}")
-                    
-                    # Check memory requirements first
-                    logger.info("Opening file for size check...")
-                    with rasterio.open(raster_path) as src:
-                        shape = (src.height, src.width)
-                        estimated_mb = (shape[0] * shape[1] * 4) / (1024 * 1024)  # float32
-                        logger.info(f"Raster shape: {shape}, estimated memory: {estimated_mb:.1f}MB")
-                        
-                        if estimated_mb > 5000:  # More than 5GB
-                            logger.warning(f"Large raster detected ({estimated_mb:.1f}MB), this may take several minutes")
-                    
-                    logger.info("Size check complete, now loading data...")
-                    start_time = time.time()
-                    with rasterio.open(raster_path) as src:
-                        logger.info("File opened, reading band 1...")
-                        data = src.read(1).astype(np.float32)
-                        logger.info(f"Data read, shape: {data.shape}")
-                        # Handle nodata values
-                        if src.nodata is not None:
-                            logger.info(f"Handling nodata value: {src.nodata}")
-                            data[data == src.nodata] = np.nan
-                    load_time = time.time() - start_time
-                    data_mb = data.nbytes / (1024 * 1024)
-                    logger.info(f"Loaded {data.shape} array ({data_mb:.1f}MB) in {load_time:.1f}s")
-                    
-                    if progress_callback:
-                        progress_callback(f"Storing passthrough data to database", 90)
-                    
-                    # Store both metadata AND data for passthrough datasets
-                    try:
-                        self._store_resampled_dataset(passthrough_info, data)
-                    except Exception as e:
-                        logger.error(f"Failed to store passthrough data for {dataset_name}: {e}")
-                        # Clean up any partial data
-                        try:
-                            with self.db.get_connection() as conn:
-                                with conn.cursor() as cur:
-                                    cur.execute("DELETE FROM resampled_datasets WHERE name = %s", (dataset_name,))
-                                    table_name = f"passthrough_{dataset_name.replace('-', '_')}"
-                                    cur.execute(f"DROP TABLE IF EXISTS {table_name}")
-                                    conn.commit()
-                        except:
-                            pass
-                        raise
-                    
-                    if progress_callback:
-                        progress_callback(f"Completed {dataset_name} (skipped)", 100)
-                    
-                    logger.info(f"✅ Skip-resampling completed for {dataset_name}")
-                    return passthrough_info
-                else:
-                    logger.info(f"Resolution does not match for {dataset_name}, proceeding with resampling")
-            else:
-                logger.debug(f"Skip-resampling disabled for {dataset_name}")
-            
-            # Check if memory-aware processing is enabled for resampling
-            use_memory_aware = self.config.get('resampling.enable_memory_aware_processing', False)
-            
-            if use_memory_aware:
-                # Use memory-aware resampling that doesn't load data
-                logger.info(f"Using memory-aware resampling for {dataset_name}")
-                return self._handle_resampling_memory_aware(raster_entry, normalized_config, progress_callback)
-            
-            # Legacy path: estimate memory requirements
-            estimated_memory = self._estimate_memory_requirements(raster_entry)
-            logger.info(f"Estimated memory requirement: {estimated_memory:.1f} MB")
-            
-            # Determine if chunked processing is needed
-            if estimated_memory > self.chunk_config['max_chunk_size_mb']:
-                logger.info(f"Using chunked processing (data size: {estimated_memory:.1f} MB)")
-                # Debug check before calling _resample_chunked
-                logger.info(f"🔍 DEBUG before _resample_chunked: raster_entry type = {type(raster_entry)}")
-                if isinstance(raster_entry, tuple):
-                    logger.error(f"ERROR: raster_entry is STILL a tuple before _resample_chunked!")
-                result_data = self._resample_chunked(
-                    raster_entry, method, progress_callback
-                )
-            else:
-                logger.info(f"Using single-pass processing (data size: {estimated_memory:.1f} MB)")
-                result_data = self._resample_single(
-                    raster_entry, method, progress_callback
-                )
-            
-            # Validate resampled data
-            self._validate_resampled_data(result_data, dataset_name)
-            
-            # Validate output bounds consistency
-            calculated_bounds = self._calculate_output_bounds_from_data(result_data, raster_entry.bounds)
-            self._validate_output_bounds(calculated_bounds, raster_entry.bounds, dataset_name)
-            
-            # Create resampled dataset info
-            resampled_info = ResampledDatasetInfo(
-                name=dataset_name,
-                source_path=raster_entry.path,
-                target_resolution=self.target_resolution,
-                target_crs=self.target_crs,
-                bounds=raster_entry.bounds,
-                shape=result_data.shape,
-                data_type=data_type,
-                resampling_method=method,
-                band_name=band_name,
-                metadata={
-                    'source_resolution': raster_entry.resolution_degrees,
-                    'engine': self.engine_type,
-                    'chunked_processing': estimated_memory > self.chunk_config['max_chunk_size_mb'],
-                    'resampled_at': datetime.now().isoformat()
-                }
-            )
-            
-            # Store in database
-            self._store_resampled_dataset(resampled_info, result_data)
-            
-            if progress_callback:
-                progress_callback(f"Completed {dataset_name}", 100)
-            
-            return resampled_info
-    
     def resample_dataset_memory_aware(self, dataset_config: dict, 
                                     progress_callback: Optional[Callable[[str, float], None]] = None,
                                     context: Optional[Any] = None) -> ResampledDatasetInfo:
@@ -1401,7 +1035,7 @@ class ResamplingProcessor(BaseProcessor):
     
     def _store_chunk_pixels(self, cursor, table_name: str, chunk_data: np.ndarray,
                           start_row: int, bounds: tuple, resolution: float) -> int:
-        """Store chunk data as individual pixels."""
+        """Store chunk data as individual pixels using memory-efficient streaming."""
         minx, miny, maxx, maxy = bounds
         
         # Find non-NaN values in chunk
@@ -1412,28 +1046,47 @@ class ResamplingProcessor(BaseProcessor):
         rows, cols = np.where(valid_mask)
         values = chunk_data[valid_mask]
         
-        # Calculate coordinates
-        data_to_insert = []
-        for r, c, v in zip(rows, cols, values):
-            global_row = start_row + r
-            x_coord = minx + (c + 0.5) * resolution
-            y_coord = maxy - (global_row + 0.5) * resolution
-            data_to_insert.append((
-                int(global_row), int(c), 
-                float(x_coord), float(y_coord), float(v)
-            ))
+        # Use smaller sub-batches to avoid large memory allocations
+        sub_batch_size = self.config.get('storage.batch_insert_size', 5000)
+        total_stored = 0
         
-        # Batch insert
-        if data_to_insert:
-            from psycopg2.extras import execute_values
-            execute_values(
-                cursor,
-                f"INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) VALUES %s",
-                data_to_insert,
-                page_size=10000
-            )
+        from psycopg2.extras import execute_values
         
-        return len(data_to_insert)
+        # Process in memory-efficient sub-batches
+        for i in range(0, len(rows), sub_batch_size):
+            batch_end = min(i + sub_batch_size, len(rows))
+            batch_rows = rows[i:batch_end]
+            batch_cols = cols[i:batch_end]
+            batch_values = values[i:batch_end]
+            
+            # Build only this sub-batch in memory
+            data_to_insert = []
+            for r, c, v in zip(batch_rows, batch_cols, batch_values):
+                global_row = start_row + r
+                x_coord = minx + (c + 0.5) * resolution
+                y_coord = maxy - (global_row + 0.5) * resolution
+                data_to_insert.append((
+                    int(global_row), int(c),
+                    float(x_coord), float(y_coord), float(v)
+                ))
+            
+            # Insert this sub-batch
+            if data_to_insert:
+                execute_values(
+                    cursor,
+                    f"INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) VALUES %s",
+                    data_to_insert,
+                    page_size=min(len(data_to_insert), 2000)  # Smaller page size
+                )
+                total_stored += len(data_to_insert)
+                
+                # Explicit memory cleanup for large chunks
+                if len(data_to_insert) > 1000:
+                    del data_to_insert
+                    import gc
+                    gc.collect()
+        
+        return total_stored
     
     def _store_dataset_metadata(self, cursor, info: ResampledDatasetInfo, table_name: str):
         """Store dataset metadata in resampled_datasets table."""
@@ -1558,10 +1211,11 @@ class ResamplingProcessor(BaseProcessor):
     
     # BaseProcessor abstract method implementations
     def process_single(self, item: Any) -> Any:
-        """Process single item."""
-        if isinstance(item, dict) and 'name' in item:
-            return self.resample_dataset(item)
-        return item
+        """Process single item - not used in current pipeline."""
+        raise NotImplementedError(
+            "process_single is not supported for ResamplingProcessor. "
+            "Use resample_dataset_memory_aware() directly from ResampleStage."
+        )
     
     def load_passthrough_data(self, info: ResampledDatasetInfo) -> Optional[np.ndarray]:
         print(f"🔄 DEBUG: load_passthrough_data called for {info.name}")
