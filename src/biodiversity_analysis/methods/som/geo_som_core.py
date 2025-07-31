@@ -196,10 +196,17 @@ class GeoSOMVLRSOM:
         
         Args:
             data: Training data (n_samples, n_features)
-            coordinates: Geographic coordinates (n_samples, 2) [lat, lon]
+            coordinates: Geographic coordinates (n_samples, 2) [longitude, latitude]
             method: Initialization method
         """
         self.input_dim = data.shape[1]
+        
+        # Validate coordinates shape if provided
+        if coordinates is not None:
+            if coordinates.shape[0] != data.shape[0]:
+                raise ValueError(f"Coordinates samples ({coordinates.shape[0]}) must match data samples ({data.shape[0]})")
+            if coordinates.shape[1] != 2:
+                raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
         
         if method == "pca_transformed":
             self._init_pca_transformed(data)
@@ -328,12 +335,19 @@ class GeoSOMVLRSOM:
         
         Args:
             data: Training data (n_samples, n_features)
-            coordinates: Geographic coordinates (n_samples, 2)
+            coordinates: Geographic coordinates (n_samples, 2) [longitude, latitude]
             progress_callback: Optional callback for progress updates
             
         Returns:
             Training result with history and final state
         """
+        # Validate coordinates shape if provided
+        if coordinates is not None:
+            if coordinates.shape[0] != data.shape[0]:
+                raise ValueError(f"Coordinates samples ({coordinates.shape[0]}) must match data samples ({data.shape[0]})")
+            if coordinates.shape[1] != 2:
+                raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
+        
         if self.weights is None:
             self.initialize_weights(data, coordinates)
         
@@ -573,7 +587,11 @@ class GeoSOMVLRSOM:
     
     def _calculate_geographic_coherence(self, data: np.ndarray, 
                                       coordinates: np.ndarray) -> float:
-        """Calculate geographic coherence using Moran's I."""
+        """Calculate geographic coherence using Moran's I.
+        
+        Uses vectorized operations for O(n²) distance calculations to improve
+        performance on large datasets.
+        """
         # Get cluster assignments
         clusters = []
         for idx, sample in enumerate(data):
@@ -589,16 +607,32 @@ class GeoSOMVLRSOM:
         if valid.sum() < 10:  # Need minimum samples
             return 0.0
         
-        # Calculate spatial weights matrix (inverse distance)
+        # Calculate spatial weights matrix using vectorized operations
         coords_valid = coordinates[valid]
         n = len(coords_valid)
-        W = np.zeros((n, n))
         
-        for i in range(n):
-            for j in range(i+1, n):
-                dist = self.haversine_distance(coords_valid[i], coords_valid[j])
-                if dist > 0:
-                    W[i, j] = W[j, i] = 1.0 / dist
+        # Vectorized haversine distance calculation
+        # Convert to radians
+        coords_rad = np.radians(coords_valid)
+        lat = coords_rad[:, 1]
+        lon = coords_rad[:, 0]
+        
+        # Calculate pairwise differences
+        lat_diff = lat[:, np.newaxis] - lat[np.newaxis, :]
+        lon_diff = lon[:, np.newaxis] - lon[np.newaxis, :]
+        
+        # Haversine formula (vectorized)
+        a = np.sin(lat_diff/2)**2 + \
+            np.cos(lat[:, np.newaxis]) * np.cos(lat[np.newaxis, :]) * \
+            np.sin(lon_diff/2)**2
+        c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))  # clip for numerical stability
+        distances = 6371 * c  # Earth radius in km
+        
+        # Create weights matrix (inverse distance)
+        # Set diagonal to inf to avoid division by zero
+        np.fill_diagonal(distances, np.inf)
+        W = np.where(distances > 0, 1.0 / distances, 0)
+        np.fill_diagonal(W, 0)  # No self-connections
         
         # Normalize weights matrix
         W_sum = W.sum()
@@ -608,17 +642,14 @@ class GeoSOMVLRSOM:
             # If no spatial weights (e.g., all samples at same location), return 0
             return 0.0
         
-        # Calculate Moran's I
+        # Calculate Moran's I using matrix operations
         clusters_valid = clusters[valid]
         mean_cluster = clusters_valid.mean()
+        deviations = clusters_valid - mean_cluster
         
-        numerator = 0.0
-        for i in range(n):
-            for j in range(n):
-                numerator += W[i, j] * (clusters_valid[i] - mean_cluster) * \
-                            (clusters_valid[j] - mean_cluster)
-        
-        denominator = np.sum((clusters_valid - mean_cluster)**2) / n
+        # Vectorized calculation: sum(W[i,j] * dev[i] * dev[j])
+        numerator = np.sum(W * np.outer(deviations, deviations))
+        denominator = np.sum(deviations**2) / n
         
         if denominator == 0:
             return 0.0
@@ -654,6 +685,13 @@ class GeoSOMVLRSOM:
     
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
         """Predict BMU indices for data."""
+        # Validate coordinates shape if provided
+        if coordinates is not None:
+            if coordinates.shape[0] != data.shape[0]:
+                raise ValueError(f"Coordinates samples ({coordinates.shape[0]}) must match data samples ({data.shape[0]})")
+            if coordinates.shape[1] != 2:
+                raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
+        
         bmu_indices = []
         
         for idx, sample in enumerate(data):

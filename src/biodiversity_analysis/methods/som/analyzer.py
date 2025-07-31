@@ -141,7 +141,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Load data
         biodiv_data = self.load_data(
             data_path,
-            coordinate_cols=kwargs.get('coordinate_columns', ['latitude', 'longitude'])
+            coordinate_cols=kwargs.get('coordinate_columns', ['longitude', 'latitude'])
         )
         
         # Validate missing data handling
@@ -383,10 +383,10 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 'n_features': features.shape[1],
                 'missing_proportion': np.isnan(features).mean(),
                 'geographic_bounds': {
-                    'lat_min': coordinates[:, 0].min(),
-                    'lat_max': coordinates[:, 0].max(),
-                    'lon_min': coordinates[:, 1].min(),
-                    'lon_max': coordinates[:, 1].max()
+                    'lon_min': coordinates[:, 0].min(),  # coordinates are [longitude, latitude]
+                    'lon_max': coordinates[:, 0].max(),
+                    'lat_min': coordinates[:, 1].min(),
+                    'lat_max': coordinates[:, 1].max()
                 }
             }
         }
@@ -479,7 +479,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             'spatial_weight': 0.3,
             'observed_columns': [0, 1],
             'predicted_columns': [2, 3],
-            'coordinate_columns': ['latitude', 'longitude'],
+            'coordinate_columns': ['longitude', 'latitude'],
             'max_epochs': 1000,
             'random_seed': 42
         }
