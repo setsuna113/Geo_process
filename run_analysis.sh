@@ -171,8 +171,14 @@ if [ "$DAEMON_MODE" = true ]; then
     # Create logs directory
     mkdir -p "$PROJECT_ROOT/logs"
     
-    # Run as background process with nohup (properly quoted for security)
-    nohup bash -c "exec $ANALYSIS_CMD" > "$PROJECT_ROOT/logs/${PROCESS_NAME}.log" 2>&1 &
+    # Validate variables for security before using in command
+    if [[ ! "$PROCESS_NAME" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "❌ Error: Invalid process name contains unsafe characters"
+        exit 1
+    fi
+    
+    # Run as background process with nohup (variables validated)
+    nohup bash -c "exec $(printf '%q ' $PYTHON_CMD $PROJECT_ROOT/scripts/run_analysis.py --experiment $(printf '%q' "$EXPERIMENT_NAME") ${INPUT_PARQUET:+--input $(printf '%q' "$INPUT_PARQUET")} ${ANALYSIS_METHOD:+--method $(printf '%q' "$ANALYSIS_METHOD")} ${RESUME_MODE:+--resume})" > "$PROJECT_ROOT/logs/${PROCESS_NAME}.log" 2>&1 &
     PID=$!
     echo "🌙 Analysis pipeline started as daemon (PID: $PID)"
     echo "📝 Logs: $PROJECT_ROOT/logs/${PROCESS_NAME}.log"

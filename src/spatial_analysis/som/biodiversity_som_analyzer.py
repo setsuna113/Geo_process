@@ -165,19 +165,114 @@ class BiodiversitySOMAnalyzer(BaseAnalyzer):
             missing_percent = (n_missing / features.size) * 100
             logger.warning(f"Found {n_missing:,} missing values ({missing_percent:.2f}% of data)")
             
-            # Use column-wise median imputation instead of zero-filling
-            # This is more appropriate for biodiversity metrics
+            # Use sophisticated imputation strategies appropriate for biodiversity metrics
             for col_idx in range(features.shape[1]):
                 col_data = features[:, col_idx]
                 nan_mask = np.isnan(col_data)
                 if np.any(nan_mask):
-                    col_median = np.nanmedian(col_data)
-                    # If all values in column are NaN, use 0 as fallback
-                    fill_value = col_median if not np.isnan(col_median) else 0.0
+                    col_name = feature_cols[col_idx] if col_idx < len(feature_cols) else f"feature_{col_idx}"
+                    
+                    if np.all(nan_mask):
+                        # All values are NaN - this column should be excluded
+                        logger.warning(f"Column '{col_name}' has all NaN values - excluding from analysis")
+                        features = np.delete(features, col_idx, axis=1)
+                        feature_cols.pop(col_idx) if col_idx < len(feature_cols) else None
+                        continue
+                    
+                    # Choose imputation strategy based on column characteristics
+                    valid_data = col_data[~nan_mask]
+                    if 'richness' in col_name.lower() or 'count' in col_name.lower():
+                        # For species counts/richness: use median (better than mean for counts)
+                        fill_value = np.median(valid_data)
+                    elif 'diversity' in col_name.lower() or 'shannon' in col_name.lower():
+                        # For diversity indices: use mean (continuous measures)
+                        fill_value = np.mean(valid_data)
+                    elif np.all(np.isin(valid_data, [0, 1])):
+                        # Binary presence/absence: use mode (most common value)
+                        fill_value = np.bincount(valid_data.astype(int)).argmax()
+                    else:
+                        # Default: median for robustness
+                        fill_value = np.median(valid_data)
+                    
                     features[nan_mask, col_idx] = fill_value
-                    logger.debug(f"Filled {np.sum(nan_mask)} NaN values in column {col_idx} with {fill_value:.4f}")
+                    logger.debug(f"Filled {np.sum(nan_mask)} NaN values in '{col_name}' with {fill_value:.4f}")
         
         return features, coordinates, feature_cols
+    
+    def _calculate_streaming_statistics(self, 
+                                      features: np.ndarray,
+                                      som,
+                                      vlrsom_result,
+                                      data_split,
+                                      params: Dict[str, Any],
+                                      coordinates: Optional[np.ndarray] = None) -> Dict[str, Any]:
+        """Calculate statistics using streaming approach to minimize memory usage."""
+        logger.info("Calculating statistics using streaming approach")
+        
+        # Initialize accumulators for streaming calculations
+        total_samples = len(features)
+        chunk_size = 10000
+        
+        # Streaming statistics
+        cluster_counts = {}
+        total_quantization_error = 0.0
+        total_topographic_error = 0.0
+        processed_samples = 0
+        
+        # Process in chunks without storing all labels
+        for i in range(0, total_samples, chunk_size):
+            end_idx = min(i + chunk_size, total_samples)
+            chunk_features = features[i:end_idx]
+            chunk_labels = som.predict(chunk_features)
+            
+            # Update cluster counts
+            unique, counts = np.unique(chunk_labels, return_counts=True)
+            for cluster_id, count in zip(unique, counts):
+                cluster_counts[cluster_id] = cluster_counts.get(cluster_id, 0) + count
+            
+            # Accumulate errors (streaming calculation)
+            chunk_qe = som.quantization_error(chunk_features)
+            chunk_te = som.topographic_error(chunk_features) if hasattr(som, 'topographic_error') else 0.0
+            
+            total_quantization_error += chunk_qe * len(chunk_features)
+            total_topographic_error += chunk_te * len(chunk_features)
+            processed_samples += len(chunk_features)
+            
+            # Log progress
+            if i % (chunk_size * 10) == 0:
+                logger.debug(f"Streaming statistics: processed {processed_samples:,}/{total_samples:,} samples")
+        
+        # Calculate final statistics
+        n_clusters = len(cluster_counts)
+        avg_quantization_error = total_quantization_error / processed_samples
+        avg_topographic_error = total_topographic_error / processed_samples
+        
+        statistics = {
+            'quantization_error': avg_quantization_error,
+            'topographic_error': avg_topographic_error,
+            'n_clusters_used': n_clusters,
+            'cluster_distribution': cluster_counts,
+            'converged': vlrsom_result.converged,
+            'final_learning_rate': vlrsom_result.final_learning_rate,
+            'total_iterations': vlrsom_result.total_iterations,
+            'streaming_mode': True,  # Flag to indicate streaming was used
+            'processed_samples': processed_samples
+        }
+        
+        # Add spatial autocorrelation if coordinates available (but use sampling for memory efficiency)
+        if coordinates is not None:
+            # Sample subset for spatial autocorrelation calculation
+            sample_size = min(50000, len(coordinates))  # Max 50k samples for spatial calc
+            sample_indices = np.random.choice(len(coordinates), sample_size, replace=False)
+            sample_coords = coordinates[sample_indices]
+            sample_labels = som.predict(features[sample_indices])
+            
+            from .biodiversity_evaluation import calculate_spatial_autocorrelation
+            spatial_autocorr = calculate_spatial_autocorrelation(sample_labels, sample_coords)
+            statistics['spatial_autocorrelation'] = spatial_autocorr
+            statistics['spatial_autocorr_sample_size'] = sample_size
+        
+        return statistics
     
     def analyze(self, 
                 data: Union[str, Path, np.ndarray],
@@ -278,59 +373,70 @@ class BiodiversitySOMAnalyzer(BaseAnalyzer):
         
         logger.info(f"VLRSOM training completed: converged={vlrsom_result.converged}")
         
-        # Generate cluster labels for all data with memory optimization
+        # Generate cluster labels with memory-conscious approach
         self._update_progress(5, 6, "Generating cluster labels")
-        if data_split is not None:
-            # For large datasets, process in chunks to reduce memory pressure
-            if n_samples > 100000:
-                logger.info(f"Processing {n_samples:,} samples in chunks to optimize memory usage")
-                all_labels = np.zeros(n_samples, dtype=np.int32)  # Use int32 instead of int for memory efficiency
-                
-                # Process train data in chunks
-                chunk_size = 10000
-                for i in range(0, len(data_split.train_indices), chunk_size):
-                    end_idx = min(i + chunk_size, len(data_split.train_indices))
-                    indices_chunk = data_split.train_indices[i:end_idx]
-                    data_chunk = data_split.train_data[i:end_idx]
-                    all_labels[indices_chunk] = som.predict(data_chunk)
-                
-                # Process validation data in chunks
-                for i in range(0, len(data_split.validation_indices), chunk_size):
-                    end_idx = min(i + chunk_size, len(data_split.validation_indices))
-                    indices_chunk = data_split.validation_indices[i:end_idx]
-                    data_chunk = data_split.validation_data[i:end_idx]
-                    all_labels[indices_chunk] = som.predict(data_chunk)
-                
-                # Process test data in chunks
-                for i in range(0, len(data_split.test_indices), chunk_size):
-                    end_idx = min(i + chunk_size, len(data_split.test_indices))
-                    indices_chunk = data_split.test_indices[i:end_idx]
-                    data_chunk = data_split.test_data[i:end_idx]
-                    all_labels[indices_chunk] = som.predict(data_chunk)
-            else:
-                # Original method for smaller datasets
-                all_labels = np.zeros(n_samples, dtype=np.int32)
-                all_labels[data_split.train_indices] = som.predict(data_split.train_data)
-                all_labels[data_split.validation_indices] = som.predict(data_split.validation_data)
-                all_labels[data_split.test_indices] = som.predict(data_split.test_data)
-        else:
-            # Process features in chunks if dataset is large
-            if len(features) > 100000:
-                logger.info(f"Processing {len(features):,} features in chunks to optimize memory usage")
-                all_labels = np.zeros(len(features), dtype=np.int32)
-                chunk_size = 10000
-                for i in range(0, len(features), chunk_size):
-                    end_idx = min(i + chunk_size, len(features))
-                    chunk_labels = som.predict(features[i:end_idx])
-                    all_labels[i:end_idx] = chunk_labels
-            else:
-                all_labels = som.predict(features)
         
-        # Calculate statistics
-        self._update_progress(6, 6, "Calculating statistics")
-        statistics = self._calculate_statistics(
-            features, all_labels, som, vlrsom_result, data_split, params
-        )
+        # For extremely large datasets (>1M samples), use streaming approach
+        if n_samples > 1000000:
+            logger.info(f"Using streaming approach for {n_samples:,} samples to minimize memory usage")
+            
+            # Calculate statistics directly without storing all labels
+            statistics = self._calculate_streaming_statistics(
+                features, som, vlrsom_result, data_split, params, coordinates
+            )
+            
+        else:
+            # For manageable datasets, use chunked approach
+            if data_split is not None:
+                if n_samples > 100000:
+                    logger.info(f"Processing {n_samples:,} samples in chunks to optimize memory usage")
+                    all_labels = np.zeros(n_samples, dtype=np.int32)
+                    
+                    # Process train data in chunks
+                    chunk_size = 10000
+                    for i in range(0, len(data_split.train_indices), chunk_size):
+                        end_idx = min(i + chunk_size, len(data_split.train_indices))
+                        indices_chunk = data_split.train_indices[i:end_idx]
+                        data_chunk = data_split.train_data[i:end_idx]
+                        all_labels[indices_chunk] = som.predict(data_chunk)
+                    
+                    # Process validation data in chunks
+                    for i in range(0, len(data_split.validation_indices), chunk_size):
+                        end_idx = min(i + chunk_size, len(data_split.validation_indices))
+                        indices_chunk = data_split.validation_indices[i:end_idx]
+                        data_chunk = data_split.validation_data[i:end_idx]
+                        all_labels[indices_chunk] = som.predict(data_chunk)
+                    
+                    # Process test data in chunks
+                    for i in range(0, len(data_split.test_indices), chunk_size):
+                        end_idx = min(i + chunk_size, len(data_split.test_indices))
+                        indices_chunk = data_split.test_indices[i:end_idx]
+                        data_chunk = data_split.test_data[i:end_idx]
+                        all_labels[indices_chunk] = som.predict(data_chunk)
+                else:
+                    # Original method for smaller datasets
+                    all_labels = np.zeros(n_samples, dtype=np.int32)
+                    all_labels[data_split.train_indices] = som.predict(data_split.train_data)
+                    all_labels[data_split.validation_indices] = som.predict(data_split.validation_data)
+                    all_labels[data_split.test_indices] = som.predict(data_split.test_data)
+            else:
+                # Process features in chunks if dataset is large
+                if len(features) > 100000:
+                    logger.info(f"Processing {len(features):,} features in chunks to optimize memory usage")
+                    all_labels = np.zeros(len(features), dtype=np.int32)
+                    chunk_size = 10000
+                    for i in range(0, len(features), chunk_size):
+                        end_idx = min(i + chunk_size, len(features))
+                        chunk_labels = som.predict(features[i:end_idx])
+                        all_labels[i:end_idx] = chunk_labels
+                else:
+                    all_labels = som.predict(features)
+            
+            # Calculate statistics for non-streaming approach
+            self._update_progress(6, 6, "Calculating statistics")
+            statistics = self._calculate_statistics(
+                features, all_labels, som, vlrsom_result, data_split, params
+            )
         
         # Create metadata
         processing_time = time.time() - start_time

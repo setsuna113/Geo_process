@@ -82,14 +82,27 @@ class StandaloneAnalysisRunner:
         """Resolve output path with environment detection and fallbacks."""
         path = Path(configured_path)
         
-        # Handle system-specific paths with better detection
-        if configured_path.startswith('/scratch'):
-            # Check if we're in a high-performance computing environment
-            if Path('/scratch').exists() and Path('/scratch').is_dir():
-                return path
-            else:
-                self.logger.warning("Scratch filesystem not available, using local outputs directory")
-                return Path('outputs')
+        # Detect high-performance computing environments
+        hpc_indicators = [
+            os.getenv('SLURM_JOB_ID'),        # SLURM workload manager
+            os.getenv('PBS_JOBID'),           # PBS/Torque
+            os.getenv('SGE_JOB_ID'),          # Sun Grid Engine
+            os.getenv('LSB_JOBID'),           # LSF
+        ]
+        is_hpc_environment = any(hpc_indicators)
+        
+        # Handle high-performance storage paths dynamically
+        if path.is_absolute() and path.parts[0] == '/' and len(path.parts) > 1:
+            potential_hpc_paths = ['/scratch', '/tmp', '/work', '/lustre', '/gpfs']
+            root_dir = '/' + path.parts[1]  # e.g., '/scratch' from '/scratch/user/data'
+            
+            if root_dir in potential_hpc_paths:
+                if is_hpc_environment and path.parent.exists() and path.parent.is_dir():
+                    self.logger.info(f"Using HPC storage path: {path}")
+                    return path
+                else:
+                    self.logger.warning(f"HPC storage {root_dir} not available or not in HPC environment, using local outputs directory")
+                    return Path('outputs')
         
         # Handle other absolute paths
         if path.is_absolute():
