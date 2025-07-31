@@ -344,6 +344,17 @@ RESAMPLING = {
     'engine': 'numpy'
 }
 
+# Storage configuration for memory-efficient database operations
+STORAGE = {
+    'chunk_size': 1000000,  # 1M pixels threshold for chunked storage (production: 1M, test: 100k)
+    'chunk_rows': 1000,  # Process 1000 rows at a time for chunked storage
+    'aggregate_to_grid': False,  # Set to True for fungi datasets to aggregate pixels to grid cells
+    'grid_cell_size': 0.1,  # Grid cell size in degrees for aggregation (0.1° ≈ 11km)
+    'batch_insert_size': 10000,  # Number of records per batch insert
+    'enable_progress_logging': True,  # Log progress during chunked storage
+    'memory_cleanup_interval': 10  # Trigger memory cleanup every N chunks
+}
+
 # Raster processing configuration
 RASTER_PROCESSING = {
     'tile_size': 1000,  # pixels per tile

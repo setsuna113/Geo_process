@@ -72,6 +72,18 @@ resampling:
   use_legacy_passthrough: false  # Set to true to use old behavior
   use_legacy_resampling: false  # Set to true to use old behavior
 
+# =============================================================================
+# STORAGE CONFIGURATION - Memory-efficient database operations
+# =============================================================================
+storage:
+  chunk_size: 100000       # 100k pixels threshold for chunked storage (lower for fungi datasets)
+  chunk_rows: 500          # Process 500 rows at a time (smaller chunks for memory efficiency)
+  aggregate_to_grid: true  # ENABLE for fungi datasets to reduce 233M pixels to ~21M grid cells
+  grid_cell_size: 0.05     # 0.05° grid cells (≈ 5.5km) for finer aggregation
+  batch_insert_size: 5000  # Smaller batches for stability
+  enable_progress_logging: true
+  memory_cleanup_interval: 5  # More frequent cleanup
+
 # Multiple dataset definitions for unified processing
 # Each dataset now has its own path - no central data_dir needed!
 datasets:

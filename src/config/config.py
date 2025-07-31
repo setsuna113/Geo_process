@@ -105,6 +105,7 @@ class Config:
             'data_files': defaults.DATA_FILES.copy(),
             'datasets': defaults.DATASETS.copy(),
             'resampling': defaults.RESAMPLING.copy(),
+            'storage': defaults.STORAGE.copy(),
             # New configuration sections
             'progress_monitoring': defaults.PROGRESS_MONITORING.copy(),
             'checkpointing': defaults.CHECKPOINTING.copy(),

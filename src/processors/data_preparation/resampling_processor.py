@@ -1212,25 +1212,274 @@ class ResamplingProcessor(BaseProcessor):
         return resampled_info
 
     def _store_resampled_dataset(self, info: ResampledDatasetInfo, data: Optional[np.ndarray]):
-        """Store resampled dataset in database.
+        """Store resampled dataset in database using chunked approach for memory efficiency.
         
-        DEPRECATED: This method requires the entire dataset in memory.
-        Use windowed storage methods for memory-efficient processing.
+        This method replaces the previous implementation that stored entire arrays in memory.
+        For large datasets, it processes and stores data in configurable chunks.
         """
-        import warnings
-        warnings.warn(
-            "_store_resampled_dataset() is deprecated as it requires entire dataset in memory. "
-            "Use windowed storage methods for memory-efficient processing.",
-            DeprecationWarning,
-            stacklevel=2
-        )
-        # For consistency, store all data in DB (including passthrough)
-        # This ensures lazy loading works uniformly for all datasets
         if data is None:
             raise ValueError(f"Data cannot be None for dataset {info.name}")
         
+        # Check if we should use chunked storage based on data size
+        storage_chunk_size = self.config.get('storage.chunk_size', 1000000)  # 1M pixels default
+        total_pixels = data.size
+        use_chunked_storage = total_pixels > storage_chunk_size
+        
+        if use_chunked_storage:
+            logger.info(f"Using chunked storage for {info.name} ({total_pixels:,} pixels > {storage_chunk_size:,} threshold)")
+            return self._store_resampled_dataset_chunked(info, data)
+        else:
+            logger.info(f"Using standard storage for {info.name} ({total_pixels:,} pixels)")
+            return self._store_resampled_dataset_standard(info, data)
+    
+    def _store_resampled_dataset_chunked(self, info: ResampledDatasetInfo, data: np.ndarray):
+        """Store large resampled dataset using chunked approach to manage memory."""
+        # Get configuration
+        chunk_rows = self.config.get('storage.chunk_rows', 1000)  # Process 1000 rows at a time
+        aggregate_to_grid = self.config.get('storage.aggregate_to_grid', False)
+        
         # CRITICAL FIX: Get actual bounds from raster file for all datasets
-        actual_bounds = self.catalog.get_raster_bounds(info.source_path)
+        # For test mode, use bounds from info if file doesn't exist
+        if info.source_path.exists():
+            actual_bounds = self.catalog.get_raster_bounds(info.source_path)
+        else:
+            # Use bounds from info (for testing or when file is not accessible)
+            actual_bounds = info.bounds
+            logger.warning(f"Using bounds from dataset info for {info.name} (file not accessible: {info.source_path})")
+        
+        # Update info with actual bounds
+        info.bounds = actual_bounds
+        info.metadata['actual_bounds'] = list(actual_bounds)
+        info.metadata['bounds'] = list(actual_bounds)
+        info.metadata['chunked_storage'] = True
+        info.metadata['chunk_rows'] = chunk_rows
+        info.metadata['aggregated'] = aggregate_to_grid
+        
+        try:
+            with self.db.get_connection() as conn:
+                cur = conn.cursor()
+                
+                # Create data table name
+                if info.metadata.get('passthrough', False):
+                    table_name = f"passthrough_{info.name.replace('-', '_')}"
+                else:
+                    table_name = f"resampled_{info.name.replace('-', '_')}"
+                
+                logger.info(f"Storing {info.name} to {table_name} using chunked approach")
+                logger.info(f"Data shape: {data.shape}, chunk size: {chunk_rows} rows")
+                
+                # Store metadata first
+                self._store_dataset_metadata(cur, info, table_name)
+                
+                # Create data table
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS {table_name} (
+                        row_idx INTEGER NOT NULL,
+                        col_idx INTEGER NOT NULL,
+                        x_coord DOUBLE PRECISION,
+                        y_coord DOUBLE PRECISION,
+                        value FLOAT,
+                        PRIMARY KEY (row_idx, col_idx)
+                    )
+                """)
+                
+                # Truncate existing data
+                cur.execute(f"TRUNCATE TABLE {table_name}")
+                conn.commit()
+                
+                # Process data in chunks
+                total_rows = data.shape[0]
+                total_stored = 0
+                
+                for start_row in range(0, total_rows, chunk_rows):
+                    end_row = min(start_row + chunk_rows, total_rows)
+                    chunk_data = data[start_row:end_row, :]
+                    
+                    if aggregate_to_grid:
+                        # Aggregate chunk to grid cells before storage
+                        stored_count = self._store_chunk_aggregated(
+                            cur, table_name, chunk_data, start_row, 
+                            actual_bounds, info.target_resolution
+                        )
+                    else:
+                        # Store individual pixels
+                        stored_count = self._store_chunk_pixels(
+                            cur, table_name, chunk_data, start_row,
+                            actual_bounds, info.target_resolution
+                        )
+                    
+                    total_stored += stored_count
+                    
+                    # Progress logging
+                    progress = (end_row / total_rows) * 100
+                    logger.info(f"Processed chunk {start_row}:{end_row} ({progress:.1f}%) - stored {stored_count:,} values")
+                    
+                    # Commit chunk and trigger cleanup
+                    conn.commit()
+                    if hasattr(self, 'memory_manager'):
+                        self.memory_manager.trigger_cleanup()
+                
+                logger.info(f"✅ Chunked storage completed for {info.name}: {total_stored:,} values stored")
+                
+        except Exception as e:
+            logger.error(f"Failed to store dataset with chunked approach: {e}")
+            raise
+    
+    def _store_chunk_aggregated(self, cursor, table_name: str, chunk_data: np.ndarray, 
+                              start_row: int, bounds: tuple, resolution: float) -> int:
+        """Store chunk data aggregated to grid cells."""
+        # Get grid configuration
+        grid_size = self.config.get('storage.grid_cell_size', 0.1)  # 0.1 degree cells
+        
+        minx, miny, maxx, maxy = bounds
+        stored_count = 0
+        
+        # Calculate grid bounds for this chunk
+        chunk_height, chunk_width = chunk_data.shape
+        chunk_minx = minx
+        chunk_maxx = minx + chunk_width * resolution  
+        chunk_maxy = maxy - start_row * resolution
+        chunk_miny = chunk_maxy - chunk_height * resolution
+        
+        # Create grid cells within chunk bounds
+        grid_cols = int(np.ceil((chunk_maxx - chunk_minx) / grid_size))
+        grid_rows = int(np.ceil((chunk_maxy - chunk_miny) / grid_size))
+        
+        data_to_insert = []
+        
+        for grid_row in range(grid_rows):
+            for grid_col in range(grid_cols):
+                # Calculate grid cell bounds
+                cell_minx = chunk_minx + grid_col * grid_size
+                cell_maxx = min(cell_minx + grid_size, chunk_maxx)
+                cell_maxy = chunk_maxy - grid_row * grid_size
+                cell_miny = max(cell_maxy - grid_size, chunk_miny)
+                
+                # Find pixels within this grid cell
+                pixel_col_start = max(0, int((cell_minx - chunk_minx) / resolution))
+                pixel_col_end = min(chunk_width, int(np.ceil((cell_maxx - chunk_minx) / resolution)))
+                pixel_row_start = max(0, int((chunk_maxy - cell_maxy) / resolution))
+                pixel_row_end = min(chunk_height, int(np.ceil((chunk_maxy - cell_miny) / resolution)))
+                
+                if pixel_row_start < pixel_row_end and pixel_col_start < pixel_col_end:
+                    # Extract pixels in this grid cell
+                    cell_pixels = chunk_data[pixel_row_start:pixel_row_end, pixel_col_start:pixel_col_end]
+                    valid_pixels = cell_pixels[~np.isnan(cell_pixels)]
+                    
+                    if len(valid_pixels) > 0:
+                        # Aggregate (sum for richness data, mean for others)
+                        if self.config.get('datasets.target_datasets', [{}])[0].get('data_type') == 'richness_data':
+                            aggregated_value = np.sum(valid_pixels)
+                        else:
+                            aggregated_value = np.mean(valid_pixels)
+                        
+                        # Calculate grid cell center coordinates
+                        cell_x = (cell_minx + cell_maxx) / 2
+                        cell_y = (cell_miny + cell_maxy) / 2
+                        
+                        # Use grid indices for row/col
+                        global_row = start_row // int(grid_size / resolution) + grid_row
+                        global_col = grid_col
+                        
+                        data_to_insert.append((
+                            int(global_row), int(global_col),
+                            float(cell_x), float(cell_y), float(aggregated_value)
+                        ))
+        
+        # Batch insert
+        if data_to_insert:
+            from psycopg2.extras import execute_values
+            execute_values(
+                cursor,
+                f"INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) VALUES %s",
+                data_to_insert,
+                page_size=10000
+            )
+            stored_count = len(data_to_insert)
+        
+        return stored_count
+    
+    def _store_chunk_pixels(self, cursor, table_name: str, chunk_data: np.ndarray,
+                          start_row: int, bounds: tuple, resolution: float) -> int:
+        """Store chunk data as individual pixels."""
+        minx, miny, maxx, maxy = bounds
+        
+        # Find non-NaN values in chunk
+        valid_mask = ~np.isnan(chunk_data)
+        if not np.any(valid_mask):
+            return 0
+        
+        rows, cols = np.where(valid_mask)
+        values = chunk_data[valid_mask]
+        
+        # Calculate coordinates
+        data_to_insert = []
+        for r, c, v in zip(rows, cols, values):
+            global_row = start_row + r
+            x_coord = minx + (c + 0.5) * resolution
+            y_coord = maxy - (global_row + 0.5) * resolution
+            data_to_insert.append((
+                int(global_row), int(c), 
+                float(x_coord), float(y_coord), float(v)
+            ))
+        
+        # Batch insert
+        if data_to_insert:
+            from psycopg2.extras import execute_values
+            execute_values(
+                cursor,
+                f"INSERT INTO {table_name} (row_idx, col_idx, x_coord, y_coord, value) VALUES %s",
+                data_to_insert,
+                page_size=10000
+            )
+        
+        return len(data_to_insert)
+    
+    def _store_dataset_metadata(self, cursor, info: ResampledDatasetInfo, table_name: str):
+        """Store dataset metadata in resampled_datasets table."""
+        cursor.execute("""
+            INSERT INTO resampled_datasets 
+            (name, source_path, target_resolution, target_crs, bounds, 
+             shape_height, shape_width, data_type, resampling_method, 
+             band_name, data_table_name, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (name) DO UPDATE SET
+                source_path = EXCLUDED.source_path,
+                target_resolution = EXCLUDED.target_resolution,
+                target_crs = EXCLUDED.target_crs,
+                bounds = EXCLUDED.bounds,
+                shape_height = EXCLUDED.shape_height,
+                shape_width = EXCLUDED.shape_width,
+                data_type = EXCLUDED.data_type,
+                resampling_method = EXCLUDED.resampling_method,
+                band_name = EXCLUDED.band_name,
+                data_table_name = EXCLUDED.data_table_name,
+                metadata = EXCLUDED.metadata
+        """, (
+            info.name,
+            str(info.source_path),
+            info.target_resolution,
+            info.target_crs,
+            list(info.bounds),
+            info.shape[0],
+            info.shape[1],
+            info.data_type,
+            info.resampling_method,
+            info.band_name,
+            table_name,
+            json.dumps(info.metadata)
+        ))
+    
+    def _store_resampled_dataset_standard(self, info: ResampledDatasetInfo, data: np.ndarray):
+        """Store smaller datasets using the original approach."""
+        # CRITICAL FIX: Get actual bounds from raster file for all datasets
+        # For test mode, use bounds from info if file doesn't exist
+        if info.source_path.exists():
+            actual_bounds = self.catalog.get_raster_bounds(info.source_path)
+        else:
+            # Use bounds from info (for testing or when file is not accessible)
+            actual_bounds = info.bounds
+            logger.warning(f"Using bounds from dataset info for {info.name} (file not accessible: {info.source_path})")
         
         # Update info with actual bounds and store in metadata for reference
         info.bounds = actual_bounds
@@ -1251,39 +1500,8 @@ class ResamplingProcessor(BaseProcessor):
                 
                 logger.info(f"Using actual raster bounds: {actual_bounds}")
                 
-                # Insert or update metadata
-                cur.execute("""
-                    INSERT INTO resampled_datasets 
-                    (name, source_path, target_resolution, target_crs, bounds, 
-                     shape_height, shape_width, data_type, resampling_method, 
-                     band_name, data_table_name, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (name) DO UPDATE SET
-                        source_path = EXCLUDED.source_path,
-                        target_resolution = EXCLUDED.target_resolution,
-                        target_crs = EXCLUDED.target_crs,
-                        bounds = EXCLUDED.bounds,
-                        shape_height = EXCLUDED.shape_height,
-                        shape_width = EXCLUDED.shape_width,
-                        data_type = EXCLUDED.data_type,
-                        resampling_method = EXCLUDED.resampling_method,
-                        band_name = EXCLUDED.band_name,
-                        data_table_name = EXCLUDED.data_table_name,
-                        metadata = EXCLUDED.metadata
-                """, (
-                    info.name,
-                    str(info.source_path),
-                    info.target_resolution,
-                    info.target_crs,
-                    list(info.bounds),
-                    info.shape[0],
-                    info.shape[1],
-                    info.data_type,
-                    info.resampling_method,
-                    info.band_name,
-                    table_name,
-                    json.dumps(info.metadata)
-                ))
+                # Store metadata
+                self._store_dataset_metadata(cur, info, table_name)
                 
                 # Create and populate data table
                 cur.execute(f"""
