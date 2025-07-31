@@ -635,10 +635,32 @@ class DatabaseManager(DatabaseInterface):
         """Cleanup on destruction."""
         self.close_pool()
 
-# Global database manager instance
-# Skip initialization if running in standalone mode
+# Global database manager instance - LAZY INITIALIZATION
+# The database connection should only be created when explicitly requested,
+# not as a side effect of importing the module.
 import os
-if os.environ.get('SKIP_DB_INIT') == 'true':
-    db = None  # ML standalone mode - no database needed
-else:
-    db = DatabaseManager()
+
+_db_instance = None
+
+def get_db():
+    """Get the database manager instance (lazy initialization).
+    
+    This ensures the database connection is only created when actually needed,
+    not as a side effect of importing the module.
+    
+    Returns:
+        DatabaseManager: The database manager instance, or None if SKIP_DB_INIT is set
+    """
+    global _db_instance
+    
+    if os.environ.get('SKIP_DB_INIT') == 'true':
+        return None  # ML standalone mode - no database needed
+    
+    if _db_instance is None:
+        _db_instance = DatabaseManager()
+    
+    return _db_instance
+
+# DEPRECATED: Direct access to 'db' - use get_db() instead
+# This is set to None to prevent connection on import
+db = None

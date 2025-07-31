@@ -22,8 +22,7 @@ class AnalyzerFactory:
     # Registry of available analyzers
     # Format: method_name -> (module_path, class_name)
     _analyzers: Dict[str, Tuple[str, str]] = {
-        # TODO: Replace with new biodiversity_analysis implementations
-        # 'som': ('src.biodiversity_analysis.methods.som.analyzer', 'SOMAnalyzer'),
+        'som': ('src.biodiversity_analysis.methods.som.analyzer', 'SOMAnalyzer'),
         # 'gwpca': ('src.biodiversity_analysis.methods.gwpca.analyzer', 'GWPCAAnalyzer'),
         # 'maxp_regions': ('src.biodiversity_analysis.methods.maxp.analyzer', 'MaxPAnalyzer')
     }

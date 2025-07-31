@@ -9,11 +9,11 @@ __version__ = "1.0.0"
 __author__ = "Jason"
 __description__ = "Geoprocessing tools for biodiversity analysis"
 
-# Main modules
-from . import config
-from . import database
+# Note: Modules should be imported explicitly when needed to avoid
+# side effects like database connections on import.
 
 __all__ = [
-    'config',
-    'database',
+    '__version__',
+    '__author__',
+    '__description__',
 ]

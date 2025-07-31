@@ -11,8 +11,7 @@ import logging
 from pathlib import Path
 
 from src.config import config
-from ..database.schema import schema
-from ..database.connection import db
+from src.database import get_db, get_schema
 
 if TYPE_CHECKING:
     from ..base import GridCell
@@ -208,6 +207,11 @@ class BoundsManager:
     
     def get_species_data_bounds(self) -> Optional[Tuple[float, float, float, float]]:
         """Get the extent of all species data in database."""
+        db = get_db()
+        if db is None:
+            logger.warning("Database not available for bounds lookup")
+            return self._get_default_bounds(bounds_name)
+        
         with db.get_cursor() as cursor:
             cursor.execute("""
                 SELECT 

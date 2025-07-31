@@ -166,6 +166,9 @@ class BaseBiodiversityAnalyzer(ABC):
                 data.features,
                 method='log1p'  # Could be configurable
             )
+            # Initialize metadata if None
+            if data.metadata is None:
+                data.metadata = {}
             data.metadata['zero_inflation_transform'] = transform_info
         
         # Remove constant features
@@ -182,6 +185,9 @@ class BaseBiodiversityAnalyzer(ABC):
                 data.features,
                 method=self.data_config['normalization_method']
             )
+            # Initialize metadata if None
+            if data.metadata is None:
+                data.metadata = {}
             data.metadata['normalization'] = scaler_info
         
         self.update_progress("Preprocessing complete", 0.4)

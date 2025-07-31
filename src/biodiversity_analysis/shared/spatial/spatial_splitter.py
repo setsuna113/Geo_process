@@ -7,9 +7,18 @@ Implements blockCV and other spatial validation strategies.
 import numpy as np
 from typing import Tuple, List, Dict, Optional
 from dataclasses import dataclass
+from enum import Enum
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class SpatialSplitStrategy(Enum):
+    """Available spatial splitting strategies."""
+    RANDOM_BLOCKS = "random_blocks"
+    SYSTEMATIC_BLOCKS = "systematic_blocks"
+    LATITUDINAL = "latitudinal"
+    ENVIRONMENTAL_BLOCKS = "environmental_blocks"
 
 
 @dataclass
@@ -35,6 +44,82 @@ class SpatialSplit:
 
 class SpatialSplitter:
     """Split spatial data to avoid autocorrelation in validation."""
+    
+    def __init__(self, 
+                 strategy: SpatialSplitStrategy = SpatialSplitStrategy.RANDOM_BLOCKS,
+                 train_ratio: float = 0.7,
+                 val_ratio: float = 0.15,
+                 buffer_distance: float = 0.0,
+                 random_state: Optional[int] = None):
+        """Initialize spatial splitter.
+        
+        Args:
+            strategy: Splitting strategy to use
+            train_ratio: Proportion for training
+            val_ratio: Proportion for validation
+            buffer_distance: Buffer between regions
+            random_state: Random seed
+        """
+        self.strategy = strategy
+        self.train_ratio = train_ratio
+        self.val_ratio = val_ratio
+        self.test_ratio = 1.0 - train_ratio - val_ratio
+        self.buffer_distance = buffer_distance
+        self.random_state = random_state
+    
+    def split(self, coordinates: np.ndarray, 
+              features: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Perform spatial split.
+        
+        Args:
+            coordinates: Spatial coordinates
+            features: Optional features for environmental blocking
+            
+        Returns:
+            Tuple of (train_idx, val_idx, test_idx)
+        """
+        if self.strategy == SpatialSplitStrategy.RANDOM_BLOCKS:
+            return self._random_block_split(coordinates)
+        elif self.strategy == SpatialSplitStrategy.LATITUDINAL:
+            return self._latitudinal_split(coordinates)
+        else:
+            # Default to random blocks for now
+            return self._random_block_split(coordinates)
+    
+    def _random_block_split(self, coordinates: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Random spatial blocks split."""
+        n_samples = len(coordinates)
+        if self.random_state is not None:
+            np.random.seed(self.random_state)
+        
+        # Simple implementation - divide into grid blocks
+        # This is a placeholder - a real implementation would create actual spatial blocks
+        indices = np.random.permutation(n_samples)
+        
+        train_size = int(n_samples * self.train_ratio)
+        val_size = int(n_samples * self.val_ratio)
+        
+        train_idx = indices[:train_size]
+        val_idx = indices[train_size:train_size + val_size]
+        test_idx = indices[train_size + val_size:]
+        
+        return train_idx, val_idx, test_idx
+    
+    def _latitudinal_split(self, coordinates: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Split by latitude bands."""
+        n_samples = len(coordinates)
+        
+        # Sort by latitude
+        lat_order = np.argsort(coordinates[:, 1])
+        
+        train_size = int(n_samples * self.train_ratio)
+        val_size = int(n_samples * self.val_ratio)
+        
+        train_idx = lat_order[:train_size]
+        val_idx = lat_order[train_size:train_size + val_size]
+        test_idx = lat_order[train_size + val_size:]
+        
+        return train_idx, val_idx, test_idx
     
     @staticmethod
     def block_cv_split(

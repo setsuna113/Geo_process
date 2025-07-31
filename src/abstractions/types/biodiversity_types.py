@@ -36,12 +36,15 @@ class SpatialData:
         return self.features.shape[1]
     
     def get_bounds(self) -> tuple[float, float, float, float]:
-        """Get spatial bounds (min_lon, min_lat, max_lon, max_lat)."""
+        """Get spatial bounds (min_lon, min_lat, max_lon, max_lat).
+        
+        Assumes coordinates are stored as [longitude, latitude].
+        """
         return (
-            self.coordinates[:, 0].min(),
-            self.coordinates[:, 1].min(),
-            self.coordinates[:, 0].max(),
-            self.coordinates[:, 1].max()
+            self.coordinates[:, 0].min(),  # min_lon
+            self.coordinates[:, 1].min(),  # min_lat
+            self.coordinates[:, 0].max(),  # max_lon
+            self.coordinates[:, 1].max()   # max_lat
         )
 
 
