@@ -71,29 +71,35 @@ class AverageAggregationStrategy:
     
     def _upsample_interpolate(self, source, target_shape, mapping, config, progress_callback):
         """Handle upsampling using bilinear interpolation for continuous data."""
-        result = np.zeros(target_shape, dtype=np.float64)
+        # Use scipy's zoom for proper bilinear interpolation
+        from scipy import ndimage
         
-        # For each target pixel, interpolate from surrounding source pixels
-        n_targets = len(mapping)
+        src_height, src_width = source.shape
+        tgt_height, tgt_width = target_shape
         
-        for i in range(n_targets):
-            if progress_callback and i % 1000 == 0:
-                progress_callback(int(i / n_targets * 100))
-            
-            target_idx = int(mapping[i, 0])
-            source_idx = int(mapping[i, 1])
-            
-            # Get source value
-            source_value = source.flat[source_idx]
-            
-            # Skip nodata values
-            if config.nodata_value is not None and source_value == config.nodata_value:
-                result.flat[target_idx] = config.nodata_value
-                continue
-            
-            # For simple case, just copy the value
-            # In a full implementation, we'd use proper bilinear interpolation
-            # with fractional indices and 4 neighboring pixels
-            result.flat[target_idx] = source_value
+        # Calculate zoom factors
+        zoom_y = tgt_height / src_height
+        zoom_x = tgt_width / src_width
         
-        return result
+        # Handle nodata by masking
+        if config.nodata_value is not None:
+            # Create mask for valid data
+            valid_mask = source != config.nodata_value
+            
+            # Replace nodata with 0 for interpolation
+            source_clean = np.where(valid_mask, source, 0)
+            
+            # Interpolate data and mask separately
+            result = ndimage.zoom(source_clean, (zoom_y, zoom_x), order=1)  # order=1 for bilinear
+            mask_interp = ndimage.zoom(valid_mask.astype(float), (zoom_y, zoom_x), order=1)
+            
+            # Restore nodata where mask is near 0
+            result = np.where(mask_interp > 0.01, result / np.maximum(mask_interp, 0.01), config.nodata_value)
+        else:
+            # Simple bilinear interpolation
+            result = ndimage.zoom(source, (zoom_y, zoom_x), order=1)
+        
+        if progress_callback:
+            progress_callback(100)
+        
+        return result.astype(np.float64)

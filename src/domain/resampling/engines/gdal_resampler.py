@@ -59,7 +59,7 @@ class GDALResampler(BaseResampler):
         'median': gdal.GRA_Med,
         'q1': gdal.GRA_Q1,
         'q3': gdal.GRA_Q3,
-        'sum': 'sum'  # GDAL 3.1+ native sum aggregation
+        'sum': gdal.GRA_Sum if hasattr(gdal, 'GRA_Sum') else gdal.GRA_Average  # GDAL 3.1+ has native sum
     }
     
     def __init__(self, config):
