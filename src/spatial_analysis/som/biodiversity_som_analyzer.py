@@ -166,18 +166,27 @@ class BiodiversitySOMAnalyzer(BaseAnalyzer):
             logger.warning(f"Found {n_missing:,} missing values ({missing_percent:.2f}% of data)")
             
             # Use sophisticated imputation strategies appropriate for biodiversity metrics
+            # First pass: identify columns to remove (all NaN)
+            cols_to_remove = []
+            for col_idx in range(features.shape[1]):
+                col_data = features[:, col_idx]
+                if np.all(np.isnan(col_data)):
+                    col_name = feature_cols[col_idx] if col_idx < len(feature_cols) else f"feature_{col_idx}"
+                    logger.warning(f"Column '{col_name}' has all NaN values - excluding from analysis")
+                    cols_to_remove.append(col_idx)
+            
+            # Remove all-NaN columns (in reverse order to maintain indices)
+            for col_idx in reversed(cols_to_remove):
+                features = np.delete(features, col_idx, axis=1)
+                if col_idx < len(feature_cols):
+                    feature_cols.pop(col_idx)
+            
+            # Second pass: impute remaining NaN values
             for col_idx in range(features.shape[1]):
                 col_data = features[:, col_idx]
                 nan_mask = np.isnan(col_data)
                 if np.any(nan_mask):
                     col_name = feature_cols[col_idx] if col_idx < len(feature_cols) else f"feature_{col_idx}"
-                    
-                    if np.all(nan_mask):
-                        # All values are NaN - this column should be excluded
-                        logger.warning(f"Column '{col_name}' has all NaN values - excluding from analysis")
-                        features = np.delete(features, col_idx, axis=1)
-                        feature_cols.pop(col_idx) if col_idx < len(feature_cols) else None
-                        continue
                     
                     # Choose imputation strategy based on column characteristics
                     valid_data = col_data[~nan_mask]

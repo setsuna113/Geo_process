@@ -10,6 +10,7 @@ import tempfile
 import os
 
 from src.base.dataset import BaseDataset, DatasetInfo
+from src.abstractions.types import DataType
 from src.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
@@ -55,12 +56,19 @@ class StandaloneAnalysisDataset(BaseDataset, ABC):
                 )
             
             self._info = DatasetInfo(
-                record_count=record_count,
-                column_count=len(self._data.columns),
+                name=getattr(self, 'parquet_path', getattr(self, 'csv_path', 'unknown')).name,
+                source=str(getattr(self, 'parquet_path', getattr(self, 'csv_path', 'unknown'))),
+                format='parquet' if hasattr(self, 'parquet_path') else 'csv',
                 size_mb=size_mb,
+                record_count=record_count,
                 bounds=bounds,
-                columns=list(self._data.columns),
-                data_types={col: str(dtype) for col, dtype in self._data.dtypes.items()}
+                crs='EPSG:4326',  # Assume geographic coordinates
+                metadata={
+                    'columns': list(self._data.columns),
+                    'data_types': {col: str(dtype) for col, dtype in self._data.dtypes.items()},
+                    'column_count': len(self._data.columns)
+                },
+                data_type=DataType.TABULAR
             )
         
         return self._info
@@ -144,6 +152,57 @@ class ParquetAnalysisDataset(StandaloneAnalysisDataset):
             return data
         except Exception as e:
             raise RuntimeError(f"Failed to load parquet file {self.parquet_path}: {e}")
+    
+    @property
+    def data_type(self) -> DataType:
+        """Return the data type for this dataset."""
+        return DataType.TABULAR
+    
+    def read_records(self) -> Iterator[Dict[str, Any]]:
+        """Read records from parquet file."""
+        if self._data is None:
+            self._data = self._load_data()
+        
+        for _, row in self._data.iterrows():
+            yield row.to_dict()
+    
+    def read_chunks(self) -> Iterator[List[Dict[str, Any]]]:
+        """Read parquet data in chunks."""
+        if self._data is None:
+            self._data = self._load_data()
+        
+        for i in range(0, len(self._data), self.chunk_size):
+            chunk = self._data.iloc[i:i + self.chunk_size]
+            yield [row.to_dict() for _, row in chunk.iterrows()]
+    
+    def validate_record(self, record: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Validate a single record from the parquet data."""
+        # Basic validation - check for required coordinate columns
+        coord_candidates = [
+            ['longitude', 'latitude'],
+            ['lon', 'lat'], 
+            ['x', 'y'],
+            ['long', 'lat'],
+            ['lng', 'lat']
+        ]
+        
+        for coord_cols in coord_candidates:
+            if all(col in record for col in coord_cols):
+                # Check if coordinates are numeric and within valid ranges
+                try:
+                    lon, lat = record[coord_cols[0]], record[coord_cols[1]]
+                    if pd.isna(lon) or pd.isna(lat):
+                        return False, f"Missing coordinate values: {coord_cols}"
+                    
+                    lon, lat = float(lon), float(lat)
+                    if not (-180 <= lon <= 180) or not (-90 <= lat <= 90):
+                        return False, f"Invalid coordinate ranges: lon={lon}, lat={lat}"
+                    
+                    return True, None
+                except (ValueError, TypeError) as e:
+                    return False, f"Invalid coordinate types: {e}"
+        
+        return False, "No valid coordinate columns found"
 
 
 class CSVAnalysisDataset(StandaloneAnalysisDataset):

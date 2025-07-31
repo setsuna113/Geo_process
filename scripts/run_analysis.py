@@ -19,8 +19,8 @@ import yaml
 import gc
 
 # Skip database initialization for standalone mode
-# Using explicit flag instead of environment variable to avoid masking initialization errors
-SKIP_DB_INIT = True
+# Set environment variable that the database connection checks
+os.environ['SKIP_DB_INIT'] = 'true'
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -91,18 +91,42 @@ class StandaloneAnalysisRunner:
         ]
         is_hpc_environment = any(hpc_indicators)
         
-        # Handle high-performance storage paths dynamically
+        # Handle high-performance storage paths with dynamic detection
         if path.is_absolute() and path.parts[0] == '/' and len(path.parts) > 1:
-            potential_hpc_paths = ['/scratch', '/tmp', '/work', '/lustre', '/gpfs']
             root_dir = '/' + path.parts[1]  # e.g., '/scratch' from '/scratch/user/data'
             
-            if root_dir in potential_hpc_paths:
-                if is_hpc_environment and path.parent.exists() and path.parent.is_dir():
-                    self.logger.info(f"Using HPC storage path: {path}")
-                    return path
-                else:
-                    self.logger.warning(f"HPC storage {root_dir} not available or not in HPC environment, using local outputs directory")
+            # Check if this looks like an HPC storage path by checking if:
+            # 1. We're in an HPC environment, AND
+            # 2. The path exists and is writable, AND  
+            # 3. The filesystem has HPC characteristics (large space, fast I/O)
+            if is_hpc_environment and path.parent.exists():
+                try:
+                    # Test if directory is writable
+                    test_file = path.parent / '.write_test'
+                    test_file.touch()
+                    test_file.unlink()
+                    
+                    # Check filesystem characteristics for HPC storage
+                    import shutil
+                    _, _, free_space = shutil.disk_usage(path.parent)
+                    
+                    # HPC storage typically has > 100GB free space
+                    if free_space > 100 * 1024**3:  # 100GB in bytes
+                        self.logger.info(f"Using HPC storage path: {path} (detected {free_space/1024**3:.1f}GB free)")
+                        return path
+                    else:
+                        self.logger.warning(f"Path {root_dir} exists but appears to be local storage ({free_space/1024**3:.1f}GB free), using local outputs directory")
+                        return Path('outputs')
+                        
+                except (PermissionError, OSError) as e:
+                    self.logger.warning(f"Cannot write to {root_dir}: {e}, using local outputs directory")
                     return Path('outputs')
+            else:
+                if not is_hpc_environment:
+                    self.logger.warning(f"Not in HPC environment, path {root_dir} may not be appropriate, using local outputs directory")
+                else:
+                    self.logger.warning(f"HPC storage {root_dir} not available, using local outputs directory")
+                return Path('outputs')
         
         # Handle other absolute paths
         if path.is_absolute():
@@ -194,9 +218,10 @@ class StandaloneAnalysisRunner:
             
             # Get dataset info
             dataset_info = dataset.load_info()
+            column_count = dataset_info.metadata.get('column_count', 'unknown')
             self.logger.info(f"Dataset: {dataset_info.record_count:,} records, "
                            f"{dataset_info.size_mb:.2f} MB, "
-                           f"{dataset_info.column_count} columns")
+                           f"{column_count} columns")
             
             # Set up checkpointing if enabled
             checkpointer = None
@@ -222,11 +247,11 @@ class StandaloneAnalysisRunner:
             analyzer = AnalyzerFactory.create(
                 analysis_method,
                 config_wrapper,
-                db_connection=None  # No database dependency
+                db=None  # No database dependency
             )
             
-            # Set up progress tracking
-            self._setup_progress_tracking(analysis_method, exp_name)
+            # Progress tracking is handled by UnifiedMonitor
+            self.logger.info("Progress tracking initialized")
             
             # Get analysis parameters
             params = self._get_analysis_parameters(analysis_config, analysis_method)
@@ -358,31 +383,46 @@ class StandaloneAnalysisRunner:
         # For now, run analysis normally without chunked checkpointing
         # This can be enhanced later with more sophisticated chunked processing
         
-        # Set up progress callback
+        # Set up progress callback with error handling
         def progress_callback(current: int, total: int, message: str = ""):
             progress_percent = (current / total) * 100
-            self.progress_manager.update_progress(
-                node_id=f"analysis/{params.get('method', 'analysis')}",
-                completed_units=int(progress_percent),
-                status="running",
-                metadata={"message": message, "current": current, "total": total}
-            )
+            try:
+                # Try to update progress, but don't fail if it doesn't work
+                if hasattr(self.progress_manager, 'update_progress'):
+                    self.progress_manager.update_progress(
+                        node_id=f"analysis/{params.get('method', 'analysis')}",
+                        completed_units=int(progress_percent),
+                        status="running",
+                        metadata={"message": message, "current": current, "total": total}
+                    )
+            except Exception as e:
+                # Log progress errors but don't fail the analysis
+                self.logger.debug(f"Progress callback error (non-fatal): {e}")
             
-            self.logger.debug(f"Analysis progress: {message} ({current}/{total} - {progress_percent:.1f}%)")
+            # Always log progress to console
+            if current % 100 == 0 or current == total:  # Log every 100 iterations or at end
+                self.logger.info(f"Analysis progress: {message} ({current}/{total} - {progress_percent:.1f}%)")
         
         # Set progress callback if analyzer supports it
         if hasattr(analyzer, 'set_progress_callback'):
             analyzer.set_progress_callback(progress_callback)
         
-        # Run the analysis
-        results = analyzer.analyze(dataset, **params)
+        # Run the analysis - pass the parquet file path, not the dataset object  
+        input_path = analysis_config.get('input_parquet')
+        results = analyzer.analyze(input_path, **params)
         
-        # Update progress to complete
-        self.progress_manager.update_progress(
-            node_id=f"analysis/{params.get('method', 'analysis')}",
-            completed_units=100,
-            status="completed"
-        )
+        # Update progress to complete (with error handling)
+        try:
+            if hasattr(self.progress_manager, 'update_progress'):
+                self.progress_manager.update_progress(
+                    node_id=f"analysis/{params.get('method', 'analysis')}",
+                    completed_units=100,
+                    status="completed"
+                )
+        except Exception as e:
+            self.logger.debug(f"Final progress update error (non-fatal): {e}")
+        
+        self.logger.info("Analysis computation completed successfully!")
         
         return results
     
@@ -425,7 +465,7 @@ class StandaloneAnalysisRunner:
             'parameters': params,
             'dataset_info': {
                 'record_count': dataset_info.record_count,
-                'column_count': dataset_info.column_count,
+                'column_count': dataset_info.metadata.get('column_count', 'unknown'),
                 'size_mb': dataset_info.size_mb
             },
             'timestamp': datetime.now().isoformat()

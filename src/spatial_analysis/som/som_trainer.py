@@ -21,6 +21,7 @@ from src.database.connection import DatabaseManager
 from .dynamic_convergence import DynamicConvergenceDetector
 from .advanced_convergence import AdvancedConvergenceDetector, create_advanced_convergence_detector
 from .batch_unified_convergence import BatchUnifiedConvergenceDetector, create_batch_convergence_detector
+from .biodiversity_som_validator import DataSplit
 
 logger = logging.getLogger(__name__)
 

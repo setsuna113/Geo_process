@@ -177,6 +177,17 @@ if [ "$DAEMON_MODE" = true ]; then
         exit 1
     fi
     
+    # Validate PROJECT_ROOT path
+    if [[ ! -d "$PROJECT_ROOT" ]]; then
+        echo "❌ Error: PROJECT_ROOT directory does not exist: $PROJECT_ROOT"
+        exit 1
+    fi
+    
+    if [[ "$PROJECT_ROOT" != /* ]]; then
+        echo "❌ Error: PROJECT_ROOT must be an absolute path: $PROJECT_ROOT"
+        exit 1
+    fi
+    
     # Run as background process with nohup (variables validated)
     nohup bash -c "exec $(printf '%q ' $PYTHON_CMD $PROJECT_ROOT/scripts/run_analysis.py --experiment $(printf '%q' "$EXPERIMENT_NAME") ${INPUT_PARQUET:+--input $(printf '%q' "$INPUT_PARQUET")} ${ANALYSIS_METHOD:+--method $(printf '%q' "$ANALYSIS_METHOD")} ${RESUME_MODE:+--resume})" > "$PROJECT_ROOT/logs/${PROCESS_NAME}.log" 2>&1 &
     PID=$!

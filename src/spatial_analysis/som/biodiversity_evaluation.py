@@ -325,51 +325,32 @@ class BiodiversityEvaluator:
         if n_samples < 10:
             return 0.0
         
-        # For large datasets, use spatial indexing instead of full distance matrix
+        # Always use spatial indexing for efficiency (no O(n²) memory usage)
+        from sklearn.neighbors import NearestNeighbors
+        
+        # Adaptive k based on sample size - more neighbors for larger datasets
         if n_samples > 10000:
-            # Use KDTree for efficient spatial queries
-            from sklearn.neighbors import NearestNeighbors
-            
-            # Find k nearest neighbors instead of full distance matrix
-            k = min(50, n_samples // 100)  # Adaptive k based on sample size
-            nbrs = NearestNeighbors(n_neighbors=k, algorithm='kd_tree').fit(coordinates)
-            _, indices = nbrs.kneighbors(coordinates)
-            
-            # Count matching labels among neighbors
-            same_cluster_count = 0
-            total_pairs = 0
-            
-            for i, neighbors in enumerate(indices):
-                for j in neighbors[1:]:  # Skip self (index 0)
-                    total_pairs += 1
-                    if labels[i] == labels[j]:
-                        same_cluster_count += 1
-            
-            return same_cluster_count / total_pairs if total_pairs > 0 else 0.0
+            k = min(50, n_samples // 100)  # For large datasets
         else:
-            # Original method for smaller datasets
-            distance_matrix = squareform(pdist(coordinates))
-            
-            # Find nearby pairs (within certain distance threshold)
-            distance_threshold = np.percentile(distance_matrix[distance_matrix > 0], 10)
-            nearby_pairs = distance_matrix <= distance_threshold
+            k = min(20, n_samples // 10)   # For smaller datasets, use fewer neighbors
         
-        # Calculate proportion of nearby pairs with same cluster
+        k = max(k, 5)  # Minimum 5 neighbors
+        k = min(k, n_samples - 1)  # Can't exceed available samples
+        
+        nbrs = NearestNeighbors(n_neighbors=k, algorithm='kd_tree').fit(coordinates)
+        _, indices = nbrs.kneighbors(coordinates)
+        
+        # Count matching labels among neighbors
         same_cluster_count = 0
-        total_nearby_pairs = 0
+        total_pairs = 0
         
-        for i in range(n_samples):
-            for j in range(i + 1, n_samples):
-                if nearby_pairs[i, j]:
-                    total_nearby_pairs += 1
-                    if labels[i] == labels[j]:
-                        same_cluster_count += 1
+        for i, neighbors in enumerate(indices):
+            for j in neighbors[1:]:  # Skip self (index 0)
+                total_pairs += 1
+                if labels[i] == labels[j]:
+                    same_cluster_count += 1
         
-        if total_nearby_pairs == 0:
-            return 0.0
-        
-        spatial_autocorr = same_cluster_count / total_nearby_pairs
-        return float(spatial_autocorr)
+        return same_cluster_count / total_pairs if total_pairs > 0 else 0.0
     
     def _calculate_edge_effect_score(self, 
                                    labels: np.ndarray, 

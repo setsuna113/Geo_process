@@ -22,7 +22,7 @@ class AnalyzerFactory:
     # Registry of available analyzers
     # Format: method_name -> (module_path, class_name)
     _analyzers: Dict[str, Tuple[str, str]] = {
-        'som': ('src.spatial_analysis.som.som_trainer', 'SOMAnalyzer'),
+        'som': ('src.spatial_analysis.som.biodiversity_som_analyzer', 'BiodiversitySOMAnalyzer'),
         'gwpca': ('src.spatial_analysis.gwpca_analyzer', 'GWPCAAnalyzer'),
         'maxp_regions': ('src.spatial_analysis.maxp_regions.region_optimizer', 'MaxPAnalyzer')
     }
