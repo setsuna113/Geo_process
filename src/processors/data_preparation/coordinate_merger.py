@@ -33,7 +33,9 @@ class CoordinateMerger(BaseProcessor):
         self.catalog = RasterCatalog(db, config)
         
         # Initialize validators
-        self.bounds_validator = BoundsConsistencyValidator(tolerance=1e-6)
+        # Use config tolerance for consistency
+        bounds_tolerance = config.get('data_preparation.bounds_tolerance', 0.01)
+        self.bounds_validator = BoundsConsistencyValidator(tolerance=bounds_tolerance)
         self.transform_validator = CoordinateTransformValidator(max_error_meters=1.0)
         self.value_validator = ParquetValueValidator(
             max_null_percentage=10.0,
@@ -43,17 +45,23 @@ class CoordinateMerger(BaseProcessor):
         # Validation results tracking
         self.validation_results: List[Dict] = []
         
+        # Alignment shifts for correcting grid misalignment
+        self.alignment_shifts: Dict[str, Dict[str, float]] = {}
+        
     def create_merged_dataset(self,
                             resampled_datasets: List[Dict],
                             chunk_size: Optional[int] = None,
                             return_as: str = 'xarray',
-                            context: Optional[any] = None) -> any:
+                            context: Optional[any] = None,
+                            alignment_shifts: Optional[Dict[str, Dict[str, float]]] = None) -> any:
         """Create merged dataset and return in-memory without writing to file.
         
         Args:
             resampled_datasets: List of dataset info dicts
             chunk_size: If provided, use chunked processing for memory efficiency
             return_as: 'xarray' or 'dataframe' - format to return
+            context: Optional context for pipeline operations
+            alignment_shifts: Optional dict mapping dataset names to x/y shift values
             context: Optional pipeline context with memory monitor
             
         Returns:
@@ -63,6 +71,9 @@ class CoordinateMerger(BaseProcessor):
         
         logger.info(f"Creating merged dataset in memory (return_as={return_as})")
         self.validation_results.clear()
+        
+        # Store alignment shifts for use in coordinate loading
+        self.alignment_shifts = alignment_shifts or {}
         
         # Get memory monitor
         memory_monitor = context.memory_monitor if context and hasattr(context, 'memory_monitor') else None
@@ -368,7 +379,7 @@ class CoordinateMerger(BaseProcessor):
         
         # Load with spatial filter
         if dataset_info.get('passthrough', False):
-            return self._load_passthrough_coordinates_bounded(
+            df = self._load_passthrough_coordinates_bounded(
                 dataset_info['name'],
                 dataset_info['table_name'],
                 dataset_bounds,
@@ -376,13 +387,23 @@ class CoordinateMerger(BaseProcessor):
                 bounds
             )
         else:
-            return self._load_resampled_coordinates_bounded(
+            df = self._load_resampled_coordinates_bounded(
                 dataset_info['name'],
                 dataset_info['table_name'],
                 bounds,
                 dataset_bounds,
                 dataset_info['resolution']
             )
+        
+        # Apply alignment shifts if needed
+        if df is not None and dataset_info['name'] in self.alignment_shifts:
+            shifts = self.alignment_shifts[dataset_info['name']]
+            logger.info(f"Applying alignment shifts to {dataset_info['name']} (bounded): "
+                       f"x_shift={shifts['x_shift']:.6f}, y_shift={shifts['y_shift']:.6f}")
+            df['x'] = df['x'] + shifts['x_shift']
+            df['y'] = df['y'] + shifts['y_shift']
+        
+        return df
     
     def _load_passthrough_coordinates_bounded(self, name: str, table_name: str,
                                             dataset_bounds: Tuple, resolution: float,
@@ -470,18 +491,29 @@ class CoordinateMerger(BaseProcessor):
         if isinstance(bounds, list):
             bounds = tuple(bounds)
         
+        # Load the data
         if dataset_info.get('passthrough', False):
-            return self._load_passthrough_coordinates(
+            df = self._load_passthrough_coordinates(
                 dataset_info['name'],
                 dataset_info['table_name'],
                 bounds,
                 dataset_info['resolution']
             )
         else:
-            return self._load_resampled_coordinates(
+            df = self._load_resampled_coordinates(
                 dataset_info['name'],
                 dataset_info['table_name']
             )
+        
+        # Apply alignment shifts if needed
+        if df is not None and dataset_info['name'] in self.alignment_shifts:
+            shifts = self.alignment_shifts[dataset_info['name']]
+            logger.info(f"Applying alignment shifts to {dataset_info['name']}: "
+                       f"x_shift={shifts['x_shift']:.6f}, y_shift={shifts['y_shift']:.6f}")
+            df['x'] = df['x'] + shifts['x_shift']
+            df['y'] = df['y'] + shifts['y_shift']
+        
+        return df
     
     def _load_passthrough_coordinates(self, name: str, table_name: str, 
                                     bounds: Tuple, resolution: float) -> pd.DataFrame:

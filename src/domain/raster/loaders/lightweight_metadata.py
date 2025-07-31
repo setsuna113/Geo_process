@@ -128,6 +128,26 @@ class LightweightMetadataExtractor:
         resolution_x = abs(transform[1])
         resolution_y = abs(transform[5])
         
+        # Apply tolerance-based clamping for geographic bounds
+        # This handles floating point precision issues in GDAL transforms
+        tolerance = 0.01  # Same tolerance used in validation
+        if spatial_ref.IsGeographic():
+            # Clamp to valid geographic ranges with tolerance
+            minx = max(-180 - tolerance, min(180 + tolerance, minx))
+            maxx = max(-180 - tolerance, min(180 + tolerance, maxx))
+            miny = max(-90 - tolerance, min(90 + tolerance, miny))
+            maxy = max(-90 - tolerance, min(90 + tolerance, maxy))
+            
+            # If still slightly outside after clamping, snap to exact bounds
+            if minx < -180:
+                minx = -180
+            if maxx > 180:
+                maxx = 180
+            if miny < -90:
+                miny = -90
+            if maxy > 90:
+                maxy = 90
+        
         return {
             'width': width,
             'height': height,
@@ -278,7 +298,8 @@ class LightweightMetadataExtractor:
 def extract_metadata_with_progress(file_path: Path, 
                                  db_connection: DatabaseManager,
                                  timeout: int = 30,
-                                 progress_callback: Optional[Callable[[str, float], None]] = None) -> Tuple[str, Dict[str, Any]]:
+                                 progress_callback: Optional[Callable[[str, float], None]] = None,
+                                 raster_name: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """
     Convenience function for extracting lightweight metadata with progress.
     
@@ -292,7 +313,9 @@ def extract_metadata_with_progress(file_path: Path,
     )
     
     metadata = extractor.extract_essential_metadata(file_path)
-    raster_id = extractor.store_lightweight_metadata(metadata, file_path.stem)
+    # Use provided name or file stem
+    name = raster_name if raster_name is not None else file_path.stem
+    raster_id = extractor.store_lightweight_metadata(metadata, name)
     
     # Schedule full extraction for smaller files
     if extractor.can_extract_full_metadata_later(file_path):

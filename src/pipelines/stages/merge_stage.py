@@ -116,6 +116,8 @@ class MergeStage(PipelineStage):
                 'max_shift_degrees': 0.0
             }
             
+            # Create alignment mapping for the merger
+            alignment_shifts = {}
             for alignment in alignment_report:
                 if alignment.requires_shift:
                     alignment_metrics['datasets_requiring_alignment'] += 1
@@ -126,6 +128,11 @@ class MergeStage(PipelineStage):
                     )
                     logger.info(f"Dataset {alignment.aligned_dataset} requires shift: "
                               f"x={alignment.x_shift:.6f}, y={alignment.y_shift:.6f} degrees")
+                    # Store shifts for the merger to apply
+                    alignment_shifts[alignment.aligned_dataset] = {
+                        'x_shift': alignment.x_shift,
+                        'y_shift': alignment.y_shift
+                    }
             
             # Determine chunk size based on config and dataset sizes
             chunk_size = None
@@ -150,7 +157,8 @@ class MergeStage(PipelineStage):
                     context.set('merge_config', {
                         'dataset_dicts': dataset_dicts,
                         'chunk_size': chunk_size or context.config.get('merge.streaming_chunk_size', 5000),
-                        'merger': merger  # Store merger instance for use in ExportStage
+                        'merger': merger,  # Store merger instance for use in ExportStage
+                        'alignment_shifts': alignment_shifts  # Pass alignment shifts for streaming
                     })
                     
                     # We don't create the merged dataset, just validate the inputs
@@ -180,7 +188,8 @@ class MergeStage(PipelineStage):
                     dataset_dicts,
                     chunk_size=chunk_size,
                     return_as='xarray',  # Return as xarray for compatibility with ExportStage
-                    context=context
+                    context=context,
+                    alignment_shifts=alignment_shifts  # Pass alignment shifts
                 )
                 
                 # Get validation results

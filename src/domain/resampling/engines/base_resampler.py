@@ -26,6 +26,7 @@ class ResamplingConfig:
     preserve_sum: bool = False  # For count data
     nodata_value: Optional[float] = None
     dtype: Optional[np.dtype] = None
+    memory_limit_mb: int = 512  # Memory limit for processing
 
 
 @dataclass

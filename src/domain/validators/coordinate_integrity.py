@@ -93,14 +93,16 @@ class BoundsConsistencyValidator(BaseValidator):
         
         # Check geographic validity for lat/lon
         if crs == 'EPSG:4326':
-            if not (-180 <= minx <= 180 and -180 <= maxx <= 180):
+            if not (-180 - self.tolerance <= minx <= 180 + self.tolerance and 
+                    -180 - self.tolerance <= maxx <= 180 + self.tolerance):
                 issues.append(self.create_issue(
                     ValidationType.BOUNDS_CONSISTENCY,
                     ValidationSeverity.ERROR,
                     f"Longitude out of range [-180, 180]: min={minx}, max={maxx}"
                 ))
             
-            if not (-90 <= miny <= 90 and -90 <= maxy <= 90):
+            if not (-90 - self.tolerance <= miny <= 90 + self.tolerance and 
+                    -90 - self.tolerance <= maxy <= 90 + self.tolerance):
                 issues.append(self.create_issue(
                     ValidationType.BOUNDS_CONSISTENCY,
                     ValidationSeverity.ERROR,

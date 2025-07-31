@@ -44,9 +44,12 @@ class NumpyResampler(BaseResampler):
     
     def _register_strategies(self):
         """Register resampling strategies."""
+        from ..strategies.block_sum_aggregation import BlockSumAggregationStrategy
+        
         self.strategies = {
             'area_weighted': AreaWeightedStrategy(),
-            'sum': SumAggregationStrategy(),
+            'sum': BlockSumAggregationStrategy(),  # Use efficient block-based sum
+            'sum_legacy': SumAggregationStrategy(),  # Keep old version as legacy
             'majority': MajorityVoteStrategy(),
             'nearest': self._nearest_neighbor,
             'bilinear': self._bilinear,
@@ -123,18 +126,30 @@ class NumpyResampler(BaseResampler):
             # Built-in method
             result_array = np.asarray(strategy(source_array, target_shape, wrapped_callback))
         elif strategy is not None:
-            # Custom strategy
-            mapping = self._build_pixel_mapping(
-                source_array.shape, source_bounds,
-                target_shape, target_bounds
-            )
-            result_array = strategy.resample(
-                source_array,
-                target_shape,
-                mapping,
-                self.config,
-                wrapped_callback
-            )
+            # Check if strategy is block-based
+            if hasattr(strategy, 'is_block_based') and strategy.is_block_based():
+                # Use direct resampling without pixel mapping
+                result_array = strategy.resample_direct(
+                    source_array,
+                    source_bounds,
+                    target_shape,
+                    target_bounds,
+                    self.config,
+                    wrapped_callback
+                )
+            else:
+                # Custom strategy with pixel mapping
+                mapping = self._build_pixel_mapping(
+                    source_array.shape, source_bounds,
+                    target_shape, target_bounds
+                )
+                result_array = strategy.resample(
+                    source_array,
+                    target_shape,
+                    mapping,
+                    self.config,
+                    wrapped_callback
+                )
         else:
             raise ValueError(f"Strategy {self.config.method} is not implemented")
         
@@ -509,6 +524,8 @@ class NumpyResampler(BaseResampler):
         # Implementation remains the same but with chunked processing
         src_height, src_width = source_shape
         tgt_height, tgt_width = target_shape
+        
+        logger.debug(f"Building pixel mapping: source {src_height}x{src_width} -> target {tgt_height}x{tgt_width}")
         
         src_minx, src_miny, src_maxx, src_maxy = source_bounds
         tgt_minx, _, _, tgt_maxy = target_bounds

@@ -135,7 +135,9 @@ class ResampleStage(PipelineStage):
                         metrics['total_pixels_processed'] += resampled_info.shape[0] * resampled_info.shape[1]
                     
                 except Exception as e:
+                    import traceback
                     logger.error(f"Failed to process {dataset_config.get('name')}: {e}")
+                    logger.error(f"Stack trace:\n{traceback.format_exc()}")
                     continue
             
             # Store results in context

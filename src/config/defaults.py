@@ -26,7 +26,13 @@ PIPELINE = {
     'memory_limit_gb': 800.0,  # Conservative test mode limit
     'enable_memory_monitoring': True,
     'memory_check_interval': 5.0,  # seconds
-    'auto_adjust_chunk_size': True
+    'auto_adjust_chunk_size': True,
+    'quality_thresholds': {
+        'max_nan_ratio': 0.10,  # Default 10% - will be overridden for biodiversity data
+        'min_completeness': 0.80,  # 80% data completeness
+        'max_outlier_ratio': 0.05,  # 5% outliers
+        'min_coverage': 0.90  # 90% spatial coverage
+    }
 }
 
 # Enhanced processing configuration - test mode defaults (production overrides via config.yml)

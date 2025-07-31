@@ -44,14 +44,6 @@ class QualityChecker:
     
     def __init__(self, config):
         self.config = config
-        self.quality_thresholds = config.get('pipeline.quality_thresholds', {})
-        
-        # Default thresholds
-        self.default_thresholds = {
-            'min_completeness': 0.8,  # 80% data completeness
-            'max_outlier_ratio': 0.05,  # 5% outliers
-            'min_coverage': 0.9  # 90% spatial coverage
-        }
     
     def check_stage_output(self, stage: PipelineStage, result: StageResult, 
                           context) -> QualityReport:
@@ -161,11 +153,12 @@ class QualityChecker:
             report.checks_passed += 1
         
         # Check for NaN values
+        max_nan_ratio = self.config.get('pipeline.quality_thresholds.max_nan_ratio', 0.1)
         for var_name in merged_dataset.data_vars:
             data = merged_dataset[var_name].values
             nan_ratio = np.isnan(data).sum() / data.size
             
-            if nan_ratio > 0.1:  # More than 10% NaN
+            if nan_ratio > max_nan_ratio:
                 report.warnings.append(f"High NaN ratio in {var_name}: {nan_ratio:.2%}")
                 report.checks_failed += 1
             else:

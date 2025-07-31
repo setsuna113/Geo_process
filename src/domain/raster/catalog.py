@@ -130,16 +130,21 @@ class RasterCatalog:
     def add_raster_lightweight(self, file_path: Path, 
                               dataset_type: Optional[str] = None,
                               validate: bool = False,
-                              progress_callback: Optional[callable] = None) -> RasterEntry:
+                              progress_callback: Optional[callable] = None,
+                              name: Optional[str] = None) -> RasterEntry:
         """Add a raster to the catalog using lightweight metadata extraction."""
         logger.info(f"Adding raster with lightweight extraction: {file_path.name}")
+        
+        # Use provided name or file stem
+        raster_name = name if name is not None else file_path.stem
         
         # Use lightweight metadata extraction with timeout protection
         raster_id, lightweight_metadata = extract_metadata_with_progress(
             file_path, 
             self.db,
             timeout=self.config.get('raster_processing.gdal_timeout', 30),
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            raster_name=raster_name
         )
         
         # Detect dataset type if not provided
@@ -159,7 +164,7 @@ class RasterCatalog:
         
         entry = RasterEntry(
             id=str(raster_id),
-            name=file_path.stem,
+            name=raster_name,
             path=file_path,
             dataset_type=dataset_type,
             resolution_degrees=spatial_info.get('resolution_degrees', 0.05),  # Default fallback

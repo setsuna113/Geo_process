@@ -70,8 +70,9 @@ class ResamplingProcessor(BaseProcessor):
         self.cache_manager = ResamplingCacheManager()
         self.memory_manager = get_memory_manager()
         
-        # Initialize validators
-        self.bounds_validator = BoundsConsistencyValidator(tolerance=1e-6)
+        # Initialize validators with config tolerance
+        bounds_tolerance = config.get('data_preparation.bounds_tolerance', 0.01)
+        self.bounds_validator = BoundsConsistencyValidator(tolerance=bounds_tolerance)
         self.transform_validator = CoordinateTransformValidator(max_error_meters=5.0)  # More lenient for resampling
         self.value_validator = ParquetValueValidator(
             max_null_percentage=15.0,  # More lenient for resampled data
@@ -243,6 +244,8 @@ class ResamplingProcessor(BaseProcessor):
         )
         logger.info(f"🔍 DEBUG: resample_dataset() called for {dataset_config.get('name', 'unknown')}")
         logger.debug(f"🔍 resample_dataset() called for {dataset_config.get('name', 'unknown')}")
+        logger.info(f"🔍 TRACE: Python file location: {__file__}")
+        logger.info(f"🔍 TRACE: Method called at: {datetime.now().isoformat()}")
         from src.config.dataset_utils import DatasetPathResolver
         
         # Memory allocation tracking
@@ -287,6 +290,35 @@ class ResamplingProcessor(BaseProcessor):
             )
             logger.info(f"🔍 DEBUG: _get_or_register_raster completed")
             logger.debug(f"🔍 _get_or_register_raster completed")
+            
+            # Debug: Check what type raster_entry actually is
+            logger.info(f"🔍 DEBUG: raster_entry type: {type(raster_entry)}")
+            if isinstance(raster_entry, tuple):
+                logger.error(f"ERROR: raster_entry is a tuple! Length: {len(raster_entry)}")
+                # Try to recover by creating RasterEntry from tuple
+                if len(raster_entry) >= 11:  # RasterEntry has at least 11 fields
+                    try:
+                        # Reconstruct RasterEntry from tuple
+                        raster_entry = RasterEntry(
+                            id=str(raster_entry[0]),
+                            name=raster_entry[1],
+                            path=Path(raster_entry[2]) if not isinstance(raster_entry[2], Path) else raster_entry[2],
+                            dataset_type=raster_entry[3],
+                            resolution_degrees=float(raster_entry[4]),
+                            bounds=tuple(raster_entry[5]) if not isinstance(raster_entry[5], tuple) else raster_entry[5],
+                            data_type=raster_entry[6],
+                            nodata_value=raster_entry[7],
+                            file_size_mb=float(raster_entry[8]),
+                            last_validated=raster_entry[9],
+                            is_active=bool(raster_entry[10]),
+                            metadata=raster_entry[11] if len(raster_entry) > 11 else {}
+                        )
+                        logger.warning(f"Recovered RasterEntry from tuple for {raster_entry.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to recover RasterEntry from tuple: {e}")
+                        raise TypeError(f"Cannot convert tuple to RasterEntry: {raster_entry}")
+                else:
+                    raise TypeError(f"Expected RasterEntry but got tuple with {len(raster_entry)} elements")
             
             # Validate source bounds
             self._validate_source_bounds(raster_entry, dataset_name)
@@ -399,6 +431,10 @@ class ResamplingProcessor(BaseProcessor):
             # Determine if chunked processing is needed
             if estimated_memory > self.chunk_config['max_chunk_size_mb']:
                 logger.info(f"Using chunked processing (data size: {estimated_memory:.1f} MB)")
+                # Debug check before calling _resample_chunked
+                logger.info(f"🔍 DEBUG before _resample_chunked: raster_entry type = {type(raster_entry)}")
+                if isinstance(raster_entry, tuple):
+                    logger.error(f"ERROR: raster_entry is STILL a tuple before _resample_chunked!")
                 result_data = self._resample_chunked(
                     raster_entry, method, progress_callback
                 )
@@ -538,6 +574,12 @@ class ResamplingProcessor(BaseProcessor):
         from dask.array import from_delayed
         import dask.array as da
         
+        # Defensive check for tuple issue
+        if isinstance(raster_entry, tuple):
+            logger.error(f"ERROR in _resample_chunked: raster_entry is a tuple! Length: {len(raster_entry)}")
+            logger.error(f"Tuple contents: {raster_entry}")
+            raise TypeError(f"Expected RasterEntry in _resample_chunked but got tuple with {len(raster_entry)} elements")
+        
         logger.info(f"Starting chunked resampling for {raster_entry.name}")
         
         # Calculate optimal chunk size based on available memory
@@ -555,9 +597,10 @@ class ResamplingProcessor(BaseProcessor):
             progress_callback("Loading raster metadata", 10)
         
         # Open raster with explicit chunking
+        # Note: chunks parameter uses dimension indices, not names
         with rioxarray.open_rasterio(
             raster_entry.path,
-            chunks={'x': chunk_size, 'y': chunk_size},
+            chunks={'band': 1, 'x': chunk_size, 'y': chunk_size},
             cache=False,
             lock=False
         ) as src:
@@ -573,39 +616,95 @@ class ResamplingProcessor(BaseProcessor):
             output_shape = self._calculate_output_shape(raster_entry.bounds)
             
             # Create resampler
-            resampler = self._create_resampler_engine(method, raster_entry.bounds)
+            resampler = self._create_resampler_engine(method, raster_entry)
             
             # Initialize output array
             output_data = np.zeros(output_shape, dtype=np.float32)
             
-            # Process chunks
-            total_chunks = len(src.lon.chunks[0]) * len(src.lat.chunks[0])
+            # Process chunks - chunks are accessed by dimension index after rename
+            if src.chunks is None:
+                logger.error(f"No chunks available for {raster_entry.name}")
+                raise ValueError(f"Dataset {raster_entry.name} has no chunk information")
+            
+            # After rename, chunks are still indexed by position (0 for lat/y, 1 for lon/x)
+            lat_chunks = src.chunks[0] if len(src.chunks) > 0 else None
+            lon_chunks = src.chunks[1] if len(src.chunks) > 1 else None
+            
+            if lat_chunks is None or lon_chunks is None:
+                logger.error(f"Invalid chunk structure for {raster_entry.name}: {src.chunks}")
+                raise ValueError(f"Dataset {raster_entry.name} has invalid chunk structure")
+                
+            total_chunks = len(lat_chunks) * len(lon_chunks)
             processed_chunks = 0
             
             if progress_callback:
                 progress_callback("Processing chunks", 20)
             
-            # Iterate over chunks
-            for i, lon_slice in enumerate(src.lon.chunks):
-                for j, lat_slice in enumerate(src.lat.chunks):
+            # Iterate over chunks using the chunk sizes we determined earlier
+            lon_offsets = [0] + list(np.cumsum(lon_chunks))
+            lat_offsets = [0] + list(np.cumsum(lat_chunks))
+            
+            logger.info(f"Processing {len(lon_chunks)} x {len(lat_chunks)} = {total_chunks} chunks")
+            
+            for i in range(len(lon_chunks)):
+                for j in range(len(lat_chunks)):
+                    chunk_idx = i * len(lat_chunks) + j
+                    if chunk_idx % 10 == 0:  # Log every 10th chunk
+                        logger.info(f"Processing chunk {chunk_idx + 1}/{total_chunks} ({(chunk_idx + 1) / total_chunks * 100:.1f}%)")
+                    
                     # Check memory pressure
                     if self.memory_manager.get_memory_pressure_level().value in ['high', 'critical']:
                         logger.warning("High memory pressure, triggering cleanup")
                         self.memory_manager.trigger_cleanup()
                     
-                    # Extract chunk bounds
+                    # Get chunk slice indices
+                    lon_start = lon_offsets[i]
+                    lon_end = lon_offsets[i + 1]
+                    lat_start = lat_offsets[j]
+                    lat_end = lat_offsets[j + 1]
+                    
+                    # Extract chunk bounds with proper handling
+                    # Get coordinate values
+                    lon_start_val = float(src.lon[lon_start].values)
+                    lon_end_val = float(src.lon[min(lon_end - 1, len(src.lon) - 1)].values)
+                    lat_start_val = float(src.lat[lat_start].values)
+                    lat_end_val = float(src.lat[min(lat_end - 1, len(src.lat) - 1)].values)
+                    
+                    # Calculate pixel spacing from raster metadata
+                    lon_spacing = raster_entry.metadata.get('resolution_x', 0.008983)
+                    lat_spacing = raster_entry.metadata.get('resolution_y', 0.008983)
+                    
+                    # Calculate bounds extending to pixel edges
+                    # Ensure proper ordering (minx, miny, maxx, maxy)
                     chunk_bounds = (
-                        float(src.lon[sum(src.lon.chunks[:i])].values),
-                        float(src.lat[sum(src.lat.chunks[:j])].values),
-                        float(src.lon[sum(src.lon.chunks[:i+1])-1].values),
-                        float(src.lat[sum(src.lat.chunks[:j+1])-1].values)
+                        min(lon_start_val, lon_end_val) - lon_spacing / 2,
+                        min(lat_start_val, lat_end_val) - lat_spacing / 2,
+                        max(lon_start_val, lon_end_val) + lon_spacing / 2,
+                        max(lat_start_val, lat_end_val) + lat_spacing / 2
                     )
                     
+                    # Validate chunk bounds will produce positive dimensions
+                    chunk_width = chunk_bounds[2] - chunk_bounds[0]
+                    chunk_height = chunk_bounds[3] - chunk_bounds[1]
+                    target_width = int(np.ceil(chunk_width / self.target_resolution))
+                    target_height = int(np.ceil(chunk_height / self.target_resolution))
+                    
+                    if target_width <= 0 or target_height <= 0:
+                        logger.warning(f"Skipping chunk {i},{j} - would produce invalid dimensions: {target_width}x{target_height}")
+                        logger.warning(f"  Chunk bounds: {chunk_bounds}")
+                        logger.warning(f"  Chunk size in degrees: {chunk_width:.6f} x {chunk_height:.6f}")
+                        continue
+                    
                     # Load chunk data
+                    if chunk_idx % 10 == 0:
+                        logger.debug(f"Loading chunk data: lon[{lon_start}:{lon_end}], lat[{lat_start}:{lat_end}]")
                     chunk_data = src.isel(
-                        lon=slice(sum(src.lon.chunks[:i]), sum(src.lon.chunks[:i+1])),
-                        lat=slice(sum(src.lat.chunks[:j]), sum(src.lat.chunks[:j+1]))
+                        lon=slice(lon_start, lon_end),
+                        lat=slice(lat_start, lat_end)
                     ).compute()
+                    
+                    if chunk_idx % 10 == 0:
+                        logger.debug(f"Chunk data loaded, shape: {chunk_data.shape}")
                     
                     # Resample chunk
                     chunk_result = resampler.resample(
@@ -652,6 +751,11 @@ class ResamplingProcessor(BaseProcessor):
         Returns:
             Resampled data array
         """
+        # Defensive check for tuple issue
+        if isinstance(raster_entry, tuple):
+            logger.error(f"ERROR: raster_entry is a tuple instead of RasterEntry! Contents: {raster_entry}")
+            raise TypeError(f"Expected RasterEntry but got tuple with {len(raster_entry)} elements")
+            
         if progress_callback:
             progress_callback("Loading raster data", 20)
         
@@ -713,7 +817,8 @@ class ResamplingProcessor(BaseProcessor):
                 target_crs=self.target_crs,
                 chunk_size=self.chunk_config['tile_size'],
                 preserve_sum=method == 'sum',
-                nodata_value=raster_entry.nodata_value
+                nodata_value=raster_entry.nodata_value,
+                memory_limit_mb=self.config.get('raster_processing.memory_limit_mb', 10000)
             )
             
             return NumpyResampler(resample_config)
@@ -732,7 +837,8 @@ class ResamplingProcessor(BaseProcessor):
                 target_crs=self.target_crs,
                 chunk_size=self.chunk_config['tile_size'],
                 preserve_sum=method == 'sum',
-                nodata_value=raster_entry.nodata_value
+                nodata_value=raster_entry.nodata_value,
+                memory_limit_mb=self.config.get('raster_processing.memory_limit_mb', 10000)
             )
             
             return GDALResampler(resample_config)
@@ -776,11 +882,12 @@ class ResamplingProcessor(BaseProcessor):
             
             logger.info(f"🔍 DEBUG: About to call catalog.add_raster_lightweight")
             logger.debug(f"🔍 About to call catalog.add_raster_lightweight")
-            # Use lightweight registration
+            # Use lightweight registration with explicit name
             raster_entry = self.catalog.add_raster_lightweight(
                 raster_path,
                 dataset_type=data_type,
-                validate=False
+                validate=False,
+                name=dataset_name  # Use the dataset name from config
             )
             logger.info(f"🔍 DEBUG: catalog.add_raster_lightweight completed")
             logger.debug(f"🔍 catalog.add_raster_lightweight completed")
@@ -1051,7 +1158,8 @@ class ResamplingProcessor(BaseProcessor):
                 target_crs=self.target_crs,
                 chunk_size=self._get_current_window_size(),
                 preserve_sum=dataset_config['data_type'] == 'richness_data',
-                nodata_value=raster_entry.metadata.get('nodata_value')
+                nodata_value=raster_entry.metadata.get('nodata_value'),
+                memory_limit_mb=self.config.get('raster_processing.memory_limit_mb', 10000)
             )
             
             resampler = NumpyResampler(resample_config)
