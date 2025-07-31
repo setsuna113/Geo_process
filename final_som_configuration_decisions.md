@@ -239,3 +239,4 @@ def run_biodiversity_som_analysis(data, coordinates):
 7. ✅ **Reporting**: Full visualization and statistical suite
 
 All parameters are optimized for global biodiversity data with 70% missing values and mixed observed/predicted features.
+EOF < /dev/null
