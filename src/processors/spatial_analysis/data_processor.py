@@ -12,9 +12,31 @@ from src.config import config
 from src.config.config import Config
 from src.database.connection import DatabaseManager
 from src.processors.data_preparation.array_converter import ArrayConverter
-from src.spatial_analysis.memory_aware_processor import MemoryAwareProcessor, check_memory_usage
+# Memory aware processing temporarily removed - spatial_analysis module was removed
+# TODO: Replace with new memory management from biodiversity_analysis module
 
 logger = logging.getLogger(__name__)
+
+
+def check_memory_usage(data_shape: Tuple[int, ...], dtype: np.dtype) -> Dict[str, Any]:
+    """Simple memory usage check."""
+    import psutil
+    
+    # Calculate data size
+    itemsize = np.dtype(dtype).itemsize
+    data_size_bytes = np.prod(data_shape) * itemsize
+    data_size_gb = data_size_bytes / (1024**3)
+    
+    # Get available memory
+    memory = psutil.virtual_memory()
+    available_gb = memory.available / (1024**3)
+    
+    return {
+        'data_size_gb': data_size_gb,
+        'available_gb': available_gb,
+        'will_fit': data_size_gb < available_gb * 0.8  # Leave 20% buffer
+    }
+
 
 class SpatialDataProcessor(BaseProcessor):
     """Handle data preparation and processing for spatial analysis."""
@@ -35,9 +57,8 @@ class SpatialDataProcessor(BaseProcessor):
         
         self.config = config
         self.array_converter = ArrayConverter()
-        self.memory_processor = MemoryAwareProcessor(
-            memory_limit_gb=config.get('processing', {}).get('subsampling', {}).get('memory_limit_gb', 8.0)
-        )
+        # Memory processor removed - TODO: Replace with new implementation
+        self.memory_limit_gb = config.get('processing', {}).get('subsampling', {}).get('memory_limit_gb', 8.0)
         
         # Processing parameters
         self.normalize_data = config.get('spatial_analysis', {}).get('normalize_data', True)
