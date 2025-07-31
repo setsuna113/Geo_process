@@ -1,0 +1,142 @@
+{
+  "timestamp": "2025-07-31T19:00:25.067754",
+  "processed_windows": 66,
+  "total_windows": 0,
+  "completed_windows": [
+    "window_6144_8192",
+    "window_10240_0",
+    "window_0_8192",
+    "window_0_14336",
+    "window_0_18432",
+    "window_2048_8192",
+    "window_2048_0",
+    "window_10240_4096",
+    "window_10240_2048",
+    "window_6144_0",
+    "window_2048_16384",
+    "window_4096_20480",
+    "window_4096_6144",
+    "window_4096_10240",
+    "window_6144_2048",
+    "window_10240_6144",
+    "window_6144_4096",
+    "window_2048_18432",
+    "window_2048_12288",
+    "window_10240_18432",
+    "window_2048_2048",
+    "window_0_0",
+    "window_8192_8192",
+    "window_4096_12288",
+    "window_10240_10240",
+    "window_4096_2048",
+    "window_0_12288",
+    "window_2048_6144",
+    "window_8192_12288",
+    "window_4096_4096",
+    "window_8192_6144",
+    "window_6144_14336",
+    "window_2048_4096",
+    "window_8192_20480",
+    "window_10240_12288",
+    "window_0_16384",
+    "window_4096_8192",
+    "window_8192_18432",
+    "window_0_6144",
+    "window_8192_2048",
+    "window_4096_18432",
+    "window_8192_10240",
+    "window_10240_14336",
+    "window_8192_4096",
+    "window_8192_16384",
+    "window_10240_8192",
+    "window_2048_14336",
+    "window_10240_20480",
+    "window_6144_6144",
+    "window_6144_10240",
+    "window_6144_18432",
+    "window_2048_10240",
+    "window_0_20480",
+    "window_0_4096",
+    "window_10240_16384",
+    "window_4096_16384",
+    "window_6144_12288",
+    "window_0_10240",
+    "window_8192_0",
+    "window_6144_20480",
+    "window_2048_20480",
+    "window_8192_14336",
+    "window_6144_16384",
+    "window_4096_0",
+    "window_0_2048",
+    "window_4096_14336"
+  ],
+  "last_window_info": {
+    "status": "interrupted",
+    "summary": {
+      "total_windows": 0,
+      "processed_windows": 66,
+      "progress_percent": 0,
+      "elapsed_time": "1s",
+      "elapsed_seconds": 1.0135235786437988,
+      "windows_per_second": 65.11935330435523,
+      "peak_memory_mb": 322.24609375,
+      "errors": 10,
+      "warnings": 0,
+      "completed": false
+    }
+  },
+  "errors": [
+    {
+      "timestamp": "2025-07-31T19:00:18.124188",
+      "window_id": "window_4096_20480",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.191869",
+      "window_id": "window_8192_20480",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.269562",
+      "window_id": "window_8192_0",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.441916",
+      "window_id": "window_2048_16384",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.538456",
+      "window_id": "window_0_0",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.606206",
+      "window_id": "window_6144_0",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.665356",
+      "window_id": "window_6144_20480",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.716076",
+      "window_id": "window_2048_20480",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.796464",
+      "window_id": "window_0_20480",
+      "error": "Object of type int64 is not JSON serializable"
+    },
+    {
+      "timestamp": "2025-07-31T19:00:18.865523",
+      "window_id": "window_2048_0",
+      "error": "Object of type int64 is not JSON serializable"
+    }
+  ],
+  "warnings": [],
+  "peak_memory_mb": 322.24609375
+}

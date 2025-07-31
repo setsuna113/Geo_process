@@ -44,9 +44,37 @@ class MonitoringClient:
             if not exp_row:
                 raise ValueError(f"Experiment not found: {experiment}")
             
-            # Get progress tree
-            cursor.execute("SELECT * FROM get_progress_tree(%(exp_id)s::uuid)", 
-                          {'exp_id': experiment_id})
+            # Get progress tree - direct query instead of function
+            cursor.execute("""
+                WITH RECURSIVE progress_tree AS (
+                    -- Base case: root nodes
+                    SELECT 
+                        node_id,
+                        parent_id,
+                        0 as node_level,
+                        node_name,
+                        status,
+                        progress_percent
+                    FROM pipeline_progress
+                    WHERE experiment_id = %(exp_id)s AND parent_id IS NULL
+                    
+                    UNION ALL
+                    
+                    -- Recursive case
+                    SELECT 
+                        p.node_id,
+                        p.parent_id,
+                        pt.node_level + 1,
+                        p.node_name,
+                        p.status,
+                        p.progress_percent
+                    FROM pipeline_progress p
+                    INNER JOIN progress_tree pt ON p.parent_id = pt.node_id
+                    WHERE p.experiment_id = %(exp_id)s
+                )
+                SELECT * FROM progress_tree
+                ORDER BY node_level, node_name
+            """, {'exp_id': experiment_id})
             progress_tree = cursor.fetchall()
             
             # Get error count
@@ -95,22 +123,31 @@ class MonitoringClient:
             start_time = self._parse_time_delta(start_time)
         
         with self.db.get_cursor() as cursor:
-            # Use the function we created
-            cursor.execute("""
-                SELECT * FROM get_experiment_logs(
-                    %(exp_id)s::uuid,
-                    p_level := %(level)s,
-                    p_search := %(search)s,
-                    p_start_time := %(start_time)s,
-                    p_limit := %(limit)s
-                )
-            """, {
-                'exp_id': experiment_id,
-                'level': level,
-                'search': search,
-                'start_time': start_time,
-                'limit': limit
-            })
+            # Direct query instead of function
+            query = """
+                SELECT 
+                    id, timestamp, level, node_id, message, context, traceback
+                FROM pipeline_logs
+                WHERE experiment_id = %(exp_id)s
+            """
+            params = {'exp_id': experiment_id}
+            
+            if level:
+                query += " AND level = %(level)s"
+                params['level'] = level
+            
+            if search:
+                query += " AND message ILIKE %(search)s"
+                params['search'] = f'%{search}%'
+            
+            if start_time:
+                query += " AND timestamp >= %(start_time)s"
+                params['start_time'] = start_time
+            
+            query += " ORDER BY timestamp DESC LIMIT %(limit)s"
+            params['limit'] = limit
+            
+            cursor.execute(query, params)
             
             logs = []
             for row in cursor.fetchall():
@@ -221,15 +258,55 @@ class MonitoringClient:
             Error summary with counts and recent errors
         """
         with self.db.get_cursor() as cursor:
-            cursor.execute("SELECT * FROM get_error_summary(%(exp_id)s::uuid)",
-                          {'exp_id': experiment_id})
+            # Total error count
+            cursor.execute("""
+                SELECT COUNT(*) as total_errors
+                FROM pipeline_logs
+                WHERE experiment_id = %(exp_id)s 
+                AND level IN ('ERROR', 'CRITICAL')
+            """, {'exp_id': experiment_id})
+            total_errors = cursor.fetchone()['total_errors']
             
-            row = cursor.fetchone()
+            # Errors by level
+            cursor.execute("""
+                SELECT level, COUNT(*) as count
+                FROM pipeline_logs
+                WHERE experiment_id = %(exp_id)s 
+                AND level IN ('ERROR', 'CRITICAL')
+                GROUP BY level
+            """, {'exp_id': experiment_id})
+            by_level = {row['level']: row['count'] for row in cursor.fetchall()}
+            
+            # Errors by stage (from context)
+            cursor.execute("""
+                SELECT 
+                    COALESCE(context->>'stage', 'unknown') as stage,
+                    COUNT(*) as count
+                FROM pipeline_logs
+                WHERE experiment_id = %(exp_id)s 
+                AND level IN ('ERROR', 'CRITICAL')
+                GROUP BY COALESCE(context->>'stage', 'unknown')
+            """, {'exp_id': experiment_id})
+            by_stage = {row['stage']: row['count'] for row in cursor.fetchall()}
+            
+            # Recent errors
+            cursor.execute("""
+                SELECT 
+                    timestamp, level, message, context, traceback,
+                    COALESCE(context->>'stage', 'unknown') as stage
+                FROM pipeline_logs
+                WHERE experiment_id = %(exp_id)s 
+                AND level IN ('ERROR', 'CRITICAL')
+                ORDER BY timestamp DESC
+                LIMIT 10
+            """, {'exp_id': experiment_id})
+            recent_errors = [dict(row) for row in cursor.fetchall()]
+            
             return {
-                'total_count': row['total_errors'],
-                'by_level': row['error_by_level'] or {},
-                'by_stage': row['error_by_stage'] or {},
-                'recent_errors': row['recent_errors'] or []
+                'total_count': total_errors,
+                'by_level': by_level,
+                'by_stage': by_stage,
+                'recent_errors': recent_errors
             }
     
     def _resolve_experiment_id(self, experiment: str) -> str:
@@ -252,7 +329,7 @@ class MonitoringClient:
                 cursor.execute("""
                     SELECT id FROM experiments 
                     WHERE name = %(name)s 
-                    ORDER BY created_at DESC 
+                    ORDER BY started_at DESC 
                     LIMIT 1
                 """, {'name': experiment})
                 

@@ -67,6 +67,7 @@ resampling:
   # Resolution matching
   allow_skip_resampling: true  # Skip resampling if resolution matches
   resolution_tolerance: 0.001  # Tolerance for resolution matching
+  force_passthrough_for_skip: true  # Use passthrough strategy when skipping
   
 
 # =============================================================================
@@ -99,16 +100,18 @@ datasets:
       enabled: true
       
     - name: "am-fungi-richness"
-      path: "/maps/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
+      path: "/scratch/yl998/resampled_rasters/AM_Fungi_Richness_Predicted_resampled_0.016667.tif"
       data_type: "continuous_data"  # Changed from richness_data - SDM predictions
       band_name: "am_fungi_richness"
       enabled: true
+      skip_resampling: true  # Already at target resolution
       
     - name: "ecm-fungi-richness"
-      path: "/maps/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
+      path: "/scratch/yl998/resampled_rasters/EcM_Fungi_Richness_Predicted_resampled_0.016667.tif"
       data_type: "continuous_data"  # Changed from richness_data - SDM predictions
       band_name: "ecm_fungi_richness"
       enabled: true
+      skip_resampling: true  # Already at target resolution
       
     # EXAMPLE: Add more datasets when ready:
     # - name: "marine-richness"
