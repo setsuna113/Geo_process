@@ -48,7 +48,7 @@ resampling:
   # Resampling strategy per data type
   strategies:
     richness_data: 'sum'          # Sum for count data (using existing SumAggregationStrategy)
-    continuous_data: 'bilinear'   # Bilinear for continuous data
+    continuous_data: 'average'    # Average for continuous SDM predictions (area-weighted)
     categorical_data: 'majority'  # Majority for categories
   
   # Processing options
@@ -99,13 +99,13 @@ datasets:
       
     - name: "am-fungi-richness"
       path: "/maps/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
-      data_type: "richness_data"
+      data_type: "continuous_data"  # Changed from richness_data - SDM predictions
       band_name: "am_fungi_richness"
       enabled: true
       
     - name: "ecm-fungi-richness"
       path: "/maps/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
-      data_type: "richness_data"
+      data_type: "continuous_data"  # Changed from richness_data - SDM predictions
       band_name: "ecm_fungi_richness"
       enabled: true
       
