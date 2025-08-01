@@ -4,7 +4,7 @@
 biodiversity_analysis:
   # Common data processing settings
   data_processing:
-    missing_value_strategy: adaptive  # adaptive, mean, median, zero
+    missing_value_strategy: keep  # keep, drop_samples, drop_features, mean, median, zero
     normalization_method: standard    # standard, minmax
     handle_zero_inflation: true
     zero_inflation_threshold: 0.5
@@ -54,6 +54,51 @@ biodiversity_analysis:
       n_iterations: 100
       cooling_rate: 0.85
     
+    kmeans:
+      # Core parameters
+      n_clusters: 20  # Increased for fine 18km grids
+      init: k-means++  # k-means++, random
+      n_init: 10  # Number of runs with different initializations
+      max_iter: 300
+      tol: 1.0e-4
+      random_state: 42
+      
+      # Distance and weights
+      distance_metric: bray_curtis  # bray_curtis, euclidean
+      weight_method: auto  # auto, completeness, variance, fixed
+      fixed_weights: [1.0, 1.0, 1.0, 1.0]  # Used only if weight_method=fixed
+      
+      # Adaptive thresholds for missing data
+      adaptive_mode: latitude  # latitude, density, both
+      arctic_boundary: 66.5  # degrees
+      temperate_boundary: 45.0  # degrees
+      arctic_min_features: 1  # Min features required in Arctic
+      temperate_min_features: 2  # Min features in temperate zone
+      tropical_min_features: 2  # Min features in tropics
+      
+      # Spatial parameters (for 18km grids)
+      grid_size_km: 18.0
+      neighborhood_radius_km: 100.0  # For density calculations
+      remote_threshold_km: 200.0  # Distance to be considered remote
+      min_neighbors_remote: 10  # Min neighbors to not be remote
+      
+      # Preprocessing
+      transform: log1p  # log1p, sqrt, none
+      normalize: standardize  # standardize, minmax, none
+      handle_zeros: true
+      
+      # Optimization for sparse data
+      prefilter_empty: true  # Remove grids with no data
+      min_features_prefilter: 1  # Min features to keep grid
+      use_sparse_distances: true  # Use sparse matrix optimization
+      chunk_size: 10000  # Chunk size for processing
+      n_jobs: -1  # Parallel jobs (-1 = all cores)
+      
+      # Validation and selection
+      calculate_silhouette: true
+      silhouette_sample_size: 5000  # Sample for large datasets
+      determine_k_method: silhouette  # elbow, silhouette, both
+      
     # Example of custom method that could be added
     # custom_clustering:
     #   algorithm: hierarchical
