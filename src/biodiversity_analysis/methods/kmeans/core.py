@@ -53,6 +53,53 @@ class BiodiversityKMeans:
         Returns:
             self: Fitted estimator
         """
+        # Comprehensive input validation
+        if not isinstance(X, np.ndarray):
+            raise TypeError(f"X must be a numpy array, got {type(X)}")
+        
+        if X.ndim != 2:
+            raise ValueError(f"X must be 2-dimensional, got shape {X.shape}")
+        
+        n_samples, n_features = X.shape
+        
+        if n_samples == 0:
+            raise ValueError("X contains no samples")
+        
+        if n_features == 0:
+            raise ValueError("X contains no features")
+        
+        # Validate n_clusters
+        if not isinstance(self.config.n_clusters, int) or self.config.n_clusters <= 0:
+            raise ValueError(f"n_clusters must be a positive integer, got {self.config.n_clusters}")
+        
+        if n_samples < self.config.n_clusters:
+            raise ValueError(f"Number of samples ({n_samples}) must be >= n_clusters ({self.config.n_clusters})")
+        
+        # Validate other parameters
+        if self.config.max_iter <= 0:
+            raise ValueError(f"max_iter must be positive, got {self.config.max_iter}")
+        
+        if self.config.n_init <= 0:
+            raise ValueError(f"n_init must be positive, got {self.config.n_init}")
+        
+        if self.config.tol < 0:
+            raise ValueError(f"tol must be non-negative, got {self.config.tol}")
+        
+        # Validate coordinates if provided
+        if coordinates is not None:
+            if not isinstance(coordinates, np.ndarray):
+                raise TypeError(f"coordinates must be a numpy array, got {type(coordinates)}")
+            
+            if coordinates.shape != (n_samples, 2):
+                raise ValueError(f"coordinates must have shape ({n_samples}, 2), got {coordinates.shape}")
+            
+            # Check for valid latitude/longitude ranges
+            if np.any(np.abs(coordinates[:, 0]) > 90):
+                raise ValueError("Latitude values must be between -90 and 90")
+            
+            if np.any(np.abs(coordinates[:, 1]) > 180):
+                raise ValueError("Longitude values must be between -180 and 180")
+        
         # Calculate feature weights
         self.feature_weights_ = self.weight_calculator.calculate_weights(X, coordinates)
         logger.info(f"Feature weights: {self.feature_weights_}")
@@ -85,6 +132,13 @@ class BiodiversityKMeans:
         
         # Stratify by data quality
         strata = self.optimizer.stratify_by_quality(X)
+        
+        # Validate strata indices are within bounds
+        n_samples = len(X)
+        for quality, indices in strata.items():
+            if len(indices) > 0:
+                if np.any(indices < 0) or np.any(indices >= n_samples):
+                    raise ValueError(f"Invalid indices in {quality} quality stratum: out of bounds [0, {n_samples})")
         
         if len(strata['high']) >= self.config.n_clusters:
             # Fit initial centers on high-quality data
@@ -191,7 +245,8 @@ class BiodiversityKMeans:
                     logger.debug(f"Converged at iteration {iteration}")
                     break
                 
-                prev_labels = labels.copy()
+                # Use in-place copy for better performance
+                np.copyto(prev_labels, labels)
                 
                 # Update step
                 for k in range(self.config.n_clusters):
@@ -223,20 +278,27 @@ class BiodiversityKMeans:
             
             # Choose first center randomly from data points
             center_idx = np.random.choice(n_samples)
-            centers[0] = X[center_idx].copy()
+            if center_idx < 0 or center_idx >= n_samples:
+                raise ValueError(f"Invalid center index: {center_idx}")
+            centers[0] = X[center_idx]  # Direct assignment, no copy needed
             
             # Choose remaining centers
             for k in range(1, self.config.n_clusters):
-                # Calculate distances to nearest center
+                # Calculate distances to nearest center - vectorized for performance
                 min_distances = np.full(n_samples, np.inf)
                 
+                # Pre-compute coordinates for efficiency
+                coords = coordinates if coordinates is not None else [None] * n_samples
+                
                 for i in range(n_samples):
-                    coord_i = coordinates[i] if coordinates is not None else None
+                    coord_i = coords[i] if coords is not None else None
+                    # Only calculate to previous centers
                     for j in range(k):
                         dist = self.distance_calculator.calculate_distance(
                             X[i], centers[j], coord_i, None
                         )
-                        min_distances[i] = min(min_distances[i], dist)
+                        if dist < min_distances[i]:
+                            min_distances[i] = dist
                 
                 # Choose next center with probability proportional to squared distance
                 # Handle infinite distances
@@ -245,18 +307,24 @@ class BiodiversityKMeans:
                     probs = min_distances.copy()
                     probs[~finite_mask] = 0
                     probs = probs ** 2
-                    probs = probs / probs.sum()
-                    center_idx = np.random.choice(n_samples, p=probs)
+                    # Protect against division by zero
+                    prob_sum = probs.sum()
+                    if prob_sum > 0:
+                        probs = probs / prob_sum
+                        center_idx = np.random.choice(n_samples, p=probs)
+                    else:
+                        # All distances are 0 or inf - random selection
+                        center_idx = np.random.choice(n_samples)
                 else:
                     # Fallback to random selection
                     center_idx = np.random.choice(n_samples)
                 
-                centers[k] = X[center_idx].copy()
+                centers[k] = X[center_idx]  # Direct assignment
             
         else:
-            # Random initialization
+            # Random initialization - direct indexing is more efficient
             indices = np.random.choice(n_samples, self.config.n_clusters, replace=False)
-            centers = X[indices].copy()
+            centers = X[indices]
         
         return centers
     

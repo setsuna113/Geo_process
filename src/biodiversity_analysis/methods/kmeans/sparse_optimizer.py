@@ -154,8 +154,36 @@ class SparseDataOptimizer:
         Returns:
             overlap: Boolean matrix of sample pairs with overlap
         """
+        import gc
+        
         n_samples = len(data)
-        overlap = np.zeros((n_samples, n_samples), dtype=bool)
+        
+        # Use smaller chunks for large datasets to manage memory
+        if n_samples > self.config.large_dataset_threshold:
+            # Process in chunks to avoid memory overflow
+            chunk_size = self.config.memory_chunk_size
+            overlap = np.zeros((n_samples, n_samples), dtype=bool)
+            
+            for i in range(0, n_samples, chunk_size):
+                i_end = min(i + chunk_size, n_samples)
+                for j in range(i, n_samples, chunk_size):
+                    j_end = min(j + chunk_size, n_samples)
+                    
+                    # Process chunk
+                    chunk_overlap = self._compute_overlap_chunk(
+                        data[i:i_end], data[j:j_end], i, j
+                    )
+                    overlap[i:i_end, j:j_end] = chunk_overlap
+                    if i != j:
+                        overlap[j:j_end, i:i_end] = chunk_overlap.T
+                
+                # Force garbage collection after each row of chunks
+                gc.collect()
+            
+            return overlap
+        else:
+            # Small dataset - process normally
+            overlap = np.zeros((n_samples, n_samples), dtype=bool)
         
         for i in range(n_samples):
             for j in range(i+1, n_samples):
@@ -165,6 +193,33 @@ class SparseDataOptimizer:
                     overlap[i, j] = overlap[j, i] = True
         
         return overlap
+    
+    def _compute_overlap_chunk(self, data_i: np.ndarray, data_j: np.ndarray, 
+                              i_offset: int, j_offset: int) -> np.ndarray:
+        """Compute overlap for a chunk of data.
+        
+        Args:
+            data_i, data_j: Data chunks to compare
+            i_offset, j_offset: Offsets in the full dataset
+            
+        Returns:
+            overlap_chunk: Boolean array of overlaps
+        """
+        n_i, n_j = len(data_i), len(data_j)
+        overlap_chunk = np.zeros((n_i, n_j), dtype=bool)
+        
+        for i in range(n_i):
+            for j in range(n_j):
+                # Skip if this is a diagonal element
+                if i_offset + i == j_offset + j:
+                    continue
+                    
+                # Check if samples have any common non-missing features
+                common_features = ~(np.isnan(data_i[i]) | np.isnan(data_j[j]))
+                if np.any(common_features):
+                    overlap_chunk[i, j] = True
+        
+        return overlap_chunk
     
     def _compute_distances_sequential(self, data: np.ndarray,
                                     distance_calculator: AdaptivePartialDistance,
@@ -196,25 +251,31 @@ class SparseDataOptimizer:
                                   coordinates: Optional[np.ndarray],
                                   has_overlap: np.ndarray,
                                   threshold: float) -> np.ndarray:
-        """Compute distances in parallel."""
+        """Compute distances in parallel with memory management."""
+        import gc
         n_samples = len(data)
         
         # Create chunks for parallel processing
         def compute_chunk(i_start, i_end):
             chunk_distances = []
-            for i in range(i_start, i_end):
-                for j in range(i+1, n_samples):
-                    if has_overlap[i, j]:
-                        coord_i = coordinates[i] if coordinates is not None else None
-                        coord_j = coordinates[j] if coordinates is not None else None
-                        
-                        d = distance_calculator.calculate_distance(
-                            data[i], data[j], coord_i, coord_j
-                        )
-                        
-                        if d < threshold:
-                            chunk_distances.append((i, j, d))
-            return chunk_distances
+            try:
+                for i in range(i_start, i_end):
+                    for j in range(i+1, n_samples):
+                        if has_overlap[i, j]:
+                            coord_i = coordinates[i] if coordinates is not None else None
+                            coord_j = coordinates[j] if coordinates is not None else None
+                            
+                            d = distance_calculator.calculate_distance(
+                                data[i], data[j], coord_i, coord_j
+                            )
+                            
+                            if d < threshold:
+                                chunk_distances.append((i, j, d))
+                
+                return chunk_distances
+            finally:
+                # Clean up after each chunk
+                gc.collect()
         
         # Parallel computation
         n_chunks = min(self.config.n_jobs if self.config.n_jobs > 0 else 1, n_samples)

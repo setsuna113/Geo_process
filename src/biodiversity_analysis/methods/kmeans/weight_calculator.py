@@ -61,8 +61,13 @@ class FeatureWeightCalculator:
         # Avoid zero weights
         completeness = np.maximum(completeness, 0.01)
         
-        # Normalize
-        weights = completeness / completeness.sum()
+        # Normalize with protection against division by zero
+        total_completeness = completeness.sum()
+        if total_completeness > 0:
+            weights = completeness / total_completeness
+        else:
+            # All features are completely missing - use equal weights
+            weights = np.ones(n_features) / n_features
         
         logger.info(f"Completeness weights: {weights}")
         logger.info(f"Feature completeness: {completeness}")
@@ -83,8 +88,13 @@ class FeatureWeightCalculator:
         # Log transform to reduce extreme differences
         log_variances = np.log1p(variances)
         
-        # Normalize
-        weights = log_variances / log_variances.sum()
+        # Normalize with protection against division by zero
+        total_log_variance = log_variances.sum()
+        if total_log_variance > 0:
+            weights = log_variances / total_log_variance
+        else:
+            # All features have zero variance - use equal weights
+            weights = np.ones(n_features) / n_features
         
         logger.info(f"Variance weights: {weights}")
         logger.info(f"Feature variances: {variances}")

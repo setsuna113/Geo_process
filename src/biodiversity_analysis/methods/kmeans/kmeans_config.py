@@ -91,6 +91,14 @@ class KMeansConfig:
     silhouette_sample_size: int = 5000
     determine_k_method: Literal['elbow', 'silhouette', 'both'] = 'silhouette'
     
+    # Numerical stability parameters
+    epsilon: float = 1e-8  # Small value to prevent division by zero
+    min_common_features: int = 1  # Minimum features for valid distance
+    
+    # Memory management
+    large_dataset_threshold: int = 10000  # Threshold for chunked processing
+    memory_chunk_size: int = 1000  # Size of chunks for memory-efficient processing
+    
     def __post_init__(self):
         """Validate configuration."""
         if self.fixed_weights is None:

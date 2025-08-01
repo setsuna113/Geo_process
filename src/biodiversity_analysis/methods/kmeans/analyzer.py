@@ -47,6 +47,29 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
         """
         start_time = datetime.now()
         
+        # Validate and sanitize input path
+        import os
+        data_path = os.path.abspath(data_path)
+        
+        # Security check: prevent directory traversal
+        if ".." in data_path or data_path.count("/") > 50:
+            raise ValueError("Invalid file path")
+        
+        # Validate file exists and is readable
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Data file not found: {data_path}")
+        
+        if not os.access(data_path, os.R_OK):
+            raise PermissionError(f"Cannot read data file: {data_path}")
+        
+        # Validate file extension
+        valid_extensions = ['.parquet', '.csv']
+        if not any(data_path.lower().endswith(ext) for ext in valid_extensions):
+            raise ValueError(f"Unsupported file format. Supported: {valid_extensions}")
+        
+        # Validate parameters
+        self._validate_analysis_parameters(kwargs)
+        
         # Load biodiversity data
         logger.info(f"Loading biodiversity data from {data_path}")
         biodiv_data = self.load_data(data_path)
@@ -367,6 +390,50 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
         
         return outputs
     
+    def _validate_analysis_parameters(self, params: Dict[str, Any]) -> None:
+        """Validate analysis parameters for security and correctness.
+        
+        Args:
+            params: Parameters dictionary
+            
+        Raises:
+            ValueError: If parameters are invalid
+        """
+        # Validate n_clusters
+        if 'n_clusters' in params:
+            n_clusters = params['n_clusters']
+            if not isinstance(n_clusters, int):
+                raise TypeError(f"n_clusters must be int, got {type(n_clusters)}")
+            if n_clusters < 2 or n_clusters > 1000:
+                raise ValueError(f"n_clusters must be between 2 and 1000, got {n_clusters}")
+        
+        # Validate k_range
+        if 'k_range' in params:
+            k_range = params['k_range']
+            if not hasattr(k_range, '__iter__'):
+                raise TypeError("k_range must be iterable")
+            k_list = list(k_range)
+            if len(k_list) < 2:
+                raise ValueError("k_range must contain at least 2 values")
+            if not all(isinstance(k, int) and 2 <= k <= 100 for k in k_list):
+                raise ValueError("k_range values must be integers between 2 and 100")
+        
+        # Validate output_dir if save_results is True
+        if params.get('save_results', False):
+            output_dir = params.get('output_dir', './outputs/kmeans_results')
+            
+            # Security: prevent directory traversal
+            if '..' in str(output_dir):
+                raise ValueError("Invalid output directory path")
+            
+            # Convert to Path for validation
+            from pathlib import Path
+            output_path = Path(output_dir)
+            
+            # Check if parent directory exists
+            if not output_path.parent.exists():
+                raise ValueError(f"Parent directory does not exist: {output_path.parent}")
+    
     def _create_result(self, biodiv_data, features_processed, quality_metrics,
                       additional_outputs, start_time) -> AnalysisResult:
         """Create analysis result object."""
@@ -410,8 +477,18 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
     
     def _save_results(self, result: AnalysisResult, output_dir: str):
         """Save analysis results to disk."""
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        # Sanitize output path
+        output_path = Path(output_dir).resolve()
+        
+        # Security check
+        if '..' in str(output_path):
+            raise ValueError("Invalid output directory")
+        
+        # Create directory safely
+        try:
+            output_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise IOError(f"Cannot create output directory: {e}")
         
         # Save main results as JSON
         results_file = output_path / 'kmeans_results.json'

@@ -60,11 +60,17 @@ class AdaptivePartialDistance:
         
         # Calculate distance with adaptive threshold
         if self.feature_weights is not None:
-            distance = self._distance_func(u, v, self.feature_weights, min_features)
+            if self.config.distance_metric == 'bray_curtis':
+                distance = self._distance_func(u, v, self.feature_weights, min_features, self.config.epsilon)
+            else:
+                distance = self._distance_func(u, v, self.feature_weights, min_features)
         else:
             # Use equal weights if not provided
             weights = np.ones(len(u)) / len(u)
-            distance = self._distance_func(u, v, weights, min_features)
+            if self.config.distance_metric == 'bray_curtis':
+                distance = self._distance_func(u, v, weights, min_features, self.config.epsilon)
+            else:
+                distance = self._distance_func(u, v, weights, min_features)
         
         return distance
     
@@ -133,7 +139,8 @@ class AdaptivePartialDistance:
 
 @jit(nopython=True)
 def weighted_partial_bray_curtis(u: np.ndarray, v: np.ndarray, 
-                                weights: np.ndarray, min_features: int) -> float:
+                                weights: np.ndarray, min_features: int,
+                                epsilon: float = 1e-8) -> float:
     """Calculate weighted partial Bray-Curtis distance.
     
     Bray-Curtis: sum(|u-v|) / sum(u+v)
@@ -143,6 +150,7 @@ def weighted_partial_bray_curtis(u: np.ndarray, v: np.ndarray,
         u, v: Feature vectors
         weights: Feature weights
         min_features: Minimum valid features required
+        epsilon: Small value to prevent division by zero
         
     Returns:
         distance: Weighted Bray-Curtis distance
@@ -163,10 +171,10 @@ def weighted_partial_bray_curtis(u: np.ndarray, v: np.ndarray,
     if valid_count < min_features:
         return np.inf
     
-    if weighted_total_sum == 0:
-        return 0.0 if weighted_diff_sum == 0 else np.inf
+    if weighted_total_sum < epsilon:
+        return 0.0 if weighted_diff_sum < epsilon else 1.0
     
-    return weighted_diff_sum / weighted_total_sum
+    return weighted_diff_sum / (weighted_total_sum + epsilon)
 
 
 @jit(nopython=True)
