@@ -80,30 +80,32 @@ class ResamplingConfig:
                                 dtype_size: int = 4) -> int:
         """Calculate optimal window size based on available memory.
         
-        Uses conservative memory allocation to prevent exhaustion:
-        - Reserves 50% of memory for OS and other processes
-        - Accounts for memory fragmentation and peak usage
-        - Scales non-linearly with worker count
+        Simple, conservative approach:
+        - Use 25% of available memory (very conservative)
+        - Divide equally among workers
+        - Fixed overhead factor of 3x (input + output + working memory)
         """
-        # Conservative memory allocation
-        available_memory = self.get_memory_limit_bytes() * 0.5  # Use only 50% of available
+        # Very conservative: use only 25% of available memory
+        available_memory = self.get_memory_limit_bytes() * 0.25
         
-        # Non-linear scaling with workers to account for coordination overhead
-        # Each additional worker adds diminishing memory pressure
-        worker_factor = 1 + (self.max_workers - 1) * 0.7
-        max_window_memory = available_memory / (worker_factor * 2.5)  # 2.5x safety factor
+        # Simple division among workers
+        memory_per_worker = available_memory / max(1, self.max_workers)
         
-        # Calculate window size that fits in memory
-        # Account for input, output, and working memory (4x total)
-        window_pixels = max_window_memory / (dtype_size * 4)
+        # Fixed overhead factor: 3x for input, output, and working memory
+        overhead_factor = 3
+        window_pixels = memory_per_worker / (dtype_size * overhead_factor)
+        
+        # Calculate square window size
         window_size = int((window_pixels ** 0.5))
         
         # Constrain to reasonable bounds
-        window_size = max(256, min(window_size, self.window_size, 
-                                   min(raster_width, raster_height)))
+        min_window = 256  # Minimum for efficiency
+        max_window = min(self.window_size, raster_width, raster_height)
+        window_size = max(min_window, min(window_size, max_window))
         
-        # Make it a multiple of block size for efficiency
-        window_size = (window_size // self.blockxsize) * self.blockxsize
+        # Align to block size
+        if window_size > self.blockxsize:
+            window_size = (window_size // self.blockxsize) * self.blockxsize
         
         return window_size
     

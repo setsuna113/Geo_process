@@ -171,40 +171,63 @@ def run_resampling(input_path: str, output_path: Optional[str],
 
 def run_as_daemon(input_path: str, output_path: Optional[str], 
                   config: ResamplingConfig, validate: bool = False):
-    """Run resampling as a background daemon."""
-    import uuid
-    import time
+    """Run resampling as a background daemon.
     
-    # Generate unique identifier for this daemon instance
-    daemon_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    Uses atomic file operations to prevent PID file collisions.
+    """
+    import tempfile
+    import fcntl
     
-    # Set up PID file with unique identifier
-    pid_file = config.pid_file
-    if not pid_file:
-        pid_dir = Path.home() / '.biodiversity' / 'rasterio_resampler'
-        pid_dir.mkdir(parents=True, exist_ok=True)
-        pid_file = str(pid_dir / f"resampler_{daemon_id}.pid")
+    # Set up directories
+    pid_dir = Path.home() / '.biodiversity' / 'rasterio_resampler'
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    log_dir = Path.home() / '.biodiversity' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
     
-    # Set up log file for daemon
-    if not config.log_file:
-        log_dir = Path.home() / '.biodiversity' / 'logs'
-        log_dir.mkdir(parents=True, exist_ok=True)
-        config.log_file = str(log_dir / f"resampler_{daemon_id}.log")
+    # Create temporary PID file atomically
+    temp_fd, temp_pid_file = tempfile.mkstemp(
+        suffix='.pid', 
+        prefix='resampler_temp_', 
+        dir=str(pid_dir)
+    )
     
-    print(f"Starting daemon process...")
-    print(f"PID file: {pid_file}")
-    print(f"Log file: {config.log_file}")
-    
-    # Create daemon context
-    with daemon.DaemonContext(
-        pidfile=daemon.pidfile.PIDLockFile(pid_file),
-        working_directory=os.getcwd(),
-        umask=0o002,
-        stdout=open(config.log_file, 'w+'),
-        stderr=open(config.log_file, 'w+')
-    ):
-        # Run resampling in daemon
-        run_resampling(input_path, output_path, config, validate)
+    try:
+        # Try to acquire exclusive lock
+        fcntl.flock(temp_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        
+        # Generate final PID file name after acquiring lock
+        import uuid
+        import time
+        daemon_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        
+        # Set up paths
+        pid_file = config.pid_file or str(pid_dir / f"resampler_{daemon_id}.pid")
+        config.log_file = config.log_file or str(log_dir / f"resampler_{daemon_id}.log")
+        
+        print(f"Starting daemon process...")
+        print(f"PID file: {pid_file}")
+        print(f"Log file: {config.log_file}")
+        
+        # Close and remove temp file before daemon context
+        os.close(temp_fd)
+        os.unlink(temp_pid_file)
+        
+        # Create daemon context with final PID file
+        with daemon.DaemonContext(
+            pidfile=daemon.pidfile.PIDLockFile(pid_file),
+            working_directory=os.getcwd(),
+            umask=0o002,
+            stdout=open(config.log_file, 'w+'),
+            stderr=open(config.log_file, 'w+')
+        ):
+            # Run resampling in daemon
+            run_resampling(input_path, output_path, config, validate)
+            
+    except IOError:
+        os.close(temp_fd)
+        os.unlink(temp_pid_file)
+        print("Error: Another resampler daemon is starting. Please try again.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
