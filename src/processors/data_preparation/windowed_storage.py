@@ -223,13 +223,10 @@ class WindowedStorageManager:
         global_rows = rows + row_offset
         global_cols = cols + col_offset
         
-        # Calculate geographic coordinates
-        x_coords = []
-        y_coords = []
-        for r, c in zip(global_rows, global_cols):
-            x, y = transform * (c, r)
-            x_coords.append(x)
-            y_coords.append(y)
+        # Calculate geographic coordinates (vectorized)
+        # Transform: [a, b, c, d, e, f] where x = a*col + b*row + c, y = d*col + e*row + f
+        x_coords = transform[0] * global_cols + transform[1] * global_rows + transform[2]
+        y_coords = transform[3] * global_cols + transform[4] * global_rows + transform[5]
         
         # Prepare batch insert data
         data_to_insert = [
@@ -263,7 +260,7 @@ class WindowedStorageManager:
                         DO UPDATE SET value = EXCLUDED.value
                         """,
                         data_to_insert,
-                        page_size=1000
+                        page_size=50000  # Match batch_insert_size from config
                     )
                 conn.commit()
                 

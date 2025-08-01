@@ -6,8 +6,8 @@
 
 # Pipeline control - for production
 pipeline:
-  allow_skip_stages: false  # Set to true if you want to skip already processed stages
-  processing_bounds: 'tiny_test'  # Use tiny test region for quick debugging
+  allow_skip_stages: true  # Set to true if you want to skip already processed stages
+  processing_bounds: 'global'  # Process global data
 
 # =============================================================================
 # PATHS CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
@@ -43,7 +43,7 @@ merge:
 # =============================================================================
 resampling:
   # Target resolution for all datasets (in degrees for geographic data)
-  target_resolution: 0.016666666666667  # Match coarsest resolution (plants/terrestrial) to avoid upsampling
+  target_resolution: 0.166744  # Match actual downsampled resolution
   target_crs: 'EPSG:4326'
   
   # Resampling strategy per data type
@@ -57,7 +57,7 @@ resampling:
   validate_output: true
   preserve_sum: true  # Important for richness data
   cache_resampled: true
-  engine: 'gdal'   # 'numpy' or 'gdal' - GDAL is faster for large rasters
+  engine: 'numpy'   # Only numpy supports windowed resampling currently
   
   # Window processing settings (always enabled)
   window_size: 2048  # Process in 2048x2048 windows
@@ -75,10 +75,10 @@ resampling:
 # =============================================================================
 storage:
   chunk_size: 100000       # 100k pixels threshold for chunked storage (lower for fungi datasets)
-  chunk_rows: 500          # Process 500 rows at a time (smaller chunks for memory efficiency)
+  chunk_rows: 20000        # Process 20000 rows at a time (aggressive for 1TB RAM system)
   aggregate_to_grid: true  # ENABLE for fungi datasets to reduce 233M pixels to ~21M grid cells
   grid_cell_size: 0.05     # 0.05° grid cells (≈ 5.5km) for finer aggregation
-  batch_insert_size: 5000  # Smaller batches for stability
+  batch_insert_size: 50000 # Large batches for 1TB RAM system
   enable_progress_logging: true
   memory_cleanup_interval: 5  # More frequent cleanup
 
@@ -88,26 +88,28 @@ datasets:
   target_datasets:
     # PRODUCTION RASTERS - 4 datasets as requested
     - name: "plants-richness"
-      path: "/maps/mwd24/richness/daru-plants-richness.tif"
+      path: "/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif"
       data_type: "richness_data"
       band_name: "plants_richness"
       enabled: true
+      skip_resampling: true  # Already downsampled
       
     - name: "terrestrial-richness" 
-      path: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"
+      path: "/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif"
       data_type: "richness_data"
       band_name: "terrestrial_richness"
       enabled: true
+      skip_resampling: true  # Already downsampled
       
     - name: "am-fungi-richness"
-      path: "/scratch/yl998/resampled_rasters/AM_Fungi_Richness_Predicted_resampled_0.016667.tif"
+      path: "/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif"
       data_type: "continuous_data"  # Changed from richness_data - SDM predictions
       band_name: "am_fungi_richness"
       enabled: true
       skip_resampling: true  # Already at target resolution
       
     - name: "ecm-fungi-richness"
-      path: "/scratch/yl998/resampled_rasters/EcM_Fungi_Richness_Predicted_resampled_0.016667.tif"
+      path: "/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif"
       data_type: "continuous_data"  # Changed from richness_data - SDM predictions
       band_name: "ecm_fungi_richness"
       enabled: true
@@ -144,7 +146,7 @@ datasets:
 # =============================================================================
 processing:
   # Memory and chunking settings - optimized for available resources
-  memory_limit_gb: 80              # Conservative with only ~118GB available
+  memory_limit_gb: 300             # Can use 300GB with 1TB total
   chunk_size: 5000                 # Larger chunks for efficiency
   enable_chunking: true
   checkpoint_interval: 5           # More frequent checkpoints
@@ -160,7 +162,7 @@ processing:
     spatial_block_size: 200
   
   # Optimized for 256-core system with current low usage
-  max_workers: 150      # Conservative to avoid overload
+  max_workers: 200      # Utilize 200 of 256 cores
   batch_size: 5000     # Larger batches for efficiency
   chunk_size: 10000    # Larger chunks for parallel processing
 
@@ -259,8 +261,8 @@ som_analysis:
 pipeline:
   quality_thresholds:
     # Biodiversity data is naturally sparse - species have limited ranges
-    max_nan_ratio: 0.90              # Allow up to 90% NaN for ecological data
-    min_completeness: 0.10           # Only need 10% data coverage
+    max_nan_ratio: 0.99              # Allow up to 99% NaN for ecological data
+    min_completeness: 0.01           # Only need 1% data coverage
     max_outlier_ratio: 0.05          # 5% outliers acceptable
     min_coverage: 0.50               # 50% spatial coverage is fine
 

@@ -402,6 +402,10 @@ class CoordinateMerger(BaseProcessor):
                        f"x_shift={shifts['x_shift']:.6f}, y_shift={shifts['y_shift']:.6f}")
             df['x'] = df['x'] + shifts['x_shift']
             df['y'] = df['y'] + shifts['y_shift']
+            
+            # Clip coordinates to valid ranges after shifting
+            df['x'] = df['x'].clip(-180.0, 180.0)
+            df['y'] = df['y'].clip(-90.0, 90.0)
         
         return df
     
@@ -512,6 +516,10 @@ class CoordinateMerger(BaseProcessor):
                        f"x_shift={shifts['x_shift']:.6f}, y_shift={shifts['y_shift']:.6f}")
             df['x'] = df['x'] + shifts['x_shift']
             df['y'] = df['y'] + shifts['y_shift']
+            
+            # Clip coordinates to valid ranges after shifting
+            df['x'] = df['x'].clip(-180.0, 180.0)
+            df['y'] = df['y'].clip(-90.0, 90.0)
         
         return df
     
