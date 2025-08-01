@@ -256,6 +256,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         arch_config = default_config['architecture_config']
         conv_config = arch_config['convergence']
         
+        # Use iterations from kwargs if provided, otherwise fall back to default
+        max_epochs = kwargs.get('iterations', conv_config['max_epochs'])
+        
         return GeoSOMConfig(
             grid_size=grid_size,
             topology=arch_config['topology'],
@@ -278,7 +281,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             lr_stability_threshold=conv_config['lr_stability_threshold'],
             qe_improvement_threshold=conv_config['qe_improvement_threshold'],
             patience=conv_config['patience'],
-            max_epochs=conv_config['max_epochs'],
+            max_epochs=max_epochs,
             min_valid_features=default_config['distance_config']['min_valid_features'],
             random_seed=kwargs.get('random_seed', 42)
         )

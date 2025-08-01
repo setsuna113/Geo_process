@@ -375,22 +375,39 @@ class GeoSOMVLRSOM:
         best_qe = initial_qe
         
         for epoch in range(self.config.max_epochs):
+            logger.info(f"Starting epoch {epoch+1}/{self.config.max_epochs}")
+            
             # Decay radius
             self._update_radius(epoch)
+            logger.debug(f"Updated radius to {self.current_radius:.2f}")
             
             # Batch update
+            logger.info(f"Starting batch update for epoch {epoch+1}")
             self._batch_update(data, coordinates)
+            logger.info(f"Completed batch update for epoch {epoch+1}")
             
-            # Calculate QE after update (sample for large datasets)
-            if len(data) > 10000 and epoch % 10 != 0:
-                # Use sampling for most epochs
-                sample_idx = np.random.choice(len(data), size=10000, replace=False)
-                sample_data = data[sample_idx]
-                sample_coords = coordinates[sample_idx] if coordinates is not None else None
-                qe = self.calculate_quantization_error(sample_data, sample_coords)
+            # Calculate QE after update with smart sampling
+            logger.info(f"Calculating QE for epoch {epoch+1}")
+            if len(data) > 100000:
+                # Large datasets: use aggressive sampling
+                if epoch % 10 == 0:
+                    # Every 10 epochs: larger sample for accuracy
+                    logger.debug("Using 50k sample for QE calculation (validation epoch)")
+                    qe = self.calculate_quantization_error(data, coordinates, sample_size=50000)
+                else:
+                    # Other epochs: smaller sample for speed
+                    logger.debug("Using 10k sample for QE calculation")
+                    qe = self.calculate_quantization_error(data, coordinates, sample_size=10000)
+            elif len(data) > 10000:
+                # Medium datasets: moderate sampling
+                sample_size = min(len(data) // 10, 50000)
+                logger.debug(f"Using {sample_size} sample for QE calculation")
+                qe = self.calculate_quantization_error(data, coordinates, sample_size=sample_size)
             else:
-                # Full QE every 10 epochs or for small datasets
+                # Small datasets: use all data
+                logger.debug("Using full dataset for QE calculation")
                 qe = self.calculate_quantization_error(data, coordinates)
+            logger.info(f"QE calculated for epoch {epoch+1}: {qe:.6f}")
             
             self.training_history['quantization_errors'].append(qe)
             
@@ -444,6 +461,8 @@ class GeoSOMVLRSOM:
                 except TypeError:
                     # Fallback to simple progress
                     progress_callback((epoch + 1) / self.config.max_epochs)
+            
+            logger.info(f"Completed epoch {epoch+1}/{self.config.max_epochs}")
         
         # Create result
         return SOMTrainingResult(
@@ -539,8 +558,20 @@ class GeoSOMVLRSOM:
         for chunk_idx in range(n_chunks):
             start_idx = chunk_idx * chunk_size
             end_idx = min((chunk_idx + 1) * chunk_size, n_samples)
+            
+            # Skip empty chunks
+            if start_idx >= n_samples:
+                logger.debug(f"Skipping chunk {chunk_idx+1}/{n_chunks} - beyond data size")
+                continue
+                
             chunk_data = data[start_idx:end_idx]
             chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
+            
+            # Check if chunk has any valid data
+            valid_features_per_sample = (~np.isnan(chunk_data)).sum(axis=1)
+            if (valid_features_per_sample >= self.config.min_valid_features).sum() == 0:
+                logger.debug(f"Skipping chunk {chunk_idx+1}/{n_chunks} - no samples with enough valid features")
+                continue
             
             # Calculate distances for this chunk
             if coordinates is not None and hasattr(self, 'neuron_coords'):
@@ -558,9 +589,14 @@ class GeoSOMVLRSOM:
                 chunk_distances, chunk_bmu_indices[:, np.newaxis], axis=1
             ).squeeze()
             
-            # Mark invalid BMUs
+            # Mark invalid BMUs (samples with no valid distances to any neuron)
             invalid_mask = np.isinf(min_distances)
             chunk_bmu_indices[invalid_mask] = -1
+            
+            # Skip this chunk if all samples are invalid
+            if invalid_mask.all():
+                logger.debug(f"Skipping chunk {chunk_idx+1}/{n_chunks} - all samples have invalid distances")
+                continue
             
             # Calculate neighborhood influences for chunk
             chunk_influences = self._vectorized_neighborhood(chunk_bmu_indices)
@@ -577,6 +613,11 @@ class GeoSOMVLRSOM:
             if n_chunks > 10 and (chunk_idx + 1) % max(1, n_chunks // 20) == 0:
                 progress = (chunk_idx + 1) / n_chunks
                 logger.info(f"Batch update progress: {progress:.0%} ({chunk_idx + 1}/{n_chunks} chunks)")
+            
+            # Extra logging for debugging last chunks
+            if chunk_idx >= n_chunks - 10:
+                logger.info(f"Processing chunk {chunk_idx + 1}/{n_chunks}: {end_idx - start_idx} samples, "
+                          f"valid samples: {(~invalid_mask).sum()}")
         
         # Apply accumulated updates
         update_mask = denominator > n_features
@@ -795,29 +836,61 @@ class GeoSOMVLRSOM:
             )
     
     def calculate_quantization_error(self, data: np.ndarray, 
-                                   coordinates: Optional[np.ndarray] = None) -> float:
-        """Calculate average quantization error."""
+                                   coordinates: Optional[np.ndarray] = None,
+                                   sample_size: Optional[int] = None) -> float:
+        """Calculate average quantization error with optional sampling.
+        
+        Args:
+            data: Input data
+            coordinates: Geographic coordinates (optional)
+            sample_size: If provided, use random sampling for faster calculation
+        """
+        n_samples = len(data)
+        
+        # Use sampling for large datasets if requested
+        if sample_size is not None and n_samples > sample_size:
+            indices = np.random.choice(n_samples, sample_size, replace=False)
+            data = data[indices]
+            coordinates = coordinates[indices] if coordinates is not None else None
+            n_samples = sample_size
+            logger.debug(f"Using {sample_size} samples for QE calculation")
+        
+        # Pre-filter valid samples to avoid unnecessary computation
+        valid_features = (~np.isnan(data)).sum(axis=1)
+        valid_mask = valid_features >= self.config.min_valid_features
+        
+        if not valid_mask.any():
+            return np.inf
+        
+        data_valid = data[valid_mask]
+        coords_valid = coordinates[valid_mask] if coordinates is not None else None
+        
+        # Process in chunks for memory efficiency
+        chunk_size = 1000
         total_error = 0.0
         n_valid = 0
         
-        for idx, sample in enumerate(data):
-            if coordinates is not None:
-                bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-                if bmu_idx != INVALID_INDEX:
-                    error = self.combined_distance(
-                        sample, self.weights[bmu_idx],
-                        coordinates[idx], self.neuron_coords[bmu_idx]
-                    )
-                    if not np.isnan(error):  # Check for INVALID_DISTANCE
-                        total_error += error
-                        n_valid += 1
+        for start_idx in range(0, len(data_valid), chunk_size):
+            end_idx = min(start_idx + chunk_size, len(data_valid))
+            chunk_data = data_valid[start_idx:end_idx]
+            chunk_coords = coords_valid[start_idx:end_idx] if coords_valid is not None else None
+            
+            # Vectorized distance calculation
+            if coordinates is not None and hasattr(self, 'neuron_coords'):
+                distances = self._vectorized_combined_distance(
+                    chunk_data, self.weights, chunk_coords, self.neuron_coords
+                )
             else:
-                bmu_idx = self._find_bmu(sample)
-                if bmu_idx != INVALID_INDEX:
-                    error = self.partial_bray_curtis(sample, self.weights[bmu_idx])
-                    if not np.isnan(error):  # Check for INVALID_DISTANCE
-                        total_error += error
-                        n_valid += 1
+                distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
+            
+            # Find BMUs and calculate errors
+            bmu_indices = np.argmin(distances, axis=1)
+            min_errors = np.take_along_axis(distances, bmu_indices[:, np.newaxis], axis=1).squeeze()
+            
+            # Accumulate valid errors
+            valid_errors = ~np.isinf(min_errors)
+            total_error += min_errors[valid_errors].sum()
+            n_valid += valid_errors.sum()
         
         return total_error / n_valid if n_valid > 0 else np.inf
     
