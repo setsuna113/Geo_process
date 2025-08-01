@@ -7,6 +7,7 @@ comparing valid (non-NaN) pairs of features.
 import numpy as np
 from typing import Optional, Callable
 from numba import jit
+from .constants import INVALID_DISTANCE, INVALID_INDEX
 
 
 @jit(nopython=True)
@@ -31,7 +32,7 @@ def partial_bray_curtis_numba(u: np.ndarray, v: np.ndarray, min_valid: int = 2) 
             denominator += u[i] + v[i]
     
     if valid_count < min_valid:
-        return np.nan
+        return INVALID_DISTANCE
     
     if denominator == 0.0:
         # Both vectors are zero
@@ -61,7 +62,7 @@ def partial_euclidean_numba(u: np.ndarray, v: np.ndarray, min_valid: int = 2) ->
             sum_squared += diff * diff
     
     if valid_count < min_valid:
-        return np.nan
+        return INVALID_DISTANCE
     
     # Scale by proportion of valid features
     scale_factor = len(u) / valid_count
@@ -81,7 +82,7 @@ def partial_jaccard(u: np.ndarray, v: np.ndarray, min_valid: int = 2) -> float:
     valid = ~(np.isnan(u) | np.isnan(v))
     
     if valid.sum() < min_valid:
-        return np.nan
+        return INVALID_DISTANCE
     
     u_valid = u[valid] > 0
     v_valid = v[valid] > 0
@@ -108,7 +109,7 @@ def partial_cosine(u: np.ndarray, v: np.ndarray, min_valid: int = 2) -> float:
     valid = ~(np.isnan(u) | np.isnan(v))
     
     if valid.sum() < min_valid:
-        return np.nan
+        return INVALID_DISTANCE
     
     u_valid = u[valid]
     v_valid = v[valid]
@@ -198,9 +199,9 @@ class PartialDistanceMatrix:
             references: Reference vectors (n_references, n_features)
             
         Returns:
-            Tuple of (index, distance) or (-1, np.nan) if no valid comparison
+            Tuple of (index, distance) or (INVALID_INDEX, INVALID_DISTANCE) if no valid comparison
         """
-        best_idx = -1
+        best_idx = INVALID_INDEX
         best_dist = np.inf
         
         for i, ref in enumerate(references):
@@ -209,8 +210,8 @@ class PartialDistanceMatrix:
                 best_dist = dist
                 best_idx = i
         
-        if best_idx == -1:
-            return -1, np.nan
+        if best_idx == INVALID_INDEX:
+            return INVALID_INDEX, INVALID_DISTANCE
         
         return best_idx, best_dist
 

@@ -15,6 +15,10 @@ from scipy.spatial.distance import cdist
 # Moran's I calculation is in spatial_utils module
 
 from src.abstractions.types.som_types import SOMConfig, SOMTrainingResult
+from .constants import (
+    INVALID_DISTANCE, INVALID_INDEX, INVALID_COORDINATE,
+    MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +120,12 @@ class GeoSOMVLRSOM:
             u, v: Vectors to compare (may contain NaN)
             
         Returns:
-            Distance value or NaN if insufficient valid pairs
+            Distance value or INVALID_DISTANCE (np.nan) if insufficient valid pairs
         """
         valid = ~(np.isnan(u) | np.isnan(v))
         
         if valid.sum() < self.config.min_valid_features:
-            return np.nan
+            return INVALID_DISTANCE
         
         u_valid = u[valid]
         v_valid = v[valid]
@@ -172,9 +176,9 @@ class GeoSOMVLRSOM:
         # Feature distance (Bray-Curtis)
         feature_dist = self.partial_bray_curtis(sample, weights)
         
-        # Handle case where feature distance is NaN
-        if np.isnan(feature_dist):
-            return np.inf
+        # Handle case where feature distance is invalid
+        if np.isnan(feature_dist):  # Check for INVALID_DISTANCE
+            return INVALID_DISTANCE
         
         # Geographic distance (normalized)
         if sample_coord is not None and neuron_coord is not None:
@@ -485,7 +489,7 @@ class GeoSOMVLRSOM:
                 bmu_idx = self._find_bmu(sample)
             
             # Skip if no valid BMU found
-            if bmu_idx is None:
+            if bmu_idx == INVALID_INDEX:
                 continue
             
             # Calculate neighborhood influence
@@ -516,31 +520,39 @@ class GeoSOMVLRSOM:
                         self.weights[j, k] = (1 - effective_lr) * self.weights[j, k] + \
                                            effective_lr * target[k]
     
-    def _find_bmu(self, sample: np.ndarray) -> Optional[int]:
-        """Find best matching unit using partial Bray-Curtis."""
+    def _find_bmu(self, sample: np.ndarray) -> int:
+        """Find best matching unit using partial Bray-Curtis.
+        
+        Returns:
+            BMU index or INVALID_INDEX if no valid BMU found
+        """
         distances = []
         for i, weight in enumerate(self.weights):
             dist = self.partial_bray_curtis(sample, weight)
-            if not np.isnan(dist):
+            if not np.isnan(dist):  # Valid distance
                 distances.append((i, dist))
         
         if not distances:
-            return None
+            return INVALID_INDEX
         
         return min(distances, key=lambda x: x[1])[0]
     
-    def _find_bmu_geo(self, sample: np.ndarray, coord: np.ndarray) -> Optional[int]:
-        """Find BMU considering geographic distance."""
+    def _find_bmu_geo(self, sample: np.ndarray, coord: np.ndarray) -> int:
+        """Find BMU considering geographic distance.
+        
+        Returns:
+            BMU index or INVALID_INDEX if no valid BMU found
+        """
         distances = []
         for i, weight in enumerate(self.weights):
             dist = self.combined_distance(
                 sample, weight, coord, self.neuron_coords[i]
             )
-            if not np.isinf(dist):
+            if not np.isnan(dist):  # Valid distance (not INVALID_DISTANCE)
                 distances.append((i, dist))
         
         if not distances:
-            return None
+            return INVALID_INDEX
         
         return min(distances, key=lambda x: x[1])[0]
     
@@ -567,19 +579,19 @@ class GeoSOMVLRSOM:
         for idx, sample in enumerate(data):
             if coordinates is not None:
                 bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-                if bmu_idx is not None:
+                if bmu_idx != INVALID_INDEX:
                     error = self.combined_distance(
                         sample, self.weights[bmu_idx],
                         coordinates[idx], self.neuron_coords[bmu_idx]
                     )
-                    if not np.isinf(error):
+                    if not np.isnan(error):  # Check for INVALID_DISTANCE
                         total_error += error
                         n_valid += 1
             else:
                 bmu_idx = self._find_bmu(sample)
-                if bmu_idx is not None:
+                if bmu_idx != INVALID_INDEX:
                     error = self.partial_bray_curtis(sample, self.weights[bmu_idx])
-                    if not np.isnan(error):
+                    if not np.isnan(error):  # Check for INVALID_DISTANCE
                         total_error += error
                         n_valid += 1
         
@@ -596,10 +608,7 @@ class GeoSOMVLRSOM:
         clusters = []
         for idx, sample in enumerate(data):
             bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-            if bmu_idx is not None:
-                clusters.append(bmu_idx)
-            else:
-                clusters.append(-1)
+            clusters.append(bmu_idx)  # Will be INVALID_INDEX if not found
         
         clusters = np.array(clusters)
         valid = clusters >= 0
@@ -700,7 +709,7 @@ class GeoSOMVLRSOM:
             else:
                 bmu_idx = self._find_bmu(sample)
             
-            bmu_indices.append(bmu_idx if bmu_idx is not None else -1)
+            bmu_indices.append(bmu_idx)  # Will be INVALID_INDEX if not found
         
         return np.array(bmu_indices)
     
@@ -710,9 +719,9 @@ class GeoSOMVLRSOM:
         grid_coords = []
         
         for idx in bmu_indices:
-            if idx >= 0:
+            if idx != INVALID_INDEX:
                 grid_coords.append(self._grid_positions[idx])
             else:
-                grid_coords.append([-1, -1])
+                grid_coords.append([INVALID_COORDINATE, INVALID_COORDINATE])
         
         return np.array(grid_coords)
