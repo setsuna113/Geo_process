@@ -162,28 +162,31 @@ class RasterioResampler:
                 self.monitor.cleanup()
     
     def _calculate_target_transform(self, src) -> Tuple[Any, int, int]:
-        """Calculate transform for target resolution and CRS."""
-        # Target bounds in target CRS
+        """Calculate transform for target resolution and CRS.
+        
+        Always reprojects bounds to target CRS first to ensure correct dimensions.
+        """
         dst_crs = CRS.from_string(self.config.target_crs)
         
-        # Calculate dimensions based on resolution
-        if dst_crs.to_epsg() == 4326:  # Geographic
-            # Resolution is in degrees
-            left, bottom, right, top = src.bounds
-            dst_width = int((right - left) / self.config.target_resolution)
-            dst_height = int((top - bottom) / self.config.target_resolution)
-        else:
-            # Need to reproject bounds first
-            dst_transform, dst_width, dst_height = calculate_default_transform(
-                src.crs, dst_crs, src.width, src.height, *src.bounds,
-                resolution=self.config.target_resolution
-            )
-            return dst_transform, dst_width, dst_height
-        
-        # Create transform for geographic CRS
-        dst_transform = rasterio.transform.from_bounds(
-            left, bottom, right, top, dst_width, dst_height
+        # Always calculate transform properly, regardless of CRS
+        # This ensures bounds are correctly reprojected
+        dst_transform, dst_width, dst_height = calculate_default_transform(
+            src.crs, dst_crs, src.width, src.height, *src.bounds,
+            resolution=self.config.target_resolution
         )
+        
+        # Validate dimensions
+        if dst_width <= 0 or dst_height <= 0:
+            raise ValueError(f"Invalid output dimensions: {dst_width}x{dst_height}")
+        
+        # Log transform details for debugging
+        if self.config.verbose:
+            from rasterio.transform import xy
+            left, top = xy(dst_transform, 0, 0)
+            right, bottom = xy(dst_transform, dst_width, dst_height)
+            print(f"Output bounds: ({left:.6f}, {bottom:.6f}, {right:.6f}, {top:.6f})")
+            print(f"Output dimensions: {dst_width}x{dst_height}")
+            print(f"Pixel size: {dst_transform[0]:.6f}, {abs(dst_transform[4]):.6f}")
         
         return dst_transform, dst_width, dst_height
     

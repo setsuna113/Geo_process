@@ -14,7 +14,7 @@ class ResamplingConfig:
     """Configuration for rasterio resampling with adaptive resource limits."""
     
     # Target resolution and CRS
-    target_resolution: float = 0.016666666666667  # ~1km at equator
+    target_resolution: float = 0.166744  # ~18.5km at equator, matching config.yml
     target_crs: str = 'EPSG:4326'
     
     # Resampling algorithm
@@ -78,12 +78,24 @@ class ResamplingConfig:
     
     def get_optimal_window_size(self, raster_width: int, raster_height: int, 
                                 dtype_size: int = 4) -> int:
-        """Calculate optimal window size based on available memory."""
-        # Maximum memory per window (leaving room for other operations)
-        max_window_memory = self.get_memory_limit_bytes() / (self.max_workers * 2)
+        """Calculate optimal window size based on available memory.
+        
+        Uses conservative memory allocation to prevent exhaustion:
+        - Reserves 50% of memory for OS and other processes
+        - Accounts for memory fragmentation and peak usage
+        - Scales non-linearly with worker count
+        """
+        # Conservative memory allocation
+        available_memory = self.get_memory_limit_bytes() * 0.5  # Use only 50% of available
+        
+        # Non-linear scaling with workers to account for coordination overhead
+        # Each additional worker adds diminishing memory pressure
+        worker_factor = 1 + (self.max_workers - 1) * 0.7
+        max_window_memory = available_memory / (worker_factor * 2.5)  # 2.5x safety factor
         
         # Calculate window size that fits in memory
-        window_pixels = max_window_memory / (dtype_size * 3)  # 3x for overhead
+        # Account for input, output, and working memory (4x total)
+        window_pixels = max_window_memory / (dtype_size * 4)
         window_size = int((window_pixels ** 0.5))
         
         # Constrain to reasonable bounds

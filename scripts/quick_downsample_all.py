@@ -15,37 +15,37 @@ import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Datasets configuration
+# Datasets configuration - use environment variables for paths
 DATASETS = [
     {
         'name': 'plants-richness',
-        'path': '/maps/mwd24/richness/daru-plants-richness.tif',
+        'path': os.environ.get('PLANTS_RICHNESS_PATH', '/maps/mwd24/richness/daru-plants-richness.tif'),
         'method': 'max',  # Max for richness counts
         'dtype': 'uint16'
     },
     {
         'name': 'terrestrial-richness', 
-        'path': '/maps/mwd24/richness/iucn-terrestrial-richness.tif',
+        'path': os.environ.get('TERRESTRIAL_RICHNESS_PATH', '/maps/mwd24/richness/iucn-terrestrial-richness.tif'),
         'method': 'max',  # Max for richness counts
         'dtype': 'uint16'
     },
     {
         'name': 'am-fungi-richness',
-        'path': '/scratch/yl998/resampled_rasters/AM_Fungi_Richness_Predicted_resampled_0.016667.tif',
+        'path': os.environ.get('AM_FUNGI_PATH', '/scratch/yl998/resampled_rasters/AM_Fungi_Richness_Predicted_resampled_0.016667.tif'),
         'method': 'average',  # Average for SDM predictions
         'dtype': 'float32'
     },
     {
         'name': 'ecm-fungi-richness',
-        'path': '/scratch/yl998/resampled_rasters/EcM_Fungi_Richness_Predicted_resampled_0.016667.tif',
+        'path': os.environ.get('ECM_FUNGI_PATH', '/scratch/yl998/resampled_rasters/EcM_Fungi_Richness_Predicted_resampled_0.016667.tif'),
         'method': 'average',  # Average for SDM predictions
         'dtype': 'float32'
     }
 ]
 
-# Target resolution - 10x coarser
-TARGET_RESOLUTION = 0.16667  # ~18.5km
-OUTPUT_DIR = Path('/scratch/yl998/downsampled_rasters')
+# Target resolution - 10x coarser (configurable)
+TARGET_RESOLUTION = float(os.environ.get('TARGET_RESOLUTION', '0.16667'))  # ~18.5km
+OUTPUT_DIR = Path(os.environ.get('DOWNSAMPLE_OUTPUT_DIR', '/scratch/yl998/downsampled_rasters'))
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def downsample_dataset(dataset):

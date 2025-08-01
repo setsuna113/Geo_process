@@ -29,8 +29,8 @@ def main():
                        help='Output directory for resampled files (default: ./resampled)')
     
     # Resolution and projection
-    parser.add_argument('-r', '--resolution', type=float, default=0.016666666666667,
-                       help='Target resolution (default: 0.016666666666667)')
+    parser.add_argument('-r', '--resolution', type=float, default=0.166744,
+                       help='Target resolution in degrees (default: 0.166744, ~18.5km)')
     parser.add_argument('-c', '--crs', default='EPSG:4326',
                        help='Target CRS (default: EPSG:4326)')
     
@@ -172,18 +172,24 @@ def run_resampling(input_path: str, output_path: Optional[str],
 def run_as_daemon(input_path: str, output_path: Optional[str], 
                   config: ResamplingConfig, validate: bool = False):
     """Run resampling as a background daemon."""
-    # Set up PID file
+    import uuid
+    import time
+    
+    # Generate unique identifier for this daemon instance
+    daemon_id = f"{int(time.time())}_{uuid.uuid4().hex[:8]}"
+    
+    # Set up PID file with unique identifier
     pid_file = config.pid_file
     if not pid_file:
         pid_dir = Path.home() / '.biodiversity' / 'rasterio_resampler'
         pid_dir.mkdir(parents=True, exist_ok=True)
-        pid_file = str(pid_dir / f"resampler_{os.getpid()}.pid")
+        pid_file = str(pid_dir / f"resampler_{daemon_id}.pid")
     
     # Set up log file for daemon
     if not config.log_file:
         log_dir = Path.home() / '.biodiversity' / 'logs'
         log_dir.mkdir(parents=True, exist_ok=True)
-        config.log_file = str(log_dir / f"resampler_{os.getpid()}.log")
+        config.log_file = str(log_dir / f"resampler_{daemon_id}.log")
     
     print(f"Starting daemon process...")
     print(f"PID file: {pid_file}")

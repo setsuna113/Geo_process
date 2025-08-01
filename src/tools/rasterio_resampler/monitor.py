@@ -226,3 +226,36 @@ class ResamplingMonitor:
                 logger.info("Progress file removed after successful completion")
             except:
                 pass
+        
+        # Clean up old progress files
+        self._cleanup_old_progress_files()
+    
+    def _cleanup_old_progress_files(self, max_age_days: int = 7):
+        """Remove progress files older than specified days."""
+        try:
+            progress_dir = os.path.dirname(self.progress_file)
+            if not os.path.exists(progress_dir):
+                return
+            
+            current_time = time.time()
+            max_age_seconds = max_age_days * 24 * 60 * 60
+            
+            for filename in os.listdir(progress_dir):
+                if filename.endswith('.progress.json'):
+                    filepath = os.path.join(progress_dir, filename)
+                    try:
+                        # Check file age
+                        file_age = current_time - os.path.getmtime(filepath)
+                        if file_age > max_age_seconds:
+                            # Read file to check if it's an incomplete run
+                            with open(filepath, 'r') as f:
+                                data = json.load(f)
+                            
+                            # Only remove if it's completed or very old (30+ days)
+                            if data.get('status') == 'completed' or file_age > (30 * 24 * 60 * 60):
+                                os.remove(filepath)
+                                logger.debug(f"Removed old progress file: {filename}")
+                    except Exception as e:
+                        logger.debug(f"Could not clean up {filename}: {e}")
+        except Exception as e:
+            logger.debug(f"Error during progress file cleanup: {e}")
