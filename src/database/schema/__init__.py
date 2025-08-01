@@ -43,8 +43,10 @@ class DatabaseSchema:
         """Initialize with database connection and operation modules."""
         # Use provided db or get default from connection module
         if db is None:
-            from ..connection import db as default_db
-            self.db = default_db
+            from ..connection import get_db
+            self.db = get_db()
+            if self.db is None:
+                raise DatabaseConnectionError("Database connection not available")
         else:
             self.db = db
         
@@ -272,13 +274,30 @@ class DatabaseSchema:
         return self.test_ops.mark_test_data(*args, **kwargs)
 
 
-# Create default instance for backward compatibility
-def _create_default_schema():
-    """Create default schema instance for backward compatibility."""
-    try:
-        return DatabaseSchema()
-    except:
-        # If database is not available, return None
-        return None
+# LAZY INITIALIZATION - Do NOT create schema on import!
+# The schema should only be created when explicitly requested.
+_schema_instance = None
 
-schema = _create_default_schema()
+def get_schema():
+    """Get the database schema instance (lazy initialization).
+    
+    This ensures the database connection is only created when actually needed,
+    not as a side effect of importing the module.
+    
+    Returns:
+        DatabaseSchema: The schema instance, or None if database is not available
+    """
+    global _schema_instance
+    
+    if _schema_instance is None:
+        try:
+            _schema_instance = DatabaseSchema()
+        except:
+            # If database is not available, return None
+            return None
+    
+    return _schema_instance
+
+# DEPRECATED: Direct access to 'schema' - use get_schema() instead
+# This is set to None to prevent connection on import
+schema = None

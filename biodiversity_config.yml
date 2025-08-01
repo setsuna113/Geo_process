@@ -1,0 +1,62 @@
+# Biodiversity Analysis Configuration
+# This file configures biodiversity-specific analysis methods
+
+biodiversity_analysis:
+  # Common data processing settings
+  data_processing:
+    missing_value_strategy: adaptive  # adaptive, mean, median, zero
+    normalization_method: standard    # standard, minmax
+    handle_zero_inflation: true
+    zero_inflation_threshold: 0.5
+    remove_constant_features: true
+    outlier_detection: iqr           # iqr, zscore, none
+    outlier_threshold: 3.0
+  
+  # Spatial validation settings
+  spatial_validation:
+    strategy: random_blocks  # random_blocks, systematic_blocks, latitudinal
+    train_ratio: 0.7
+    val_ratio: 0.15
+    test_ratio: 0.15
+    autocorrelation_test: true
+    min_spatial_distance: 0.0
+    cv_folds: 5
+    cv_buffer_size: null
+  
+  # Method-specific configurations
+  methods:
+    som:
+      grid_size: [10, 10]
+      max_iterations: 2000
+      learning_rate: 0.5
+      sigma: 1.0
+      distance_metric: manhattan  # Better for species data
+      topology: hexagonal
+      neighborhood_function: gaussian
+      early_stopping: true
+      patience: 50
+      min_improvement: 1.0e-6
+    
+    gwpca:
+      n_components: 2
+      bandwidth_method: AICc
+      adaptive_bandwidth: true
+      kernel: bisquare
+      standardize: true
+      max_iterations: 200
+      convergence_tolerance: 1.0e-5
+    
+    maxp:
+      min_region_size: 5
+      max_region_size: null
+      contiguity: queen  # queen, rook
+      objective_function: variance
+      n_iterations: 100
+      cooling_rate: 0.85
+    
+    # Example of custom method that could be added
+    # custom_clustering:
+    #   algorithm: hierarchical
+    #   linkage: ward
+    #   n_clusters: auto
+    #   distance_threshold: 0.5

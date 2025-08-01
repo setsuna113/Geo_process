@@ -37,6 +37,11 @@ from .validation_types import (
     SpatialIntegrityValidation, ValidationErrorType, ValidationContext
 )
 
+# Biodiversity types
+from .biodiversity_types import (
+    CoordinateSystem, SpatialData, BiodiversityData
+)
+
 __all__ = [
     # Checkpoint
     'CheckpointData', 'CheckpointMetadata', 'CheckpointLevel', 'CheckpointStatus',
@@ -64,5 +69,8 @@ __all__ = [
     
     # Validation
     'BoundsValidation', 'CoordinateValidation', 'ValueRangeValidation',
-    'SpatialIntegrityValidation', 'ValidationErrorType', 'ValidationContext'
+    'SpatialIntegrityValidation', 'ValidationErrorType', 'ValidationContext',
+    
+    # Biodiversity
+    'CoordinateSystem', 'SpatialData', 'BiodiversityData'
 ]
