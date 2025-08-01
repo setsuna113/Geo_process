@@ -511,7 +511,105 @@ class GeoSOMVLRSOM:
             raise NotImplementedError(f"Decay {self.config.radius_decay} not implemented")
     
     def _batch_update(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
-        """Perform batch update of weights."""
+        """Perform batch update of weights using vectorized operations."""
+        # Use vectorized implementation for large datasets
+        if len(data) > 1000:
+            self._batch_update_vectorized(data, coordinates)
+        else:
+            self._batch_update_sequential(data, coordinates)
+    
+    def _batch_update_vectorized(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
+        """Vectorized batch update for better performance on large datasets."""
+        n_samples, n_features = data.shape
+        
+        # Step 1: Vectorized distance calculation
+        distances = self._vectorized_partial_bray_curtis(data, self.weights)
+        
+        # Step 2: Find all BMUs at once
+        bmu_indices = np.argmin(distances, axis=1)
+        min_distances = np.take_along_axis(distances, bmu_indices[:, np.newaxis], axis=1).squeeze()
+        
+        # Mark invalid BMUs
+        invalid_mask = np.isinf(min_distances)
+        bmu_indices[invalid_mask] = -1
+        
+        # Step 3: Vectorized neighborhood calculation
+        influences = self._vectorized_neighborhood(bmu_indices)
+        
+        # Step 4: Accumulate updates using matrix operations
+        data_clean = np.nan_to_num(data, nan=0.0)
+        valid_mask = ~np.isnan(data)
+        
+        # Use einsum for efficient tensor operations
+        numerator = np.einsum('ij,ik,ik->jk', influences, data_clean, valid_mask)
+        denominator = np.einsum('ij,ik->j', influences, valid_mask)
+        
+        # Step 5: Apply updates
+        update_mask = denominator > n_features
+        
+        if np.any(update_mask):
+            targets = numerator[update_mask] / denominator[update_mask, np.newaxis]
+            momentum = np.minimum(denominator[update_mask] / (n_samples * n_features), 1.0)
+            effective_lr = momentum * self.current_lr * 0.5
+            
+            # Vectorized weight update
+            for j, neuron_idx in enumerate(np.where(update_mask)[0]):
+                valid = ~(np.isnan(targets[j]) | np.isnan(self.weights[neuron_idx]))
+                self.weights[neuron_idx, valid] = (
+                    (1 - effective_lr[j]) * self.weights[neuron_idx, valid] +
+                    effective_lr[j] * targets[j, valid]
+                )
+    
+    def _vectorized_partial_bray_curtis(self, data: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        """Vectorized Bray-Curtis distance calculation."""
+        # Expand dimensions for broadcasting
+        data_exp = data[:, np.newaxis, :]
+        weights_exp = weights[np.newaxis, :, :]
+        
+        # Find valid pairs
+        valid_mask = ~(np.isnan(data_exp) | np.isnan(weights_exp))
+        n_valid = valid_mask.sum(axis=2)
+        
+        # Clean data for calculation
+        data_clean = np.nan_to_num(data_exp, nan=0.0)
+        weights_clean = np.nan_to_num(weights_exp, nan=0.0)
+        
+        # Bray-Curtis calculation
+        diff = np.abs(data_clean - weights_clean)
+        sum_vals = data_clean + weights_clean
+        
+        numerator = (diff * valid_mask).sum(axis=2)
+        denominator = (sum_vals * valid_mask).sum(axis=2)
+        
+        # Handle division
+        with np.errstate(divide='ignore', invalid='ignore'):
+            distances = numerator / denominator
+        
+        # Set invalid distances
+        invalid = (n_valid < self.config.min_valid_features) | (denominator == 0)
+        distances[invalid] = np.inf
+        
+        return distances
+    
+    def _vectorized_neighborhood(self, bmu_indices: np.ndarray) -> np.ndarray:
+        """Calculate neighborhood influences for all BMUs at once."""
+        n_samples = len(bmu_indices)
+        influences = np.zeros((n_samples, self.n_neurons))
+        
+        valid_mask = bmu_indices >= 0
+        valid_bmus = bmu_indices[valid_mask]
+        
+        if len(valid_bmus) > 0:
+            bmu_positions = self._grid_positions[valid_bmus]
+            pos_diff = bmu_positions[:, np.newaxis, :] - self._grid_positions[np.newaxis, :, :]
+            distances_sq = np.sum(pos_diff ** 2, axis=2)
+            neighborhood = np.exp(-distances_sq / (2 * self.current_radius ** 2))
+            influences[valid_mask] = neighborhood
+        
+        return influences
+    
+    def _batch_update_sequential(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
+        """Original sequential batch update for small datasets."""
         # Initialize accumulators
         numerator = np.zeros_like(self.weights)
         denominator = np.zeros(self.n_neurons)
