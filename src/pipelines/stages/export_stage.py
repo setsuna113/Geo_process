@@ -248,8 +248,62 @@ class ExportStage(PipelineStage):
         dataset_dicts = merge_config['dataset_dicts']
         chunk_size = merge_config['chunk_size']
         
-        # Only CSV export is supported in streaming mode
+        # Determine export formats
+        export_formats = context.config.get('export.formats', ['csv'])
+        if isinstance(export_formats, str):
+            export_formats = [export_formats]
+        
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Track exported files
+        exported_files = {}
+        total_rows_exported = 0
+        total_size_mb = 0
+        
+        for format in export_formats:
+            if format == 'csv':
+                # CSV streaming export
+                rows_exported = self._stream_export_csv(
+                    merger, dataset_dicts, chunk_size, 
+                    context, timestamp
+                )
+                exported_files['csv'] = context.get('exported_csv_path')
+                total_rows_exported = max(total_rows_exported, rows_exported)
+                
+            elif format == 'parquet':
+                # Parquet streaming export
+                rows_exported = self._stream_export_parquet(
+                    merger, dataset_dicts, chunk_size,
+                    context, timestamp
+                )
+                exported_files['parquet'] = context.get('ml_ready_path')
+                total_rows_exported = max(total_rows_exported, rows_exported)
+                
+            else:
+                logger.warning(f"Unknown export format for streaming: {format}, skipping")
+        
+        # Calculate total file size
+        for file_path in exported_files.values():
+            if file_path and Path(file_path).exists():
+                total_size_mb += Path(file_path).stat().st_size / (1024**2)
+        
+        return StageResult(
+            success=True,
+            data={
+                'exported_files': exported_files,
+                'formats': list(exported_files.keys()),
+                'mode': 'streaming'
+            },
+            metrics={
+                'rows_exported': total_rows_exported,
+                'formats_exported': len(exported_files),
+                'total_file_size_mb': total_size_mb,
+                'streaming_enabled': True
+            }
+        )
+    
+    def _stream_export_csv(self, merger, dataset_dicts, chunk_size, context, timestamp) -> int:
+        """Stream export to CSV format."""
         output_filename = f"merged_data_{context.experiment_id}_{timestamp}.csv"
         output_path = context.output_dir / output_filename
         
@@ -287,14 +341,14 @@ class ExportStage(PipelineStage):
                     if chunk_count % 10 == 0:
                         elapsed = time.time() - start_time
                         rate = rows_exported / elapsed if elapsed > 0 else 0
-                        logger.info(f"Streaming export progress: {rows_exported:,} rows, "
+                        logger.info(f"CSV streaming export progress: {rows_exported:,} rows, "
                                   f"{chunk_count} chunks, {rate:.0f} rows/sec")
             
             # Calculate final metrics
             duration = time.time() - start_time
             file_size = output_path.stat().st_size
             
-            logger.info(f"Streaming export complete: {rows_exported:,} rows in {duration:.1f}s")
+            logger.info(f"CSV streaming export complete: {rows_exported:,} rows in {duration:.1f}s")
             logger.info(f"Output file: {output_path} ({file_size / (1024**2):.1f} MB)")
             
             # Log performance
@@ -310,32 +364,107 @@ class ExportStage(PipelineStage):
             # Store path for downstream stages
             context.set('exported_csv_path', str(output_path))
             
-            return StageResult(
-                success=True,
-                data={
-                    'exported_files': {'csv': str(output_path)},
-                    'formats': ['csv'],
-                    'mode': 'streaming'
-                },
-                metrics={
-                    'rows_exported': rows_exported,
-                    'chunks_processed': chunk_count,
-                    'file_size_mb': file_size / (1024**2),
-                    'duration_seconds': duration,
-                    'rows_per_second': rows_exported / duration if duration > 0 else 0,
-                    'streaming_enabled': True
-                }
-            )
+            return rows_exported
             
         except Exception as e:
-            logger.error(f"Streaming export failed: {e}")
+            logger.error(f"CSV streaming export failed: {e}")
             # Clean up partial file if it exists
             if output_path.exists():
                 try:
                     output_path.unlink()
                     logger.info(f"Cleaned up partial file: {output_path}")
-                except PermissionError:
-                    logger.warning(f"Could not delete partial file due to permissions: {output_path}")
-                except Exception as cleanup_error:
-                    logger.warning(f"Error cleaning up partial file: {cleanup_error}")
+                except Exception:
+                    pass
+            raise
+    
+    def _stream_export_parquet(self, merger, dataset_dicts, chunk_size, context, timestamp) -> int:
+        """Stream export to Parquet format using PyArrow."""
+        output_filename = f"merged_data_{context.experiment_id}_{timestamp}.parquet"
+        output_path = context.output_dir / output_filename
+        
+        # Track export progress
+        rows_exported = 0
+        chunk_count = 0
+        start_time = time.time()
+        writer = None
+        
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            
+            # Stream chunks from merger
+            for chunk_df in merger.iter_merged_chunks(dataset_dicts, chunk_size):
+                chunk_count += 1
+                
+                # Convert chunk to PyArrow Table
+                table = pa.Table.from_pandas(chunk_df, preserve_index=False)
+                
+                if writer is None:
+                    # Initialize writer with first chunk's schema
+                    writer = pq.ParquetWriter(
+                        output_path, 
+                        table.schema,
+                        compression='snappy',
+                        use_dictionary=True,
+                        # Enable statistics for better query performance
+                        write_statistics=True,
+                        # Row group size for optimal read performance
+                        row_group_size=chunk_size
+                    )
+                
+                # Write chunk to parquet file
+                writer.write_table(table)
+                rows_exported += len(chunk_df)
+                
+                # Log progress periodically
+                if chunk_count % 10 == 0:
+                    elapsed = time.time() - start_time
+                    rate = rows_exported / elapsed if elapsed > 0 else 0
+                    logger.info(f"Parquet streaming export progress: {rows_exported:,} rows, "
+                              f"{chunk_count} chunks, {rate:.0f} rows/sec")
+                
+                # Free memory
+                del table
+                del chunk_df
+            
+            # Close the writer
+            if writer:
+                writer.close()
+            
+            # Calculate final metrics
+            duration = time.time() - start_time
+            file_size = output_path.stat().st_size
+            
+            logger.info(f"Parquet streaming export complete: {rows_exported:,} rows in {duration:.1f}s")
+            logger.info(f"Output file: {output_path} ({file_size / (1024**2):.1f} MB)")
+            
+            # Log performance
+            logger.log_performance(
+                "streaming_parquet_export",
+                duration,
+                rows=rows_exported,
+                chunks=chunk_count,
+                size_mb=file_size / (1024**2),
+                rate_rows_per_sec=rows_exported / duration if duration > 0 else 0
+            )
+            
+            # Store path for downstream stages
+            context.set('ml_ready_path', str(output_path))
+            
+            return rows_exported
+            
+        except Exception as e:
+            logger.error(f"Parquet streaming export failed: {e}")
+            # Clean up
+            if writer:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+            if output_path.exists():
+                try:
+                    output_path.unlink()
+                    logger.info(f"Cleaned up partial file: {output_path}")
+                except Exception:
+                    pass
             raise

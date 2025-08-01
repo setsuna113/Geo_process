@@ -223,13 +223,10 @@ class WindowedStorageManager:
         global_rows = rows + row_offset
         global_cols = cols + col_offset
         
-        # Calculate geographic coordinates
-        x_coords = []
-        y_coords = []
-        for r, c in zip(global_rows, global_cols):
-            x, y = transform * (c, r)
-            x_coords.append(x)
-            y_coords.append(y)
+        # Calculate geographic coordinates (vectorized)
+        # Transform: [a, b, c, d, e, f] where x = a*col + b*row + c, y = d*col + e*row + f
+        x_coords = transform[0] * global_cols + transform[1] * global_rows + transform[2]
+        y_coords = transform[3] * global_cols + transform[4] * global_rows + transform[5]
         
         # Prepare batch insert data
         data_to_insert = [
@@ -241,7 +238,7 @@ class WindowedStorageManager:
         try:
             with db_connection.get_connection() as conn:
                 with conn.cursor() as cur:
-                    # Create table if not exists
+                    # Create table if not exists (but this should already be created by create_storage_table)
                     cur.execute(f"""
                         CREATE TABLE IF NOT EXISTS {table_name} (
                             row_idx INTEGER,
@@ -263,7 +260,7 @@ class WindowedStorageManager:
                         DO UPDATE SET value = EXCLUDED.value
                         """,
                         data_to_insert,
-                        page_size=1000
+                        page_size=50000  # Match batch_insert_size from config
                     )
                 conn.commit()
                 
@@ -314,6 +311,7 @@ class WindowedStorageManager:
         """
         with db_connection.get_connection() as conn:
             with conn.cursor() as cur:
+                # First create the table
                 cur.execute(f"""
                     CREATE TABLE IF NOT EXISTS {table_name} (
                         row_idx INTEGER,
@@ -323,17 +321,50 @@ class WindowedStorageManager:
                         value DOUBLE PRECISION,
                         PRIMARY KEY (row_idx, col_idx)
                     );
-                    
-                    CREATE INDEX IF NOT EXISTS {table_name}_spatial_idx 
+                """)
+                
+                # Then create indexes separately for better error handling
+                # GIST spatial index for coordinate-based queries (most important for merge stage)
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_spatial_gist_idx 
+                    ON {table_name} USING GIST (
+                        ST_MakePoint(x_coord, y_coord)
+                    );
+                """)
+                
+                # Individual coordinate indexes for range queries
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_x_coord_idx 
+                    ON {table_name} (x_coord);
+                """)
+                
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_y_coord_idx 
+                    ON {table_name} (y_coord);
+                """)
+                
+                # Composite btree index for coordinate pairs (backup for non-spatial queries)
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_spatial_btree_idx 
                     ON {table_name} (x_coord, y_coord);
-                    
+                """)
+                
+                # Value index for filtering
+                cur.execute(f"""
                     CREATE INDEX IF NOT EXISTS {table_name}_value_idx 
                     ON {table_name} (value) 
                     WHERE value IS NOT NULL;
                 """)
+                
+                # Row/col composite index for window-based access
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {table_name}_rowcol_idx 
+                    ON {table_name} (row_idx, col_idx);
+                """)
+                
             conn.commit()
             
-        logger.info(f"Created storage table: {table_name}")
+        logger.info(f"Created storage table with optimized indexes: {table_name}")
     
     def validate_coordinate_accuracy(self, table_name: str, db_connection,
                                    bounds: Tuple[float, float, float, float],

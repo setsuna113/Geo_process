@@ -15,7 +15,7 @@ sys.path.insert(0, str(project_root))
 
 from src.database.connection import DatabaseManager
 from src.infrastructure.monitoring import MonitoringClient
-from src.config import Config
+from src.config import config
 from tabulate import tabulate
 import logging
 
@@ -29,7 +29,6 @@ class MonitorCLI:
     
     def __init__(self):
         """Initialize monitor CLI."""
-        self.config = Config()
         self.db = DatabaseManager()
         self.monitor = MonitoringClient(self.db)
     
@@ -69,8 +68,11 @@ class MonitorCLI:
     def logs(self, args):
         """Query and display logs."""
         try:
+            # Resolve experiment name to ID
+            experiment_id = self.monitor._resolve_experiment_id(args.experiment)
+            
             logs = self.monitor.query_logs(
-                experiment_id=args.experiment,
+                experiment_id=experiment_id,
                 level=args.level,
                 search=args.search,
                 start_time=args.since,
@@ -394,7 +396,7 @@ class MonitorCLI:
     
     def _show_current_metrics(self, experiment_id: str):
         """Show current resource metrics."""
-        metrics = self.monitor.get_metrics(experiment_id, limit=1)
+        metrics = self.monitor.get_metrics(experiment_id)
         
         if metrics:
             latest = metrics[0]

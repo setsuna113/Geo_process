@@ -745,9 +745,8 @@ class ResamplingProcessor(BaseProcessor):
             source_path=str(info.source_path),
             target_resolution=info.target_resolution,
             target_crs=info.target_crs,
-            bounds=info.bounds,
-            shape_height=info.shape[0],
-            shape_width=info.shape[1],
+            bounds=list(info.bounds),  # Convert tuple to list for PostgreSQL array
+            shape=info.shape,  # Pass shape as tuple, not separate height/width
             data_type=info.data_type,
             resampling_method=info.resampling_method,
             band_name=info.band_name,
