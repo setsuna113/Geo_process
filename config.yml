@@ -12,11 +12,12 @@ pipeline:
 # =============================================================================
 # PATHS CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
 # =============================================================================
-# PATHS: Using defaults.py for local testing
+# PATHS: Using local paths (scratch is full)
 # paths:
 #   # For cluster deployment, uncomment and modify:
 #   data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
 #   logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
+#   outputs_dir: "/scratch/yl998/geo_outputs"  # NOTE: scratch is currently full!
 
 # NOTE: Individual dataset paths are now specified in each dataset configuration below
 # This data_files section is deprecated but kept for backward compatibility
@@ -577,15 +578,30 @@ spatial_analysis:
     
   # Named analysis experiments for reproducibility
   experiments:
-    # Quick SOM test with unified convergence
-    test_som:
-      input_parquet: 'outputs/test_biodiversity.parquet'
+    # Quick SOM test with small sample
+    test_som_small:
+      input_parquet: 'outputs/test_biodiversity_sample.parquet'  # Create with sample script
       method: 'som'
       grid_size: [6, 6]
       max_iterations: 2000
       convergence_threshold: 1e-6
       enable_dynamic_convergence: true
       convergence_method: 'unified'
+      
+    # Production SOM run optimized for 5-hour deadline
+    test_som:
+      input_parquet: '/home/yl998/dev/geo/outputs/45d78409-3818-4eb6-960f-c00216110460/merged_data_45d78409-3818-4eb6-960f-c00216110460_20250801_001157.parquet'
+      method: 'som'
+      grid_size: [15, 15]  # 225 neurons - balanced for speed/quality
+      max_iterations: 1000   # Reduced for faster convergence
+      convergence_threshold: 1e-3  # More relaxed threshold
+      enable_dynamic_convergence: true
+      convergence_method: 'unified'
+      observed_columns: [0, 1]  # Specify which are observed
+      predicted_columns: [2, 3]  # Specify which are predicted
+      save_results: true
+      output_dir: 'outputs/analysis_results/som/production_run_20250801'
+      cv_folds: 3  # Reduced from 5 to 3 for speed
       
     # Production SOM analysis with advanced convergence
     production_som:
