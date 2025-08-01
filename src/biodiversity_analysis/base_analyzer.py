@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
-from src.abstractions.interfaces.analyzer import AnalysisResult, AnalysisMetadata
+from src.abstractions.interfaces.analyzer import IAnalyzer, AnalysisResult, AnalysisMetadata
 from src.abstractions.types.biodiversity_types import BiodiversityData
 from src.config import get_biodiversity_config
 from .shared.data import ParquetLoader
@@ -21,7 +21,7 @@ from .shared.data import ParquetLoader
 logger = logging.getLogger(__name__)
 
 
-class BaseBiodiversityAnalyzer(ABC):
+class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
     """
     Base class for biodiversity analysis methods.
     

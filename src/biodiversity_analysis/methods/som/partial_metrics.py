@@ -242,12 +242,21 @@ def validate_missing_data_handling(data: np.ndarray, threshold: float = 0.7) -> 
     problematic_features = np.where(feature_missing > threshold)[0]
     problematic_samples = np.where(sample_missing > threshold)[0]
     
-    # Compute pairwise valid counts
-    valid_pairs = np.zeros((n_samples, n_samples))
-    for i in range(n_samples):
-        for j in range(i, n_samples):
-            valid = ~(missing_mask[i] | missing_mask[j])
-            valid_pairs[i, j] = valid_pairs[j, i] = valid.sum()
+    # Estimate average valid pairs without computing full matrix
+    # Sample a small subset to estimate statistics
+    sample_size = min(100, n_samples)
+    sample_indices = np.random.choice(n_samples, sample_size, replace=False)
+    avg_valid_pairs = 0
+    
+    for i in range(sample_size):
+        for j in range(i+1, sample_size):
+            valid = ~(missing_mask[sample_indices[i]] | missing_mask[sample_indices[j]])
+            avg_valid_pairs += valid.sum()
+    
+    if sample_size > 1:
+        avg_valid_pairs = avg_valid_pairs / (sample_size * (sample_size - 1) / 2)
+    else:
+        avg_valid_pairs = n_features * (1 - overall_missing)
     
     return {
         'overall_missing_proportion': overall_missing,
@@ -255,7 +264,7 @@ def validate_missing_data_handling(data: np.ndarray, threshold: float = 0.7) -> 
         'sample_missing_proportions': sample_missing,
         'problematic_features': problematic_features,
         'problematic_samples': problematic_samples,
-        'min_valid_pairs': valid_pairs.min(),
-        'mean_valid_pairs': valid_pairs.mean(),
-        'pairwise_valid_matrix': valid_pairs
+        'estimated_avg_valid_pairs': avg_valid_pairs,
+        'min_features': n_features,
+        'passed_validation': overall_missing <= threshold
     }

@@ -17,6 +17,7 @@ from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
 from .preprocessing import BiodiversityPreprocessor
 from .spatial_utils import SpatialBlockGenerator, GeographicCoherence
 from .partial_metrics import validate_missing_data_handling
+from .progress_tracker import SOMProgressTracker, create_progress_callback
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +171,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         config_kwargs = {k: v for k, v in kwargs.items() if k != 'grid_size'}
         self._geosom_config = self._create_geosom_config(grid_size, **config_kwargs)
         
+        # Initialize progress tracker
+        output_dir = kwargs.get('output_dir', './outputs/analysis_results/som')
+        experiment_name = kwargs.get('experiment_name', f'som_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+        self.progress_tracker = SOMProgressTracker(output_dir, experiment_name)
+        
         # Perform spatial block cross-validation
         cv_results = self._spatial_cross_validation(
             features_processed,
@@ -179,10 +185,18 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Train final model on all data
         self.som = GeoSOMVLRSOM(self._geosom_config)
+        
+        # Create a simple progress callback if we have one
+        progress_cb = None
+        if hasattr(self, 'progress_callback') and self.progress_callback:
+            def progress_cb(progress):
+                msg = f"Training SOM: {int(progress * 100)}% complete"
+                self.progress_callback(msg, progress)
+        
         self.training_result = self.som.train_batch(
             features_processed,
             biodiv_data.coordinates,
-            progress_callback=self.progress_callback
+            progress_callback=progress_cb
         )
         
         # Calculate comprehensive metrics
@@ -234,7 +248,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _create_geosom_config(self, grid_size: Tuple[int, int], **kwargs) -> GeoSOMConfig:
         """Create GeoSOM configuration from settings."""
-        arch_config = self.config['architecture_config']
+        # Use the default config we loaded, not the biodiversity config
+        default_config = self._load_default_config()
+        arch_config = default_config['architecture_config']
         conv_config = arch_config['convergence']
         
         return GeoSOMConfig(
@@ -260,7 +276,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             qe_improvement_threshold=conv_config['qe_improvement_threshold'],
             patience=conv_config['patience'],
             max_epochs=conv_config['max_epochs'],
-            min_valid_features=self.config['distance_config']['min_valid_features'],
+            min_valid_features=default_config['distance_config']['min_valid_features'],
             random_seed=kwargs.get('random_seed', 42)
         )
     
@@ -285,14 +301,22 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
             logger.info(f"Processing CV fold {fold_idx + 1}/5")
+            self.progress_tracker.update_phase(f'cv_fold_{fold_idx + 1}', cv_fold=fold_idx + 1)
             
             # Create fold SOM
             fold_som = GeoSOMVLRSOM(config)
             
+            # Create progress callback for this fold
+            fold_callback = create_progress_callback(
+                self.progress_tracker, 
+                phase=f'cv_fold_{fold_idx + 1}'
+            )
+            
             # Train on fold
             fold_result = fold_som.train_batch(
                 features[train_idx],
-                coordinates[train_idx]
+                coordinates[train_idx],
+                progress_callback=fold_callback
             )
             
             # Evaluate on test set

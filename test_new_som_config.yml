@@ -1,0 +1,34 @@
+# Test configuration for new SOM with actual data
+spatial_analysis:
+  defaults:
+    data_source: 'parquet'
+    save_results: true
+    save_intermediate: false
+    chunk_size: 10000
+    memory_limit_gb: 50.0  # Conservative memory limit
+    enable_checkpointing: true
+    
+  experiments:
+    test_new_som:
+      input_parquet: 'outputs/45d78409-3818-4eb6-960f-c00216110460/merged_data_45d78409-3818-4eb6-960f-c00216110460_20250801_001157.parquet'
+      method: 'som'
+      grid_size: [6, 6]  # Small grid for testing
+      max_iterations: 500  # Reduced for quick test
+      convergence_threshold: 0.01  # Realistic threshold
+      enable_dynamic_convergence: true
+      convergence_method: 'unified'
+      sigma: 1.5
+      learning_rate: 0.5
+      
+# Override SOM-specific settings
+som_analysis:
+  max_pixels_in_memory: 5000000  # Reduced for safety
+  memory_overhead_factor: 2.0
+  use_memory_mapping: true
+  default_grid_size: [6, 6]
+  iterations: 500
+  
+# Use fewer workers due to high CPU usage
+processing:
+  max_workers: 4  # Very conservative
+  batch_size: 1000

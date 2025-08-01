@@ -375,6 +375,11 @@ class GeoSOMVLRSOM:
             qe = self.calculate_quantization_error(data, coordinates)
             self.training_history['quantization_errors'].append(qe)
             
+            # Log progress every 10 epochs or on significant events
+            if epoch % 10 == 0 or epoch < 5:
+                logger.info(f"Epoch {epoch+1}/{self.config.max_epochs}: QE={qe:.6f}, "
+                           f"LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
+            
             # VLRSOM: Adapt learning rate based on QE improvement
             self._adapt_learning_rate(qe, best_qe)
             
@@ -404,9 +409,22 @@ class GeoSOMVLRSOM:
                     logger.info(f"Converged at epoch {epoch}")
                     break
             
-            # Progress callback
+            # Progress callback with detailed info
             if progress_callback:
-                progress_callback((epoch + 1) / self.config.max_epochs)
+                progress_info = {
+                    'epoch': epoch + 1,
+                    'max_epochs': self.config.max_epochs,
+                    'progress': (epoch + 1) / self.config.max_epochs,
+                    'qe': current_qe,
+                    'learning_rate': self.current_lr,
+                    'radius': self.current_radius
+                }
+                # Support both simple and detailed callbacks
+                try:
+                    progress_callback(progress_info)
+                except TypeError:
+                    # Fallback to simple progress
+                    progress_callback((epoch + 1) / self.config.max_epochs)
         
         # Create result
         return SOMTrainingResult(
