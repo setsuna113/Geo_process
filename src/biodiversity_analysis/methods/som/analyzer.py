@@ -10,6 +10,7 @@ import json
 import os
 from typing import Dict, Any, Optional, List, Tuple, Callable
 import logging
+from datetime import datetime
 
 from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
@@ -180,7 +181,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         cv_results = self._spatial_cross_validation(
             features_processed,
             biodiv_data.coordinates,
-            self._geosom_config
+            self._geosom_config,
+            **kwargs
         )
         
         # Train final model on all data
@@ -232,8 +234,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _determine_grid_size(self, n_samples: int, grid_size_param: Any) -> Tuple[int, int]:
         """Determine appropriate grid size based on data."""
-        if isinstance(grid_size_param, tuple):
-            return grid_size_param
+        # Handle both list and tuple
+        if isinstance(grid_size_param, (list, tuple)) and len(grid_size_param) == 2:
+            return tuple(grid_size_param)
         
         # Auto-determine based on sample size
         # Rule of thumb: sqrt(n_samples) neurons, arranged in square grid
@@ -282,11 +285,13 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _spatial_cross_validation(self, features: np.ndarray, 
                                 coordinates: np.ndarray,
-                                config: GeoSOMConfig) -> Dict[str, Any]:
+                                config: GeoSOMConfig,
+                                **kwargs) -> Dict[str, Any]:
         """Perform spatial block cross-validation."""
         # Create spatial blocks
+        n_folds = kwargs.get('cv_folds', 5)  # Get from config or default to 5
         block_gen = SpatialBlockGenerator(block_size_km=750.0, random_state=config.random_seed)
-        cv_splits = block_gen.create_cv_splits(coordinates, n_folds=5)
+        cv_splits = block_gen.create_cv_splits(coordinates, n_folds=n_folds)
         
         cv_results = {
             'fold_results': [],
@@ -300,7 +305,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         coherence_scores = []
         
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
-            logger.info(f"Processing CV fold {fold_idx + 1}/5")
+            logger.info(f"Processing CV fold {fold_idx + 1}/{n_folds}")
             self.progress_tracker.update_phase(f'cv_fold_{fold_idx + 1}', cv_fold=fold_idx + 1)
             
             # Create fold SOM

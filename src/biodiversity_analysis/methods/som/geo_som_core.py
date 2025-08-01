@@ -415,7 +415,7 @@ class GeoSOMVLRSOM:
                     'epoch': epoch + 1,
                     'max_epochs': self.config.max_epochs,
                     'progress': (epoch + 1) / self.config.max_epochs,
-                    'qe': current_qe,
+                    'qe': qe,  # Use the calculated qe from line 375
                     'learning_rate': self.current_lr,
                     'radius': self.current_radius
                 }
