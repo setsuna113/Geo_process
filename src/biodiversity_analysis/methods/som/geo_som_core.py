@@ -11,6 +11,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict, Any, Callable
 from dataclasses import dataclass
 import logging
+import time
 from scipy.spatial.distance import cdist
 # Moran's I calculation is in spatial_utils module
 
@@ -519,32 +520,65 @@ class GeoSOMVLRSOM:
             self._batch_update_sequential(data, coordinates)
     
     def _batch_update_vectorized(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
-        """Vectorized batch update for better performance on large datasets."""
+        """Vectorized batch update with chunking for memory efficiency.
+        
+        This implementation includes geographic distance calculations as required
+        by the GeoSOM specification (30% spatial, 70% features).
+        """
         n_samples, n_features = data.shape
+        logger.info(f"Starting chunked vectorized batch update for {n_samples} samples")
         
-        # Step 1: Vectorized distance calculation
-        distances = self._vectorized_partial_bray_curtis(data, self.weights)
+        # Initialize accumulators for batch updates
+        numerator = np.zeros_like(self.weights)
+        denominator = np.zeros(self.n_neurons)
         
-        # Step 2: Find all BMUs at once
-        bmu_indices = np.argmin(distances, axis=1)
-        min_distances = np.take_along_axis(distances, bmu_indices[:, np.newaxis], axis=1).squeeze()
+        # Process in chunks to manage memory
+        chunk_size = min(10000, n_samples)  # Process 10k samples at a time
+        n_chunks = (n_samples + chunk_size - 1) // chunk_size
         
-        # Mark invalid BMUs
-        invalid_mask = np.isinf(min_distances)
-        bmu_indices[invalid_mask] = -1
+        for chunk_idx in range(n_chunks):
+            start_idx = chunk_idx * chunk_size
+            end_idx = min((chunk_idx + 1) * chunk_size, n_samples)
+            chunk_data = data[start_idx:end_idx]
+            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
+            
+            # Calculate distances for this chunk
+            if coordinates is not None and hasattr(self, 'neuron_coords'):
+                # Combined distance calculation (feature + geographic)
+                chunk_distances = self._vectorized_combined_distance(
+                    chunk_data, self.weights, chunk_coords, self.neuron_coords
+                )
+            else:
+                # Feature distance only
+                chunk_distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
+            
+            # Find BMUs for chunk
+            chunk_bmu_indices = np.argmin(chunk_distances, axis=1)
+            min_distances = np.take_along_axis(
+                chunk_distances, chunk_bmu_indices[:, np.newaxis], axis=1
+            ).squeeze()
+            
+            # Mark invalid BMUs
+            invalid_mask = np.isinf(min_distances)
+            chunk_bmu_indices[invalid_mask] = -1
+            
+            # Calculate neighborhood influences for chunk
+            chunk_influences = self._vectorized_neighborhood(chunk_bmu_indices)
+            
+            # Accumulate updates from this chunk
+            chunk_data_clean = np.nan_to_num(chunk_data, nan=0.0)
+            chunk_valid_mask = ~np.isnan(chunk_data)
+            
+            # Accumulate numerator and denominator
+            numerator += np.einsum('ij,ik,ik->jk', chunk_influences, chunk_data_clean, chunk_valid_mask)
+            denominator += np.einsum('ij,ik->j', chunk_influences, chunk_valid_mask)
+            
+            # Log progress for large datasets
+            if n_chunks > 10 and (chunk_idx + 1) % (n_chunks // 10) == 0:
+                progress = (chunk_idx + 1) / n_chunks
+                logger.debug(f"Batch update progress: {progress:.0%}")
         
-        # Step 3: Vectorized neighborhood calculation
-        influences = self._vectorized_neighborhood(bmu_indices)
-        
-        # Step 4: Accumulate updates using matrix operations
-        data_clean = np.nan_to_num(data, nan=0.0)
-        valid_mask = ~np.isnan(data)
-        
-        # Use einsum for efficient tensor operations
-        numerator = np.einsum('ij,ik,ik->jk', influences, data_clean, valid_mask)
-        denominator = np.einsum('ij,ik->j', influences, valid_mask)
-        
-        # Step 5: Apply updates
+        # Apply accumulated updates
         update_mask = denominator > n_features
         
         if np.any(update_mask):
@@ -560,10 +594,10 @@ class GeoSOMVLRSOM:
                     effective_lr[j] * targets[j, valid]
                 )
     
-    def _vectorized_partial_bray_curtis(self, data: np.ndarray, weights: np.ndarray) -> np.ndarray:
-        """Vectorized Bray-Curtis distance calculation."""
+    def _vectorized_partial_bray_curtis_chunk(self, data_chunk: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        """Vectorized Bray-Curtis distance calculation for a chunk of data."""
         # Expand dimensions for broadcasting
-        data_exp = data[:, np.newaxis, :]
+        data_exp = data_chunk[:, np.newaxis, :]
         weights_exp = weights[np.newaxis, :, :]
         
         # Find valid pairs
@@ -590,6 +624,62 @@ class GeoSOMVLRSOM:
         distances[invalid] = np.inf
         
         return distances
+    
+    def _vectorized_combined_distance(self, data_chunk: np.ndarray, weights: np.ndarray,
+                                    coords_chunk: np.ndarray, neuron_coords: np.ndarray) -> np.ndarray:
+        """Calculate combined feature and geographic distances for a chunk.
+        
+        Implements the GeoSOM specification: 30% spatial + 70% feature distance.
+        """
+        # Feature distances
+        feature_distances = self._vectorized_partial_bray_curtis_chunk(data_chunk, weights)
+        
+        # Geographic distances (vectorized haversine)
+        geo_distances = self._vectorized_haversine_distances(coords_chunk, neuron_coords)
+        
+        # Normalize geographic distances (rough earth circumference / 2)
+        geo_distances_norm = geo_distances / 20000.0
+        
+        # Combined distance with spatial weighting
+        # Handle invalid feature distances
+        valid_feature = ~np.isinf(feature_distances)
+        combined = np.full_like(feature_distances, np.inf)
+        combined[valid_feature] = (
+            (1 - self.config.spatial_weight) * feature_distances[valid_feature] +
+            self.config.spatial_weight * geo_distances_norm[valid_feature]
+        )
+        
+        return combined
+    
+    def _vectorized_haversine_distances(self, coords1: np.ndarray, coords2: np.ndarray) -> np.ndarray:
+        """Vectorized haversine distance calculation between coordinate sets.
+        
+        Args:
+            coords1: (n_samples, 2) array of [longitude, latitude] in degrees
+            coords2: (n_neurons, 2) array of [longitude, latitude] in degrees
+            
+        Returns:
+            (n_samples, n_neurons) array of distances in kilometers
+        """
+        # Convert to radians
+        coords1_rad = np.radians(coords1)
+        coords2_rad = np.radians(coords2)
+        
+        # Extract lat/lon
+        lat1 = coords1_rad[:, 1:2]  # Keep as (n, 1) for broadcasting
+        lon1 = coords1_rad[:, 0:1]
+        lat2 = coords2_rad[:, 1].reshape(1, -1)  # Shape (1, m)
+        lon2 = coords2_rad[:, 0].reshape(1, -1)
+        
+        # Haversine formula
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        
+        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))  # clip for numerical stability
+        
+        # Earth radius in km
+        return 6371 * c
     
     def _vectorized_neighborhood(self, bmu_indices: np.ndarray) -> np.ndarray:
         """Calculate neighborhood influences for all BMUs at once."""
