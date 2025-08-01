@@ -593,7 +593,7 @@ spatial_analysis:
       input_parquet: '/home/yl998/dev/geo/outputs/45d78409-3818-4eb6-960f-c00216110460/merged_data_45d78409-3818-4eb6-960f-c00216110460_20250801_001157.parquet'
       method: 'som'
       grid_size: [15, 15]  # 225 neurons - balanced for speed/quality
-      max_iterations: 1000   # Reduced for faster convergence
+      max_iterations: 50   # Reduced from 1000 to meet deadline
       convergence_threshold: 1e-3  # More relaxed threshold
       enable_dynamic_convergence: true
       convergence_method: 'unified'
@@ -602,6 +602,7 @@ spatial_analysis:
       save_results: true
       output_dir: 'outputs/analysis_results/som/production_run_20250801'
       cv_folds: 3  # Reduced from 5 to 3 for speed
+      patience: 10  # Early stopping after 10 epochs without improvement
       
     # Production SOM analysis with advanced convergence
     production_som:

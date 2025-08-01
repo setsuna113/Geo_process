@@ -574,9 +574,9 @@ class GeoSOMVLRSOM:
             denominator += np.einsum('ij,ik->j', chunk_influences, chunk_valid_mask)
             
             # Log progress for large datasets
-            if n_chunks > 10 and (chunk_idx + 1) % (n_chunks // 10) == 0:
+            if n_chunks > 10 and (chunk_idx + 1) % max(1, n_chunks // 20) == 0:
                 progress = (chunk_idx + 1) / n_chunks
-                logger.debug(f"Batch update progress: {progress:.0%}")
+                logger.info(f"Batch update progress: {progress:.0%} ({chunk_idx + 1}/{n_chunks} chunks)")
         
         # Apply accumulated updates
         update_mask = denominator > n_features
