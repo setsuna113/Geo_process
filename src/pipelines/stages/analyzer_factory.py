@@ -23,6 +23,7 @@ class AnalyzerFactory:
     # Format: method_name -> (module_path, class_name)
     _analyzers: Dict[str, Tuple[str, str]] = {
         'som': ('src.biodiversity_analysis.methods.som.analyzer_adapter', 'SOMAnalyzer'),
+        'kmeans': ('src.biodiversity_analysis.methods.kmeans.analyzer_adapter', 'KMeansAnalyzerAdapter'),
         # 'gwpca': ('src.biodiversity_analysis.methods.gwpca.analyzer', 'GWPCAAnalyzer'),
         # 'maxp_regions': ('src.biodiversity_analysis.methods.maxp.analyzer', 'MaxPAnalyzer')
     }
