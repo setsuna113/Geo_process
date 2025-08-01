@@ -48,7 +48,12 @@ class ParquetLoader:
         logger.info(f"Loading parquet file: {data_path}")
         
         # Load parquet file
-        df = pd.read_parquet(data_path)
+        try:
+            # Try fastparquet first (more robust for some formats)
+            df = pd.read_parquet(data_path, engine='fastparquet')
+        except Exception as e:
+            logger.warning(f"Failed with fastparquet: {e}, trying pyarrow")
+            df = pd.read_parquet(data_path, engine='pyarrow')
         logger.info(f"Loaded {len(df)} rows with {len(df.columns)} columns")
         
         # Auto-detect coordinate columns if not specified
@@ -59,7 +64,12 @@ class ParquetLoader:
         if len(coordinate_cols) != 2:
             raise ValueError(f"Expected 2 coordinate columns, got {len(coordinate_cols)}: {coordinate_cols}")
         
-        coordinates = df[coordinate_cols].values
+        # Extract coordinates and ensure they are in [latitude, longitude] order
+        if coordinate_cols[0] in ['longitude', 'lon', 'x', 'lng', 'long']:
+            # Swap to get [latitude, longitude] order
+            coordinates = df[[coordinate_cols[1], coordinate_cols[0]]].values
+        else:
+            coordinates = df[coordinate_cols].values
         
         # Auto-detect feature columns if not specified
         if feature_cols is None:
