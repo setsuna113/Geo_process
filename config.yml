@@ -664,6 +664,33 @@ spatial_analysis:
       threshold_variable: 'total_richness'
       method_type: 'ward'
       random_seed: 42
+    
+    # K-means test with small dataset
+    test_kmeans:
+      input_parquet: 'outputs/test_biodiversity_sample.parquet'
+      method: 'kmeans'
+      n_clusters: 8
+      determine_k: false
+      save_results: true
+      output_dir: 'outputs/analysis_results/kmeans/test_run'
+    
+    # K-means with automatic k determination
+    test_kmeans_auto_k:
+      input_parquet: 'outputs/test_biodiversity.parquet'
+      method: 'kmeans'
+      determine_k: true
+      k_range: [5, 20]
+      save_results: true
+      output_dir: 'outputs/analysis_results/kmeans/auto_k_test'
+    
+    # Production k-means for global biodiversity
+    production_kmeans:
+      input_parquet: 'outputs/biodiversity_global.parquet'
+      method: 'kmeans'
+      n_clusters: 20
+      determine_k: false
+      save_results: true
+      output_dir: 'outputs/analysis_results/kmeans/production_run'
 
 # Method-specific configurations (maintains backward compatibility)
 som_analysis:
@@ -699,3 +726,49 @@ maxp_analysis:
   method: 'ward'
   spatial_weights: 'queen'
   random_seed: 42
+
+# K-means clustering configuration for biodiversity data
+kmeans_analysis:
+  # Core parameters
+  n_clusters: 20  # Increased for fine 18km grids
+  init: 'k-means++'
+  n_init: 10
+  max_iter: 300
+  tol: 1e-4
+  random_state: 42
+  
+  # Distance and weights
+  distance_metric: 'bray_curtis'
+  weight_method: 'auto'  # 'auto', 'completeness', 'variance', 'fixed'
+  fixed_weights: [1.0, 1.0, 1.0, 1.0]  # Used only if weight_method='fixed'
+  
+  # Adaptive thresholds
+  adaptive_mode: 'latitude'  # 'latitude', 'density', 'both'
+  arctic_boundary: 66.5
+  temperate_boundary: 45.0
+  arctic_min_features: 1
+  temperate_min_features: 2
+  tropical_min_features: 2
+  
+  # Spatial parameters
+  grid_size_km: 18.0
+  neighborhood_radius_km: 100.0
+  remote_threshold_km: 200.0
+  min_neighbors_remote: 10
+  
+  # Preprocessing
+  transform: 'log1p'
+  normalize: 'standardize'
+  handle_zeros: true
+  
+  # Optimization
+  prefilter_empty: true
+  min_features_prefilter: 1
+  use_sparse_distances: true
+  chunk_size: 10000
+  n_jobs: -1
+  
+  # Validation
+  calculate_silhouette: true
+  silhouette_sample_size: 5000
+  determine_k_method: 'silhouette'  # 'elbow', 'silhouette', 'both'
