@@ -359,8 +359,17 @@ class GeoSOMVLRSOM:
         best_qe = np.inf
         patience_counter = 0
         
-        # Calculate initial QE
-        initial_qe = self.calculate_quantization_error(data, coordinates)
+        # Calculate initial QE on a sample for large datasets
+        if len(data) > 10000:
+            # Sample 10k points for initial QE calculation
+            sample_idx = np.random.choice(len(data), size=10000, replace=False)
+            sample_data = data[sample_idx]
+            sample_coords = coordinates[sample_idx] if coordinates is not None else None
+            initial_qe = self.calculate_quantization_error(sample_data, sample_coords)
+            logger.info(f"Initial QE calculated on 10k sample: {initial_qe:.6f}")
+        else:
+            initial_qe = self.calculate_quantization_error(data, coordinates)
+        
         self.training_history['quantization_errors'].append(initial_qe)
         best_qe = initial_qe
         
@@ -371,8 +380,17 @@ class GeoSOMVLRSOM:
             # Batch update
             self._batch_update(data, coordinates)
             
-            # Calculate QE after update
-            qe = self.calculate_quantization_error(data, coordinates)
+            # Calculate QE after update (sample for large datasets)
+            if len(data) > 10000 and epoch % 10 != 0:
+                # Use sampling for most epochs
+                sample_idx = np.random.choice(len(data), size=10000, replace=False)
+                sample_data = data[sample_idx]
+                sample_coords = coordinates[sample_idx] if coordinates is not None else None
+                qe = self.calculate_quantization_error(sample_data, sample_coords)
+            else:
+                # Full QE every 10 epochs or for small datasets
+                qe = self.calculate_quantization_error(data, coordinates)
+            
             self.training_history['quantization_errors'].append(qe)
             
             # Log progress every 10 epochs or on significant events
