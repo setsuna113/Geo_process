@@ -1,0 +1,38 @@
+# K-means configuration for biodiversity analysis
+pipeline:
+  stages:
+    - name: data_loader
+      params:
+        data_path: "/home/yl998/dev/geo/outputs/biodiversity_data.parquet"
+        
+    - name: analyzer
+      params:
+        method: kmeans
+        n_clusters: 20
+        determine_k: true
+        k_range: [10, 30]
+        distance_metric: bray_curtis
+        weight_method: auto
+        prefilter_empty: true
+        min_features_prefilter: 1
+        # Adaptive thresholds for different regions
+        adaptive_mode: latitude
+        arctic_min_features: 1
+        temperate_min_features: 2
+        tropical_min_features: 2
+        # Optimization settings
+        n_jobs: -1  # Use all CPU cores
+        chunk_size: 10000
+        # Output settings
+        save_results: true
+        output_dir: "./outputs/kmeans_results"
+
+# Analysis settings
+analysis:
+  experiment_name: "biodiversity_kmeans_analysis"
+  description: "K-means clustering of biodiversity patterns"
+  
+# Memory management for large datasets
+performance:
+  large_dataset_threshold: 10000
+  memory_chunk_size: 1000
