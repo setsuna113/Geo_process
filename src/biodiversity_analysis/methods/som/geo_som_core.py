@@ -11,6 +11,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict, Any, Callable
 from dataclasses import dataclass
 import logging
+import time
 from scipy.spatial.distance import cdist
 # Moran's I calculation is in spatial_utils module
 
@@ -63,6 +64,10 @@ class GeoSOMConfig:
     # Data handling
     min_valid_features: int = 2  # For partial comparison
     random_seed: Optional[int] = None
+    
+    # Performance settings
+    chunk_size: int = 50000  # Chunk size for batch processing
+    qe_sample_size: int = 100000  # Sample size for QE calculation
 
 
 class GeoSOMVLRSOM:
@@ -74,6 +79,9 @@ class GeoSOMVLRSOM:
     
     Designed for biodiversity data with high missing values and spatial structure.
     """
+    
+    # Class constants
+    INVALID_INDEX = -1
     
     def __init__(self, config: GeoSOMConfig):
         self.config = config
@@ -359,20 +367,55 @@ class GeoSOMVLRSOM:
         best_qe = np.inf
         patience_counter = 0
         
-        # Calculate initial QE
-        initial_qe = self.calculate_quantization_error(data, coordinates)
+        # Calculate initial QE on a sample for large datasets
+        if len(data) > 10000:
+            # Sample 10k points for initial QE calculation
+            sample_idx = np.random.choice(len(data), size=10000, replace=False)
+            sample_data = data[sample_idx]
+            sample_coords = coordinates[sample_idx] if coordinates is not None else None
+            initial_qe = self.calculate_quantization_error(sample_data, sample_coords)
+            logger.info(f"Initial QE calculated on 10k sample: {initial_qe:.6f}")
+        else:
+            initial_qe = self.calculate_quantization_error(data, coordinates)
+        
         self.training_history['quantization_errors'].append(initial_qe)
         best_qe = initial_qe
         
         for epoch in range(self.config.max_epochs):
+            logger.info(f"Starting epoch {epoch+1}/{self.config.max_epochs}")
+            
             # Decay radius
             self._update_radius(epoch)
+            logger.debug(f"Updated radius to {self.current_radius:.2f}")
             
             # Batch update
+            logger.info(f"Starting batch update for epoch {epoch+1}")
             self._batch_update(data, coordinates)
+            logger.info(f"Completed batch update for epoch {epoch+1}")
             
-            # Calculate QE after update
-            qe = self.calculate_quantization_error(data, coordinates)
+            # Calculate QE after update with smart sampling
+            logger.info(f"Calculating QE for epoch {epoch+1}")
+            if len(data) > 100000:
+                # Large datasets: use aggressive sampling
+                if epoch % 10 == 0:
+                    # Every 10 epochs: larger sample for accuracy
+                    logger.debug("Using 50k sample for QE calculation (validation epoch)")
+                    qe = self.calculate_quantization_error(data, coordinates, sample_size=50000)
+                else:
+                    # Other epochs: smaller sample for speed
+                    logger.debug("Using 10k sample for QE calculation")
+                    qe = self.calculate_quantization_error(data, coordinates, sample_size=10000)
+            elif len(data) > 10000:
+                # Medium datasets: moderate sampling
+                sample_size = min(len(data) // 10, 50000)
+                logger.debug(f"Using {sample_size} sample for QE calculation")
+                qe = self.calculate_quantization_error(data, coordinates, sample_size=sample_size)
+            else:
+                # Small datasets: use all data
+                logger.debug("Using full dataset for QE calculation")
+                qe = self.calculate_quantization_error(data, coordinates)
+            logger.info(f"QE calculated for epoch {epoch+1}: {qe:.6f}")
+            
             self.training_history['quantization_errors'].append(qe)
             
             # Log progress every 10 epochs or on significant events
@@ -399,8 +442,19 @@ class GeoSOMVLRSOM:
             self.training_history['radii'].append(self.current_radius)
             
             # Calculate geographic coherence
-            if coordinates is not None and epoch % 10 == 0:
-                geo_coherence = self._calculate_geographic_coherence(data, coordinates)
+            if coordinates is not None and epoch % 10 == 0 and epoch > 0:
+                logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
+                # Sample for large datasets to avoid O(n²) computation
+                if len(data) > 10000:
+                    sample_size = 5000
+                    indices = np.random.choice(len(data), sample_size, replace=False)
+                    geo_coherence = self._calculate_geographic_coherence(
+                        data[indices], coordinates[indices]
+                    )
+                    logger.info(f"Geographic coherence (sampled): {geo_coherence:.4f}")
+                else:
+                    geo_coherence = self._calculate_geographic_coherence(data, coordinates)
+                    logger.info(f"Geographic coherence: {geo_coherence:.4f}")
                 self.training_history['geographic_coherence'].append(geo_coherence)
                 
                 # Check convergence
@@ -411,6 +465,7 @@ class GeoSOMVLRSOM:
             
             # Progress callback with detailed info
             if progress_callback:
+                logger.debug(f"Calling progress callback for epoch {epoch+1}")
                 progress_info = {
                     'epoch': epoch + 1,
                     'max_epochs': self.config.max_epochs,
@@ -422,9 +477,16 @@ class GeoSOMVLRSOM:
                 # Support both simple and detailed callbacks
                 try:
                     progress_callback(progress_info)
+                    logger.debug(f"Progress callback completed for epoch {epoch+1}")
                 except TypeError:
                     # Fallback to simple progress
+                    logger.debug(f"Using fallback progress callback for epoch {epoch+1}")
                     progress_callback((epoch + 1) / self.config.max_epochs)
+                except Exception as e:
+                    logger.error(f"Error in progress callback: {e}")
+                    raise
+            
+            logger.info(f"Completed epoch {epoch+1}/{self.config.max_epochs}")
         
         # Create result
         return SOMTrainingResult(
@@ -493,7 +555,221 @@ class GeoSOMVLRSOM:
             raise NotImplementedError(f"Decay {self.config.radius_decay} not implemented")
     
     def _batch_update(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
-        """Perform batch update of weights."""
+        """Perform batch update of weights using vectorized operations."""
+        # Use vectorized implementation for large datasets
+        if len(data) > 1000:
+            self._batch_update_vectorized(data, coordinates)
+        else:
+            self._batch_update_sequential(data, coordinates)
+    
+    def _batch_update_vectorized(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
+        """Vectorized batch update with chunking for memory efficiency.
+        
+        This implementation includes geographic distance calculations as required
+        by the GeoSOM specification (30% spatial, 70% features).
+        """
+        n_samples, n_features = data.shape
+        logger.info(f"Starting chunked vectorized batch update for {n_samples} samples")
+        
+        # Initialize accumulators for batch updates
+        numerator = np.zeros_like(self.weights)
+        denominator = np.zeros(self.n_neurons)
+        
+        # Process in chunks to manage memory
+        # Use chunk size from config if available
+        chunk_size = getattr(self.config, 'chunk_size', None)
+        if chunk_size is None:
+            # Try to get from training config
+            chunk_size = 50000  # Increased default from 10k to 50k for better performance
+        chunk_size = min(chunk_size, n_samples)  # Don't exceed data size
+        n_chunks = (n_samples + chunk_size - 1) // chunk_size
+        
+        for chunk_idx in range(n_chunks):
+            start_idx = chunk_idx * chunk_size
+            end_idx = min((chunk_idx + 1) * chunk_size, n_samples)
+            
+            # Skip empty chunks
+            if start_idx >= n_samples:
+                logger.debug(f"Skipping chunk {chunk_idx+1}/{n_chunks} - beyond data size")
+                continue
+                
+            chunk_data = data[start_idx:end_idx]
+            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
+            
+            # Check if chunk has any valid data
+            valid_features_per_sample = (~np.isnan(chunk_data)).sum(axis=1)
+            if (valid_features_per_sample >= self.config.min_valid_features).sum() == 0:
+                logger.debug(f"Skipping chunk {chunk_idx+1}/{n_chunks} - no samples with enough valid features")
+                continue
+            
+            # Calculate distances for this chunk
+            if coordinates is not None and hasattr(self, 'neuron_coords'):
+                # Combined distance calculation (feature + geographic)
+                chunk_distances = self._vectorized_combined_distance(
+                    chunk_data, self.weights, chunk_coords, self.neuron_coords
+                )
+            else:
+                # Feature distance only
+                chunk_distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
+            
+            # Find BMUs for chunk
+            chunk_bmu_indices = np.argmin(chunk_distances, axis=1)
+            min_distances = np.take_along_axis(
+                chunk_distances, chunk_bmu_indices[:, np.newaxis], axis=1
+            ).squeeze()
+            
+            # Mark invalid BMUs (samples with no valid distances to any neuron)
+            invalid_mask = np.isinf(min_distances)
+            chunk_bmu_indices[invalid_mask] = -1
+            
+            # Skip this chunk if all samples are invalid
+            if invalid_mask.all():
+                logger.debug(f"Skipping chunk {chunk_idx+1}/{n_chunks} - all samples have invalid distances")
+                continue
+            
+            # Calculate neighborhood influences for chunk
+            chunk_influences = self._vectorized_neighborhood(chunk_bmu_indices)
+            
+            # Accumulate updates from this chunk
+            chunk_data_clean = np.nan_to_num(chunk_data, nan=0.0)
+            chunk_valid_mask = ~np.isnan(chunk_data)
+            
+            # Accumulate numerator and denominator
+            numerator += np.einsum('ij,ik,ik->jk', chunk_influences, chunk_data_clean, chunk_valid_mask)
+            denominator += np.einsum('ij,ik->j', chunk_influences, chunk_valid_mask)
+            
+            # Log progress for large datasets
+            if n_chunks > 10 and (chunk_idx + 1) % max(1, n_chunks // 20) == 0:
+                progress = (chunk_idx + 1) / n_chunks
+                logger.info(f"Batch update progress: {progress:.0%} ({chunk_idx + 1}/{n_chunks} chunks)")
+            
+            # Extra logging for debugging last chunks
+            if chunk_idx >= n_chunks - 10:
+                logger.info(f"Processing chunk {chunk_idx + 1}/{n_chunks}: {end_idx - start_idx} samples, "
+                          f"valid samples: {(~invalid_mask).sum()}")
+        
+        # Apply accumulated updates
+        update_mask = denominator > n_features
+        
+        if np.any(update_mask):
+            targets = numerator[update_mask] / denominator[update_mask, np.newaxis]
+            momentum = np.minimum(denominator[update_mask] / (n_samples * n_features), 1.0)
+            effective_lr = momentum * self.current_lr * 0.5
+            
+            # Vectorized weight update
+            for j, neuron_idx in enumerate(np.where(update_mask)[0]):
+                valid = ~(np.isnan(targets[j]) | np.isnan(self.weights[neuron_idx]))
+                self.weights[neuron_idx, valid] = (
+                    (1 - effective_lr[j]) * self.weights[neuron_idx, valid] +
+                    effective_lr[j] * targets[j, valid]
+                )
+    
+    def _vectorized_partial_bray_curtis_chunk(self, data_chunk: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        """Vectorized Bray-Curtis distance calculation for a chunk of data."""
+        # Expand dimensions for broadcasting
+        data_exp = data_chunk[:, np.newaxis, :]
+        weights_exp = weights[np.newaxis, :, :]
+        
+        # Find valid pairs
+        valid_mask = ~(np.isnan(data_exp) | np.isnan(weights_exp))
+        n_valid = valid_mask.sum(axis=2)
+        
+        # Clean data for calculation
+        data_clean = np.nan_to_num(data_exp, nan=0.0)
+        weights_clean = np.nan_to_num(weights_exp, nan=0.0)
+        
+        # Bray-Curtis calculation
+        diff = np.abs(data_clean - weights_clean)
+        sum_vals = data_clean + weights_clean
+        
+        numerator = (diff * valid_mask).sum(axis=2)
+        denominator = (sum_vals * valid_mask).sum(axis=2)
+        
+        # Handle division
+        with np.errstate(divide='ignore', invalid='ignore'):
+            distances = numerator / denominator
+        
+        # Set invalid distances
+        invalid = (n_valid < self.config.min_valid_features) | (denominator == 0)
+        distances[invalid] = np.inf
+        
+        return distances
+    
+    def _vectorized_combined_distance(self, data_chunk: np.ndarray, weights: np.ndarray,
+                                    coords_chunk: np.ndarray, neuron_coords: np.ndarray) -> np.ndarray:
+        """Calculate combined feature and geographic distances for a chunk.
+        
+        Implements the GeoSOM specification: 30% spatial + 70% feature distance.
+        """
+        # Feature distances
+        feature_distances = self._vectorized_partial_bray_curtis_chunk(data_chunk, weights)
+        
+        # Geographic distances (vectorized haversine)
+        geo_distances = self._vectorized_haversine_distances(coords_chunk, neuron_coords)
+        
+        # Normalize geographic distances (rough earth circumference / 2)
+        geo_distances_norm = geo_distances / 20000.0
+        
+        # Combined distance with spatial weighting
+        # Handle invalid feature distances
+        valid_feature = ~np.isinf(feature_distances)
+        combined = np.full_like(feature_distances, np.inf)
+        combined[valid_feature] = (
+            (1 - self.config.spatial_weight) * feature_distances[valid_feature] +
+            self.config.spatial_weight * geo_distances_norm[valid_feature]
+        )
+        
+        return combined
+    
+    def _vectorized_haversine_distances(self, coords1: np.ndarray, coords2: np.ndarray) -> np.ndarray:
+        """Vectorized haversine distance calculation between coordinate sets.
+        
+        Args:
+            coords1: (n_samples, 2) array of [longitude, latitude] in degrees
+            coords2: (n_neurons, 2) array of [longitude, latitude] in degrees
+            
+        Returns:
+            (n_samples, n_neurons) array of distances in kilometers
+        """
+        # Convert to radians
+        coords1_rad = np.radians(coords1)
+        coords2_rad = np.radians(coords2)
+        
+        # Extract lat/lon
+        lat1 = coords1_rad[:, 1:2]  # Keep as (n, 1) for broadcasting
+        lon1 = coords1_rad[:, 0:1]
+        lat2 = coords2_rad[:, 1].reshape(1, -1)  # Shape (1, m)
+        lon2 = coords2_rad[:, 0].reshape(1, -1)
+        
+        # Haversine formula
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        
+        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+        c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))  # clip for numerical stability
+        
+        # Earth radius in km
+        return 6371 * c
+    
+    def _vectorized_neighborhood(self, bmu_indices: np.ndarray) -> np.ndarray:
+        """Calculate neighborhood influences for all BMUs at once."""
+        n_samples = len(bmu_indices)
+        influences = np.zeros((n_samples, self.n_neurons))
+        
+        valid_mask = bmu_indices >= 0
+        valid_bmus = bmu_indices[valid_mask]
+        
+        if len(valid_bmus) > 0:
+            bmu_positions = self._grid_positions[valid_bmus]
+            pos_diff = bmu_positions[:, np.newaxis, :] - self._grid_positions[np.newaxis, :, :]
+            distances_sq = np.sum(pos_diff ** 2, axis=2)
+            neighborhood = np.exp(-distances_sq / (2 * self.current_radius ** 2))
+            influences[valid_mask] = neighborhood
+        
+        return influences
+    
+    def _batch_update_sequential(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
+        """Original sequential batch update for small datasets."""
         # Initialize accumulators
         numerator = np.zeros_like(self.weights)
         denominator = np.zeros(self.n_neurons)
@@ -589,29 +865,61 @@ class GeoSOMVLRSOM:
             )
     
     def calculate_quantization_error(self, data: np.ndarray, 
-                                   coordinates: Optional[np.ndarray] = None) -> float:
-        """Calculate average quantization error."""
+                                   coordinates: Optional[np.ndarray] = None,
+                                   sample_size: Optional[int] = None) -> float:
+        """Calculate average quantization error with optional sampling.
+        
+        Args:
+            data: Input data
+            coordinates: Geographic coordinates (optional)
+            sample_size: If provided, use random sampling for faster calculation
+        """
+        n_samples = len(data)
+        
+        # Use sampling for large datasets if requested
+        if sample_size is not None and n_samples > sample_size:
+            indices = np.random.choice(n_samples, sample_size, replace=False)
+            data = data[indices]
+            coordinates = coordinates[indices] if coordinates is not None else None
+            n_samples = sample_size
+            logger.debug(f"Using {sample_size} samples for QE calculation")
+        
+        # Pre-filter valid samples to avoid unnecessary computation
+        valid_features = (~np.isnan(data)).sum(axis=1)
+        valid_mask = valid_features >= self.config.min_valid_features
+        
+        if not valid_mask.any():
+            return np.inf
+        
+        data_valid = data[valid_mask]
+        coords_valid = coordinates[valid_mask] if coordinates is not None else None
+        
+        # Process in chunks for memory efficiency
+        chunk_size = 1000
         total_error = 0.0
         n_valid = 0
         
-        for idx, sample in enumerate(data):
-            if coordinates is not None:
-                bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-                if bmu_idx != INVALID_INDEX:
-                    error = self.combined_distance(
-                        sample, self.weights[bmu_idx],
-                        coordinates[idx], self.neuron_coords[bmu_idx]
-                    )
-                    if not np.isnan(error):  # Check for INVALID_DISTANCE
-                        total_error += error
-                        n_valid += 1
+        for start_idx in range(0, len(data_valid), chunk_size):
+            end_idx = min(start_idx + chunk_size, len(data_valid))
+            chunk_data = data_valid[start_idx:end_idx]
+            chunk_coords = coords_valid[start_idx:end_idx] if coords_valid is not None else None
+            
+            # Vectorized distance calculation
+            if coordinates is not None and hasattr(self, 'neuron_coords'):
+                distances = self._vectorized_combined_distance(
+                    chunk_data, self.weights, chunk_coords, self.neuron_coords
+                )
             else:
-                bmu_idx = self._find_bmu(sample)
-                if bmu_idx != INVALID_INDEX:
-                    error = self.partial_bray_curtis(sample, self.weights[bmu_idx])
-                    if not np.isnan(error):  # Check for INVALID_DISTANCE
-                        total_error += error
-                        n_valid += 1
+                distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
+            
+            # Find BMUs and calculate errors
+            bmu_indices = np.argmin(distances, axis=1)
+            min_errors = np.take_along_axis(distances, bmu_indices[:, np.newaxis], axis=1).squeeze()
+            
+            # Accumulate valid errors
+            valid_errors = ~np.isinf(min_errors)
+            total_error += min_errors[valid_errors].sum()
+            n_valid += valid_errors.sum()
         
         return total_error / n_valid if n_valid > 0 else np.inf
     
@@ -622,13 +930,23 @@ class GeoSOMVLRSOM:
         Uses vectorized operations for O(n²) distance calculations to improve
         performance on large datasets.
         """
-        # Get cluster assignments
-        clusters = []
-        for idx, sample in enumerate(data):
-            bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-            clusters.append(bmu_idx)  # Will be INVALID_INDEX if not found
+        # Get cluster assignments using vectorized approach
+        logger.debug(f"Finding BMUs for {len(data)} samples for geographic coherence")
         
-        clusters = np.array(clusters)
+        # Use vectorized distance calculation
+        if hasattr(self, 'neuron_coords'):
+            distances = self._vectorized_combined_distance(
+                data, self.weights, coordinates, self.neuron_coords
+            )
+        else:
+            distances = self._vectorized_partial_bray_curtis_chunk(data, self.weights)
+        
+        # Find BMUs
+        clusters = np.argmin(distances, axis=1)
+        
+        # Mark invalid distances as INVALID_INDEX
+        invalid_mask = np.all(np.isinf(distances), axis=1)
+        clusters[invalid_mask] = self.INVALID_INDEX
         valid = clusters >= 0
         
         if valid.sum() < 10:  # Need minimum samples

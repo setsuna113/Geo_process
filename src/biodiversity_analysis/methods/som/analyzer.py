@@ -54,72 +54,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         self._geosom_config = None
     
     def _load_default_config(self) -> Dict[str, Any]:
-        """Load default configuration from specification."""
-        return {
-            'distance_config': {
-                'input_space': 'bray_curtis',
-                'missing_data_handling': 'pairwise',
-                'min_valid_features': 2,
-                'map_space': 'euclidean'
-            },
-            'preprocessing_config': {
-                'transformation': 'log1p',
-                'standardization': 'z_score_by_type',
-                'missing_data': 'keep_nan',
-                'spatial_sampling': {
-                    'method': 'block_sampling',
-                    'block_size': '750km',
-                    'for_data_at': '100km_resolution'
-                }
-            },
-            'architecture_config': {
-                'type': 'GeoSOM_VLRSOM',
-                'spatial_weight': 0.3,
-                'geographic_distance': 'haversine',
-                'combine_distances': 'weighted_sum',
-                'initial_learning_rate': 0.1,  # Lowered for stability
-                'min_learning_rate': 0.01,
-                'max_learning_rate': 0.3,      # Lowered for stability
-                'lr_increase_factor': 1.05,    # Gentler increase
-                'lr_decrease_factor': 0.95,    # Gentler decrease
-                'high_qe_lr_range': [0.5, 0.8],
-                'low_qe_lr_range': [0.01, 0.1],
-                'neighborhood_function': 'gaussian',
-                'initial_radius': None,
-                'final_radius': 1.0,
-                'radius_decay': 'linear',
-                'topology': 'rectangular',
-                'grid_size': 'determined_by_data',
-                'convergence': {
-                    'geographic_coherence_threshold': 0.7,
-                    'lr_stability_threshold': 0.02,
-                    'qe_improvement_threshold': 0.001,
-                    'patience': 50,
-                    'max_epochs': 1000
-                }
-            },
-            'training_config': {
-                'mode': 'batch',
-                'parallel_processing': True,
-                'n_cores': 'auto',
-                'memory_management': {
-                    'chunk_if_exceeds': '8GB',
-                    'chunk_size': 10000
-                }
-            },
-            'validation_config': {
-                'method': 'spatial_block_cv',
-                'n_folds': 5,
-                'block_size': '750km',
-                'stratification': 'ensure_all_biodiversity_types',
-                'metrics': [
-                    'quantization_error',
-                    'topographic_error',
-                    'geographic_coherence',
-                    'beta_diversity_preservation'
-                ]
-            }
-        }
+        """Load configuration from SOM config module."""
+        from src.config.som import get_som_config
+        som_config = get_som_config()
+        
+        # Return the loaded configuration as a dictionary
+        return som_config._config
     
     def analyze(self, data_path: str, **kwargs) -> AnalysisResult:
         """Main analysis method for GeoSOM.
@@ -256,6 +196,17 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         arch_config = default_config['architecture_config']
         conv_config = arch_config['convergence']
         
+        # Use iterations from kwargs if provided, otherwise fall back to default
+        max_epochs = kwargs.get('iterations', conv_config['max_epochs'])
+        
+        # Import SOM config to get performance settings
+        from src.config.som import get_som_config
+        som_config = get_som_config()
+        
+        # Get performance settings
+        chunk_size = som_config.get_chunk_size()
+        qe_sample_size = som_config.get_qe_sample_size()
+        
         return GeoSOMConfig(
             grid_size=grid_size,
             topology=arch_config['topology'],
@@ -278,9 +229,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             lr_stability_threshold=conv_config['lr_stability_threshold'],
             qe_improvement_threshold=conv_config['qe_improvement_threshold'],
             patience=conv_config['patience'],
-            max_epochs=conv_config['max_epochs'],
+            max_epochs=max_epochs,
             min_valid_features=default_config['distance_config']['min_valid_features'],
-            random_seed=kwargs.get('random_seed', 42)
+            random_seed=kwargs.get('random_seed', 42),
+            # Add performance settings
+            chunk_size=kwargs.get('chunk_size', chunk_size),
+            qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size)
         )
     
     def _spatial_cross_validation(self, features: np.ndarray, 
@@ -289,8 +243,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                                 **kwargs) -> Dict[str, Any]:
         """Perform spatial block cross-validation."""
         # Create spatial blocks
-        n_folds = kwargs.get('cv_folds', 5)  # Get from config or default to 5
-        block_gen = SpatialBlockGenerator(block_size_km=750.0, random_state=config.random_seed)
+        validation_config = self.config.get('validation_config', {})
+        n_folds = kwargs.get('cv_folds', validation_config.get('n_folds', 5))
+        block_size = validation_config.get('block_size', '750km')
+        block_size_km = float(block_size.replace('km', ''))
+        block_gen = SpatialBlockGenerator(block_size_km=block_size_km, random_state=config.random_seed)
         cv_splits = block_gen.create_cv_splits(coordinates, n_folds=n_folds)
         
         cv_results = {
