@@ -136,62 +136,6 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
             logger.error(f"Failed to load data: {e}")
             raise
     
-    def preprocess_data(self, data: BiodiversityData) -> BiodiversityData:
-        """
-        Apply standard preprocessing based on config.
-        
-        Args:
-            data: Input biodiversity data
-            
-        Returns:
-            Preprocessed data
-        """
-        from .shared.data import FeaturePreprocessor, ZeroInflationHandler
-        
-        self.update_progress("Preprocessing data", 0.3)
-        
-        # Handle missing values
-        if self.data_config.get('missing_value_strategy'):
-            preprocessor = FeaturePreprocessor()
-            data.features, data.feature_names = preprocessor.handle_missing_values(
-                data.features,
-                data.feature_names,
-                strategy=self.data_config['missing_value_strategy']
-            )
-        
-        # Handle zero inflation
-        if self.data_config.get('handle_zero_inflation', False) and data.zero_inflated:
-            handler = ZeroInflationHandler()
-            data.features, transform_info = handler.transform_zero_inflated(
-                data.features,
-                method='log1p'  # Could be configurable
-            )
-            # Initialize metadata if None
-            if data.metadata is None:
-                data.metadata = {}
-            data.metadata['zero_inflation_transform'] = transform_info
-        
-        # Remove constant features
-        if self.data_config.get('remove_constant_features', True):
-            preprocessor = FeaturePreprocessor()
-            data.features, data.feature_names = preprocessor.remove_constant_features(
-                data.features,
-                data.feature_names
-            )
-        
-        # Normalize if specified
-        if self.data_config.get('normalization_method'):
-            data.features, scaler_info = preprocessor.normalize_features(
-                data.features,
-                method=self.data_config['normalization_method']
-            )
-            # Initialize metadata if None
-            if data.metadata is None:
-                data.metadata = {}
-            data.metadata['normalization'] = scaler_info
-        
-        self.update_progress("Preprocessing complete", 0.4)
-        return data
     
     def update_progress(self, message: str, progress: float) -> None:
         """

@@ -10,6 +10,7 @@ from datetime import datetime
 
 from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
+from src.biodiversity_analysis.preprocessing.pipeline import BiodiversityPreprocessingPipeline
 from .core import BiodiversityKMeans
 from .kmeans_config import KMeansConfig
 from .visualization import KMeansVisualizer
@@ -78,11 +79,45 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
         logger.info(f"Loaded data: {biodiv_data.n_samples} samples, "
                    f"{biodiv_data.n_features} features")
         
-        # Preprocess features
-        logger.info("Preprocessing features...")
-        # Apply standard preprocessing from base class
-        biodiv_data = self.preprocess_data(biodiv_data)
-        features_processed = biodiv_data.features
+        # Preprocess features using new pipeline
+        logger.info("Preprocessing features with advanced pipeline...")
+        
+        # Initialize preprocessing pipeline with optimal settings
+        preprocessing_pipeline = BiodiversityPreprocessingPipeline(
+            # Use hurdle model for better zero-inflation handling
+            compositional_transform='hurdle',
+            structural_zero_threshold=0.95,
+            pseudo_count_method='adaptive',
+            
+            # Use predictive MEM for better spatial patterns
+            use_pmem=True,
+            pmem_dwf='exponential',
+            spatial_neighbors=8,
+            spatial_scales=[5, 10, 25, 50, 100],
+            n_moran_eigenvectors=20,
+            
+            # Disable diversity indices to avoid circular reasoning
+            calculate_diversity_indices=False,
+            calculate_interactions=False,
+            
+            # Robust standardization for outliers
+            standardize=True,
+            standardization_method='robust'
+        )
+        
+        # Transform the data
+        features_processed, feature_names, preprocessing_metadata = preprocessing_pipeline.fit_transform(
+            species_data=biodiv_data.features,
+            coordinates=biodiv_data.coordinates,
+            species_names=biodiv_data.feature_names
+        )
+        
+        # Update biodiversity data with preprocessed features
+        biodiv_data.features = features_processed
+        biodiv_data.feature_names = feature_names
+        
+        logger.info(f"Preprocessing complete: {features_processed.shape[1]} features "
+                   f"(original: {preprocessing_metadata.get('n_original_features', 'unknown')})")
         
         # Create k-means configuration
         config = self._create_kmeans_config(**kwargs)
