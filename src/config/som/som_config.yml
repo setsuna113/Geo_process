@@ -32,7 +32,7 @@ architecture_config:
   
   # Grid configuration
   topology: 'rectangular'
-  grid_size: 'determined_by_data'  # Will be overridden by experiment config
+  grid_size: [20, 20]  # Default grid size, can be overridden by experiment config
   
   # Learning rate - VLRSOM adaptive configuration
   initial_learning_rate: 0.5      # Higher for faster initial organization
@@ -67,6 +67,12 @@ training_config:
   memory_management:
     chunk_if_exceeds: '8GB'
     chunk_size: 50000  # Larger chunks for better gradients
+  
+  # Parallel processing configuration
+  parallel:
+    enabled: true  # Use parallel chunk processing
+    n_workers: 32  # Limit workers to avoid resource exhaustion (null=auto-detect)
+    min_samples_for_parallel: 100000  # Only parallelize for datasets larger than this
 
 # Validation configuration
 validation_config:

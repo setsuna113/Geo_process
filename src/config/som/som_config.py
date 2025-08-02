@@ -23,6 +23,10 @@ class SOMConfigValidation:
     max_learning_rate: float = 1.0
     min_epochs: int = 1
     max_epochs: int = 10000
+    min_workers: int = 1
+    max_workers: int = 256
+    min_samples_for_parallel: int = 1000
+    optimal_min_samples_for_parallel: int = 50000
 
 
 class SOMConfigError(Exception):
@@ -139,6 +143,9 @@ class SOMConfig:
     
     def _validate_config(self):
         """Validate configuration values against defined rules."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # Validate chunk size
         chunk_size = self.get_chunk_size()
         if not (self._validation.min_chunk_size <= chunk_size <= self._validation.max_chunk_size):
@@ -163,6 +170,44 @@ class SOMConfig:
                 f"initial_learning_rate must be between {self._validation.min_learning_rate} "
                 f"and {self._validation.max_learning_rate}, got {lr}"
             )
+        
+        # Validate parallel processing configuration
+        parallel_config = self.get_parallel_config()
+        if parallel_config.get('enabled', True):
+            n_workers = parallel_config.get('n_workers')
+            if n_workers is not None:
+                if not isinstance(n_workers, int) or not (self._validation.min_workers <= n_workers <= self._validation.max_workers):
+                    raise SOMConfigError(
+                        f"n_workers must be between {self._validation.min_workers} "
+                        f"and {self._validation.max_workers}, got {n_workers}"
+                    )
+            
+            min_samples = parallel_config.get('min_samples_for_parallel', 100000)
+            if not isinstance(min_samples, int) or min_samples < self._validation.min_samples_for_parallel:
+                raise SOMConfigError(
+                    f"min_samples_for_parallel must be at least {self._validation.min_samples_for_parallel}, "
+                    f"got {min_samples}"
+                )
+            
+            # Warn if suboptimal configuration
+            if min_samples < self._validation.optimal_min_samples_for_parallel:
+                logger.warning(
+                    f"min_samples_for_parallel is {min_samples}, which is below the recommended "
+                    f"threshold of {self._validation.optimal_min_samples_for_parallel}. "
+                    "This may lead to parallel processing overhead exceeding benefits."
+                )
+            
+            # Check performance config if exists
+            perf_config = self._config.get('performance_config', {})
+            batch_config = perf_config.get('parallel_batch_processing', {})
+            
+            if batch_config:
+                backend = batch_config.get('backend', 'loky')
+                if backend not in ['loky', 'threading', 'multiprocessing']:
+                    logger.warning(
+                        f"Unknown parallel backend '{backend}'. "
+                        "Valid options are: 'loky', 'threading', 'multiprocessing'"
+                    )
     
     def reload(self):
         """Reload configuration from file."""
@@ -227,6 +272,102 @@ class SOMConfig:
         sampling_config = self.get_sampling_config()
         qe_config = sampling_config.get('qe_calculation', {})
         return qe_config.get('sample_size', 100000)
+    
+    def get_parallel_config(self) -> Dict[str, Any]:
+        """Get parallel processing configuration."""
+        train_config = self.get_training_config()
+        return train_config.get('parallel', {
+            'enabled': True,
+            'n_workers': None,
+            'min_samples_for_parallel': 100000
+        })
+    
+    def is_parallel_enabled(self) -> bool:
+        """Check if parallel processing is enabled."""
+        parallel_config = self.get_parallel_config()
+        return parallel_config.get('enabled', True)
+    
+    def get_n_workers(self) -> Optional[int]:
+        """Get number of parallel workers."""
+        parallel_config = self.get_parallel_config()
+        return parallel_config.get('n_workers', None)
+    
+    def check_optimization_recommendations(self) -> Dict[str, Any]:
+        """
+        Check configuration for optimization opportunities.
+        
+        Returns:
+            Dict containing recommendations and warnings
+        """
+        import multiprocessing
+        recommendations = {
+            'warnings': [],
+            'suggestions': [],
+            'performance_impact': []
+        }
+        
+        # Check parallel processing settings
+        parallel_config = self.get_parallel_config()
+        if parallel_config.get('enabled', True):
+            n_workers = parallel_config.get('n_workers')
+            available_cpus = multiprocessing.cpu_count()
+            
+            if n_workers is None:
+                recommendations['suggestions'].append(
+                    f"Consider setting explicit n_workers. System has {available_cpus} CPUs available."
+                )
+            elif n_workers > available_cpus:
+                recommendations['warnings'].append(
+                    f"n_workers ({n_workers}) exceeds available CPUs ({available_cpus}). "
+                    "This may cause resource contention."
+                )
+            elif n_workers < available_cpus // 4 and available_cpus > 8:
+                recommendations['suggestions'].append(
+                    f"n_workers ({n_workers}) seems low for a system with {available_cpus} CPUs. "
+                    f"Consider increasing to {available_cpus // 2} for better performance."
+                )
+            
+            # Check chunk size vs parallel threshold
+            chunk_size = self.get_chunk_size()
+            min_samples = parallel_config.get('min_samples_for_parallel', 100000)
+            
+            if chunk_size > min_samples // 2:
+                recommendations['warnings'].append(
+                    f"chunk_size ({chunk_size}) is large relative to min_samples_for_parallel ({min_samples}). "
+                    "This may result in poor parallel efficiency."
+                )
+                recommendations['performance_impact'].append(
+                    "Consider reducing chunk_size or increasing min_samples_for_parallel"
+                )
+        
+        # Check memory settings
+        train_config = self.get_training_config()
+        memory_config = train_config.get('memory_management', {})
+        chunk_if_exceeds = memory_config.get('chunk_if_exceeds', '8GB')
+        
+        # Parse memory string (e.g., '8GB' -> 8 * 1024 * 1024 * 1024)
+        import re
+        match = re.match(r'(\d+)(GB|MB)', chunk_if_exceeds)
+        if match:
+            size, unit = match.groups()
+            size_bytes = int(size) * (1024**3 if unit == 'GB' else 1024**2)
+            
+            # Check if chunk size aligns with memory limit
+            estimated_chunk_memory = chunk_size * 100 * 8  # Rough estimate
+            if estimated_chunk_memory > size_bytes:
+                recommendations['warnings'].append(
+                    f"Estimated chunk memory usage may exceed chunk_if_exceeds limit ({chunk_if_exceeds})"
+                )
+        
+        # Check QE sampling
+        qe_sample_size = self.get_qe_sample_size()
+        if qe_sample_size < 10000:
+            recommendations['warnings'].append(
+                f"QE sample size ({qe_sample_size}) is very low. "
+                "This may lead to inaccurate convergence detection."
+            )
+        
+        return recommendations
     
     @property
     def config_path(self) -> Optional[Path]:

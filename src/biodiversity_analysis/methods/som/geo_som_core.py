@@ -68,6 +68,8 @@ class GeoSOMConfig:
     # Performance settings
     chunk_size: int = 50000  # Chunk size for batch processing
     qe_sample_size: int = 100000  # Sample size for QE calculation
+    use_parallel: bool = True  # Enable parallel chunk processing
+    n_workers: Optional[int] = None  # Number of parallel workers (None=auto)
 
 
 class GeoSOMVLRSOM:
@@ -567,8 +569,25 @@ class GeoSOMVLRSOM:
         
         This implementation includes geographic distance calculations as required
         by the GeoSOM specification (30% spatial, 70% features).
+        
+        If use_parallel is enabled in config, chunks will be processed in parallel.
         """
         n_samples, n_features = data.shape
+        
+        # Check if parallel processing is enabled and beneficial
+        min_samples_for_parallel = getattr(self.config, 'min_samples_for_parallel', 100000)
+        if self.config.use_parallel and n_samples > min_samples_for_parallel:
+            logger.info(f"Starting PARALLEL batch update for {n_samples} samples")
+            try:
+                self._batch_update_parallel(data, coordinates)
+                return
+            except Exception as e:
+                fallback = getattr(self.config, 'fallback_to_sequential', True)
+                if fallback:
+                    logger.warning(f"Parallel processing failed: {e}. Falling back to sequential.")
+                else:
+                    raise
+        
         logger.info(f"Starting chunked vectorized batch update for {n_samples} samples")
         
         # Initialize accumulators for batch updates
@@ -767,6 +786,53 @@ class GeoSOMVLRSOM:
             influences[valid_mask] = neighborhood
         
         return influences
+    
+    def _batch_update_parallel(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
+        """Parallel batch update using multiple CPU cores.
+        
+        This method distributes chunks across multiple workers for faster processing
+        on systems with many CPU cores.
+        """
+        from .parallel_batch_processor import ParallelBatchProcessor
+        
+        n_samples, n_features = data.shape
+        
+        # Get chunk size
+        chunk_size = getattr(self.config, 'chunk_size', 50000)
+        chunk_size = min(chunk_size, n_samples)
+        
+        # Create parallel processor (reuse if exists to avoid worker churn)
+        if not hasattr(self, '_processor'):
+            self._processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
+        processor = self._processor
+        
+        # Process chunks in parallel
+        numerator, denominator = processor.process_chunks_parallel(
+            data=data,
+            coordinates=coordinates,
+            weights=self.weights,
+            neuron_coords=getattr(self, 'neuron_coords', None),
+            config=self.config,
+            grid_positions=self._grid_positions,
+            current_radius=self.current_radius,
+            chunk_size=chunk_size
+        )
+        
+        # Apply accumulated updates (same as vectorized version)
+        update_mask = denominator > n_features
+        
+        if np.any(update_mask):
+            targets = numerator[update_mask] / denominator[update_mask, np.newaxis]
+            momentum = np.minimum(denominator[update_mask] / (n_samples * n_features), 1.0)
+            effective_lr = momentum * self.current_lr * 0.5
+            
+            # Vectorized weight update
+            for j, neuron_idx in enumerate(np.where(update_mask)[0]):
+                valid = ~(np.isnan(targets[j]) | np.isnan(self.weights[neuron_idx]))
+                self.weights[neuron_idx, valid] = (
+                    (1 - effective_lr[j]) * self.weights[neuron_idx, valid] +
+                    effective_lr[j] * targets[j, valid]
+                )
     
     def _batch_update_sequential(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
         """Original sequential batch update for small datasets."""
@@ -1028,8 +1094,18 @@ class GeoSOMVLRSOM:
         """Get weight matrix in grid shape."""
         return self.weights.reshape(self.grid_rows, self.grid_cols, self.input_dim)
     
+    def cleanup(self):
+        """Clean up resources used during training."""
+        # Clean up parallel processor if it exists
+        if hasattr(self, '_processor'):
+            try:
+                self._processor.cleanup()
+            except:
+                pass
+            delattr(self, '_processor')
+    
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
-        """Predict BMU indices for data."""
+        """Predict BMU indices for data using vectorized operations."""
         # Validate coordinates shape if provided
         if coordinates is not None:
             if coordinates.shape[0] != data.shape[0]:
@@ -1037,17 +1113,37 @@ class GeoSOMVLRSOM:
             if coordinates.shape[1] != 2:
                 raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
         
-        bmu_indices = []
+        n_samples = len(data)
+        bmu_indices = np.full(n_samples, INVALID_INDEX, dtype=np.int32)
         
-        for idx, sample in enumerate(data):
-            if coordinates is not None:
-                bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-            else:
-                bmu_idx = self._find_bmu(sample)
+        # Process in chunks for memory efficiency
+        chunk_size = min(5000, n_samples)  # Smaller chunks for prediction
+        
+        for start_idx in range(0, n_samples, chunk_size):
+            end_idx = min(start_idx + chunk_size, n_samples)
+            chunk_data = data[start_idx:end_idx]
+            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
-            bmu_indices.append(bmu_idx)  # Will be INVALID_INDEX if not found
+            # Vectorized distance calculation
+            if coordinates is not None and hasattr(self, 'neuron_coords'):
+                distances = self._vectorized_combined_distance(
+                    chunk_data, self.weights, chunk_coords, self.neuron_coords
+                )
+            else:
+                distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
+            
+            # Find BMUs for valid samples
+            valid_distances = ~np.all(np.isinf(distances), axis=1)
+            if valid_distances.any():
+                chunk_bmus = np.argmin(distances[valid_distances], axis=1)
+                valid_indices = np.where(valid_distances)[0]
+                bmu_indices[start_idx + valid_indices] = chunk_bmus
+            
+            # Log progress for large datasets
+            if n_samples > 50000 and (end_idx % 50000 == 0 or end_idx == n_samples):
+                logger.debug(f"Predicted {end_idx}/{n_samples} samples")
         
-        return np.array(bmu_indices)
+        return bmu_indices
     
     def transform(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
         """Transform data to grid coordinates."""
