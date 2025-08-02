@@ -65,11 +65,39 @@ class ParquetLoader:
             raise ValueError(f"Expected 2 coordinate columns, got {len(coordinate_cols)}: {coordinate_cols}")
         
         # Extract coordinates and ensure they are in [latitude, longitude] order
-        if coordinate_cols[0] in ['longitude', 'lon', 'x', 'lng', 'long']:
-            # Swap to get [latitude, longitude] order
+        # Define known longitude and latitude column names
+        lon_names = ['longitude', 'lon', 'x', 'lng', 'long']
+        lat_names = ['latitude', 'lat', 'y']
+        
+        # Determine which column is latitude and which is longitude
+        col0_lower = coordinate_cols[0].lower()
+        col1_lower = coordinate_cols[1].lower()
+        
+        if col0_lower in lon_names and col1_lower in lat_names:
+            # First column is longitude, second is latitude - need to swap
             coordinates = df[[coordinate_cols[1], coordinate_cols[0]]].values
-        else:
+            logger.info(f"Reordered coordinates from [{coordinate_cols[0]}, {coordinate_cols[1]}] to [latitude, longitude]")
+        elif col0_lower in lat_names and col1_lower in lon_names:
+            # Already in correct order [latitude, longitude]
             coordinates = df[coordinate_cols].values
+            logger.info(f"Coordinates already in correct order: [{coordinate_cols[0]}, {coordinate_cols[1]}]")
+        else:
+            # Unknown column names - warn but proceed
+            logger.warning(f"Could not determine coordinate order from column names: {coordinate_cols}. "
+                         f"Assuming order is [latitude, longitude]")
+            coordinates = df[coordinate_cols].values
+        
+        # Validate coordinate ranges
+        lat_values = coordinates[:, 0]
+        lon_values = coordinates[:, 1]
+        
+        if np.any((lat_values < -90) | (lat_values > 90)):
+            logger.warning(f"Latitude values outside valid range [-90, 90]: "
+                         f"min={lat_values.min():.2f}, max={lat_values.max():.2f}")
+        
+        if np.any((lon_values < -180) | (lon_values > 180)):
+            logger.warning(f"Longitude values outside valid range [-180, 180]: "
+                         f"min={lon_values.min():.2f}, max={lon_values.max():.2f}")
         
         # Auto-detect feature columns if not specified
         if feature_cols is None:
