@@ -1,0 +1,120 @@
+# GeoSOM + VLRSOM Configuration File
+# Optimized for biodiversity data with 70% missing values
+# 
+# This configuration file allows easy tuning of all SOM parameters
+# without modifying the source code
+
+# Distance calculation configuration
+distance_config:
+  input_space: 'bray_curtis'
+  missing_data_handling: 'pairwise'
+  min_valid_features: 2
+  map_space: 'euclidean'
+
+# Data preprocessing
+preprocessing_config:
+  transformation: 'log1p'
+  standardization: 'z_score_by_type'
+  missing_data: 'keep_nan'
+  spatial_sampling:
+    method: 'block_sampling'
+    block_size: '750km'
+    for_data_at: '100km_resolution'
+
+# GeoSOM + VLRSOM architecture
+architecture_config:
+  type: 'GeoSOM_VLRSOM'
+  
+  # Spatial integration
+  spatial_weight: 0.3  # 30% spatial, 70% features
+  geographic_distance: 'haversine'
+  combine_distances: 'weighted_sum'
+  
+  # Grid configuration
+  topology: 'rectangular'
+  grid_size: 'determined_by_data'  # Will be overridden by experiment config
+  
+  # Learning rate - VLRSOM adaptive configuration
+  initial_learning_rate: 0.5      # Higher for faster initial organization
+  min_learning_rate: 0.001        # Lower floor for fine-tuning
+  max_learning_rate: 0.8          # Allow aggressive learning when needed
+  lr_increase_factor: 1.05        # Gentle increases when QE improves
+  lr_decrease_factor: 0.90        # More aggressive decreases when QE worsens
+  
+  # Adaptive learning rate regions
+  high_qe_lr_range: [0.3, 0.6]    # Moderate range for high error regions
+  low_qe_lr_range: [0.001, 0.05]  # Very low for stability in low error regions
+  
+  # Neighborhood function
+  neighborhood_function: 'gaussian'
+  initial_radius: null  # Will be set to grid_size/3
+  final_radius: 1.0
+  radius_decay: 'linear'  # 'linear' or 'exponential'
+  
+  # Convergence criteria
+  convergence:
+    geographic_coherence_threshold: 0.6   # Moran's I threshold (lowered from 0.7)
+    lr_stability_threshold: 0.05          # Allow more LR variation (was 0.02)
+    qe_improvement_threshold: 0.005       # 0.5% improvement (was 0.001)
+    patience: 20                          # Epochs without improvement (was 50)
+    max_epochs: 200                       # Maximum epochs (was 1000)
+
+# Training configuration
+training_config:
+  mode: 'batch'
+  parallel_processing: true
+  n_cores: 'auto'
+  memory_management:
+    chunk_if_exceeds: '8GB'
+    chunk_size: 50000  # Larger chunks for better gradients
+
+# Validation configuration
+validation_config:
+  method: 'spatial_block_cv'
+  n_folds: 3  # Reduced from 5 for faster results
+  block_size: '750km'
+  stratification: 'ensure_all_biodiversity_types'
+  metrics:
+    - 'quantization_error'
+    - 'topographic_error'
+    - 'geographic_coherence'
+    - 'beta_diversity_preservation'
+
+# Sampling configuration for large datasets
+sampling_config:
+  qe_calculation:
+    sample_size: 100000      # Larger samples for accurate QE
+    full_qe_frequency: 5     # Calculate full QE every N epochs
+  geographic_coherence:
+    sample_size: 5000        # For O(n²) Moran's I calculation
+    calculation_frequency: 10  # Every N epochs
+
+# Early stopping configuration
+early_stopping:
+  enabled: true
+  criteria:
+    - metric: 'qe_plateau'
+      threshold: 0.005        # Stop if QE changes < 0.5%
+      patience: 10            # For 10 consecutive epochs
+    - metric: 'geographic_coherence'
+      threshold: 0.6          # Stop if Moran's I > 0.6
+    - metric: 'learning_rate'
+      threshold: 0.005        # Stop if LR < 0.005
+    - metric: 'radius'
+      threshold: 1.5          # Stop if radius < 1.5
+
+# Output configuration
+output_config:
+  save_checkpoints: true
+  checkpoint_frequency: 10    # Save every N epochs
+  save_training_history: true
+  save_weights: true
+  save_cluster_assignments: true
+  save_visualizations: true
+
+# Logging configuration
+logging:
+  level: 'INFO'
+  log_batch_progress: true
+  log_frequency: 20  # Log every N chunks during batch update
+  log_convergence_details: true

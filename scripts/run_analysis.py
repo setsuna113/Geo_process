@@ -348,7 +348,7 @@ class StandaloneAnalysisRunner:
                 'random_seed': analysis_config.get('random_seed', method_config.get('random_seed', 42)),
                 'convergence_threshold': analysis_config.get('convergence_threshold', 1e-6),
                 'enable_dynamic_convergence': analysis_config.get('enable_dynamic_convergence', True),
-                'cv_folds': analysis_config.get('cv_folds', 5),  # Add cv_folds parameter
+                'cv_folds': analysis_config.get('cv_folds', method_config.get('cv_folds', 5)),  # Check both analysis_config and method_config
                 'observed_columns': analysis_config.get('observed_columns', [0, 1]),
                 'predicted_columns': analysis_config.get('predicted_columns', [2, 3]),
                 'save_results': analysis_config.get('save_results', True),

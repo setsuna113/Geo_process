@@ -440,22 +440,13 @@ LOGGING = {
 }
 
 # SOM-specific analysis configuration
+# DEPRECATED: SOM configuration has been moved to som_config.yml
+# This section is kept only for backward compatibility with memory settings
 SOM_ANALYSIS = {
-    'max_pixels_in_memory': 10000,  # Very small for quick testing
-    'chunk_overlap': 5,  # Minimal overlap
-    'subsample_ratio': 0.01,  # Heavy subsampling for speed
-    'min_samples': 100,  # Very few samples for quick testing
+    'max_pixels_in_memory': 10000,  # Memory management only
     'use_memory_mapping': True,  # Use memmap for large arrays
-    'batch_training': {
-        'enabled': False,  # Disable for quick testing
-        'batch_size': 1000,
-        'epochs_per_batch': 1
-    },
-    'memory_overhead_factor': 2.0,  # Reduced overhead
-    'default_grid_size': [3, 3],  # Very small SOM grid
-    'iterations': 10,  # Very few iterations for speed
-    'sigma': 1.0,
-    'learning_rate': 0.5
+    'memory_overhead_factor': 2.0,  # Memory overhead factor
+    # All other SOM parameters are now in som_config.yml
 }
 
 # Data preparation configuration

@@ -64,6 +64,10 @@ class GeoSOMConfig:
     # Data handling
     min_valid_features: int = 2  # For partial comparison
     random_seed: Optional[int] = None
+    
+    # Performance settings
+    chunk_size: int = 50000  # Chunk size for batch processing
+    qe_sample_size: int = 100000  # Sample size for QE calculation
 
 
 class GeoSOMVLRSOM:
@@ -435,8 +439,19 @@ class GeoSOMVLRSOM:
             self.training_history['radii'].append(self.current_radius)
             
             # Calculate geographic coherence
-            if coordinates is not None and epoch % 10 == 0:
-                geo_coherence = self._calculate_geographic_coherence(data, coordinates)
+            if coordinates is not None and epoch % 10 == 0 and epoch > 0:
+                logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
+                # Sample for large datasets to avoid O(n²) computation
+                if len(data) > 10000:
+                    sample_size = 5000
+                    indices = np.random.choice(len(data), sample_size, replace=False)
+                    geo_coherence = self._calculate_geographic_coherence(
+                        data[indices], coordinates[indices]
+                    )
+                    logger.info(f"Geographic coherence (sampled): {geo_coherence:.4f}")
+                else:
+                    geo_coherence = self._calculate_geographic_coherence(data, coordinates)
+                    logger.info(f"Geographic coherence: {geo_coherence:.4f}")
                 self.training_history['geographic_coherence'].append(geo_coherence)
                 
                 # Check convergence
@@ -447,6 +462,7 @@ class GeoSOMVLRSOM:
             
             # Progress callback with detailed info
             if progress_callback:
+                logger.debug(f"Calling progress callback for epoch {epoch+1}")
                 progress_info = {
                     'epoch': epoch + 1,
                     'max_epochs': self.config.max_epochs,
@@ -458,9 +474,14 @@ class GeoSOMVLRSOM:
                 # Support both simple and detailed callbacks
                 try:
                     progress_callback(progress_info)
+                    logger.debug(f"Progress callback completed for epoch {epoch+1}")
                 except TypeError:
                     # Fallback to simple progress
+                    logger.debug(f"Using fallback progress callback for epoch {epoch+1}")
                     progress_callback((epoch + 1) / self.config.max_epochs)
+                except Exception as e:
+                    logger.error(f"Error in progress callback: {e}")
+                    raise
             
             logger.info(f"Completed epoch {epoch+1}/{self.config.max_epochs}")
         
@@ -552,7 +573,12 @@ class GeoSOMVLRSOM:
         denominator = np.zeros(self.n_neurons)
         
         # Process in chunks to manage memory
-        chunk_size = min(10000, n_samples)  # Process 10k samples at a time
+        # Use chunk size from config if available
+        chunk_size = getattr(self.config, 'chunk_size', None)
+        if chunk_size is None:
+            # Try to get from training config
+            chunk_size = 50000  # Increased default from 10k to 50k for better performance
+        chunk_size = min(chunk_size, n_samples)  # Don't exceed data size
         n_chunks = (n_samples + chunk_size - 1) // chunk_size
         
         for chunk_idx in range(n_chunks):
@@ -901,13 +927,23 @@ class GeoSOMVLRSOM:
         Uses vectorized operations for O(n²) distance calculations to improve
         performance on large datasets.
         """
-        # Get cluster assignments
-        clusters = []
-        for idx, sample in enumerate(data):
-            bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-            clusters.append(bmu_idx)  # Will be INVALID_INDEX if not found
+        # Get cluster assignments using vectorized approach
+        logger.debug(f"Finding BMUs for {len(data)} samples for geographic coherence")
         
-        clusters = np.array(clusters)
+        # Use vectorized distance calculation
+        if hasattr(self, 'neuron_coords'):
+            distances = self._vectorized_combined_distance(
+                data, self.weights, coordinates, self.neuron_coords
+            )
+        else:
+            distances = self._vectorized_partial_bray_curtis_chunk(data, self.weights)
+        
+        # Find BMUs
+        clusters = np.argmin(distances, axis=1)
+        
+        # Mark invalid distances as INVALID_INDEX
+        invalid_mask = np.all(np.isinf(distances), axis=1)
+        clusters[invalid_mask] = self.INVALID_INDEX
         valid = clusters >= 0
         
         if valid.sum() < 10:  # Need minimum samples
