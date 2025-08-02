@@ -67,6 +67,12 @@ training_config:
   memory_management:
     chunk_if_exceeds: '8GB'
     chunk_size: 50000  # Larger chunks for better gradients
+  
+  # Parallel processing configuration
+  parallel:
+    enabled: true  # Use parallel chunk processing
+    n_workers: null  # Number of workers (null=auto-detect)
+    min_samples_for_parallel: 100000  # Only parallelize for datasets larger than this
 
 # Validation configuration
 validation_config:

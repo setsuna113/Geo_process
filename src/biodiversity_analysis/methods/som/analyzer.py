@@ -206,6 +206,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Get performance settings
         chunk_size = som_config.get_chunk_size()
         qe_sample_size = som_config.get_qe_sample_size()
+        use_parallel = som_config.is_parallel_enabled()
+        n_workers = som_config.get_n_workers()
         
         return GeoSOMConfig(
             grid_size=grid_size,
@@ -234,7 +236,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             random_seed=kwargs.get('random_seed', 42),
             # Add performance settings
             chunk_size=kwargs.get('chunk_size', chunk_size),
-            qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size)
+            qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size),
+            use_parallel=kwargs.get('use_parallel', use_parallel),
+            n_workers=kwargs.get('n_workers', n_workers)
         )
     
     def _spatial_cross_validation(self, features: np.ndarray, 

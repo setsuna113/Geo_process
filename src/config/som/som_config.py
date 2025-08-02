@@ -228,6 +228,25 @@ class SOMConfig:
         qe_config = sampling_config.get('qe_calculation', {})
         return qe_config.get('sample_size', 100000)
     
+    def get_parallel_config(self) -> Dict[str, Any]:
+        """Get parallel processing configuration."""
+        train_config = self.get_training_config()
+        return train_config.get('parallel', {
+            'enabled': True,
+            'n_workers': None,
+            'min_samples_for_parallel': 100000
+        })
+    
+    def is_parallel_enabled(self) -> bool:
+        """Check if parallel processing is enabled."""
+        parallel_config = self.get_parallel_config()
+        return parallel_config.get('enabled', True)
+    
+    def get_n_workers(self) -> Optional[int]:
+        """Get number of parallel workers."""
+        parallel_config = self.get_parallel_config()
+        return parallel_config.get('n_workers', None)
+    
     @property
     def config_path(self) -> Optional[Path]:
         """Get the path to the loaded configuration file."""

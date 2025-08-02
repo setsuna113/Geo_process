@@ -68,6 +68,8 @@ class GeoSOMConfig:
     # Performance settings
     chunk_size: int = 50000  # Chunk size for batch processing
     qe_sample_size: int = 100000  # Sample size for QE calculation
+    use_parallel: bool = True  # Enable parallel chunk processing
+    n_workers: Optional[int] = None  # Number of parallel workers (None=auto)
 
 
 class GeoSOMVLRSOM:
@@ -567,8 +569,17 @@ class GeoSOMVLRSOM:
         
         This implementation includes geographic distance calculations as required
         by the GeoSOM specification (30% spatial, 70% features).
+        
+        If use_parallel is enabled in config, chunks will be processed in parallel.
         """
         n_samples, n_features = data.shape
+        
+        # Check if parallel processing is enabled and beneficial
+        if self.config.use_parallel and n_samples > 100000:  # Only parallelize for large datasets
+            logger.info(f"Starting PARALLEL batch update for {n_samples} samples")
+            self._batch_update_parallel(data, coordinates)
+            return
+        
         logger.info(f"Starting chunked vectorized batch update for {n_samples} samples")
         
         # Initialize accumulators for batch updates
@@ -767,6 +778,51 @@ class GeoSOMVLRSOM:
             influences[valid_mask] = neighborhood
         
         return influences
+    
+    def _batch_update_parallel(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
+        """Parallel batch update using multiple CPU cores.
+        
+        This method distributes chunks across multiple workers for faster processing
+        on systems with many CPU cores.
+        """
+        from .parallel_batch_processor import ParallelBatchProcessor
+        
+        n_samples, n_features = data.shape
+        
+        # Get chunk size
+        chunk_size = getattr(self.config, 'chunk_size', 50000)
+        chunk_size = min(chunk_size, n_samples)
+        
+        # Create parallel processor
+        processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
+        
+        # Process chunks in parallel
+        numerator, denominator = processor.process_chunks_parallel(
+            data=data,
+            coordinates=coordinates,
+            weights=self.weights,
+            neuron_coords=getattr(self, 'neuron_coords', None),
+            config=self.config,
+            grid_positions=self._grid_positions,
+            current_radius=self.current_radius,
+            chunk_size=chunk_size
+        )
+        
+        # Apply accumulated updates (same as vectorized version)
+        update_mask = denominator > n_features
+        
+        if np.any(update_mask):
+            targets = numerator[update_mask] / denominator[update_mask, np.newaxis]
+            momentum = np.minimum(denominator[update_mask] / (n_samples * n_features), 1.0)
+            effective_lr = momentum * self.current_lr * 0.5
+            
+            # Vectorized weight update
+            for j, neuron_idx in enumerate(np.where(update_mask)[0]):
+                valid = ~(np.isnan(targets[j]) | np.isnan(self.weights[neuron_idx]))
+                self.weights[neuron_idx, valid] = (
+                    (1 - effective_lr[j]) * self.weights[neuron_idx, valid] +
+                    effective_lr[j] * targets[j, valid]
+                )
     
     def _batch_update_sequential(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
         """Original sequential batch update for small datasets."""
