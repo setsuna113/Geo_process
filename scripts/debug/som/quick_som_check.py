@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+from pathlib import Path
 import json
 import time
 import os
 
-progress_file = "/home/yl998/dev/geo/outputs/analysis_results/som/production_run_20250801/som_progress_som_20250801_112047.json"
+progress_file = "Path(__file__).parent.parent.parent / outputs/analysis_results/som/production_run_20250801/som_progress_som_20250801_112047.json"
 
 print("Checking SOM progress...")
 if os.path.exists(progress_file):

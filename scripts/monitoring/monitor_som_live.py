@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from pathlib import Path
 """Live monitoring of SOM training progress."""
 
 import json
@@ -56,5 +57,5 @@ def monitor_progress(progress_file, interval=30):
         print("\nMonitoring stopped.")
 
 if __name__ == "__main__":
-    progress_file = "/home/yl998/dev/geo/outputs/analysis_results/som/som_progress_som_20250801_101125.json"
+    progress_file = "Path(__file__).parent.parent.parent / outputs/analysis_results/som/som_progress_som_20250801_101125.json"
     monitor_progress(progress_file, interval=10)

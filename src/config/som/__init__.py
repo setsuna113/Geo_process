@@ -1,5 +1,9 @@
-"""SOM Configuration Module"""
+"""SOM Configuration Module
 
-from .som_config import SOMConfig, som_config
+This module provides configuration management for Self-Organizing Map (SOM) analysis.
+Use get_som_config() to access the singleton configuration instance.
+"""
 
-__all__ = ['SOMConfig', 'som_config']
+from .som_config import SOMConfig, get_som_config
+
+__all__ = ['SOMConfig', 'get_som_config']

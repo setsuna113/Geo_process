@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from pathlib import Path
 """Debug script to understand why progress isn't updating."""
 
 import numpy as np
@@ -31,7 +32,7 @@ print(f"For 1000 epochs: {estimated_epoch_time*1000/3600:.1f} hours")
 import os
 import json
 
-output_dir = "/home/yl998/dev/geo/outputs/analysis_results/som"
+output_dir = "Path(__file__).parent.parent.parent / outputs/analysis_results/som"
 print(f"\nFiles in {output_dir}:")
 for f in sorted(os.listdir(output_dir)):
     if f.endswith('.json'):
@@ -40,7 +41,7 @@ for f in sorted(os.listdir(output_dir)):
         print(f"  {f} - modified {time.time() - mtime:.1f} seconds ago")
         
 # Check if we can read the progress file
-progress_file = "/home/yl998/dev/geo/outputs/analysis_results/som/som_progress_som_20250801_101125.json"
+progress_file = "Path(__file__).parent.parent.parent / outputs/analysis_results/som/som_progress_som_20250801_101125.json"
 if os.path.exists(progress_file):
     with open(progress_file, 'r') as f:
         data = json.load(f)

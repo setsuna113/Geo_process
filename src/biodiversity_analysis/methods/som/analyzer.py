@@ -55,10 +55,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _load_default_config(self) -> Dict[str, Any]:
         """Load configuration from SOM config module."""
-        from src.config.som import som_config
+        from src.config.som import get_som_config
+        som_config = get_som_config()
         
-        # Return the loaded configuration
-        return som_config.settings
+        # Return the loaded configuration as a dictionary
+        return som_config._config
     
     def analyze(self, data_path: str, **kwargs) -> AnalysisResult:
         """Main analysis method for GeoSOM.
@@ -199,7 +200,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         max_epochs = kwargs.get('iterations', conv_config['max_epochs'])
         
         # Import SOM config to get performance settings
-        from src.config.som import som_config
+        from src.config.som import get_som_config
+        som_config = get_som_config()
         
         # Get performance settings
         chunk_size = som_config.get_chunk_size()
