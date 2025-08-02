@@ -575,10 +575,18 @@ class GeoSOMVLRSOM:
         n_samples, n_features = data.shape
         
         # Check if parallel processing is enabled and beneficial
-        if self.config.use_parallel and n_samples > 100000:  # Only parallelize for large datasets
+        min_samples_for_parallel = getattr(self.config, 'min_samples_for_parallel', 100000)
+        if self.config.use_parallel and n_samples > min_samples_for_parallel:
             logger.info(f"Starting PARALLEL batch update for {n_samples} samples")
-            self._batch_update_parallel(data, coordinates)
-            return
+            try:
+                self._batch_update_parallel(data, coordinates)
+                return
+            except Exception as e:
+                fallback = getattr(self.config, 'fallback_to_sequential', True)
+                if fallback:
+                    logger.warning(f"Parallel processing failed: {e}. Falling back to sequential.")
+                else:
+                    raise
         
         logger.info(f"Starting chunked vectorized batch update for {n_samples} samples")
         

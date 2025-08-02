@@ -68,10 +68,21 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Check for config override
         config_path = os.environ.get('SOM_CONFIG_PATH')
-        if config_path and os.path.exists(config_path):
-            import yaml
-            with open(config_path, 'r') as f:
-                return yaml.safe_load(f)
+        if config_path:
+            try:
+                if not os.path.exists(config_path):
+                    logger.warning(f"Config path does not exist: {config_path}")
+                else:
+                    import yaml
+                    with open(config_path, 'r') as f:
+                        config = yaml.safe_load(f)
+                    if not isinstance(config, dict):
+                        raise ValueError(f"Config must be dict, got {type(config)}")
+                    logger.info(f"Loaded SOM config from: {config_path}")
+                    return config
+            except (yaml.YAMLError, IOError, ValueError) as e:
+                logger.warning(f"Failed to load config from {config_path}: {e}")
+                logger.info("Falling back to default configuration")
         
         # Otherwise use default
         som_config = get_som_config()

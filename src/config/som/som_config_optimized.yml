@@ -82,6 +82,8 @@ performance_config:
     enabled: true
     n_workers: 32
     backend: 'loky'
+    min_samples_for_parallel: 100000  # Minimum samples to trigger parallel processing
+    fallback_to_sequential: true  # Use sequential if parallel fails
     
   quantization_error:
     use_sampling: true

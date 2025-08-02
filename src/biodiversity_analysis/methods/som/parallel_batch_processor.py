@@ -11,6 +11,11 @@ import logging
 from joblib import Parallel, delayed
 from multiprocessing import cpu_count
 import os
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +287,12 @@ class ParallelBatchProcessor:
                 data, coordinates, weights, neuron_coords, 
                 config, grid_positions, current_radius, chunk_size
             )
+        
+        # Log initial resource usage
+        if HAS_PSUTIL:
+            initial_memory = psutil.virtual_memory().percent
+            initial_cpu = psutil.cpu_percent(interval=0.1)
+            logger.info(f"Starting parallel processing - Memory: {initial_memory:.1f}%, CPU: {initial_cpu:.1f}%")
         
         # Adjust workers based on chunks
         actual_workers = min(self.n_workers, n_chunks)
