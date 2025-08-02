@@ -553,6 +553,11 @@ class GeoSOMVLRSOM:
             progress = epoch / self.config.max_epochs
             self.current_radius = self.config.initial_radius * (1 - progress) + \
                                  self.config.final_radius * progress
+        elif self.config.radius_decay == "exponential":
+            # Exponential decay: r(t) = r_init * exp(-lambda * t)
+            # where lambda is chosen so that r(max_epochs) ≈ r_final
+            decay_rate = -np.log(self.config.final_radius / self.config.initial_radius) / self.config.max_epochs
+            self.current_radius = self.config.initial_radius * np.exp(-decay_rate * epoch)
         else:
             raise NotImplementedError(f"Decay {self.config.radius_decay} not implemented")
     

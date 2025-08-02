@@ -10,7 +10,7 @@
 # Core architecture parameters
 architecture_config:
   grid_size: [50, 50]  # 2,500 neurons for detailed pattern discovery
-  topology: 'hexagonal'  # Better for geographic data than rectangular
+  topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
   spatial_weight: 0.4  # Balanced: 60% biodiversity, 40% spatial
   geographic_distance: 'haversine'
   
@@ -29,7 +29,7 @@ architecture_config:
   neighborhood_function: 'gaussian'
   initial_radius: 16.7  # For 50x50 grid (grid_size/3)
   final_radius: 0.5  # Smaller than 1.0 for finer distinctions
-  radius_decay: 'exponential'  # Better for sparse data
+  radius_decay: 'exponential'  # Better for sparse data - fast initial, slow later
   
   # Convergence criteria - adjusted for sparse data
   convergence:
