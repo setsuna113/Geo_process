@@ -80,6 +80,9 @@ class GeoSOMVLRSOM:
     Designed for biodiversity data with high missing values and spatial structure.
     """
     
+    # Class constants
+    INVALID_INDEX = -1
+    
     def __init__(self, config: GeoSOMConfig):
         self.config = config
         self.weights = None
