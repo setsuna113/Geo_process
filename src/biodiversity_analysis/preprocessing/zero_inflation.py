@@ -31,7 +31,15 @@ class ZeroInflationPreprocessor:
             structural_zero_threshold: Proportion of zeros to consider structural
             pseudo_count_method: 'fixed', 'adaptive', or 'gmean'
             min_pseudo_count: Minimum pseudo-count value
-            compositional_transform: 'clr', 'ilr', 'alr', or 'hurdle'
+            compositional_transform: Transform method:
+                - 'clr': Centered log-ratio
+                - 'ilr': Isometric log-ratio  
+                - 'alr': Additive log-ratio
+                - 'hurdle': Two-stage hurdle model
+                - 'log1p': Simple log(x+1)
+                - 'sqrt': Square root
+                - 'arcsinh': Inverse hyperbolic sine
+                - 'binary': Presence/absence
         """
         self.structural_zero_threshold = structural_zero_threshold
         self.pseudo_count_method = pseudo_count_method
@@ -226,8 +234,19 @@ class ZeroInflationPreprocessor:
             transformed, names = self._ilr_transform(comp_data, comp_indices)
         elif self.compositional_transform == 'hurdle':
             transformed, names = self._hurdle_transform(data, comp_indices)
-        else:  # alr
+        elif self.compositional_transform == 'alr':
             transformed, names = self._alr_transform(comp_data, comp_indices)
+        # Simple transformations
+        elif self.compositional_transform == 'log1p':
+            transformed, names = self._log1p_transform(data, comp_indices)
+        elif self.compositional_transform == 'sqrt':
+            transformed, names = self._sqrt_transform(data, comp_indices)
+        elif self.compositional_transform == 'arcsinh':
+            transformed, names = self._arcsinh_transform(data, comp_indices)
+        elif self.compositional_transform == 'binary':
+            transformed, names = self._binary_transform(data, comp_indices)
+        else:
+            raise ValueError(f"Unknown transform: {self.compositional_transform}")
             
         return transformed, names
     
@@ -332,6 +351,58 @@ class ZeroInflationPreprocessor:
             
             features.append(abundance)
             names.append(f'{self.feature_names_[idx]}_log_abundance')
+            
+        return features, names
+    
+    def _log1p_transform(self, data: np.ndarray, indices: np.ndarray) -> Tuple[List[np.ndarray], List[str]]:
+        """Simple log(x+1) transformation."""
+        features = []
+        names = []
+        
+        for idx in indices:
+            # Ensure non-negative values
+            feature_data = np.maximum(data[:, idx], 0)
+            transformed = np.log1p(feature_data)
+            features.append(transformed)
+            names.append(f'{self.feature_names_[idx]}_log1p')
+            
+        return features, names
+    
+    def _sqrt_transform(self, data: np.ndarray, indices: np.ndarray) -> Tuple[List[np.ndarray], List[str]]:
+        """Square root transformation."""
+        features = []
+        names = []
+        
+        for idx in indices:
+            # Ensure non-negative values
+            feature_data = np.maximum(data[:, idx], 0)
+            transformed = np.sqrt(feature_data)
+            features.append(transformed)
+            names.append(f'{self.feature_names_[idx]}_sqrt')
+            
+        return features, names
+    
+    def _arcsinh_transform(self, data: np.ndarray, indices: np.ndarray) -> Tuple[List[np.ndarray], List[str]]:
+        """Inverse hyperbolic sine transformation (works with negative values)."""
+        features = []
+        names = []
+        
+        for idx in indices:
+            transformed = np.arcsinh(data[:, idx])
+            features.append(transformed)
+            names.append(f'{self.feature_names_[idx]}_arcsinh')
+            
+        return features, names
+    
+    def _binary_transform(self, data: np.ndarray, indices: np.ndarray) -> Tuple[List[np.ndarray], List[str]]:
+        """Convert to binary presence/absence."""
+        features = []
+        names = []
+        
+        for idx in indices:
+            binary = (data[:, idx] > 0).astype(float)
+            features.append(binary)
+            names.append(f'{self.feature_names_[idx]}_binary')
             
         return features, names
     

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Working k-means analysis script with proper error handling."""
+"""Working k-means analysis script with advanced preprocessing.
+
+This script uses the new preprocessing pipeline with:
+- Hurdle model transformation for zero-inflated data
+- Predictive Moran's Eigenvector Maps (pMEM)
+- Disabled diversity indices to avoid circular reasoning
+"""
 
 import sys
 import os

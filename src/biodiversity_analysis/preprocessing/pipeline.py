@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Optional, Tuple, Union
 import logging
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
+from sklearn.impute import SimpleImputer
 
 from .spatial_features import SpatialFeatureEngineering
 from .zero_inflation import ZeroInflationPreprocessor
@@ -21,10 +22,18 @@ class BiodiversityPreprocessingPipeline:
     """Complete preprocessing pipeline for biodiversity data."""
     
     def __init__(self,
+                 # Missing value handling
+                 missing_value_strategy: str = 'keep',
+                 missing_threshold: float = 0.5,
+                 
                  # Zero-inflation parameters
                  structural_zero_threshold: float = 0.95,
                  pseudo_count_method: str = 'adaptive',
                  compositional_transform: str = 'clr',
+                 
+                 # Feature filtering
+                 remove_constant_features: bool = True,
+                 variance_threshold: float = 1e-10,
                  
                  # Spatial parameters
                  spatial_neighbors: int = 8,
@@ -44,9 +53,19 @@ class BiodiversityPreprocessingPipeline:
         """Initialize preprocessing pipeline.
         
         Args:
+            missing_value_strategy: How to handle missing values:
+                - 'keep': Keep NaN values (default)
+                - 'drop_samples': Remove samples with any NaN
+                - 'drop_features': Remove features with >missing_threshold NaN
+                - 'mean': Impute with mean
+                - 'median': Impute with median
+                - 'zero': Replace with zero
+            missing_threshold: Max proportion of missing values for drop_features
             structural_zero_threshold: Threshold for structural zeros
             pseudo_count_method: Method for pseudo-counts
             compositional_transform: Type of compositional transform ('clr', 'ilr', 'alr', 'hurdle')
+            remove_constant_features: Whether to remove constant features
+            variance_threshold: Minimum variance to keep features
             spatial_neighbors: Number of spatial neighbors
             spatial_scales: Scales for multi-scale features
             n_moran_eigenvectors: Number of Moran eigenvectors
@@ -56,7 +75,7 @@ class BiodiversityPreprocessingPipeline:
             calculate_diversity_indices: Whether to calculate diversity indices as features
             environmental_features: Names of environmental features
             standardize: Whether to standardize features
-            standardization_method: 'robust' or 'standard'
+            standardization_method: 'robust', 'standard', or 'minmax'
         """
         # Initialize components
         self.zero_preprocessor = ZeroInflationPreprocessor(
@@ -77,6 +96,10 @@ class BiodiversityPreprocessingPipeline:
             environmental_features=environmental_features
         )
         
+        self.missing_value_strategy = missing_value_strategy
+        self.missing_threshold = missing_threshold
+        self.remove_constant_features = remove_constant_features
+        self.variance_threshold = variance_threshold
         self.n_moran_eigenvectors = n_moran_eigenvectors
         self.calculate_diversity_indices = calculate_diversity_indices
         self.standardize = standardize
@@ -134,9 +157,12 @@ class BiodiversityPreprocessingPipeline:
             logger.info("Step 4: Fitting scaler...")
             if self.standardization_method == 'robust':
                 self.scaler = RobustScaler()
-            else:
-                from sklearn.preprocessing import StandardScaler
+            elif self.standardization_method == 'standard':
                 self.scaler = StandardScaler()
+            elif self.standardization_method == 'minmax':
+                self.scaler = MinMaxScaler()
+            else:
+                raise ValueError(f"Unknown standardization method: {self.standardization_method}")
             
             # Fit on all features
             zero_features, _ = self.zero_preprocessor.transform(species_data)
@@ -166,8 +192,13 @@ class BiodiversityPreprocessingPipeline:
         all_names = []
         metadata = {}
         
+        # Step 0: Handle missing values
+        species_data, coordinates = self._handle_missing_values(
+            species_data, coordinates, self.species_names_
+        )
+        
         # Step 1: Zero-inflation preprocessing
-        logger.info("Step 1/5: Handling zero-inflation...")
+        logger.info("Step 1/6: Handling zero-inflation...")
         zero_features, zero_names = self.zero_preprocessor.transform(species_data)
         all_features.append(zero_features)
         all_names.extend(zero_names)
@@ -211,9 +242,13 @@ class BiodiversityPreprocessingPipeline:
         # Combine all features
         combined = np.hstack(all_features)
         
-        # Step 5: Standardization
+        # Step 5: Remove constant features
+        logger.info("Step 5/6: Removing constant features...")
+        combined, all_names = self._remove_constant_features(combined, all_names)
+        
+        # Step 6: Standardization
         if self.standardize:
-            logger.info("Step 5/5: Standardizing features...")
+            logger.info("Step 6/6: Standardizing features...")
             combined = self.scaler.transform(combined)
         
         # Calculate global Moran's I for quality check
@@ -284,3 +319,64 @@ class BiodiversityPreprocessingPipeline:
         """Save feature names and metadata to file."""
         # This would save feature names and groupings for later use
         pass
+    
+    def _handle_missing_values(self, 
+                              species_data: np.ndarray,
+                              coordinates: np.ndarray,
+                              species_names: List[str]) -> Tuple[np.ndarray, np.ndarray]:
+        """Handle missing values according to strategy."""
+        logger.info(f"Handling missing values with strategy: {self.missing_value_strategy}")
+        
+        if self.missing_value_strategy == 'keep':
+            return species_data, coordinates
+            
+        elif self.missing_value_strategy == 'drop_samples':
+            # Remove samples with any missing values
+            mask = ~np.any(np.isnan(species_data), axis=1)
+            logger.info(f"Dropping {(~mask).sum()} samples with missing values")
+            return species_data[mask], coordinates[mask]
+            
+        elif self.missing_value_strategy == 'drop_features':
+            # Remove features with too many missing values
+            missing_prop = np.isnan(species_data).mean(axis=0)
+            mask = missing_prop <= self.missing_threshold
+            n_dropped = (~mask).sum()
+            if n_dropped > 0:
+                logger.info(f"Dropping {n_dropped} features with >{self.missing_threshold:.1%} missing")
+                self.species_names_ = [n for i, n in enumerate(species_names) if mask[i]]
+            return species_data[:, mask], coordinates
+            
+        elif self.missing_value_strategy in ['mean', 'median']:
+            # Impute missing values
+            imputer = SimpleImputer(strategy=self.missing_value_strategy)
+            species_data_imputed = imputer.fit_transform(species_data)
+            logger.info(f"Imputed missing values with {self.missing_value_strategy}")
+            return species_data_imputed, coordinates
+            
+        elif self.missing_value_strategy == 'zero':
+            # Replace missing with zero
+            species_data_filled = np.nan_to_num(species_data, nan=0.0)
+            logger.info("Replaced missing values with zero")
+            return species_data_filled, coordinates
+            
+        else:
+            raise ValueError(f"Unknown missing value strategy: {self.missing_value_strategy}")
+    
+    def _remove_constant_features(self,
+                                 features: np.ndarray,
+                                 feature_names: List[str]) -> Tuple[np.ndarray, List[str]]:
+        """Remove features with constant or near-constant values."""
+        if not self.remove_constant_features:
+            return features, feature_names
+            
+        # Calculate variance ignoring NaN
+        variances = np.nanvar(features, axis=0)
+        
+        # Keep features with variance above threshold
+        mask = variances > self.variance_threshold
+        
+        n_removed = (~mask).sum()
+        if n_removed > 0:
+            logger.info(f"Removed {n_removed} constant features (variance < {self.variance_threshold})")
+            
+        return features[:, mask], [name for i, name in enumerate(feature_names) if mask[i]]
