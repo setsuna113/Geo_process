@@ -793,8 +793,10 @@ class GeoSOMVLRSOM:
         chunk_size = getattr(self.config, 'chunk_size', 50000)
         chunk_size = min(chunk_size, n_samples)
         
-        # Create parallel processor
-        processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
+        # Create parallel processor (reuse if exists to avoid worker churn)
+        if not hasattr(self, '_processor'):
+            self._processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
+        processor = self._processor
         
         # Process chunks in parallel
         numerator, denominator = processor.process_chunks_parallel(
@@ -1084,8 +1086,18 @@ class GeoSOMVLRSOM:
         """Get weight matrix in grid shape."""
         return self.weights.reshape(self.grid_rows, self.grid_cols, self.input_dim)
     
+    def cleanup(self):
+        """Clean up resources used during training."""
+        # Clean up parallel processor if it exists
+        if hasattr(self, '_processor'):
+            try:
+                self._processor.cleanup()
+            except:
+                pass
+            delattr(self, '_processor')
+    
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
-        """Predict BMU indices for data."""
+        """Predict BMU indices for data using vectorized operations."""
         # Validate coordinates shape if provided
         if coordinates is not None:
             if coordinates.shape[0] != data.shape[0]:
@@ -1093,17 +1105,37 @@ class GeoSOMVLRSOM:
             if coordinates.shape[1] != 2:
                 raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
         
-        bmu_indices = []
+        n_samples = len(data)
+        bmu_indices = np.full(n_samples, INVALID_INDEX, dtype=np.int32)
         
-        for idx, sample in enumerate(data):
-            if coordinates is not None:
-                bmu_idx = self._find_bmu_geo(sample, coordinates[idx])
-            else:
-                bmu_idx = self._find_bmu(sample)
+        # Process in chunks for memory efficiency
+        chunk_size = min(5000, n_samples)  # Smaller chunks for prediction
+        
+        for start_idx in range(0, n_samples, chunk_size):
+            end_idx = min(start_idx + chunk_size, n_samples)
+            chunk_data = data[start_idx:end_idx]
+            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
-            bmu_indices.append(bmu_idx)  # Will be INVALID_INDEX if not found
+            # Vectorized distance calculation
+            if coordinates is not None and hasattr(self, 'neuron_coords'):
+                distances = self._vectorized_combined_distance(
+                    chunk_data, self.weights, chunk_coords, self.neuron_coords
+                )
+            else:
+                distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
+            
+            # Find BMUs for valid samples
+            valid_distances = ~np.all(np.isinf(distances), axis=1)
+            if valid_distances.any():
+                chunk_bmus = np.argmin(distances[valid_distances], axis=1)
+                valid_indices = np.where(valid_distances)[0]
+                bmu_indices[start_idx + valid_indices] = chunk_bmus
+            
+            # Log progress for large datasets
+            if n_samples > 50000 and (end_idx % 50000 == 0 or end_idx == n_samples):
+                logger.debug(f"Predicted {end_idx}/{n_samples} samples")
         
-        return np.array(bmu_indices)
+        return bmu_indices
     
     def transform(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
         """Transform data to grid coordinates."""

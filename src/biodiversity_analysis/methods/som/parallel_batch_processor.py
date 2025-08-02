@@ -223,6 +223,7 @@ class ParallelBatchProcessor:
             n_workers: Number of parallel workers. If None, auto-detect.
         """
         self.n_workers = n_workers or self._determine_worker_count()
+        self._executor = None
         
     def _determine_worker_count(self) -> int:
         """Determine optimal number of workers based on system and data."""
@@ -247,6 +248,15 @@ class ParallelBatchProcessor:
             
         logger.info(f"System has {available_cpus} CPUs, using {suggested} workers for SOM")
         return suggested
+    
+    def cleanup(self):
+        """Clean up any resources used by the parallel processor."""
+        if self._executor is not None:
+            try:
+                self._executor.terminate()
+            except:
+                pass
+            self._executor = None
     
     def process_chunks_parallel(self, 
                               data: np.ndarray,
@@ -295,9 +305,14 @@ class ParallelBatchProcessor:
             ))
         
         # Process chunks in parallel using joblib
-        results = Parallel(n_jobs=actual_workers, backend='loky', verbose=10)(
-            delayed(process_single_chunk)(*params) for params in chunk_params
-        )
+        # Use threading backend for better cleanup between CV folds
+        backend = 'threading' if n_chunks < 20 else 'loky'
+        
+        # Create context manager for proper cleanup
+        with Parallel(n_jobs=actual_workers, backend=backend, verbose=10) as parallel:
+            results = parallel(
+                delayed(process_single_chunk)(*params) for params in chunk_params
+            )
         
         # Aggregate results
         numerator = np.zeros_like(weights)

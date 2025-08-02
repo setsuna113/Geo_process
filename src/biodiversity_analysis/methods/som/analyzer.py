@@ -53,6 +53,14 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         self.training_result = None
         self._geosom_config = None
     
+    def __del__(self):
+        """Cleanup resources on deletion."""
+        if hasattr(self, 'som') and self.som is not None:
+            try:
+                self.som.cleanup()
+            except:
+                pass
+    
     def _load_default_config(self) -> Dict[str, Any]:
         """Load configuration from SOM config module."""
         from src.config.som import get_som_config
@@ -267,36 +275,72 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         for fold_idx, (train_idx, test_idx) in enumerate(cv_splits):
             logger.info(f"Processing CV fold {fold_idx + 1}/{n_folds}")
-            self.progress_tracker.update_phase(f'cv_fold_{fold_idx + 1}', cv_fold=fold_idx + 1)
+            try:
+                self.progress_tracker.update_phase(f'cv_fold_{fold_idx + 1}', cv_fold=fold_idx + 1)
+            except Exception as e:
+                logger.warning(f"Failed to update progress tracker: {e}")
             
             # Create fold SOM
             fold_som = GeoSOMVLRSOM(config)
             
             # Create progress callback for this fold
-            fold_callback = create_progress_callback(
-                self.progress_tracker, 
-                phase=f'cv_fold_{fold_idx + 1}'
-            )
+            try:
+                fold_callback = create_progress_callback(
+                    self.progress_tracker, 
+                    phase=f'cv_fold_{fold_idx + 1}'
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create progress callback: {e}")
+                fold_callback = None
             
             # Train on fold
+            logger.info(f"Starting training for CV fold {fold_idx + 1}/{n_folds}")
             fold_result = fold_som.train_batch(
                 features[train_idx],
                 coordinates[train_idx],
                 progress_callback=fold_callback
             )
+            logger.info(f"Completed training for CV fold {fold_idx + 1}/{n_folds}, converged at epoch {fold_result.convergence_epoch}")
             
             # Evaluate on test set
+            logger.info(f"Calculating test QE for fold {fold_idx + 1}")
             test_qe = fold_som.calculate_quantization_error(
                 features[test_idx],
                 coordinates[test_idx]
             )
+            logger.info(f"Test QE for fold {fold_idx + 1}: {test_qe:.6f}")
             
             # Calculate geographic coherence
+            logger.info(f"Calculating predictions for fold {fold_idx + 1}")
             test_predictions = fold_som.predict(features[test_idx], coordinates[test_idx])
-            geo_coherence = GeographicCoherence.morans_i(
-                test_predictions,
-                coordinates[test_idx]
-            )
+            logger.info(f"Predictions calculated, computing geographic coherence")
+            
+            # Sample for large test sets to avoid memory issues
+            test_size = len(test_idx)
+            if test_size > 30000:
+                # Use 20,000 samples for large datasets - good balance of accuracy and computation
+                sample_size = 20000
+                logger.info(f"Test set has {test_size} samples, sampling {sample_size} for geographic coherence")
+                sample_indices = np.random.choice(test_size, size=sample_size, replace=False)
+                sampled_predictions = test_predictions[sample_indices]
+                sampled_coords = coordinates[test_idx][sample_indices]
+                geo_coherence = GeographicCoherence.morans_i(sampled_predictions, sampled_coords)
+                logger.info(f"Geographic coherence (sampled) for fold {fold_idx + 1}: {geo_coherence:.4f}")
+            elif test_size > 10000:
+                # Use 10,000 samples for medium datasets
+                sample_size = 10000
+                logger.info(f"Test set has {test_size} samples, sampling {sample_size} for geographic coherence")
+                sample_indices = np.random.choice(test_size, size=sample_size, replace=False)
+                sampled_predictions = test_predictions[sample_indices]
+                sampled_coords = coordinates[test_idx][sample_indices]
+                geo_coherence = GeographicCoherence.morans_i(sampled_predictions, sampled_coords)
+                logger.info(f"Geographic coherence (sampled) for fold {fold_idx + 1}: {geo_coherence:.4f}")
+            else:
+                geo_coherence = GeographicCoherence.morans_i(
+                    test_predictions,
+                    coordinates[test_idx]
+                )
+                logger.info(f"Geographic coherence for fold {fold_idx + 1}: {geo_coherence:.4f}")
             
             qe_scores.append(test_qe)
             coherence_scores.append(geo_coherence)
@@ -309,6 +353,19 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 'geographic_coherence': geo_coherence,
                 'convergence_epoch': fold_result.convergence_epoch
             })
+            
+            # Clean up resources after each fold
+            try:
+                fold_som.cleanup()
+                logger.info(f"Completed cleanup for CV fold {fold_idx + 1}/{n_folds}")
+            except Exception as e:
+                logger.warning(f"Failed to cleanup fold {fold_idx + 1}: {e}")
+            
+            logger.info(f"Completed CV fold {fold_idx + 1}/{n_folds}, moving to next fold")
+            
+            # Force garbage collection to free memory
+            import gc
+            gc.collect()
         
         # Aggregate results
         cv_results['mean_qe'] = np.mean(qe_scores)
@@ -332,10 +389,61 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Basic SOM metrics
         final_qe = self.som.calculate_quantization_error(features, coordinates)
         
-        # Geographic metrics
-        geo_metrics = GeographicCoherence.geographic_cluster_quality(
-            predictions, coordinates
-        )
+        # Geographic metrics with stratified sampling for large datasets
+        n_samples = len(predictions)
+        
+        if n_samples > 100000:
+            # Use stratified spatial sampling for very large datasets
+            logger.info(f"Dataset has {n_samples} samples, using stratified spatial sampling (100k samples)")
+            
+            # Create spatial grid for stratification
+            lon_bins = np.linspace(coordinates[:, 0].min(), coordinates[:, 0].max(), 50)
+            lat_bins = np.linspace(coordinates[:, 1].min(), coordinates[:, 1].max(), 50)
+            
+            # Assign each point to a grid cell
+            lon_idx = np.digitize(coordinates[:, 0], lon_bins) - 1
+            lat_idx = np.digitize(coordinates[:, 1], lat_bins) - 1
+            cell_idx = lon_idx * 50 + lat_idx
+            
+            # Sample proportionally from each cell
+            sample_indices = []
+            unique_cells = np.unique(cell_idx)
+            samples_per_cell = max(1, 100000 // len(unique_cells))
+            
+            for cell in unique_cells:
+                cell_points = np.where(cell_idx == cell)[0]
+                if len(cell_points) > 0:
+                    n_cell_samples = min(len(cell_points), samples_per_cell)
+                    cell_samples = np.random.choice(cell_points, size=n_cell_samples, replace=False)
+                    sample_indices.extend(cell_samples)
+            
+            # Ensure we have exactly 100k samples (or close to it)
+            sample_indices = np.array(sample_indices)
+            if len(sample_indices) > 100000:
+                sample_indices = np.random.choice(sample_indices, size=100000, replace=False)
+            
+            sampled_predictions = predictions[sample_indices]
+            sampled_coords = coordinates[sample_indices]
+            geo_metrics = GeographicCoherence.geographic_cluster_quality(
+                sampled_predictions, sampled_coords
+            )
+            logger.info(f"Geographic metrics calculated on {len(sample_indices)} stratified samples")
+            
+        elif n_samples > 50000:
+            # Use 50k samples for medium-large datasets
+            logger.info(f"Dataset has {n_samples} samples, sampling 50,000 for geographic metrics")
+            sample_indices = np.random.choice(n_samples, size=50000, replace=False)
+            sampled_predictions = predictions[sample_indices]
+            sampled_coords = coordinates[sample_indices]
+            geo_metrics = GeographicCoherence.geographic_cluster_quality(
+                sampled_predictions, sampled_coords
+            )
+            
+        else:
+            # Use all data for smaller datasets
+            geo_metrics = GeographicCoherence.geographic_cluster_quality(
+                predictions, coordinates
+            )
         
         # Feature importance (variance across map)
         weights = self.som.get_weights()

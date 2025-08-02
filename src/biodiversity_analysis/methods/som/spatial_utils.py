@@ -270,6 +270,14 @@ class GeographicCoherence:
         Returns:
             Dictionary of quality metrics
         """
+        n_samples = len(cluster_assignments)
+        
+        # Use optimized implementation for large datasets
+        if n_samples > 50000:
+            # Import here to avoid circular dependency
+            from .spatial_utils_optimized import compute_spatial_metrics_large
+            return compute_spatial_metrics_large(cluster_assignments, coordinates)
+        
         unique_clusters = np.unique(cluster_assignments)
         n_clusters = len(unique_clusters)
         
