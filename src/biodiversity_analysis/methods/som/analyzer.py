@@ -63,7 +63,17 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _load_default_config(self) -> Dict[str, Any]:
         """Load configuration from SOM config module."""
+        import os
         from src.config.som import get_som_config
+        
+        # Check for config override
+        config_path = os.environ.get('SOM_CONFIG_PATH')
+        if config_path and os.path.exists(config_path):
+            import yaml
+            with open(config_path, 'r') as f:
+                return yaml.safe_load(f)
+        
+        # Otherwise use default
         som_config = get_som_config()
         
         # Return the loaded configuration as a dictionary
