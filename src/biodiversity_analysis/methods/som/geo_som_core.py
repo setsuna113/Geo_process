@@ -387,6 +387,10 @@ class GeoSOMVLRSOM:
         best_qe = np.inf
         patience_counter = 0
         
+        # QE tracking window for smoother adaptation
+        qe_window = []
+        qe_window_size = 5  # Track last 5 epochs for trend
+        
         # Calculate initial QE on a sample for large datasets
         if len(data) > 10000:
             # Sample 10k points for initial QE calculation
@@ -438,13 +442,25 @@ class GeoSOMVLRSOM:
             
             self.training_history['quantization_errors'].append(qe)
             
+            # Update QE window for trend analysis
+            qe_window.append(qe)
+            if len(qe_window) > qe_window_size:
+                qe_window.pop(0)
+            
             # Log progress every 10 epochs or on significant events
             if epoch % 10 == 0 or epoch < 5:
                 logger.info(f"Epoch {epoch+1}/{self.config.max_epochs}: QE={qe:.6f}, "
                            f"LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
             
-            # VLRSOM: Adapt learning rate based on QE improvement
-            self._adapt_learning_rate(qe, best_qe)
+            # VLRSOM: Adapt learning rate based on QE trend (not just last epoch)
+            if len(qe_window) >= 2:
+                # Use average of window for smoother adaptation
+                avg_recent_qe = np.mean(qe_window[-3:]) if len(qe_window) >= 3 else np.mean(qe_window)
+                avg_previous_qe = np.mean(qe_window[:-1]) if len(qe_window) > 1 else best_qe
+                self._adapt_learning_rate(avg_recent_qe, avg_previous_qe)
+            else:
+                # Fallback to simple comparison for first few epochs
+                self._adapt_learning_rate(qe, best_qe)
             
             # Update best QE
             if qe < best_qe:
@@ -528,6 +544,13 @@ class GeoSOMVLRSOM:
         else:
             improvement = 0
         
+        # Check if learning rate is critically low and needs recovery
+        if self.current_lr < 0.02 and current_qe > 0.055:  # LR too low and QE still poor
+            # Force a small recovery to escape local minimum
+            self.current_lr = min(self.current_lr * 1.5, 0.05)
+            logger.info(f"Learning rate recovery triggered: LR={self.current_lr:.4f}")
+            return
+        
         # More nuanced adaptation based on improvement magnitude
         if improvement > 0.05:  # Significant improvement (>5%)
             # Increase learning rate
@@ -535,10 +558,16 @@ class GeoSOMVLRSOM:
                 self.current_lr * self.config.lr_increase_factor,
                 self.config.max_learning_rate
             )
-        elif improvement > 0:  # Small improvement (0-5%)
-            # Keep learning rate stable
+        elif improvement > 0.01:  # Small improvement (1-5%)
+            # Keep learning rate stable or slightly increase
+            self.current_lr = min(
+                self.current_lr * 1.02,  # Slight increase to encourage progress
+                self.config.max_learning_rate
+            )
+        elif improvement > -0.02:  # Very small degradation (0-2%)
+            # Keep stable - this might be noise
             pass
-        elif improvement > -0.05:  # Small degradation (0-5%)
+        elif improvement > -0.05:  # Small degradation (2-5%)
             # Slightly decrease learning rate
             self.current_lr = max(
                 self.current_lr * 0.98,  # Very gentle decrease
