@@ -16,6 +16,9 @@ from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
 from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
 from .preprocessing import BiodiversityPreprocessor
+from ..preprocessing.pipeline import BiodiversityPreprocessingPipeline
+from ..preprocessing.zero_inflation import ZeroInflationPreprocessor
+from ..preprocessing.spatial_features import SpatialFeatureEngineering
 from .spatial_utils import SpatialBlockGenerator, GeographicCoherence
 from .partial_metrics import validate_missing_data_handling
 from .progress_tracker import SOMProgressTracker, create_progress_callback
@@ -49,7 +52,34 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         self.config = config
         self.som = None
-        self.preprocessor = BiodiversityPreprocessor()
+        
+        # Check if we should use advanced preprocessing
+        self.use_advanced_preprocessing = self.config.get('preprocessing_config', {}).get('use_advanced', False)
+        
+        if self.use_advanced_preprocessing:
+            # Use the new advanced preprocessing pipeline
+            preprocessing_config = self.config.get('preprocessing_config', {})
+            self.preprocessor = BiodiversityPreprocessingPipeline(
+                # Zero-inflation handling
+                structural_zero_threshold=preprocessing_config.get('structural_zero_threshold', 0.95),
+                pseudo_count_method=preprocessing_config.get('pseudo_count_method', 'adaptive'),
+                compositional_transform=preprocessing_config.get('compositional_transform', 'hurdle'),
+                
+                # Spatial features
+                spatial_neighbors=preprocessing_config.get('spatial_neighbors', 8),
+                spatial_scales=preprocessing_config.get('spatial_scales', [5, 10, 25, 50, 100]),
+                n_moran_eigenvectors=preprocessing_config.get('n_moran_eigenvectors', 10),
+                use_pmem=preprocessing_config.get('use_pmem', True),
+                
+                # Feature handling
+                calculate_diversity_indices=False,  # Not for richness clustering
+                standardize=True,
+                standardization_method='robust'
+            )
+        else:
+            # Use the original simple preprocessing
+            self.preprocessor = BiodiversityPreprocessor()
+            
         self.training_result = None
         self._geosom_config = None
     
@@ -124,11 +154,30 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         predicted_cols = kwargs.get('predicted_columns', [2, 3])
         
         # Preprocess data
-        features_processed = self.preprocessor.fit_transform(
-            biodiv_data.features,
-            observed_cols,
-            predicted_cols
-        )
+        if self.use_advanced_preprocessing:
+            logger.info("Using advanced preprocessing with spatial features and zero-inflation handling")
+            # Advanced preprocessing pipeline expects all features together
+            # No need to separate observed/predicted for advanced preprocessing
+            features_processed, new_feature_names, metadata = self.preprocessor.fit_transform(
+                species_data=biodiv_data.features,
+                coordinates=biodiv_data.coordinates,
+                species_names=biodiv_data.feature_names
+            )
+            logger.info(f"Advanced preprocessing created {len(new_feature_names)} features from {biodiv_data.features.shape[1]} original features")
+            logger.info(f"Preprocessing metadata: {metadata}")
+            
+            # Update feature names for later use
+            biodiv_data.feature_names = new_feature_names
+            
+            # Note: With advanced preprocessing, we don't distinguish between observed/predicted
+            # All features are treated equally in the spatial analysis
+        else:
+            # Simple preprocessing
+            features_processed = self.preprocessor.fit_transform(
+                biodiv_data.features,
+                observed_cols,
+                predicted_cols
+            )
         
         # Determine grid size
         grid_size = self._determine_grid_size(

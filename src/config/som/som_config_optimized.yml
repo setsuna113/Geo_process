@@ -62,13 +62,28 @@ training_config:
   
 # Preprocessing - critical for sparse data
 preprocessing_config:
+  # Enable advanced preprocessing with spatial features
+  use_advanced: true  # Set to true to enable spatial features and better zero-inflation handling
+  
   # Feature weighting - EQUAL for finding intercorrelations
   feature_weights: [0.25, 0.25, 0.25, 0.25]  # Equal weights to discover natural correlations
   
-  # Normalization - keep log transformation!
+  # Basic preprocessing (when use_advanced=false)
   transformation: 'log1p'  # Essential for richness data
   normalization: 'minmax'  # After log, scale to [0,1]
   clip_outliers: false  # Don't clip - we want to see hotspots
+  
+  # Advanced preprocessing options (when use_advanced=true)
+  # Zero-inflation handling
+  structural_zero_threshold: 0.95  # 95% zeros are considered structural
+  pseudo_count_method: 'adaptive'  # Adaptive pseudo-counts based on data
+  compositional_transform: 'hurdle'  # Use hurdle model for zero-inflated richness data
+  
+  # Spatial feature engineering
+  spatial_neighbors: 8  # Number of nearest neighbors for spatial features
+  spatial_scales: [5, 10, 25, 50, 100]  # Multi-scale spatial statistics in km
+  n_moran_eigenvectors: 10  # Number of spatial eigenvectors (reduced from 20)
+  use_pmem: true  # Use predictive MEM for better spatial patterns
   
 # Validation settings
 validation_config:
