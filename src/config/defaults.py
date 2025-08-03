@@ -439,15 +439,10 @@ LOGGING = {
     'file': LOGS_DIR / 'biodiversity.log',
 }
 
-# SOM-specific analysis configuration
-# DEPRECATED: SOM configuration has been moved to som_config.yml
-# This section is kept only for backward compatibility with memory settings
-SOM_ANALYSIS = {
-    'max_pixels_in_memory': 10000,  # Memory management only
-    'use_memory_mapping': True,  # Use memmap for large arrays
-    'memory_overhead_factor': 2.0,  # Memory overhead factor
-    # All other SOM parameters are now in som_config.yml
-}
+# Method-specific configurations have been moved to their own files:
+# - SOM: src/config/som/som_config_optimized.yml
+# - GWPCA: src/config/gwpca/gwpca_config.yml (if exists)
+# - MaxP: src/config/maxp/maxp_config.yml (if exists)
 
 # Data preparation configuration
 DATA_PREPARATION = {
