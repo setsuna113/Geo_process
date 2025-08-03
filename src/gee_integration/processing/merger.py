@@ -60,12 +60,11 @@ class GEEMerger:
         biodiv_combined = ee.Image(biodiv_combined)
         climate_image = ee.Image(climate_image)
         
-        # Get band info
-        biodiv_bands = biodiv_combined.bandNames().getInfo()
-        climate_bands = climate_image.bandNames().getInfo()
+        # Get band info (lazy - don't call getInfo)
+        biodiv_bands = biodiv_combined.bandNames()
+        climate_bands = climate_image.bandNames()
         
-        self.logger.info(f"Biodiversity bands: {biodiv_bands}")
-        self.logger.info(f"Climate bands: {len(climate_bands)} WorldClim variables")
+        self.logger.info(f"Merging biodiversity bands with climate data")
         
         # Merge with climate data
         if merge_strategy == "addBands":
@@ -73,15 +72,15 @@ class GEEMerger:
         else:
             raise ValueError(f"Unknown merge strategy: {merge_strategy}")
         
-        # Add metadata
+        # Add metadata (keep as server-side objects)
         merged = merged.set({
             'biodiversity_bands': biodiv_bands,
             'climate_bands': climate_bands,
-            'total_bands': len(biodiv_bands) + len(climate_bands),
+            'total_bands': biodiv_bands.size().add(climate_bands.size()),
             'merge_strategy': merge_strategy
         })
         
-        self.logger.info(f"✅ Created merged image with {len(biodiv_bands) + len(climate_bands)} bands")
+        self.logger.info(f"✅ Created merged image")
         
         return merged
     

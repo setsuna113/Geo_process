@@ -79,10 +79,10 @@ class AssetUploader:
             
         except subprocess.CalledProcessError as e:
             self.logger.error(f"GCS upload failed: {e.stderr}")
-            return False
+            raise RuntimeError(f"GCS upload failed: {e.stderr}")
         except FileNotFoundError:
             self.logger.error("gsutil not found. Please install Google Cloud SDK")
-            return False
+            raise RuntimeError("gsutil not found. Please install Google Cloud SDK")
     
     @log_operation("create_gee_asset")
     def create_gee_asset(self, gcs_path: str, asset_name: str, 

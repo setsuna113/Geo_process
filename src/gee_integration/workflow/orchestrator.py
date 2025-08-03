@@ -296,10 +296,10 @@ class GEEWorkflowOrchestrator:
                 
                 processed_images[res_name] = merged
             
-            # Save processed images info
+            # Save processed images info (without blocking getInfo calls)
             self.state.set_metadata('processed_images', {
-                res: {'bands': img.bandNames().getInfo()}
-                for res, img in processed_images.items()
+                res: {'status': 'processed'}
+                for res in processed_images.keys()
             })
             
             self.state.update_step(WorkflowStep.PROCESSING_COMPLETE)
@@ -432,13 +432,16 @@ class GEEWorkflowOrchestrator:
             # Save task IDs
             self.state.set_metadata('export_task_ids', task_ids)
             
-            # Monitor export tasks
-            self.logger.info("\n   ⏳ Monitoring export tasks...")
+            # Monitor export tasks with configurable timeout
+            self.logger.info(f"\n   ⏳ Monitoring export tasks (timeout: {self.config.export_timeout}s)...")
             all_completed = False
             start_time = time.time()
-            timeout = 3600  # 1 hour timeout
             
-            while not all_completed and (time.time() - start_time) < timeout:
+            # Track individual task progress
+            task_progress = {res: {'start_time': start_time, 'state': 'READY'} 
+                           for res in task_ids.keys()}
+            
+            while not all_completed and (time.time() - start_time) < self.config.export_timeout:
                 statuses = {}
                 all_completed = True
                 
@@ -446,18 +449,34 @@ class GEEWorkflowOrchestrator:
                     status = self._task_monitor.get_task_status(task_id)
                     statuses[res_name] = status
                     
+                    # Update progress tracking
+                    if status['state'] != task_progress[res_name]['state']:
+                        task_progress[res_name]['state'] = status['state']
+                        elapsed = int(time.time() - task_progress[res_name]['start_time'])
+                        self.logger.info(f"   {res_name}: {status['state']} ({elapsed}s)")
+                    
                     if status['state'] in ['READY', 'RUNNING']:
                         all_completed = False
+                        # Check individual task timeout (3x global timeout)
+                        if (time.time() - task_progress[res_name]['start_time']) > self.config.export_timeout * 3:
+                            raise RuntimeError(f"Export timeout for {res_name} after {self.config.export_timeout * 3}s")
                     elif status['state'] == 'FAILED':
                         raise RuntimeError(f"Export failed for {res_name}: {status.get('error_message', 'Unknown error')}")
                     elif status['state'] == 'COMPLETED':
-                        self.logger.info(f"   ✅ {res_name} export completed")
+                        if task_progress[res_name]['state'] != 'LOGGED':
+                            elapsed = int(time.time() - task_progress[res_name]['start_time'])
+                            self.logger.info(f"   ✅ {res_name} export completed in {elapsed}s")
+                            task_progress[res_name]['state'] = 'LOGGED'
                 
                 if not all_completed:
-                    time.sleep(30)  # Check every 30 seconds
+                    time.sleep(self.config.export_check_interval)
             
             if not all_completed:
-                raise RuntimeError("Export tasks timed out")
+                # Log which tasks are still running
+                running_tasks = [res for res, info in task_progress.items() 
+                               if info['state'] in ['READY', 'RUNNING']]
+                raise RuntimeError(f"Export tasks timed out after {self.config.export_timeout}s. "
+                                 f"Still running: {', '.join(running_tasks)}")
             
             # Get export paths
             export_paths = {

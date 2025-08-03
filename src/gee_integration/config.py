@@ -63,6 +63,8 @@ class GEEConfig:
     export_destination: str = "cloud_storage"
     export_folder: str = "merged_outputs"
     export_format: str = "CSV"  # For parquet conversion
+    export_timeout: int = 7200  # 2 hours default, configurable
+    export_check_interval: int = 30  # Check every 30 seconds
     
     # Output settings
     output_dir: Path = Path("data/gee_merged")

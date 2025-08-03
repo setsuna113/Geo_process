@@ -70,11 +70,11 @@ class GEEAuthenticator:
                 return self._auth_default(project_id)
             else:
                 self.logger.error(f"Unknown authentication method: {method}")
-                return False
+                raise ValueError(f"Unknown authentication method: {method}")
                 
         except Exception as e:
             self.logger.error(f"Authentication failed: {e}")
-            return False
+            raise RuntimeError(f"Authentication failed: {e}")
     
     def _auth_service_account(self, key_path: Optional[str], project_id: Optional[str]) -> bool:
         """Authenticate using service account"""

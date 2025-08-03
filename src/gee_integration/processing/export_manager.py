@@ -47,7 +47,7 @@ class ExportManager:
             Task ID
         """
         # Sample the image at points
-        self.logger.info(f"Sampling merged image at {sampling_points.size().getInfo()} points")
+        self.logger.info(f"Sampling merged image")
         
         sampled = merged_image.sampleRegions(
             collection=sampling_points,
@@ -129,9 +129,8 @@ class ExportManager:
                 resolution=res_config['resolution']
             )
             
-            # Get sample count
-            sample_count = sampling_grid.size().getInfo()
-            self.logger.info(f"   Sample points: {sample_count:,}")
+            # Log sampling
+            self.logger.info(f"   Created sampling grid for resolution {res_name}")
             
             # Export
             task_id = self.export_sampled_data(
