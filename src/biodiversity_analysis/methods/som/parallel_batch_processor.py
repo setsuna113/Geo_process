@@ -17,6 +17,8 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
+from .minibatch_distance_calculator import MiniBatchDistanceCalculator
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,9 @@ def process_single_chunk(chunk_idx: int,
                         neuron_coords: Optional[np.ndarray],
                         config: Any,
                         grid_positions: np.ndarray,
-                        current_radius: float) -> ChunkResult:
+                        current_radius: float,
+                        use_minibatch: bool = True,
+                        minibatch_size: int = 1000) -> ChunkResult:
     """Process a single chunk of data - standalone function for parallel execution.
     
     This function is defined at module level to be pickleable for multiprocessing.
@@ -58,17 +62,31 @@ def process_single_chunk(chunk_idx: int,
         )
     
     # Calculate distances for this chunk
-    if chunk_coords is not None and neuron_coords is not None:
-        # Combined distance calculation (feature + geographic)
-        chunk_distances = _vectorized_combined_distance(
-            chunk_data, weights, chunk_coords, neuron_coords,
-            min_valid_features, spatial_weight
-        )
+    if use_minibatch:
+        # Use mini-batch calculator for memory efficiency
+        calculator = MiniBatchDistanceCalculator(mini_batch_size=minibatch_size)
+        if chunk_coords is not None and neuron_coords is not None:
+            chunk_distances = calculator.combined_distance_minibatch(
+                chunk_data, weights, chunk_coords, neuron_coords,
+                spatial_weight, min_valid_features
+            )
+        else:
+            chunk_distances = calculator.partial_bray_curtis_minibatch(
+                chunk_data, weights, min_valid_features
+            )
     else:
-        # Feature distance only
-        chunk_distances = _vectorized_partial_bray_curtis_chunk(
-            chunk_data, weights, min_valid_features
-        )
+        # Original implementation
+        if chunk_coords is not None and neuron_coords is not None:
+            # Combined distance calculation (feature + geographic)
+            chunk_distances = _vectorized_combined_distance(
+                chunk_data, weights, chunk_coords, neuron_coords,
+                min_valid_features, spatial_weight
+            )
+        else:
+            # Feature distance only
+            chunk_distances = _vectorized_partial_bray_curtis_chunk(
+                chunk_data, weights, min_valid_features
+            )
     
     # Find BMUs for chunk
     chunk_bmu_indices = np.argmin(chunk_distances, axis=1)
@@ -310,9 +328,14 @@ class ParallelBatchProcessor:
             chunk_data = data[start_idx:end_idx]
             chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
+            # Add mini-batch parameters from config
+            use_minibatch = getattr(config, 'use_minibatch', True)
+            minibatch_size = getattr(config, 'minibatch_size', 1000)
+            
             chunk_params.append((
                 chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius
+                weights, neuron_coords, config, grid_positions, current_radius,
+                use_minibatch, minibatch_size
             ))
         
         # Process chunks in parallel using joblib
@@ -364,9 +387,14 @@ class ParallelBatchProcessor:
             chunk_data = data[start_idx:end_idx]
             chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
+            # Add mini-batch parameters
+            use_minibatch = getattr(config, 'use_minibatch', True)
+            minibatch_size = getattr(config, 'minibatch_size', 1000)
+            
             result = process_single_chunk(
                 chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius
+                weights, neuron_coords, config, grid_positions, current_radius,
+                use_minibatch, minibatch_size
             )
             numerator += result.numerator
             denominator += result.denominator
