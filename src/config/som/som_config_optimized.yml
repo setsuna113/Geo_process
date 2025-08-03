@@ -22,8 +22,8 @@ architecture_config:
   lr_decrease_factor: 0.85  # Slower decay
   
   # Adaptive LR ranges - wider ranges for better adaptation
-  high_qe_lr_range: [0.5, 1.0]  # Was [0.3, 0.8]
-  low_qe_lr_range: [0.001, 0.05]  # Was [0.01, 0.1]
+  high_qe_lr_range: [0.5, 1.0]  # For QE > 0.5
+  low_qe_lr_range: [0.01, 0.8]  # For QE < 0.02 - allow higher LR for good QE values
   
   # Neighborhood settings - adjusted for 50x50 grid
   neighborhood_function: 'gaussian'
