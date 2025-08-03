@@ -63,13 +63,15 @@ training_config:
 # Preprocessing - critical for sparse data
 preprocessing_config:
   # Enable advanced preprocessing with spatial features
-  use_advanced: true  # Set to true to enable spatial features and better zero-inflation handling
+  use_advanced: false  # DISABLED: These methods are for supervised prediction, not unsupervised discovery
   
   # Feature weighting - EQUAL for finding intercorrelations
   feature_weights: [0.25, 0.25, 0.25, 0.25]  # Equal weights to discover natural correlations
   
   # Basic preprocessing (when use_advanced=false)
-  transformation: 'log1p'  # Essential for richness data
+  # IMPORTANT: We use simple preprocessing for unsupervised discovery
+  # Advanced spatial features would impose structure we want SOM to discover naturally
+  transformation: 'log1p'  # Essential for richness data (handles zeros well)
   normalization: 'minmax'  # After log, scale to [0,1]
   clip_outliers: false  # Don't clip - we want to see hotspots
   
@@ -77,11 +79,11 @@ preprocessing_config:
   # Zero-inflation handling
   structural_zero_threshold: 0.95  # 95% zeros are considered structural
   pseudo_count_method: 'adaptive'  # Adaptive pseudo-counts based on data
-  compositional_transform: 'hurdle'  # Use hurdle model for zero-inflated richness data
+  compositional_transform: 'hurdle'  # CRITICAL: Use 'hurdle' NOT 'clr' for species richness counts
   
-  # Spatial feature engineering
+  # Spatial feature engineering - REDUCED COMPLEXITY based on evidence
   spatial_neighbors: 8  # Number of nearest neighbors for spatial features
-  spatial_scales: [5, 10, 25, 50, 100]  # Multi-scale spatial statistics in km
+  spatial_scales: [10, 50, 100]  # Reduced from 5 to 3 scales to avoid feature explosion with sparse data
   n_moran_eigenvectors: 10  # Number of spatial eigenvectors (reduced from 20)
   use_pmem: true  # Use predictive MEM for better spatial patterns
   
