@@ -49,12 +49,12 @@ distance_config:
 training_config:
   mode: 'batch'
   parallel_processing: true
-  n_cores: 64  # Conservative setting to avoid memory issues with 182 chunks
+  n_cores: 180  # With 5k chunks, memory usage is ~400MB per worker (72GB total)
   
   # Memory management
   memory_management:
     chunk_if_exceeds: '8GB'
-    chunk_size: 50000  # Creates ~182 chunks for better granularity
+    chunk_size: 5000  # Temporary: smaller chunks to reduce memory per worker from 2GB to 400MB
     
   # Batch processing
   batch_size: 10000  # For smoother updates
@@ -97,9 +97,9 @@ validation_config:
 performance_config:
   parallel_batch_processing:
     enabled: true
-    n_workers: 64  # Match n_cores for consistency
+    n_workers: 180  # Match n_cores for consistency
     backend: 'loky'
-    min_samples_for_parallel: 50000  # Reduced to match smaller chunk size
+    min_samples_for_parallel: 25000  # Match chunk size
     fallback_to_sequential: true  # Use sequential if parallel fails
     
   quantization_error:
