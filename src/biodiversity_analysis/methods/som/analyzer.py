@@ -290,6 +290,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         use_parallel = som_config.is_parallel_enabled()
         n_workers = som_config.get_n_workers()
         
+        # Get mini-batch settings from training config
+        training_config = default_config.get('training_config', {})
+        minibatch_config = training_config.get('minibatch', {})
+        use_minibatch = minibatch_config.get('enabled', False)
+        minibatch_size = minibatch_config.get('size', 1000)
+        
         return GeoSOMConfig(
             grid_size=grid_size,
             topology=arch_config['topology'],
@@ -319,7 +325,10 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             chunk_size=kwargs.get('chunk_size', chunk_size),
             qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size),
             use_parallel=kwargs.get('use_parallel', use_parallel),
-            n_workers=kwargs.get('n_workers', n_workers)
+            n_workers=kwargs.get('n_workers', n_workers),
+            # Add mini-batch settings
+            use_minibatch=kwargs.get('use_minibatch', use_minibatch),
+            minibatch_size=kwargs.get('minibatch_size', minibatch_size)
         )
     
     def _spatial_cross_validation(self, features: np.ndarray, 

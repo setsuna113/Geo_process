@@ -49,12 +49,18 @@ distance_config:
 training_config:
   mode: 'batch'
   parallel_processing: true
-  n_cores: 180  # With 5k chunks, memory usage is ~400MB per worker (72GB total)
+  n_cores: 180  # With mini-batching, memory usage is controlled
   
   # Memory management
   memory_management:
     chunk_if_exceeds: '8GB'
-    chunk_size: 5000  # Temporary: smaller chunks to reduce memory per worker from 2GB to 400MB
+    chunk_size: 25000  # Back to reasonable chunk size with mini-batching
+    
+  # Mini-batch configuration
+  minibatch:
+    enabled: true
+    size: 1000  # Process 1000 samples at a time within each chunk
+    # Memory usage: 1000 × 2500 × 4 × 8 bytes = 80MB per mini-batch
     
   # Batch processing
   batch_size: 10000  # For smoother updates
