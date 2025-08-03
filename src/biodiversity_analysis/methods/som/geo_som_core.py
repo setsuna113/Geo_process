@@ -1074,24 +1074,40 @@ class GeoSOMVLRSOM:
         return morans_i
     
     def _check_convergence(self, geo_coherence: float, patience_counter: int) -> bool:
-        """Check convergence criteria."""
+        """Check convergence criteria - requires BOTH QE stability AND geographic coherence."""
+        converged_qe = False
+        converged_geo = False
+        
+        # Check QE improvement threshold
+        if len(self.training_history['quantization_errors']) > 10:
+            recent_qes = self.training_history['quantization_errors'][-10:]
+            qe_improvement = abs(recent_qes[-1] - recent_qes[0]) / recent_qes[0]
+            if qe_improvement < self.config.qe_improvement_threshold:
+                logger.info(f"QE stabilized (improvement = {qe_improvement:.5f} < {self.config.qe_improvement_threshold})")
+                converged_qe = True
+        
         # Geographic coherence threshold
         if geo_coherence > self.config.geographic_coherence_threshold:
-            logger.info(f"Geographic coherence {geo_coherence:.3f} > threshold")
+            logger.info(f"Geographic coherence {geo_coherence:.3f} > threshold {self.config.geographic_coherence_threshold}")
+            converged_geo = True
+        
+        # Require BOTH criteria to be met
+        if converged_qe and converged_geo:
+            logger.info("Both QE stability and geographic coherence criteria met - converged!")
             return True
+        elif converged_qe:
+            logger.info("QE converged but geographic coherence not met - continuing...")
+        elif converged_geo:
+            logger.info("Geographic coherence met but QE not stable - continuing...")
         
-        # Learning rate stability
-        if len(self.training_history['learning_rates']) > 10:
-            recent_lrs = self.training_history['learning_rates'][-10:]
-            lr_std = np.std(recent_lrs) / np.mean(recent_lrs)
-            if lr_std < self.config.lr_stability_threshold:
-                logger.info(f"Learning rate stabilized (std/mean = {lr_std:.3f})")
-                return True
-        
-        # Patience exceeded
+        # Alternative: Patience exceeded with reasonable QE
         if patience_counter >= self.config.patience:
-            logger.info(f"Patience exceeded ({patience_counter} epochs)")
-            return True
+            if len(self.training_history['quantization_errors']) > 20:
+                recent_qes = self.training_history['quantization_errors'][-20:]
+                qe_trend = recent_qes[-1] - recent_qes[0]
+                if qe_trend <= 0:  # QE is not getting worse
+                    logger.info(f"Patience exceeded ({patience_counter} epochs) with stable/improving QE")
+                    return True
         
         return False
     
