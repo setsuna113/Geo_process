@@ -102,6 +102,11 @@ class GeoSOMVLRSOM:
         
         # Initialize mini-batch distance calculator if enabled
         if config.use_minibatch:
+            # Validate mini-batch size relative to chunk size
+            if config.minibatch_size > config.chunk_size:
+                logger.warning(f"Mini-batch size ({config.minibatch_size}) exceeds chunk size ({config.chunk_size}), adjusting...")
+                config.minibatch_size = min(config.minibatch_size, config.chunk_size // 2)
+            
             self.distance_calculator = MiniBatchDistanceCalculator(
                 mini_batch_size=config.minibatch_size
             )

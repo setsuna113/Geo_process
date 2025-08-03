@@ -17,7 +17,7 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
-from .minibatch_distance_calculator import MiniBatchDistanceCalculator
+from .minibatch_distance_calculator import MiniBatchDistanceCalculator, INVALID_DISTANCE
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ def _vectorized_partial_bray_curtis_chunk(data_chunk: np.ndarray,
     
     # Set invalid distances
     invalid = (n_valid < min_valid_features) | (denominator == 0)
-    distances[invalid] = np.inf
+    distances[invalid] = INVALID_DISTANCE
     
     return distances
 
@@ -183,7 +183,7 @@ def _vectorized_combined_distance(data_chunk: np.ndarray,
     
     # Combined distance with spatial weighting
     valid_feature = ~np.isinf(feature_distances)
-    combined = np.full_like(feature_distances, np.inf)
+    combined = np.full_like(feature_distances, INVALID_DISTANCE)
     combined[valid_feature] = (
         (1 - spatial_weight) * feature_distances[valid_feature] +
         spatial_weight * geo_distances_norm[valid_feature]
@@ -337,6 +337,16 @@ class ParallelBatchProcessor:
                 weights, neuron_coords, config, grid_positions, current_radius,
                 use_minibatch, minibatch_size
             ))
+        
+        # Monitor memory usage and adjust workers if needed
+        if HAS_PSUTIL:
+            current_memory = psutil.virtual_memory().percent
+            if current_memory > 85:
+                actual_workers = max(1, actual_workers // 2)
+                logger.warning(f"High memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
+            elif current_memory > 95:
+                actual_workers = max(1, actual_workers // 4)
+                logger.warning(f"Critical memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
         
         # Process chunks in parallel using joblib
         # Use threading backend for better cleanup between CV folds
