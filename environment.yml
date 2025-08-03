@@ -14,7 +14,6 @@ dependencies:
   - matplotlib
   - mgwr
   - minisom
-  - numpy
   - pandas
   - psutil
   - psycopg2
@@ -35,4 +34,10 @@ dependencies:
   - pyright
   - tabulate
   - h3-py
+  - google-auth-httplib2
+  - keyring
+  - google-auth
+  - google-auth-oauthlib
+  - google-api-python-client
+  - earthengine-api
 prefix: /home/jason/anaconda3/envs/geo

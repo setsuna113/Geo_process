@@ -40,3 +40,8 @@ models/
 test_*.parquet
 *_test.parquet
 test_biodiversity.parquet
+# GEE credentials (keep secure)
+.gee/
+
+# Google Cloud SDK (user should install separately)
+google-cloud-sdk/
