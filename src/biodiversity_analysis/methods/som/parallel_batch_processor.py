@@ -17,6 +17,8 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
+from .minibatch_distance_calculator import MiniBatchDistanceCalculator, INVALID_DISTANCE
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,9 @@ def process_single_chunk(chunk_idx: int,
                         neuron_coords: Optional[np.ndarray],
                         config: Any,
                         grid_positions: np.ndarray,
-                        current_radius: float) -> ChunkResult:
+                        current_radius: float,
+                        use_minibatch: bool = True,
+                        minibatch_size: int = 1000) -> ChunkResult:
     """Process a single chunk of data - standalone function for parallel execution.
     
     This function is defined at module level to be pickleable for multiprocessing.
@@ -58,17 +62,31 @@ def process_single_chunk(chunk_idx: int,
         )
     
     # Calculate distances for this chunk
-    if chunk_coords is not None and neuron_coords is not None:
-        # Combined distance calculation (feature + geographic)
-        chunk_distances = _vectorized_combined_distance(
-            chunk_data, weights, chunk_coords, neuron_coords,
-            min_valid_features, spatial_weight
-        )
+    if use_minibatch:
+        # Use mini-batch calculator for memory efficiency
+        calculator = MiniBatchDistanceCalculator(mini_batch_size=minibatch_size)
+        if chunk_coords is not None and neuron_coords is not None:
+            chunk_distances = calculator.combined_distance_minibatch(
+                chunk_data, weights, chunk_coords, neuron_coords,
+                spatial_weight, min_valid_features
+            )
+        else:
+            chunk_distances = calculator.partial_bray_curtis_minibatch(
+                chunk_data, weights, min_valid_features
+            )
     else:
-        # Feature distance only
-        chunk_distances = _vectorized_partial_bray_curtis_chunk(
-            chunk_data, weights, min_valid_features
-        )
+        # Original implementation
+        if chunk_coords is not None and neuron_coords is not None:
+            # Combined distance calculation (feature + geographic)
+            chunk_distances = _vectorized_combined_distance(
+                chunk_data, weights, chunk_coords, neuron_coords,
+                min_valid_features, spatial_weight
+            )
+        else:
+            # Feature distance only
+            chunk_distances = _vectorized_partial_bray_curtis_chunk(
+                chunk_data, weights, min_valid_features
+            )
     
     # Find BMUs for chunk
     chunk_bmu_indices = np.argmin(chunk_distances, axis=1)
@@ -140,7 +158,7 @@ def _vectorized_partial_bray_curtis_chunk(data_chunk: np.ndarray,
     
     # Set invalid distances
     invalid = (n_valid < min_valid_features) | (denominator == 0)
-    distances[invalid] = np.inf
+    distances[invalid] = INVALID_DISTANCE
     
     return distances
 
@@ -165,7 +183,7 @@ def _vectorized_combined_distance(data_chunk: np.ndarray,
     
     # Combined distance with spatial weighting
     valid_feature = ~np.isinf(feature_distances)
-    combined = np.full_like(feature_distances, np.inf)
+    combined = np.full_like(feature_distances, INVALID_DISTANCE)
     combined[valid_feature] = (
         (1 - spatial_weight) * feature_distances[valid_feature] +
         spatial_weight * geo_distances_norm[valid_feature]
@@ -310,10 +328,25 @@ class ParallelBatchProcessor:
             chunk_data = data[start_idx:end_idx]
             chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
+            # Add mini-batch parameters from config
+            use_minibatch = getattr(config, 'use_minibatch', True)
+            minibatch_size = getattr(config, 'minibatch_size', 1000)
+            
             chunk_params.append((
                 chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius
+                weights, neuron_coords, config, grid_positions, current_radius,
+                use_minibatch, minibatch_size
             ))
+        
+        # Monitor memory usage and adjust workers if needed
+        if HAS_PSUTIL:
+            current_memory = psutil.virtual_memory().percent
+            if current_memory > 85:
+                actual_workers = max(1, actual_workers // 2)
+                logger.warning(f"High memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
+            elif current_memory > 95:
+                actual_workers = max(1, actual_workers // 4)
+                logger.warning(f"Critical memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
         
         # Process chunks in parallel using joblib
         # Use threading backend for better cleanup between CV folds
@@ -364,9 +397,14 @@ class ParallelBatchProcessor:
             chunk_data = data[start_idx:end_idx]
             chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
+            # Add mini-batch parameters
+            use_minibatch = getattr(config, 'use_minibatch', True)
+            minibatch_size = getattr(config, 'minibatch_size', 1000)
+            
             result = process_single_chunk(
                 chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius
+                weights, neuron_coords, config, grid_positions, current_radius,
+                use_minibatch, minibatch_size
             )
             numerator += result.numerator
             denominator += result.denominator

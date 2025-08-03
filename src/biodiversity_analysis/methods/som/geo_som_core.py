@@ -20,6 +20,7 @@ from .constants import (
     INVALID_DISTANCE, INVALID_INDEX, INVALID_COORDINATE,
     MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG
 )
+from .minibatch_distance_calculator import MiniBatchDistanceCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ class GeoSOMConfig:
     # GeoSOM parameters
     spatial_weight: float = 0.3  # k=0.3 (30% spatial, 70% features)
     geographic_distance: str = "haversine"
+    
+    # Mini-batch parameters for memory efficiency
+    use_minibatch: bool = True
+    minibatch_size: int = 1000  # Process 1000 samples at a time within chunks
     
     # VLRSOM parameters
     initial_learning_rate: float = 0.5
@@ -94,6 +99,19 @@ class GeoSOMVLRSOM:
         
         # Initialize grid positions
         self._init_grid_positions()
+        
+        # Initialize mini-batch distance calculator if enabled
+        if config.use_minibatch:
+            # Validate mini-batch size relative to chunk size
+            if config.minibatch_size > config.chunk_size:
+                logger.warning(f"Mini-batch size ({config.minibatch_size}) exceeds chunk size ({config.chunk_size}), adjusting...")
+                config.minibatch_size = min(config.minibatch_size, config.chunk_size // 2)
+            
+            self.distance_calculator = MiniBatchDistanceCalculator(
+                mini_batch_size=config.minibatch_size
+            )
+        else:
+            self.distance_calculator = None
         
         # Training state
         self.current_lr = config.initial_learning_rate
@@ -690,6 +708,13 @@ class GeoSOMVLRSOM:
     
     def _vectorized_partial_bray_curtis_chunk(self, data_chunk: np.ndarray, weights: np.ndarray) -> np.ndarray:
         """Vectorized Bray-Curtis distance calculation for a chunk of data."""
+        # Use mini-batch calculator if enabled
+        if self.config.use_minibatch and self.distance_calculator is not None:
+            return self.distance_calculator.partial_bray_curtis_minibatch(
+                data_chunk, weights, self.config.min_valid_features
+            )
+        
+        # Original implementation (memory-intensive)
         # Expand dimensions for broadcasting
         data_exp = data_chunk[:, np.newaxis, :]
         weights_exp = weights[np.newaxis, :, :]
@@ -725,6 +750,14 @@ class GeoSOMVLRSOM:
         
         Implements the GeoSOM specification: 30% spatial + 70% feature distance.
         """
+        # Use mini-batch calculator if enabled
+        if self.config.use_minibatch and self.distance_calculator is not None:
+            return self.distance_calculator.combined_distance_minibatch(
+                data_chunk, weights, coords_chunk, neuron_coords,
+                self.config.spatial_weight, self.config.min_valid_features
+            )
+        
+        # Original implementation
         # Feature distances
         feature_distances = self._vectorized_partial_bray_curtis_chunk(data_chunk, weights)
         
@@ -1074,24 +1107,40 @@ class GeoSOMVLRSOM:
         return morans_i
     
     def _check_convergence(self, geo_coherence: float, patience_counter: int) -> bool:
-        """Check convergence criteria."""
+        """Check convergence criteria - requires BOTH QE stability AND geographic coherence."""
+        converged_qe = False
+        converged_geo = False
+        
+        # Check QE improvement threshold
+        if len(self.training_history['quantization_errors']) > 10:
+            recent_qes = self.training_history['quantization_errors'][-10:]
+            qe_improvement = abs(recent_qes[-1] - recent_qes[0]) / recent_qes[0]
+            if qe_improvement < self.config.qe_improvement_threshold:
+                logger.info(f"QE stabilized (improvement = {qe_improvement:.5f} < {self.config.qe_improvement_threshold})")
+                converged_qe = True
+        
         # Geographic coherence threshold
         if geo_coherence > self.config.geographic_coherence_threshold:
-            logger.info(f"Geographic coherence {geo_coherence:.3f} > threshold")
+            logger.info(f"Geographic coherence {geo_coherence:.3f} > threshold {self.config.geographic_coherence_threshold}")
+            converged_geo = True
+        
+        # Require BOTH criteria to be met
+        if converged_qe and converged_geo:
+            logger.info("Both QE stability and geographic coherence criteria met - converged!")
             return True
+        elif converged_qe:
+            logger.info("QE converged but geographic coherence not met - continuing...")
+        elif converged_geo:
+            logger.info("Geographic coherence met but QE not stable - continuing...")
         
-        # Learning rate stability
-        if len(self.training_history['learning_rates']) > 10:
-            recent_lrs = self.training_history['learning_rates'][-10:]
-            lr_std = np.std(recent_lrs) / np.mean(recent_lrs)
-            if lr_std < self.config.lr_stability_threshold:
-                logger.info(f"Learning rate stabilized (std/mean = {lr_std:.3f})")
-                return True
-        
-        # Patience exceeded
+        # Alternative: Patience exceeded with reasonable QE
         if patience_counter >= self.config.patience:
-            logger.info(f"Patience exceeded ({patience_counter} epochs)")
-            return True
+            if len(self.training_history['quantization_errors']) > 20:
+                recent_qes = self.training_history['quantization_errors'][-20:]
+                qe_trend = recent_qes[-1] - recent_qes[0]
+                if qe_trend <= 0:  # QE is not getting worse
+                    logger.info(f"Patience exceeded ({patience_counter} epochs) with stable/improving QE")
+                    return True
         
         return False
     

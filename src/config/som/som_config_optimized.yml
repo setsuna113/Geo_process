@@ -11,7 +11,7 @@
 architecture_config:
   grid_size: [50, 50]  # 2,500 neurons for detailed pattern discovery
   topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
-  spatial_weight: 0.4  # Balanced: 60% biodiversity, 40% spatial
+  spatial_weight: 0.2  # Feature-focused: 80% biodiversity, 20% spatial
   geographic_distance: 'haversine'
   
   # Learning rate settings - more aggressive start, slower decay
@@ -33,7 +33,7 @@ architecture_config:
   
   # Convergence criteria - adjusted for sparse data
   convergence:
-    geographic_coherence_threshold: 0.3  # Lowered from 0.6 (realistic for sparse data)
+    geographic_coherence_threshold: 0.6  # Raised back to ensure meaningful geographic organization
     lr_stability_threshold: 0.1  # Increased from 0.05
     qe_improvement_threshold: 0.001  # More sensitive (was 0.005)
     patience: 200  # Increased for 50x50 grid
@@ -49,12 +49,18 @@ distance_config:
 training_config:
   mode: 'batch'
   parallel_processing: true
-  n_cores: 32  # Keep as optimized
+  n_cores: 180  # With mini-batching, memory usage is controlled
   
   # Memory management
   memory_management:
     chunk_if_exceeds: '8GB'
-    chunk_size: 100000  # Increased from 50000
+    chunk_size: 25000  # Back to reasonable chunk size with mini-batching
+    
+  # Mini-batch configuration
+  minibatch:
+    enabled: true
+    size: 1000  # Process 1000 samples at a time within each chunk
+    # Memory usage: 1000 × 2500 × 4 × 8 bytes = 80MB per mini-batch
     
   # Batch processing
   batch_size: 10000  # For smoother updates
@@ -97,9 +103,9 @@ validation_config:
 performance_config:
   parallel_batch_processing:
     enabled: true
-    n_workers: 32
+    n_workers: 180  # Match n_cores for consistency
     backend: 'loky'
-    min_samples_for_parallel: 100000  # Minimum samples to trigger parallel processing
+    min_samples_for_parallel: 25000  # Match chunk size
     fallback_to_sequential: true  # Use sequential if parallel fails
     
   quantization_error:

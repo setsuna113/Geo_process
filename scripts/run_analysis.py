@@ -339,20 +339,15 @@ class StandaloneAnalysisRunner:
         params = {}
         
         if analysis_method == 'som':
+            # Only pass parameters that are explicitly set in the experiment config
+            # Let the SOM analyzer load its own defaults from som_config_optimized.yml
+            som_params = ['grid_size', 'iterations', 'max_iterations', 'sigma', 'learning_rate', 
+                         'neighborhood_function', 'random_seed', 'convergence_threshold', 
+                         'enable_dynamic_convergence', 'cv_folds', 'observed_columns', 
+                         'predicted_columns', 'save_results', 'output_dir']
             params.update({
-                'grid_size': analysis_config.get('grid_size', method_config.get('default_grid_size', [8, 8])),
-                'iterations': analysis_config.get('max_iterations', method_config.get('iterations', 1000)),
-                'sigma': analysis_config.get('sigma', method_config.get('sigma', 1.5)),
-                'learning_rate': analysis_config.get('learning_rate', method_config.get('learning_rate', 0.5)),
-                'neighborhood_function': method_config.get('neighborhood_function', 'gaussian'),
-                'random_seed': analysis_config.get('random_seed', method_config.get('random_seed', 42)),
-                'convergence_threshold': analysis_config.get('convergence_threshold', 1e-6),
-                'enable_dynamic_convergence': analysis_config.get('enable_dynamic_convergence', True),
-                'cv_folds': analysis_config.get('cv_folds', method_config.get('cv_folds', 5)),  # Check both analysis_config and method_config
-                'observed_columns': analysis_config.get('observed_columns', [0, 1]),
-                'predicted_columns': analysis_config.get('predicted_columns', [2, 3]),
-                'save_results': analysis_config.get('save_results', True),
-                'output_dir': analysis_config.get('output_dir', 'outputs/analysis_results/som')
+                k: v for k, v in analysis_config.items() 
+                if k in som_params and v is not None
             })
         
         elif analysis_method == 'gwpca':
