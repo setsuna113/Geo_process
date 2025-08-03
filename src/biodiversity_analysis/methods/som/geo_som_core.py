@@ -552,13 +552,13 @@ class GeoSOMVLRSOM:
             )
         
         # Adaptive regions based on QE level
-        if current_qe > 0.5:  # High QE region
+        if current_qe > 0.5:  # High QE region (poor performance)
             self.current_lr = np.clip(
                 self.current_lr,
                 self.config.high_qe_lr_min,
                 self.config.high_qe_lr_max
             )
-        elif current_qe < 0.1:  # Low QE region
+        elif current_qe < 0.02:  # Very low QE region (excellent performance)
             self.current_lr = np.clip(
                 self.current_lr,
                 self.config.low_qe_lr_min,
