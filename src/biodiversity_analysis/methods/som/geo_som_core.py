@@ -532,7 +532,7 @@ class GeoSOMVLRSOM:
         if improvement > 0.05:  # Significant improvement (>5%)
             # Increase learning rate
             self.current_lr = min(
-                self.current_lr * 1.05,  # Gentle increase
+                self.current_lr * self.config.lr_increase_factor,
                 self.config.max_learning_rate
             )
         elif improvement > 0:  # Small improvement (0-5%)
@@ -547,7 +547,7 @@ class GeoSOMVLRSOM:
         else:  # Significant degradation (>5%)
             # Decrease learning rate more
             self.current_lr = max(
-                self.current_lr * 0.95,
+                self.current_lr * self.config.lr_decrease_factor,
                 self.config.min_learning_rate
             )
         
@@ -696,7 +696,7 @@ class GeoSOMVLRSOM:
         if np.any(update_mask):
             targets = numerator[update_mask] / denominator[update_mask, np.newaxis]
             momentum = np.minimum(denominator[update_mask] / (n_samples * n_features), 1.0)
-            effective_lr = momentum * self.current_lr * 0.5
+            effective_lr = momentum * self.current_lr
             
             # Vectorized weight update
             for j, neuron_idx in enumerate(np.where(update_mask)[0]):
@@ -862,7 +862,7 @@ class GeoSOMVLRSOM:
         if np.any(update_mask):
             targets = numerator[update_mask] / denominator[update_mask, np.newaxis]
             momentum = np.minimum(denominator[update_mask] / (n_samples * n_features), 1.0)
-            effective_lr = momentum * self.current_lr * 0.5
+            effective_lr = momentum * self.current_lr
             
             # Vectorized weight update
             for j, neuron_idx in enumerate(np.where(update_mask)[0]):
@@ -910,7 +910,7 @@ class GeoSOMVLRSOM:
                 # Adaptive momentum based on how many samples assigned
                 # More samples = more confidence in update
                 momentum = min(denominator[j] / len(data), 1.0)
-                effective_lr = momentum * self.current_lr * 0.5  # Scale down LR
+                effective_lr = momentum * self.current_lr  # Scale down LR
                 
                 # Only update non-NaN components
                 for k in range(self.input_dim):
