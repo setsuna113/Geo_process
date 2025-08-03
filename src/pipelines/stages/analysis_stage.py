@@ -313,13 +313,13 @@ class AnalysisStage(PipelineStage):
         base_config = context.config.get(f'{self.analysis_method}_analysis', {})
         
         if self.analysis_method == 'som':
+            # Don't provide hardcoded defaults - let SOM analyzer use som_config_optimized.yml
+            # Only return values that are explicitly set in the config
+            som_params = ['grid_size', 'iterations', 'sigma', 'learning_rate', 
+                         'neighborhood_function', 'random_seed', 'default_grid_size']
             return {
-                'grid_size': base_config.get('default_grid_size', [8, 8]),
-                'iterations': base_config.get('iterations', 1000),
-                'sigma': base_config.get('sigma', 1.5),
-                'learning_rate': base_config.get('learning_rate', 0.5),
-                'neighborhood_function': base_config.get('neighborhood_function', 'gaussian'),
-                'random_seed': base_config.get('random_seed', 42)
+                k: v for k, v in base_config.items() 
+                if k in som_params and v is not None
             }
         
         elif self.analysis_method == 'maxp_regions':
