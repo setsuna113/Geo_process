@@ -60,9 +60,8 @@ class MiniBatchDistanceCalculator:
         n_samples = len(data_chunk)
         n_neurons = len(weights)
         
-        # Pre-allocate output array - use empty for performance, will fill all values
-        distances = np.empty((n_samples, n_neurons), dtype=np.float32)
-        distances.fill(INVALID_DISTANCE)  # Use standardized invalid value
+        # Pre-allocate output array with invalid distance value
+        distances = np.full((n_samples, n_neurons), INVALID_DISTANCE, dtype=np.float32)
         
         # Process in mini-batches
         for start_idx in range(0, n_samples, self.mini_batch_size):
@@ -150,6 +149,7 @@ class MiniBatchDistanceCalculator:
         lat2_rad = np.radians(coords2[:, 0])
         lon2_rad = np.radians(coords2[:, 1])
         cos_lat2 = np.cos(lat2_rad)
+        sin_lat2 = np.sin(lat2_rad)
         
         # Process in mini-batches
         for start_idx in range(0, n_samples, self.mini_batch_size):
@@ -160,17 +160,29 @@ class MiniBatchDistanceCalculator:
             lat1_rad = np.radians(batch_coords[:, 0:1])
             lon1_rad = np.radians(batch_coords[:, 1:2])
             
+            # Pre-compute trigonometric values for batch
+            cos_lat1 = np.cos(lat1_rad)
+            sin_lat1 = np.sin(lat1_rad)
+            
             # Vectorized haversine
             dlat = lat1_rad - lat2_rad[np.newaxis, :]
             dlon = lon1_rad - lon2_rad[np.newaxis, :]
             
-            a = (np.sin(dlat/2)**2 + 
-                 np.cos(lat1_rad) * cos_lat2[np.newaxis, :] * 
-                 np.sin(dlon/2)**2)
-            # More robust clipping with validation
-            if np.any(a < 0) or np.any(a > 1):
-                logger.debug(f"Haversine 'a' values outside [0,1]: min={np.min(a):.6f}, max={np.max(a):.6f}")
+            # More efficient computation with pre-computed values
+            sin_dlat_2 = np.sin(dlat/2)
+            sin_dlon_2 = np.sin(dlon/2)
             
+            a = sin_dlat_2**2 + cos_lat1 * cos_lat2[np.newaxis, :] * sin_dlon_2**2
+            
+            # Robust handling of numerical edge cases
+            if np.any(a < 0) or np.any(a > 1):
+                a_min, a_max = np.min(a), np.max(a)
+                if a_min < -1e-10 or a_max > 1 + 1e-10:
+                    logger.warning(f"Haversine 'a' values significantly outside [0,1]: min={a_min:.6f}, max={a_max:.6f}")
+                else:
+                    logger.debug(f"Haversine 'a' values slightly outside [0,1]: min={a_min:.6f}, max={a_max:.6f}")
+            
+            # Clip with tolerance for numerical precision
             c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
             
             distances[start_idx:end_idx] = 6371 * c  # Earth radius in km
