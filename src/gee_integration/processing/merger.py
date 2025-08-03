@@ -50,10 +50,10 @@ class GEEMerger:
             # Stack biodiversity bands
             biodiv_combined = biodiversity_images[0]
             for img in biodiversity_images[1:]:
-                # Ensure it's an ee.Image
+                # Type check and raise error if incorrect
                 if not isinstance(img, ee.Image):
-                    self.logger.error(f"Expected ee.Image but got {type(img)}")
-                    img = ee.Image(img)
+                    raise TypeError(f"Expected ee.Image but got {type(img)}. "
+                                    f"This indicates an issue in the image loading process.")
                 biodiv_combined = biodiv_combined.addBands(img)
         
         # Ensure we have ee.Image objects
@@ -105,7 +105,9 @@ class GEEMerger:
             variables = [f'bio{i:02d}' for i in range(1, 20)]
         
         # Load the WorldClim image with all bands
-        worldclim_all = ee.Image("WORLDCLIM/V1/BIO")  # V1 is the available version
+        # Note: Using V1 as it's the version available in GEE catalog
+        # Config may specify V2 for clarity but we use V1 for actual loading
+        worldclim_all = ee.Image("WORLDCLIM/V1/BIO")
         
         # Get the band names to select (bio01, bio02, etc.)
         band_indices = []
@@ -128,9 +130,9 @@ class GEEMerger:
         
         # Add metadata
         worldclim_combined = worldclim_combined.set({
-            'source': 'WORLDCLIM/V2/BIO',
+            'source': 'WORLDCLIM/V1/BIO',  # Actual source used
             'variables': variables,
-            'version': '2.1',
+            'version': '1.4',  # WorldClim V1 version
             'resolution': '30 arc-seconds (~1km)'
         })
         

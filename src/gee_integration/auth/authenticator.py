@@ -14,7 +14,11 @@ logger = get_logger(__name__)
 
 
 class GEEAuthenticator:
-    """Handles Google Earth Engine authentication"""
+    """Handles Google Earth Engine authentication
+    
+    Note: GEE API handles connection pooling internally through the ee module.
+    Multiple API calls will reuse authenticated sessions automatically.
+    """
     
     def __init__(self, config: Optional[Dict] = None):
         """

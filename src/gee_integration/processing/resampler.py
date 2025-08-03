@@ -29,23 +29,8 @@ class GEEResampler:
         # Convert degrees to meters (approximate at equator)
         self.target_scale = target_resolution * 111320  # degrees to meters
         
-        # Lazy import ee
-        try:
-            import ee
-            self.ee = ee
-            # Set up methods after ee is available
-            self.RESAMPLING_METHODS = {
-                'bilinear': None,  # Default resampling
-                'bicubic': 'bicubic',
-                'max': ee.Reducer.max(),
-                'min': ee.Reducer.min(),
-                'mean': ee.Reducer.mean(),
-                'mode': ee.Reducer.mode(),
-                'median': ee.Reducer.median()
-            }
-        except ImportError:
-            self.ee = None
-            self.RESAMPLING_METHODS = {}
+        # Store configuration - ee will be imported when needed
+        self.RESAMPLING_METHODS = None  # Will be initialized on first use
     
     def resample_image(self, image: 'ee.Image', config: Dict) -> 'ee.Image':
         """
@@ -86,11 +71,32 @@ class GEEResampler:
         resampled = resampled.copyProperties(image, ['system:time_start'])
         
         # Ensure we return an ee.Image
-        import ee
-        return ee.Image(resampled)
+        try:
+            import ee
+            return ee.Image(resampled)
+        except ImportError as e:
+            raise ImportError("Earth Engine module not available. "
+                              "Please install with: pip install earthengine-api") from e
     
     def _resample_with_reducer(self, image: 'ee.Image', method: str) -> 'ee.Image':
         """Resample using reducer (for aggregation methods)"""
+        # Initialize resampling methods if not done
+        if self.RESAMPLING_METHODS is None:
+            try:
+                import ee
+                self.RESAMPLING_METHODS = {
+                    'bilinear': None,  # Default resampling
+                    'bicubic': 'bicubic',
+                    'max': ee.Reducer.max(),
+                    'min': ee.Reducer.min(),
+                    'mean': ee.Reducer.mean(),
+                    'mode': ee.Reducer.mode(),
+                    'median': ee.Reducer.median()
+                }
+            except ImportError as e:
+                raise ImportError("Earth Engine module not available. "
+                                  "Please install with: pip install earthengine-api") from e
+        
         reducer = self.RESAMPLING_METHODS[method]
         
         # Use reduceResolution for proper aggregation
