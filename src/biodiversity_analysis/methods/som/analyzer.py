@@ -16,9 +16,9 @@ from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
 from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
 from .preprocessing import BiodiversityPreprocessor
-from ..preprocessing.pipeline import BiodiversityPreprocessingPipeline
-from ..preprocessing.zero_inflation import ZeroInflationPreprocessor
-from ..preprocessing.spatial_features import SpatialFeatureEngineering
+from ...preprocessing.pipeline import BiodiversityPreprocessingPipeline
+from ...preprocessing.zero_inflation import ZeroInflationPreprocessor
+from ...preprocessing.spatial_features import SpatialFeatureEngineering
 from .spatial_utils import SpatialBlockGenerator, GeographicCoherence
 from .partial_metrics import validate_missing_data_handling
 from .progress_tracker import SOMProgressTracker, create_progress_callback
@@ -54,7 +54,10 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         self.som = None
         
         # Check if we should use advanced preprocessing
-        self.use_advanced_preprocessing = self.config.get('preprocessing_config', {}).get('use_advanced', False)
+        preprocessing_config = self.config.get('preprocessing_config', {})
+        self.use_advanced_preprocessing = preprocessing_config.get('use_advanced', False)
+        logger.info(f"Preprocessing config: {preprocessing_config}")
+        logger.info(f"Use advanced preprocessing: {self.use_advanced_preprocessing}")
         
         if self.use_advanced_preprocessing:
             # Use the new advanced preprocessing pipeline
