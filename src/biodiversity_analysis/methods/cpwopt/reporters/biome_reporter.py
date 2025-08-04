@@ -146,6 +146,49 @@ class BiomeReporter:
         else:
             return pattern
     
+    def _generate_spatial_patterns(self, lat_factor: np.ndarray, 
+                                  lon_factor: np.ndarray,
+                                  feat_factor: np.ndarray,
+                                  component_weights: Optional[np.ndarray] = None) -> np.ndarray:
+        """Generate spatial patterns for each component.
+        
+        Args:
+            lat_factor: Latitude factor matrix
+            lon_factor: Longitude factor matrix
+            feat_factor: Feature factor matrix
+            component_weights: Optional component weights
+            
+        Returns:
+            3D array of spatial patterns (lat x lon x components)
+        """
+        n_lat, n_components = lat_factor.shape
+        n_lon = lon_factor.shape[0]
+        
+        spatial_patterns = np.zeros((n_lat, n_lon, n_components))
+        
+        for comp in range(n_components):
+            # Outer product of lat and lon factors
+            spatial_pattern = np.outer(lat_factor[:, comp], lon_factor[:, comp])
+            
+            # Weight by sum of feature loadings for this component
+            feature_weight = np.sum(np.abs(feat_factor[:, comp]))
+            spatial_pattern = spatial_pattern * feature_weight
+            
+            # Apply component weight if provided
+            if component_weights is not None:
+                spatial_pattern *= component_weights[comp]
+            
+            # Apply smoothing
+            spatial_pattern = self._smooth_spatial_pattern(spatial_pattern)
+            
+            # Apply thresholding
+            spatial_pattern = self._threshold_pattern(spatial_pattern)
+            
+            spatial_patterns[:, :, comp] = spatial_pattern
+        
+        # Filter weak components
+        return self._filter_weak_components(spatial_patterns, component_weights)
+    
     def _filter_weak_components(self, patterns: np.ndarray, 
                                component_weights: Optional[np.ndarray] = None) -> np.ndarray:
         """Filter out weak components based on their weights.
@@ -185,30 +228,10 @@ class BiomeReporter:
         
         # Reconstruct spatial patterns for all components
         # For each location, sum across all features
-        spatial_patterns = np.zeros((n_lat, n_lon, n_components))
-        
-        for comp in range(n_components):
-            # Outer product of lat and lon factors
-            spatial_pattern = np.outer(lat_factor[:, comp], lon_factor[:, comp])
-            
-            # Weight by sum of feature loadings for this component
-            feature_weight = np.sum(np.abs(feat_factor[:, comp]))
-            spatial_pattern = spatial_pattern * feature_weight
-            
-            # Apply component weight if provided
-            if component_weights is not None:
-                spatial_pattern *= component_weights[comp]
-            
-            # Apply smoothing
-            spatial_pattern = self._smooth_spatial_pattern(spatial_pattern)
-            
-            # Apply thresholding
-            spatial_pattern = self._threshold_pattern(spatial_pattern)
-            
-            spatial_patterns[:, :, comp] = spatial_pattern
-        
-        # Filter weak components
-        spatial_patterns = self._filter_weak_components(spatial_patterns, component_weights)
+        # REFACTORED: Extract spatial pattern generation
+        spatial_patterns = self._generate_spatial_patterns(
+            lat_factor, lon_factor, feat_factor, component_weights
+        )
         
         # Find dominant component at each location
         # Add small epsilon to avoid division by zero

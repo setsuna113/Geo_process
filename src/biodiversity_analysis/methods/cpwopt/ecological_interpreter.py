@@ -88,7 +88,7 @@ class EcologicalInterpreter:
         for comp in range(n_components):
             # Skip weak components
             if component_weights is not None and comp < len(component_weights):
-                weight = component_weights[comp] / np.max(component_weights)
+                weight = component_weights[comp] / (np.max(component_weights) + 1e-10)
                 if weight < 0.1:  # Skip components with <10% relative weight
                     continue
             
@@ -169,7 +169,7 @@ class EcologicalInterpreter:
         # Normalize loadings
         abs_loading = np.abs(feat_loading)
         if np.max(abs_loading) > 0:
-            norm_loading = abs_loading / np.max(abs_loading)
+            norm_loading = abs_loading / (np.max(abs_loading) + 1e-10)
         else:
             return []
         

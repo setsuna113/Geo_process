@@ -306,16 +306,27 @@ class CPWOPT:
             batch_tensor = tensor_unfold[batch_indices, :]
             batch_weights = weights_unfold[batch_indices, :]
             
-            # Weighted Khatri-Rao product for batch
-            V_weighted = V * batch_weights[:, :, np.newaxis]  # Broadcasting
-            
-            # Batch matrix multiplication
-            # Compute weighted MTTKRP for batch
+            # MEMORY OPTIMIZATION: Avoid creating large intermediate arrays
+            # Process in smaller sub-batches if needed
             lhs_batch = np.zeros((len(batch_indices), rank))
-            for i in range(len(batch_indices)):
-                # Element-wise multiply data by weights, then multiply by KR product
-                weighted_row = batch_tensor[i, :] * batch_weights[i, :]
-                lhs_batch[i, :] = weighted_row @ V
+            
+            # Check estimated memory usage
+            estimated_memory_mb = (batch_weights.shape[0] * batch_weights.shape[1] * rank * 8) / (1024**2)
+            if estimated_memory_mb > 100:  # If over 100MB, process in sub-batches
+                sub_batch_size = max(1, int(100 * 1024 * 1024 / (batch_weights.shape[1] * rank * 8)))
+                for sub_start in range(0, len(batch_indices), sub_batch_size):
+                    sub_end = min(sub_start + sub_batch_size, len(batch_indices))
+                    
+                    # Process sub-batch without creating full V_weighted
+                    for i in range(sub_start, sub_end):
+                        weighted_row = batch_tensor[i, :] * batch_weights[i, :]
+                        lhs_batch[i, :] = weighted_row @ V
+            else:
+                # Original approach for smaller batches
+                for i in range(len(batch_indices)):
+                    # Element-wise multiply data by weights, then multiply by KR product
+                    weighted_row = batch_tensor[i, :] * batch_weights[i, :]
+                    lhs_batch[i, :] = weighted_row @ V
             
             # Solve for all rows in batch
             try:
@@ -331,8 +342,12 @@ class CPWOPT:
         norms = np.linalg.norm(new_factor, axis=0)
         valid_norms = norms > MIN_COMPONENT_NORM
         
-        # Vectorized normalization
-        new_factor[:, valid_norms] /= norms[valid_norms]
+        # BUGFIX: Check if there are any valid norms before indexing
+        if np.any(valid_norms):
+            # Vectorized normalization - only for valid components
+            new_factor[:, valid_norms] /= norms[valid_norms]
+        else:
+            logger.warning(f"No valid norms found for mode {mode}, all components near zero")
         
         # Reinitialize near-zero components
         if not np.all(valid_norms):
