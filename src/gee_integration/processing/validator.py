@@ -111,6 +111,15 @@ class GEEAlignmentValidator:
             issues.append(f"Multiple CRS found: {crs_set}")
             self.logger.warning("Images have different CRS - will need reprojection")
         
+        # Check transform alignment (pixel grid alignment)
+        if all('crs_transform' in m for m in metadata_list):
+            transforms = [m['crs_transform'] for m in metadata_list]
+            # Check if pixel origins align
+            origins = [(t[2], t[5]) for t in transforms if t]  # x_origin, y_origin
+            if len(set(origins)) > 1:
+                self.logger.warning(f"Different pixel origins detected: {origins}")
+                self.logger.info("Images may have sub-pixel misalignment")
+        
         # Check bounds overlap (if available)
         bounds_list = [m.get('bounds') for m in metadata_list if 'bounds' in m]
         if len(bounds_list) > 1:

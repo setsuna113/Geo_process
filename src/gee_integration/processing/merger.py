@@ -16,15 +16,18 @@ logger = get_logger(__name__)
 class GEEMerger:
     """Merge biodiversity and climate data in GEE"""
     
-    def __init__(self):
+    def __init__(self, config: Optional[Dict] = None):
         """Initialize merger"""
         self.logger = logger
+        self.config = config or {}
     
     @log_operation("merge_datasets")
     def merge_datasets(self, 
                       biodiversity_images: List['ee.Image'],
                       climate_image: 'ee.Image',
-                      merge_strategy: str = "addBands") -> 'ee.Image':
+                      merge_strategy: str = "addBands",
+                      mask_ocean: bool = True,
+                      include_elevation: bool = True) -> 'ee.Image':
         """
         Merge biodiversity and climate datasets.
         
@@ -32,6 +35,8 @@ class GEEMerger:
             biodiversity_images: List of biodiversity images
             climate_image: Climate data image (multi-band)
             merge_strategy: How to merge (currently only 'addBands')
+            mask_ocean: Whether to mask out ocean areas (default True)
+            include_elevation: Whether to include elevation data (default True)
             
         Returns:
             Merged multi-band image
@@ -44,6 +49,7 @@ class GEEMerger:
             self.logger.debug(f"Image {i}: type={type(img)}, class={img.__class__.__name__ if hasattr(img, '__class__') else 'unknown'}")
         
         # First, combine all biodiversity images
+        # Note: Don't unmask here as resampler will re-mask NoData values
         if len(biodiversity_images) == 1:
             biodiv_combined = biodiversity_images[0]
         else:
@@ -69,16 +75,36 @@ class GEEMerger:
         # Merge with climate data
         if merge_strategy == "addBands":
             merged = biodiv_combined.addBands(climate_image)
+            
+            # Add elevation if requested
+            if include_elevation:
+                self.logger.info("Adding elevation data")
+                elevation = self.load_elevation()
+                merged = merged.addBands(elevation)
         else:
             raise ValueError(f"Unknown merge strategy: {merge_strategy}")
         
         # Add metadata (keep as server-side objects)
+        total_bands = biodiv_bands.size().add(climate_bands.size())
+        if include_elevation:
+            total_bands = total_bands.add(1)
+            
         merged = merged.set({
             'biodiversity_bands': biodiv_bands,
             'climate_bands': climate_bands,
-            'total_bands': biodiv_bands.size().add(climate_bands.size()),
+            'elevation_included': include_elevation,
+            'total_bands': total_bands,
             'merge_strategy': merge_strategy
         })
+        
+        # Apply ocean mask if requested
+        if mask_ocean:
+            self.logger.info("Applying ocean mask to exclude water areas")
+            # Get latitude bounds from config if available
+            lat_bounds = None
+            if hasattr(self, 'config') and 'latitude_bounds' in self.config.get('processing', {}):
+                lat_bounds = tuple(self.config['processing']['latitude_bounds'])
+            merged = self.apply_land_mask(merged, latitude_bounds=lat_bounds)
         
         self.logger.info(f"✅ Created merged image")
         
@@ -139,6 +165,87 @@ class GEEMerger:
         self.logger.info(f"✅ Loaded {len(variables)} WorldClim variables")
         
         return worldclim_combined
+    
+    def apply_land_mask(self, image: 'ee.Image', 
+                       latitude_bounds: Optional[Tuple[float, float]] = None) -> 'ee.Image':
+        """
+        Apply a land mask to exclude ocean areas and optionally polar regions.
+        
+        Args:
+            image: Image to mask
+            latitude_bounds: Optional (min_lat, max_lat) to exclude polar regions
+                           Common boundaries:
+                           - Arctic Circle: 66.5°N
+                           - Antarctic Circle: -66.5°S
+                           - Tree line: ~70°N, -55°S
+                           - Tundra limit: ~75°N, -60°S
+            
+        Returns:
+            Image with ocean areas (and optionally polar regions) masked out
+        """
+        import ee
+        
+        # Use MODIS land/water mask
+        # 0 = water, 1 = land, 2 = shallow water
+        land_mask = ee.Image("MODIS/006/MOD44W/2015_01_01").select('water_mask').eq(1)
+        
+        # Apply latitude bounds if specified
+        if latitude_bounds:
+            min_lat, max_lat = latitude_bounds
+            self.logger.info(f"Applying latitude mask: {min_lat}° to {max_lat}°")
+            
+            # Create latitude image
+            lat_img = ee.Image.pixelLonLat().select('latitude')
+            
+            # Create latitude mask
+            lat_mask = lat_img.gte(min_lat).And(lat_img.lte(max_lat))
+            
+            # Combine with land mask
+            final_mask = land_mask.And(lat_mask)
+            
+            self.logger.info(f"Applied land mask with latitude bounds [{min_lat}, {max_lat}]")
+        else:
+            final_mask = land_mask
+            self.logger.info("Applied land mask - ocean areas excluded")
+        
+        # Apply the mask to all bands
+        masked = image.updateMask(final_mask)
+        
+        # Add metadata
+        masked = masked.set({
+            'ocean_masked': True,
+            'latitude_bounds': latitude_bounds if latitude_bounds else 'none'
+        })
+        
+        return masked
+    
+    def load_elevation(self) -> 'ee.Image':
+        """
+        Load MERIT DEM elevation data.
+        
+        Returns:
+            Single-band image with elevation in meters
+        """
+        import ee
+        self.logger.info("Loading MERIT DEM elevation data...")
+        
+        # Load MERIT DEM - error-removed elevation model
+        elevation = ee.Image("MERIT/DEM/v1_0_3").select('dem')
+        
+        # Add metadata
+        elevation = elevation.set({
+            'source': 'MERIT/DEM/v1_0_3',
+            'units': 'meters',
+            'resolution': '~90m',
+            'coverage': '90N to 60S'
+        })
+        
+        # Rename band for clarity
+        elevation = elevation.rename('elevation')
+        
+        self.logger.info("✅ Loaded MERIT DEM elevation data")
+        
+        return elevation
     
     def create_sampling_grid(self, 
                            bounds: Tuple[float, float, float, float],
@@ -205,3 +312,89 @@ class GEEMerger:
             bounds = ee.Geometry.Rectangle([-180, -90, 180, 90])
         
         return bounds
+    
+    def get_data_bounds(self, image: 'ee.Image', scale: float = 10000) -> 'ee.Geometry':
+        """
+        Automatically detect the bounds of valid data in an image.
+        
+        Args:
+            image: The image to get bounds from
+            scale: Scale in meters for bounds calculation (coarser = faster)
+            
+        Returns:
+            ee.Geometry representing the bounds of valid data
+        """
+        import ee
+        
+        self.logger.info("Detecting data bounds from image...")
+        
+        # Method 1: Try to get geometry directly from the image
+        try:
+            # This works if the image has a defined geometry
+            image_geom = image.geometry()
+            bounds = image_geom.bounds()
+            
+            # Check if it's not just a default global bounds
+            bounds_info = bounds.getInfo()
+            if bounds_info and 'coordinates' in bounds_info:
+                coords = bounds_info['coordinates'][0]
+                min_lon = min(c[0] for c in coords)
+                max_lon = max(c[0] for c in coords)
+                min_lat = min(c[1] for c in coords)
+                max_lat = max(c[1] for c in coords)
+                
+                # If it's not global bounds, use it
+                if not (min_lon < -179 and max_lon > 179 and min_lat < -89 and max_lat > 89):
+                    self.logger.info(f"Using image geometry bounds: ({min_lon:.2f}, {min_lat:.2f}, {max_lon:.2f}, {max_lat:.2f})")
+                    return bounds
+        except:
+            pass
+        
+        # Method 2: Use reduceRegion to find min/max coordinates where data exists
+        try:
+            # Create a mask of valid pixels (not null and not nodata)
+            valid_mask = image.select(0).mask()
+            
+            # Create coordinate images
+            coords = ee.Image.pixelLonLat()
+            
+            # Mask coordinates to only include valid data areas
+            masked_coords = coords.updateMask(valid_mask)
+            
+            # Find min/max of coordinates where data exists
+            bounds_dict = masked_coords.reduceRegion(
+                reducer=ee.Reducer.minMax(),
+                geometry=ee.Geometry.Rectangle([-180, -90, 180, 90]),
+                scale=scale,
+                maxPixels=1e9,
+                tileScale=4
+            )
+            
+            # Extract bounds
+            bounds_info = bounds_dict.getInfo()
+            if bounds_info:
+                min_lon = bounds_info.get('longitude_min', -180)
+                max_lon = bounds_info.get('longitude_max', 180)
+                min_lat = bounds_info.get('latitude_min', -90)
+                max_lat = bounds_info.get('latitude_max', 90)
+                
+                self.logger.info(f"Detected data bounds: ({min_lon:.2f}, {min_lat:.2f}, {max_lon:.2f}, {max_lat:.2f})")
+                
+                # Create bounds geometry
+                bounds = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+                return bounds
+        except Exception as e:
+            self.logger.warning(f"Could not detect bounds automatically: {e}")
+        
+        # Method 3: Fallback to using the footprint of the first band
+        try:
+            footprint = image.select(0).geometry()
+            bounds = footprint.bounds()
+            self.logger.info("Using image footprint as bounds")
+            return bounds
+        except:
+            pass
+        
+        # Final fallback: return None to indicate bounds detection failed
+        self.logger.warning("Could not detect data bounds, export will use image default")
+        return None
