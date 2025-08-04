@@ -26,7 +26,7 @@ gee:
         band_name: "am_fungi"
         data_type: "continuous"
         resampling: "bilinear"
-        no_data: -9999
+        no_data: -3.4e+38
         
       # AM Fungi uncertainty (coefficient of variation)
       - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
@@ -34,7 +34,7 @@ gee:
         band_name: "am_fungi_cv"
         data_type: "continuous"
         resampling: "bilinear"
-        no_data: -9999
+        no_data: -3.4e+38
         
       # AM Fungi extrapolation flag
       - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Extrapolation.tif"
@@ -42,7 +42,7 @@ gee:
         band_name: "am_fungi_extrap"
         data_type: "categorical"
         resampling: "mode"  # Mode for binary/categorical data
-        no_data: -9999
+        no_data: -3.4e+38
         
       # EcM Fungi richness - SDM predictions
       - path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
@@ -50,7 +50,7 @@ gee:
         band_name: "ecm_fungi"
         data_type: "continuous"
         resampling: "bilinear"
-        no_data: -9999
+        no_data: -3.4e+38
         
       # EcM Fungi uncertainty (coefficient of variation)
       - path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_CoeffVar.tif"
@@ -58,7 +58,7 @@ gee:
         band_name: "ecm_fungi_cv"
         data_type: "continuous"
         resampling: "bilinear"
-        no_data: -9999
+        no_data: -3.4e+38
         
       # EcM Fungi extrapolation flag
       - path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Extrapolation.tif"
@@ -66,7 +66,7 @@ gee:
         band_name: "ecm_fungi_extrap"
         data_type: "categorical"
         resampling: "mode"  # Mode for binary/categorical data
-        no_data: -9999
+        no_data: -3.4e+38
       
       # Species richness maps  
       - path: "data/richness_maps/daru-plants-richness.tif"
@@ -74,14 +74,14 @@ gee:
         band_name: "plants"
         data_type: "count"
         resampling: "max"  # Max for species counts
-        no_data: null
+        no_data: 0
         
       - path: "data/richness_maps/iucn-terrestrial-richness.tif"
         name: "terrestrial_richness"
         band_name: "terrestrial"
         data_type: "count"
         resampling: "max"
-        no_data: null
+        no_data: 0
     
     climate:
       source: "WORLDCLIM/V2/BIO"
