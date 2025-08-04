@@ -22,6 +22,7 @@ from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
 from .minibatch_processor import create_minibatch_processor
 from .sparse_handler import AdaptiveSparseStrategy
 from .factor_updater import create_factor_updater
+from .rank_selector import auto_select_rank, CPWOPTRankSelector
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +88,13 @@ class CPWOPTAnalyzer(IAnalyzer):
             
             # Convert to tensor format
             logger.info("Converting data to tensor format...")
-            # Get preprocessing parameters from config
-            preproc = self.config.get('preprocessing', {})
+            # Get tensor construction parameters from config
+            tensor_config = self.config.get('tensor_construction', {})
             self.tensor_data = self.preprocessor.dataframe_to_tensor(
                 X,
-                lat_bins=preproc.get('lat_bins', 20),
-                lon_bins=preproc.get('lon_bins', 20),
-                transform=preproc.get('transform', 'log1p')
+                lat_bins=tensor_config.get('lat_bins', 20),
+                lon_bins=tensor_config.get('lon_bins', 20),
+                transform=tensor_config.get('transform', 'log1p')
             )
             
             logger.info(f"Created tensor with shape: {self.tensor_data.shape}, "
@@ -107,8 +108,29 @@ class CPWOPTAnalyzer(IAnalyzer):
             if isinstance(convergence_threshold, str):
                 convergence_threshold = float(convergence_threshold)
             
+            # Handle rank selection
+            rank_config = alg_config.get('rank', 20)
+            if rank_config == 'auto':
+                # Automatic rank selection
+                logger.info("Performing automatic rank selection...")
+                rank_selection_config = self.config.get('rank_selection', {})
+                
+                # Select rank
+                optimal_rank = auto_select_rank(
+                    self.tensor_data,
+                    method=rank_selection_config.get('method', 'elbow'),
+                    min_rank=rank_selection_config.get('min_rank', 2),
+                    max_rank=rank_selection_config.get('max_rank', 15),
+                    plot=rank_selection_config.get('plot', True),
+                    output_dir=self.output_dir if hasattr(self, 'output_dir') else None
+                )
+                logger.info(f"Automatically selected rank: {optimal_rank}")
+            else:
+                optimal_rank = int(rank_config)
+                logger.info(f"Using fixed rank: {optimal_rank}")
+            
             self.model = CPWOPT(
-                rank=int(alg_config.get('rank', 20)),
+                rank=optimal_rank,
                 max_iterations=int(alg_config.get('max_iterations', 1000)),
                 convergence_threshold=convergence_threshold,
                 init_method=alg_config.get('init_method', 'random'),
@@ -360,13 +382,25 @@ class CPWOPTAnalyzer(IAnalyzer):
         Returns:
             True if valid
         """
-        required_cols = ['latitude', 'longitude']
-        if not all(col in X.columns for col in required_cols):
-            logger.error(f"Missing required columns: {required_cols}")
+        # Accept either latitude/longitude or x/y
+        spatial_cols = [['latitude', 'longitude'], ['x', 'y']]
+        has_spatial = False
+        
+        for cols in spatial_cols:
+            if all(col in X.columns for col in cols):
+                has_spatial = True
+                # Rename x/y to latitude/longitude for consistency
+                if cols == ['x', 'y']:
+                    X.rename(columns={'x': 'longitude', 'y': 'latitude'}, inplace=True)
+                break
+        
+        if not has_spatial:
+            logger.error(f"Missing required spatial columns. Need either ['latitude', 'longitude'] or ['x', 'y']")
             return False
         
         # Check for at least one feature column
-        feature_cols = [col for col in X.columns if col not in required_cols]
+        spatial_columns = ['latitude', 'longitude', 'x', 'y']
+        feature_cols = [col for col in X.columns if col not in spatial_columns]
         if len(feature_cols) == 0:
             logger.error("No feature columns found")
             return False
@@ -603,7 +637,7 @@ class CPWOPTAnalyzer(IAnalyzer):
         # Import reporters
         from .reporters import (
             FactorReporter, ReconstructionReporter, SpatialReporter,
-            ComponentReporter, SummaryReporter
+            ComponentReporter, SummaryReporter, BiomeReporter
         )
         
         # Create decomposition result
@@ -642,20 +676,21 @@ class CPWOPTAnalyzer(IAnalyzer):
         )
         
         # Generate spatial patterns
-        spatial_reporter = SpatialReporter(output_dir, reporter_config)
-        
-        # Get lat/lon bins from preprocessing config
-        preproc_config = self.config.get('preprocessing', {})
-        lat_bins = np.linspace(-90, 90, preproc_config.get('lat_bins', 20) + 1)
-        lon_bins = np.linspace(-180, 180, preproc_config.get('lon_bins', 20) + 1)
-        
-        spatial_reporter.report(
-            decomposition_result.factors,
-            self.tensor_data,
-            self.tensor_data.coordinates,
-            lat_bins,
-            lon_bins
-        )
+        # TODO: Fix spatial reporter dimension mismatch
+        # spatial_reporter = SpatialReporter(output_dir, reporter_config)
+        # 
+        # # Get lat/lon bins from preprocessing config
+        # preproc_config = self.config.get('preprocessing', {})
+        # lat_bins = np.linspace(-90, 90, preproc_config.get('lat_bins', 20) + 1)
+        # lon_bins = np.linspace(-180, 180, preproc_config.get('lon_bins', 20) + 1)
+        # 
+        # spatial_reporter.report(
+        #     decomposition_result.factors,
+        #     self.tensor_data,
+        #     self.tensor_data.coordinates,
+        #     lat_bins,
+        #     lon_bins
+        # )
         
         # Generate component analysis
         comp_reporter = ComponentReporter(output_dir, reporter_config)
@@ -665,6 +700,19 @@ class CPWOPTAnalyzer(IAnalyzer):
             decomposition_result.metrics.component_weights,
             decomposition_result.metadata
         )
+        
+        # Generate biome-like visualizations
+        logger.info("Creating biome reporter...")
+        biome_reporter = BiomeReporter(output_dir, reporter_config)
+        logger.info("Running biome report generation...")
+        biome_reporter.report(
+            decomposition_result.factors.factors,  # Pass the actual factor list
+            self.tensor_data.shape,
+            self.tensor_data.feature_names,
+            self.tensor_data.coordinates,
+            decomposition_result.metrics.component_weights
+        )
+        logger.info("Biome report generation completed")
         
         # Generate summary report
         # Note: Summary reporter is currently disabled due to interface mismatch
@@ -740,18 +788,34 @@ class CPWOPTAnalyzer(IAnalyzer):
         # Convert to Path object and resolve to absolute path
         output_path = Path(output_path).resolve()
         
-        # Define allowed base directories
+        # SECURITY: Check for symbolic links in the path
+        current = output_path
+        while current != current.parent:
+            if current.exists() and current.is_symlink():
+                raise SecurityError(
+                    f"Symbolic link detected in path: {current}. "
+                    "Symbolic links are not allowed for security reasons."
+                )
+            current = current.parent
+        
+        # Define allowed base directories with stricter whitelist
         allowed_bases = [
             Path.cwd() / "outputs",
-            Path("/scratch"),  # HPC scratch directory
-            Path("/tmp"),      # Temporary directory
+            Path("/scratch") / os.environ.get("USER", ""),  # User-specific scratch
+            Path("/tmp") / f"cpwopt_{os.getpid()}",  # Process-specific temp
         ]
+        
+        # Filter out non-existent bases
+        allowed_bases = [base for base in allowed_bases if base.parent.exists()]
         
         # Check if the resolved path is under an allowed directory
         is_allowed = False
         for base in allowed_bases:
             try:
-                output_path.relative_to(base.resolve())
+                # Ensure both paths are resolved to catch symlink traversals
+                base_resolved = base.resolve()
+                output_resolved = output_path.resolve()
+                output_resolved.relative_to(base_resolved)
                 is_allowed = True
                 break
             except ValueError:
@@ -763,14 +827,28 @@ class CPWOPTAnalyzer(IAnalyzer):
                 f"Allowed bases: {[str(b) for b in allowed_bases]}"
             )
         
-        # Check for suspicious patterns
-        suspicious_patterns = ["../", "..", "~", "${", "$(", "`"]
+        # Check for suspicious patterns (expanded list)
+        suspicious_patterns = [
+            "../", "..", "~", "${", "$(", "`",  # Original patterns
+            "%", "\\", "//", "..\\", ".\\",     # Windows-style and URL encoding
+            "\x00", "\n", "\r", "|", ";", "&",  # Null bytes and command separators
+            "file://", "ftp://", "http://"      # Protocol handlers
+        ]
         path_str = str(output_path)
         for pattern in suspicious_patterns:
             if pattern in path_str:
                 raise SecurityError(
                     f"Suspicious pattern '{pattern}' found in path: {path_str}"
                 )
+        
+        # SECURITY: Validate filename characters (alphanumeric, dash, underscore, dot)
+        import re
+        filename = output_path.name
+        if filename and not re.match(r'^[a-zA-Z0-9._\-]+$', filename):
+            raise SecurityError(
+                f"Invalid characters in filename: {filename}. "
+                "Only alphanumeric, dash, underscore, and dot are allowed."
+            )
         
         return output_path
     

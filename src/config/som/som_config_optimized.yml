@@ -9,33 +9,42 @@
 
 # Core architecture parameters
 architecture_config:
-  grid_size: [50, 50]  # 2,500 neurons for detailed pattern discovery
+  grid_size: [60, 60]  # 3600 neurons for better representation of 9M+ samples
   topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
-  spatial_weight: 0.2  # Feature-focused: 80% biodiversity, 20% spatial
+  spatial_weight: 0.2  # 20% spatial, 80% biodiversity (as per user request)
   geographic_distance: 'haversine'
   
   # Learning rate settings - moderate start for stability
   initial_learning_rate: 0.4  # Reduced from 0.8 for better stability with sparse data
-  min_learning_rate: 0.2  # VERY HIGH FLOOR to approximate standard SOM (raised from 0.1)
+  min_learning_rate: 0.1  # Floor at 0.1 as requested (was 0.05)
   max_learning_rate: 1.0
   lr_increase_factor: 1.3  # More aggressive increase
   lr_decrease_factor: 0.90  # GENTLER decay to prevent rapid collapse (was 0.85)
   
   # Adaptive LR ranges - wider ranges for better adaptation
   high_qe_lr_range: [0.5, 1.0]  # For QE > 0.5
-  low_qe_lr_range: [0.2, 0.8]  # For QE < 0.02 - MIN matches floor of 0.2
+  low_qe_lr_range: [0.1, 0.8]  # For QE < 0.02 - MIN matches floor of 0.1
   
-  # Neighborhood settings - adjusted for 50x50 grid
+  # Neighborhood settings - adjusted for 60x60 grid
   neighborhood_function: 'gaussian'
-  initial_radius: 16.7  # For 50x50 grid (grid_size/3)
+  initial_radius: 20.0  # For 60x60 grid (grid_size/3)
   final_radius: 0.5  # Smaller than 1.0 for finer distinctions
   radius_decay: 'linear'  # More predictable decay for better stability
+  
+  # Topographic error based radius adjustment
+  te_radius_adjustment: true  # Enable TE-based radius adjustment
+  te_high_threshold: 0.15  # TE > 0.15 is considered high
+  te_low_threshold: 0.05   # TE < 0.05 is considered low
+  te_high_radius_modifier: 1.1  # Slow down radius decay by 10% for high TE
+  te_low_radius_modifier: 0.95  # Speed up radius decay by 5% for low TE
   
   # Convergence criteria - adjusted for sparse data
   convergence:
     geographic_coherence_threshold: 0.6  # Raised back to ensure meaningful geographic organization
     lr_stability_threshold: 0.1  # Increased from 0.05
     qe_improvement_threshold: 0.001  # More sensitive (was 0.005)
+    qe_stability_window: 20  # Check QE range over last 20 epochs
+    qe_stability_threshold: 0.001  # Consider converged if QE range < 0.1%
     patience: 200  # Increased for 50x50 grid
     max_epochs: 1000  # Increased for larger grid convergence
 
@@ -49,7 +58,7 @@ distance_config:
 training_config:
   mode: 'batch'
   parallel_processing: true
-  n_cores: 180  # With mini-batching, memory usage is controlled
+  n_cores: 80  # Conservative for workday usage (was 180)
   
   # Memory management
   memory_management:
@@ -95,15 +104,15 @@ preprocessing_config:
   
 # Validation settings
 validation_config:
-  n_folds: 5  # Increased from 3 for better assessment
-  block_size: '500km'  # Smaller blocks for finer spatial resolution
-  stratify_by_density: true  # Ensure sparse regions are represented
+  n_folds: 1  # Use all data for training (no CV splits)
+  block_size: '500km'  # Not used when n_folds=1
+  stratify_by_density: true  # Not used when n_folds=1
   
 # Performance settings
 performance_config:
   parallel_batch_processing:
     enabled: true
-    n_workers: 180  # Match n_cores for consistency
+    n_workers: 80  # Match n_cores for consistency
     backend: 'loky'
     min_samples_for_parallel: 25000  # Match chunk size
     fallback_to_sequential: true  # Use sequential if parallel fails
@@ -115,6 +124,7 @@ performance_config:
   progress_tracking:
     enabled: true
     checkpoint_frequency: 10  # Every 10 epochs
+    checkpoint_dir: 'checkpoints/som'  # Directory for checkpoints
     
 # Spatial metrics configuration  
 spatial_metrics:

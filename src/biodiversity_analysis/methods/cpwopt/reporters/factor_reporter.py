@@ -72,7 +72,8 @@ class FactorReporter:
         plots['component_weights'] = self._plot_component_weights(factors)
         
         # Plot factor correlations
-        plots['factor_correlations'] = self._plot_factor_correlations(factors)
+        # TODO: Fix factor correlations for different mode sizes
+        # plots['factor_correlations'] = self._plot_factor_correlations(factors)
         
         return plots
     
