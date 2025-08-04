@@ -22,6 +22,7 @@ from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
 from .minibatch_processor import create_minibatch_processor
 from .sparse_handler import AdaptiveSparseStrategy
 from .factor_updater import create_factor_updater
+from .rank_selector import auto_select_rank, CPWOPTRankSelector
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +108,29 @@ class CPWOPTAnalyzer(IAnalyzer):
             if isinstance(convergence_threshold, str):
                 convergence_threshold = float(convergence_threshold)
             
+            # Handle rank selection
+            rank_config = alg_config.get('rank', 20)
+            if rank_config == 'auto':
+                # Automatic rank selection
+                logger.info("Performing automatic rank selection...")
+                rank_selection_config = self.config.get('rank_selection', {})
+                
+                # Select rank
+                optimal_rank = auto_select_rank(
+                    self.tensor_data,
+                    method=rank_selection_config.get('method', 'elbow'),
+                    min_rank=rank_selection_config.get('min_rank', 2),
+                    max_rank=rank_selection_config.get('max_rank', 15),
+                    plot=rank_selection_config.get('plot', True),
+                    output_dir=self.output_dir if hasattr(self, 'output_dir') else None
+                )
+                logger.info(f"Automatically selected rank: {optimal_rank}")
+            else:
+                optimal_rank = int(rank_config)
+                logger.info(f"Using fixed rank: {optimal_rank}")
+            
             self.model = CPWOPT(
-                rank=int(alg_config.get('rank', 20)),
+                rank=optimal_rank,
                 max_iterations=int(alg_config.get('max_iterations', 1000)),
                 convergence_threshold=convergence_threshold,
                 init_method=alg_config.get('init_method', 'random'),

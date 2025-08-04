@@ -3,12 +3,20 @@
 
 # Algorithm parameters
 algorithm:
-  rank: 50                    # Number of components to extract (increased for richer analysis)
+  rank: 'auto'                # Number of components ('auto' for automatic selection or integer)
   max_iterations: 1000        # Maximum ALS iterations
   convergence_threshold: 1e-6 # Relative error threshold
   init_method: 'svd'          # Initialization: 'random', 'svd', 'nndsvd' (svd better for large-scale)
   optimizer: 'als'            # Optimizer: 'als', 'gradient', 'nonnegative', 'sparse'
   random_state: 42            # For reproducibility
+
+# Rank selection parameters (when rank='auto')
+rank_selection:
+  method: 'elbow'             # Selection method: 'elbow', 'cross_validation', 'core_consistency'
+  min_rank: 2                 # Minimum rank to test
+  max_rank: 8                 # Maximum rank (conservative for 4 biodiversity features)
+  n_trials: 3                 # Number of trials per rank for stability
+  plot: true                  # Generate diagnostic plot
 
 # Tensor construction parameters
 tensor_construction:
@@ -106,6 +114,11 @@ reporting:
   plot_format: 'png'        # Plot format: 'png', 'pdf', 'svg'
   plot_dpi: 300            # Plot resolution (higher quality)
   colormap: 'viridis'      # Colormap for visualizations
+  
+  # Biome visualization parameters
+  smoothing_sigma: 1.5      # Gaussian smoothing (0 = no smoothing)
+  threshold_percentile: 30  # Remove bottom 30% of weak signals
+  min_component_weight: 0.05 # Minimum component weight to display
 
 # Logging
 logging:

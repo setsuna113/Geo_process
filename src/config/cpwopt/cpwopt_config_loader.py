@@ -161,8 +161,9 @@ class CPWOPTConfigLoader(IMethodConfig):
         if 'algorithm' in config:
             alg = config['algorithm']
             
-            if alg.get('rank', 1) <= 0:
-                raise ValueError("Rank must be positive")
+            rank = alg.get('rank', 1)
+            if rank != 'auto' and isinstance(rank, (int, float)) and rank <= 0:
+                raise ValueError("Rank must be positive or 'auto'")
                 
             if alg.get('max_iterations', 1) <= 0:
                 raise ValueError("Max iterations must be positive")

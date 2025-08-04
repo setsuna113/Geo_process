@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import logging
 import warnings
+from scipy.ndimage import gaussian_filter
 
 # Try to import cartopy for proper map projections
 try:
@@ -36,6 +37,11 @@ class BiomeReporter:
         """
         self.output_dir = Path(output_dir)
         self.config = config
+        
+        # Get visualization parameters
+        self.smoothing_sigma = config.get('smoothing_sigma', 1.0)
+        self.threshold_percentile = config.get('threshold_percentile', 20)
+        self.min_component_weight = config.get('min_component_weight', 0.1)
         
         # Define color schemes for biomes
         self.biome_colors = [
@@ -98,6 +104,70 @@ class BiomeReporter:
         logger.info(f"Generated {len(plots)} biome visualizations")
         return plots
     
+    def _smooth_spatial_pattern(self, pattern: np.ndarray, sigma: Optional[float] = None) -> np.ndarray:
+        """Apply Gaussian smoothing to spatial pattern.
+        
+        Args:
+            pattern: 2D spatial pattern
+            sigma: Smoothing parameter (uses self.smoothing_sigma if None)
+            
+        Returns:
+            Smoothed pattern
+        """
+        if sigma is None:
+            sigma = self.smoothing_sigma
+            
+        if sigma > 0:
+            # Apply Gaussian filter
+            smoothed = gaussian_filter(pattern, sigma=sigma, mode='constant')
+            return smoothed
+        else:
+            return pattern
+    
+    def _threshold_pattern(self, pattern: np.ndarray, 
+                          percentile: Optional[float] = None) -> np.ndarray:
+        """Apply thresholding to remove weak signals.
+        
+        Args:
+            pattern: 2D pattern
+            percentile: Threshold percentile (uses self.threshold_percentile if None)
+            
+        Returns:
+            Thresholded pattern
+        """
+        if percentile is None:
+            percentile = self.threshold_percentile
+            
+        if percentile > 0:
+            threshold = np.percentile(np.abs(pattern), percentile)
+            pattern_thresholded = pattern.copy()
+            pattern_thresholded[np.abs(pattern) < threshold] = 0
+            return pattern_thresholded
+        else:
+            return pattern
+    
+    def _filter_weak_components(self, patterns: np.ndarray, 
+                               component_weights: Optional[np.ndarray] = None) -> np.ndarray:
+        """Filter out weak components based on their weights.
+        
+        Args:
+            patterns: 3D array of spatial patterns (lat x lon x components)
+            component_weights: Weights for each component
+            
+        Returns:
+            Filtered patterns
+        """
+        if component_weights is not None:
+            # Normalize weights
+            weights_norm = component_weights / (np.max(component_weights) + 1e-10)
+            
+            # Filter weak components
+            for i, weight in enumerate(weights_norm):
+                if weight < self.min_component_weight:
+                    patterns[:, :, i] = 0
+                    
+        return patterns
+    
     def _create_biome_map(self, factors: List[np.ndarray], 
                           tensor_shape: Tuple[int, ...],
                           component_weights: Optional[np.ndarray] = None) -> Path:
@@ -123,14 +193,36 @@ class BiomeReporter:
             
             # Weight by sum of feature loadings for this component
             feature_weight = np.sum(np.abs(feat_factor[:, comp]))
-            spatial_patterns[:, :, comp] = spatial_pattern * feature_weight
+            spatial_pattern = spatial_pattern * feature_weight
             
             # Apply component weight if provided
             if component_weights is not None:
-                spatial_patterns[:, :, comp] *= component_weights[comp]
+                spatial_pattern *= component_weights[comp]
+            
+            # Apply smoothing
+            spatial_pattern = self._smooth_spatial_pattern(spatial_pattern)
+            
+            # Apply thresholding
+            spatial_pattern = self._threshold_pattern(spatial_pattern)
+            
+            spatial_patterns[:, :, comp] = spatial_pattern
+        
+        # Filter weak components
+        spatial_patterns = self._filter_weak_components(spatial_patterns, component_weights)
         
         # Find dominant component at each location
-        dominant_component = np.argmax(np.abs(spatial_patterns), axis=2)
+        # Add small epsilon to avoid division by zero
+        pattern_strengths = np.abs(spatial_patterns)
+        max_strengths = np.max(pattern_strengths, axis=2)
+        
+        # Create mask for locations with any significant pattern
+        has_pattern = max_strengths > np.percentile(max_strengths, 10)
+        
+        # Find dominant component only where there's a pattern
+        dominant_component = np.argmax(pattern_strengths, axis=2)
+        
+        # Set no-pattern areas to -1
+        dominant_component[~has_pattern] = -1
         
         # Create figure
         if HAS_CARTOPY:
@@ -143,8 +235,9 @@ class BiomeReporter:
         else:
             fig, ax = plt.subplots(figsize=(15, 8))
         
-        # Create discrete colormap
-        cmap = ListedColormap(self.biome_colors[:n_components])
+        # Create discrete colormap with white for no-pattern areas
+        colors = ['white'] + self.biome_colors[:n_components]
+        cmap = ListedColormap(colors)
         
         # Create coordinate grids
         lat_bins = np.linspace(-90, 90, n_lat + 1)
@@ -153,15 +246,17 @@ class BiomeReporter:
         
         # Plot biomes
         im = ax.pcolormesh(lon_grid, lat_grid, dominant_component, 
-                          cmap=cmap, vmin=0, vmax=n_components-1,
+                          cmap=cmap, vmin=-1, vmax=n_components-1,
                           alpha=0.8, shading='auto')
         
-        # Add legend
+        # Add legend only for components that appear in the map
         legend_elements = []
-        for i in range(n_components):
+        unique_components = np.unique(dominant_component[dominant_component >= 0])
+        
+        for i in unique_components:
             legend_elements.append(
-                mpatches.Patch(color=self.biome_colors[i], 
-                             label=f'Biome {i+1}')
+                mpatches.Patch(color=self.biome_colors[int(i)], 
+                             label=f'Biome {int(i)+1}')
             )
         ax.legend(handles=legend_elements, loc='center left', 
                  bbox_to_anchor=(1, 0.5), frameon=True)
@@ -199,7 +294,13 @@ class BiomeReporter:
         n_cols = 5
         n_rows = (n_components + n_cols - 1) // n_cols
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(20, 4 * n_rows))
-        axes = axes.flatten() if n_rows > 1 else [axes]
+        # Ensure axes is always a list
+        if n_rows == 1 and n_cols == 1:
+            axes = [axes]
+        elif n_rows == 1:
+            axes = axes if hasattr(axes, '__len__') else [axes]
+        else:
+            axes = axes.flatten()
         
         for comp in range(n_components):
             ax = axes[comp]
