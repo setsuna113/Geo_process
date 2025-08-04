@@ -1,0 +1,115 @@
+# CP-WOPT (Tensor Factorization) Configuration
+# For sparse biodiversity tensor decomposition
+
+# Algorithm parameters
+algorithm:
+  rank: 20                    # Number of components to extract
+  max_iterations: 1000        # Maximum ALS iterations
+  convergence_threshold: 1e-6 # Relative error threshold
+  init_method: 'random'       # Initialization: 'random', 'svd', 'nndsvd'
+  optimizer: 'als'            # Optimizer: 'als', 'gradient', 'nonnegative', 'sparse'
+  random_state: 42            # For reproducibility
+
+# Tensor construction parameters
+tensor_construction:
+  lat_bins: 50               # Number of latitude bins
+  lon_bins: 50               # Number of longitude bins
+  aggregation: 'sum'         # Aggregation method: 'sum', 'mean', 'max'
+  transform: 'log1p'         # Transform: 'none', 'log1p', 'sqrt', 'asinh'
+  min_observations: 1        # Minimum observations per cell
+  fill_value: 0              # Value for empty cells
+
+# Weight mask configuration
+weights:
+  missing_value_weight: 0.0   # Weight for missing values
+  use_observation_counts: true # Weight by number of observations
+  min_weight: 0.0             # Minimum weight threshold
+  max_weight: 1.0             # Maximum weight (for normalization)
+
+# Mini-batch processing
+minibatch:
+  enabled: true               # Use mini-batch processing
+  batch_size: 10000          # Samples per batch
+  shuffle: false             # Shuffle batches
+  drop_last: false           # Drop incomplete last batch
+  memory_threshold: 0.8      # Memory usage threshold for auto-adjustment
+
+# Sparse tensor handling
+sparse:
+  auto_sparse: true          # Automatically use sparse format
+  sparsity_threshold: 0.95   # Use sparse above this sparsity
+  force_sparse: false        # Always use sparse format
+  storage_format: 'coo'      # Sparse format: 'coo', 'csr', 'dok'
+
+# Factor constraints
+constraints:
+  nonnegative: false         # Non-negative factors
+  orthogonal: false          # Orthogonal factors
+  sparsity: 0.0             # L1 sparsity (0-1)
+  smoothness: 0.0           # Spatial smoothness regularization
+
+# Advanced optimization
+optimization:
+  learning_rate: 0.01       # For gradient methods
+  momentum: 0.9             # Momentum parameter
+  gradient_iterations: 10   # Inner gradient steps
+  line_search: true         # Use line search
+  regularization: 0.0       # L2 regularization
+
+# Component interpretation
+interpretation:
+  top_n_features: 10        # Top features per component
+  significance_threshold: 0.1 # Minimum loading significance
+  sort_components: true     # Sort by variance explained
+  normalize_loadings: true  # Normalize factor loadings
+
+# Memory management
+memory:
+  max_tensor_gb: 8.0        # Maximum tensor size in memory
+  chunk_memory_fraction: 0.8 # Fraction of limit per chunk
+  enable_checkpointing: true # Save intermediate results
+  checkpoint_interval: 50    # Iterations between checkpoints
+
+# Parallel processing
+parallel:
+  n_workers: -1             # Number of workers (-1 for all CPUs)
+  backend: 'threading'      # Joblib backend: 'threading', 'multiprocessing'
+  batch_parallelism: true   # Parallelize across batches
+  factor_parallelism: false # Parallelize factor updates
+
+# Convergence monitoring
+convergence:
+  patience: 10              # Iterations without improvement
+  min_improvement: 1e-4     # Minimum relative improvement
+  check_interval: 10        # Check convergence every N iterations
+  early_stopping: true      # Enable early stopping
+
+# Output configuration
+output:
+  save_factors: true        # Save factor matrices
+  save_metrics: true        # Save quality metrics
+  save_reconstructed: false # Save reconstructed tensor
+  compression: 'gzip'       # Compression for saved files
+  decimal_places: 6         # Precision for saved values
+
+# Validation
+validation:
+  cross_validation: false   # Enable cross-validation
+  n_folds: 5               # Number of CV folds
+  validation_fraction: 0.1  # Fraction for validation
+  stability_runs: 3        # Runs for stability assessment
+
+# Reporting
+reporting:
+  generate_plots: true      # Generate visualization plots
+  plot_components: 5        # Number of components to plot
+  plot_format: 'png'        # Plot format: 'png', 'pdf', 'svg'
+  plot_dpi: 150            # Plot resolution
+  colormap: 'viridis'      # Colormap for visualizations
+
+# Logging
+logging:
+  level: 'INFO'            # Logging level
+  progress_bar: true       # Show progress bar
+  log_memory: true         # Log memory usage
+  log_timing: true         # Log timing information
