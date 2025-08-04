@@ -347,8 +347,8 @@ class GEEMerger:
                 if not (min_lon < -179 and max_lon > 179 and min_lat < -89 and max_lat > 89):
                     self.logger.info(f"Using image geometry bounds: ({min_lon:.2f}, {min_lat:.2f}, {max_lon:.2f}, {max_lat:.2f})")
                     return bounds
-        except:
-            pass
+        except Exception as e:
+            self.logger.warning(f"Could not get bounds from image geometry: {e}")
         
         # Method 2: Use reduceRegion to find min/max coordinates where data exists
         try:
