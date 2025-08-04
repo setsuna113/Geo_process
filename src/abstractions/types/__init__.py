@@ -42,6 +42,9 @@ from .biodiversity_types import (
     CoordinateSystem, SpatialData, BiodiversityData
 )
 
+# Analysis types
+from .analysis_types import AnalysisResult, ModelMetrics
+
 __all__ = [
     # Checkpoint
     'CheckpointData', 'CheckpointMetadata', 'CheckpointLevel', 'CheckpointStatus',
@@ -72,5 +75,8 @@ __all__ = [
     'SpatialIntegrityValidation', 'ValidationErrorType', 'ValidationContext',
     
     # Biodiversity
-    'CoordinateSystem', 'SpatialData', 'BiodiversityData'
+    'CoordinateSystem', 'SpatialData', 'BiodiversityData',
+    
+    # Analysis
+    'AnalysisResult', 'ModelMetrics'
 ]

@@ -39,6 +39,19 @@ class IAnalyzer(ABC):
     """
     
     @abstractmethod
+    def __init__(self, pipeline_config: Any, db: Any):
+        """Initialize analyzer with pipeline configuration and database.
+        
+        All analyzers MUST accept these parameters for consistency.
+        Method-specific configuration should be loaded internally.
+        
+        Args:
+            pipeline_config: Main pipeline configuration object
+            db: Database manager instance
+        """
+        pass
+    
+    @abstractmethod
     def get_default_parameters(self) -> Dict[str, Any]:
         """
         Get default parameters for this analysis method.

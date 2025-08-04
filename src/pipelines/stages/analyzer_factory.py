@@ -24,6 +24,7 @@ class AnalyzerFactory:
     _analyzers: Dict[str, Tuple[str, str]] = {
         'som': ('src.biodiversity_analysis.methods.som.analyzer_adapter', 'SOMAnalyzer'),
         'kmeans': ('src.biodiversity_analysis.methods.kmeans.analyzer_adapter', 'KMeansAnalyzerAdapter'),
+        'cpwopt': ('src.biodiversity_analysis.methods.cpwopt.analyzer_adapter', 'CPWOPTAnalyzer'),
         # 'gwpca': ('src.biodiversity_analysis.methods.gwpca.analyzer', 'GWPCAAnalyzer'),
         # 'maxp_regions': ('src.biodiversity_analysis.methods.maxp.analyzer', 'MaxPAnalyzer')
     }

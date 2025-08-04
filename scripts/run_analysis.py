@@ -367,6 +367,25 @@ class StandaloneAnalysisRunner:
                 'random_seed': analysis_config.get('random_seed', method_config.get('random_seed', 42))
             })
         
+        elif analysis_method == 'cpwopt':
+            # CP-WOPT tensor factorization parameters
+            cpwopt_params = ['rank', 'max_iterations', 'convergence_threshold', 
+                           'initialization', 'use_minibatch', 'minibatch_size',
+                           'regularization', 'random_state', 'verbose',
+                           'preprocessing', 'generate_plots', 'save_factors']
+            params.update({
+                k: v for k, v in analysis_config.items() 
+                if k in cpwopt_params and v is not None
+            })
+            # Add preprocessing params if not specified
+            if 'preprocessing' not in params:
+                params['preprocessing'] = {
+                    'lat_bins': analysis_config.get('lat_bins', 20),
+                    'lon_bins': analysis_config.get('lon_bins', 20),
+                    'aggregation': analysis_config.get('aggregation', 'sum'),
+                    'transform': analysis_config.get('transform', 'log1p')
+                }
+        
         return params
     
     def _run_analysis_with_checkpointing(
@@ -502,38 +521,55 @@ class ConfigWrapper:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Run standalone spatial analysis experiments on biodiversity data'
+        description='Run standalone spatial analysis experiments on biodiversity data',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Configuration Inspection:
+  python run_analysis.py --list-methods
+  python run_analysis.py --show-config cpwopt
+  python run_analysis.py --show-env-vars cpwopt
+  python run_analysis.py --compare-config cpwopt
+  python run_analysis.py --export-config cpwopt --output cpwopt.json
+
+Running Experiments:
+  python run_analysis.py --experiment test_cpwopt
+  python run_analysis.py --experiment test_som --resume
+  CPWOPT_ALGORITHM_RANK=10 python run_analysis.py --experiment sparse_cpwopt
+        """
     )
     
+    # Create argument groups
+    analysis_group = parser.add_argument_group('Analysis Options')
+    config_group = parser.add_argument_group('Configuration Inspection')
+    
     # Experiment selection
-    parser.add_argument(
+    analysis_group.add_argument(
         '--experiment', '-e',
-        required=True,
         help='Named experiment from config.yml spatial_analysis.experiments'
     )
     
     # Input data override
-    parser.add_argument(
+    analysis_group.add_argument(
         '--input', '-i',
         help='Input parquet file path (overrides experiment config)'
     )
     
     # Method override
-    parser.add_argument(
+    analysis_group.add_argument(
         '--method', '-m',
-        choices=['som', 'gwpca', 'maxp_regions'],
+        choices=['som', 'gwpca', 'maxp_regions', 'cpwopt'],
         help='Analysis method (overrides experiment config)'
     )
     
     # Configuration file
-    parser.add_argument(
+    analysis_group.add_argument(
         '--config-file',
         type=Path,
         help='Path to config.yml file'
     )
     
     # Logging level
-    parser.add_argument(
+    analysis_group.add_argument(
         '--log-level',
         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
         default='INFO',
@@ -541,13 +577,80 @@ def main():
     )
     
     # Resume from checkpoint
-    parser.add_argument(
+    analysis_group.add_argument(
         '--resume',
         action='store_true',
         help='Resume from existing checkpoint if available'
     )
     
+    # Configuration inspection arguments
+    config_group.add_argument(
+        '--list-methods',
+        action='store_true',
+        help='List all available analysis methods'
+    )
+    config_group.add_argument(
+        '--show-config',
+        metavar='METHOD',
+        help='Show complete configuration for a method'
+    )
+    config_group.add_argument(
+        '--show-env-vars',
+        metavar='METHOD',
+        help='Show environment variables for a method'
+    )
+    config_group.add_argument(
+        '--compare-config',
+        metavar='METHOD',
+        help='Show differences from default configuration'
+    )
+    config_group.add_argument(
+        '--export-config',
+        metavar='METHOD',
+        help='Export current configuration to file'
+    )
+    config_group.add_argument(
+        '--output',
+        help='Output file for --export-config'
+    )
+    
     args = parser.parse_args()
+    
+    # Handle configuration inspection commands
+    if args.list_methods:
+        from src.config.method_registry import MethodConfigRegistry
+        print("\nAvailable analysis methods:")
+        print("=" * 30)
+        for method in MethodConfigRegistry.list_methods():
+            print(f"  - {method}")
+        print("\nUse --show-config <method> to see configuration details")
+        return
+    
+    if args.show_config:
+        from src.utils.config_inspector import ConfigInspector
+        ConfigInspector.show_method_config(args.show_config)
+        return
+    
+    if args.show_env_vars:
+        from src.utils.config_inspector import ConfigInspector
+        ConfigInspector.show_env_vars(args.show_env_vars)
+        return
+    
+    if args.compare_config:
+        from src.utils.config_inspector import ConfigInspector
+        ConfigInspector.compare_with_defaults(args.compare_config)
+        return
+    
+    if args.export_config:
+        from src.utils.config_inspector import ConfigInspector
+        output_file = Path(args.output) if args.output else None
+        ConfigInspector.export_config(args.export_config, output_file)
+        return
+    
+    # Regular experiment execution requires --experiment
+    if not args.experiment:
+        parser.error("--experiment is required for running analysis")
+        return
     
     # Set logging level
     logging.getLogger().setLevel(getattr(logging, args.log_level))
