@@ -125,7 +125,7 @@ class ExportManager:
         export_path = f"{self.config.get('export_folder', 'merged_outputs')}/{resolution_name}/merged_data"
         
         # Get scale in meters
-        scale_meters = resolution_config['resolution'] * 111320  # degrees to meters at equator
+        scale_meters = resolution_config.get('resolution', 0.016667) * 111320  # degrees to meters at equator
         
         # Create export task
         task = ee.batch.Export.image.toCloudStorage(

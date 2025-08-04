@@ -327,11 +327,13 @@ class ParquetConverter:
             
             # Prepare band names
             if not self.band_names:
-                # Default band names - should be set from config
-                self.band_names = [
-                    'am_fungi', 'am_fungi_cv', 'am_fungi_extrap', 'ecm_fungi',
-                    'bio01', 'bio04', 'bio12', 'bio15', 'elevation'
-                ][:n_bands]
+                # Get default band names from metadata if available
+                if metadata and 'band_names' in metadata:
+                    self.band_names = metadata['band_names'][:n_bands]
+                else:
+                    # Fallback defaults if no metadata provided
+                    self.logger.warning("No band names in metadata, using minimal defaults")
+                    self.band_names = [f'band_{i+1}' for i in range(n_bands)]
             
             # Define schema
             schema_fields = [
@@ -379,12 +381,14 @@ class ParquetConverter:
                     
                     # Create mask for valid pixels (not NoData in any band)
                     # Only include pixels where at least one biodiversity band has data
-                    # Get biodiversity bands from metadata or use defaults
+                    # Get biodiversity bands from metadata
                     if metadata and 'biodiversity_bands' in metadata:
                         biodiv_bands = metadata['biodiversity_bands']
                     else:
-                        # Default bands - should match config
-                        biodiv_bands = ['am_fungi', 'am_fungi_cv', 'am_fungi_extrap', 'ecm_fungi']
+                        # If no biodiversity bands specified, use first 4 bands as default
+                        # This avoids hardcoding specific band names
+                        biodiv_bands = self.band_names[:min(4, len(self.band_names))]
+                        self.logger.warning(f"No biodiversity bands specified in metadata, using first {len(biodiv_bands)} bands")
                     
                     valid_mask = np.zeros(len(xs), dtype=bool)
                     
