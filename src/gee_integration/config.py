@@ -65,12 +65,17 @@ class GEEConfig:
     export_format: str = "CSV"  # For parquet conversion
     export_timeout: int = 7200  # 2 hours default, configurable
     export_check_interval: int = 30  # Check every 30 seconds
+    file_format_options: Optional[Dict] = None
+    export_max_pixels: float = 1e13
     
     # Output settings
     output_dir: Path = Path("data/gee_merged")
     parquet_dir: Path = Path("data/merged")
     temp_dir: Path = Path("data/temp/gee")
     cleanup_temp: bool = True
+    
+    # Performance settings
+    parquet_chunk_size: int = 100000  # Rows per chunk for parquet conversion
     
     # Validation settings
     check_alignment: bool = True
@@ -133,10 +138,15 @@ class GEEConfig:
             export_destination=data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
             export_folder=data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
             export_format=data.get('gee', {}).get('export', {}).get('format', 'CSV'),
+            file_format_options=data.get('gee', {}).get('export', {}).get('file_format_options'),
+            export_timeout=data.get('gee', {}).get('export', {}).get('timeout', 7200),
+            export_check_interval=data.get('gee', {}).get('export', {}).get('check_interval', 30),
+            export_max_pixels=data.get('gee', {}).get('export', {}).get('maxPixels', 1e13),
             output_dir=Path(data.get('gee', {}).get('output', {}).get('local_dir', 'data/gee_merged')),
             parquet_dir=Path(data.get('gee', {}).get('output', {}).get('parquet_dir', 'data/merged')),
             temp_dir=Path(data.get('gee', {}).get('output', {}).get('temp_dir', 'data/temp/gee')),
             cleanup_temp=data.get('gee', {}).get('output', {}).get('cleanup_temp', True),
+            parquet_chunk_size=data.get('gee', {}).get('performance', {}).get('parquet_chunk_size', 100000),
             check_alignment=data.get('gee', {}).get('validation', {}).get('check_alignment', True),
             check_bounds=data.get('gee', {}).get('validation', {}).get('check_bounds', True),
             tolerance=data.get('gee', {}).get('validation', {}).get('tolerance', 0.0001),

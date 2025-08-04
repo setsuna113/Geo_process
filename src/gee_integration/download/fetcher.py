@@ -31,13 +31,14 @@ class GCSFetcher:
     
     @log_operation("download_from_gcs")
     @retry_with_logging(max_attempts=3, delay=5.0)
-    def download_export(self, gcs_path: str, local_dir: Optional[Path] = None) -> List[Path]:
+    def download_export(self, gcs_path: str, local_dir: Optional[Path] = None, export_format: str = 'CSV') -> List[Path]:
         """
         Download exported files from GCS.
         
         Args:
             gcs_path: GCS path (gs://bucket/path)
             local_dir: Local directory to download to
+            export_format: Export format ('CSV' or 'GeoTIFF')
             
         Returns:
             List of downloaded file paths
@@ -52,35 +53,74 @@ class GCSFetcher:
             local_dir = Path(local_dir)
             local_dir.mkdir(parents=True, exist_ok=True)
         
-        # GEE exports CSV files with pattern: export-*.csv
-        # Download all matching files
-        cmd = [
-            'gsutil',
-            '-m',  # Parallel mode
-            'cp',
-            f"{gcs_path}-*.csv",  # GEE export pattern
-            str(local_dir)
-        ]
-        
         try:
             self.logger.info(f"Downloading from {gcs_path}...")
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            
-            # Find downloaded files
-            pattern = str(local_dir / f"{Path(gcs_path).name}-*.csv")
-            downloaded_files = glob.glob(pattern)
-            
-            if not downloaded_files:
-                # Try without pattern
-                cmd = ['gsutil', '-m', 'cp', f"{gcs_path}.csv", str(local_dir)]
-                subprocess.run(cmd, check=True)
-                downloaded_files = [local_dir / f"{Path(gcs_path).name}.csv"]
+            if export_format == 'GeoTIFF':
+                # Download single GeoTIFF file
+                cmd = [
+                    'gsutil',
+                    '-m',
+                    'cp',
+                    f"{gcs_path}.tif",
+                    str(local_dir)
+                ]
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                
+                # Find downloaded file
+                tif_file = local_dir / f"{Path(gcs_path).name}.tif"
+                if tif_file.exists():
+                    downloaded_files = [tif_file]
+                else:
+                    downloaded_files = []
+            else:
+                # First try to download numbered CSV files (for large exports)
+                cmd = [
+                    'gsutil',
+                    '-m',  # Parallel mode
+                    'cp',
+                    f"{gcs_path}-*.csv",  # GEE adds numbers to CSV exports
+                    str(local_dir)
+                ]
+                
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    check=False  # Don't raise on error
+                )
+                
+                if result.returncode != 0:
+                    # Try single CSV file (for small exports)
+                    self.logger.debug("No numbered CSV files found, trying single file...")
+                    cmd = [
+                        'gsutil',
+                        '-m',
+                        'cp',
+                        f"{gcs_path}.csv",
+                        str(local_dir)
+                    ]
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                
+                # Find downloaded CSV files
+                csv_pattern = str(local_dir / f"{Path(gcs_path).name}-*.csv")
+                downloaded_files = glob.glob(csv_pattern)
+                
+                if not downloaded_files:
+                    # Check if it's a single CSV file (for small exports)
+                    single_file = local_dir / f"{Path(gcs_path).name}.csv"
+                    if single_file.exists():
+                        downloaded_files = [single_file]
             
             downloaded_paths = [Path(f) for f in downloaded_files]
             
@@ -100,12 +140,13 @@ class GCSFetcher:
             self.logger.error("gsutil not found. Please install Google Cloud SDK")
             raise
     
-    def download_multiple_exports(self, export_paths: Dict[str, str]) -> Dict[str, List[Path]]:
+    def download_multiple_exports(self, export_paths: Dict[str, str], export_format: str = 'CSV') -> Dict[str, List[Path]]:
         """
         Download multiple export results.
         
         Args:
             export_paths: Dict mapping resolution name to GCS path
+            export_format: Export format ('CSV' or 'GeoTIFF')
             
         Returns:
             Dict mapping resolution name to list of downloaded files
@@ -120,7 +161,7 @@ class GCSFetcher:
             res_dir.mkdir(exist_ok=True)
             
             try:
-                downloaded = self.download_export(gcs_path, res_dir)
+                downloaded = self.download_export(gcs_path, res_dir, export_format)
                 downloads[res_name] = downloaded
             except Exception as e:
                 self.logger.error(f"Failed to download {res_name}: {e}")

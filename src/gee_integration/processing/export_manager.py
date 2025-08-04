@@ -51,23 +51,23 @@ class ExportManager:
         
         sampled = merged_image.sampleRegions(
             collection=sampling_points,
-            scale=self.config['processing']['scale'],
+            scale=0.016667 * 111320,  # Default ~1.8km resolution in meters
             projection='EPSG:4326',
-            tileScale=self.config['processing']['tile_scale']
+            tileScale=self.config.get('tile_scale', 16)
         )
         
         # Prepare export
         if not description:
             description = f'biodiversity_climate_{resolution_name}'
         
-        export_path = f"{self.config['export']['folder']}/{resolution_name}/merged_data"
+        export_path = f"{self.config.get('export_folder', 'merged_outputs')}/{resolution_name}/merged_data"
         
         # Create export task
-        if self.config['export']['destination'] == 'cloud_storage':
+        if self.config.get('export_destination', 'cloud_storage') == 'cloud_storage':
             task = ee.batch.Export.table.toCloudStorage(
                 collection=sampled,
                 description=description,
-                bucket=self.config['export']['bucket'],
+                bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
                 fileNamePrefix=export_path,
                 fileFormat='CSV'
             )
@@ -76,7 +76,7 @@ class ExportManager:
             task = ee.batch.Export.table.toDrive(
                 collection=sampled,
                 description=description,
-                folder=self.config['export']['folder'],
+                folder=self.config.get('export_folder', 'merged_outputs'),
                 fileNamePrefix=f'merged_data_{resolution_name}',
                 fileFormat='CSV'
             )
@@ -100,6 +100,70 @@ class ExportManager:
         
         return task_id
     
+    def _export_as_geotiff(self,
+                          merged_image: ee.Image,
+                          bounds: ee.Geometry,
+                          resolution_name: str,
+                          resolution_config: Dict,
+                          description: Optional[str] = None) -> str:
+        """
+        Export merged image as GeoTIFF.
+        
+        Args:
+            merged_image: Merged multi-band image
+            bounds: Export bounds as ee.Geometry
+            resolution_name: Resolution identifier
+            resolution_config: Resolution configuration dict
+            description: Export description
+            
+        Returns:
+            Task ID
+        """
+        if not description:
+            description = f'biodiversity_climate_{resolution_name}'
+            
+        export_path = f"{self.config.get('export_folder', 'merged_outputs')}/{resolution_name}/merged_data"
+        
+        # Get scale in meters
+        scale_meters = resolution_config['resolution'] * 111320  # degrees to meters at equator
+        
+        # Create export task
+        task = ee.batch.Export.image.toCloudStorage(
+            image=merged_image,
+            description=description,
+            bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
+            fileNamePrefix=export_path,
+            region=bounds,
+            scale=scale_meters,
+            crs='EPSG:4326',
+            fileFormat='GeoTIFF',
+            formatOptions=self.config.get('file_format_options', {
+                'cloudOptimized': True,
+                'noData': -9999
+            }),
+            maxPixels=self.config.get('export_max_pixels', 1e13)
+        )
+        
+        # Start task
+        task.start()
+        task_id = task.id
+        
+        # Track task
+        self.active_tasks[task_id] = {
+            'task': task,
+            'description': description,
+            'resolution': resolution_name,
+            'export_path': export_path,
+            'start_time': time.time(),
+            'format': 'GeoTIFF'
+        }
+        
+        self.logger.info(f"🚀 GeoTIFF export task started: {task_id}")
+        self.logger.info(f"   Resolution: {resolution_name} ({scale_meters:.1f}m)")
+        self.logger.info(f"   Export path: {export_path}")
+        
+        return task_id
+    
     def export_for_both_resolutions(self,
                                   merged_image: ee.Image,
                                   bounds: Tuple[float, float, float, float],
@@ -116,29 +180,41 @@ class ExportManager:
             Dict mapping resolution name to task ID
         """
         task_ids = {}
+        export_format = self.config.get('export_format', 'CSV')
         
         for res_name, res_config in resolutions.items():
-            self.logger.info(f"Preparing export for {res_name} ({res_config['description']})")
+            self.logger.info(f"Preparing {export_format} export for {res_name} ({res_config['description']})")
             
-            # Create sampling grid for this resolution
-            from .merger import GEEMerger
-            merger = GEEMerger()
-            
-            sampling_grid = merger.create_sampling_grid(
-                bounds=bounds,
-                resolution=res_config['resolution']
-            )
-            
-            # Log sampling
-            self.logger.info(f"   Created sampling grid for resolution {res_name}")
-            
-            # Export
-            task_id = self.export_sampled_data(
-                merged_image=merged_image,
-                sampling_points=sampling_grid,
-                resolution_name=res_name,
-                description=f'biodiv_climate_{res_name}_{int(time.time())}'
-            )
+            if export_format == 'GeoTIFF':
+                # Convert bounds tuple to ee.Geometry
+                ee_bounds = ee.Geometry.Rectangle(bounds)
+                
+                # Export as GeoTIFF
+                task_id = self._export_as_geotiff(
+                    merged_image=merged_image,
+                    bounds=ee_bounds,
+                    resolution_name=res_name,
+                    resolution_config=res_config,
+                    description=f'biodiv_climate_{res_name}_{int(time.time())}'
+                )
+            else:
+                # Original CSV export with sampling
+                from .merger import GEEMerger
+                merger = GEEMerger()
+                
+                sampling_grid = merger.create_sampling_grid(
+                    bounds=bounds,
+                    resolution=res_config['resolution']
+                )
+                
+                self.logger.info(f"   Created sampling grid for resolution {res_name}")
+                
+                task_id = self.export_sampled_data(
+                    merged_image=merged_image,
+                    sampling_points=sampling_grid,
+                    resolution_name=res_name,
+                    description=f'biodiv_climate_{res_name}_{int(time.time())}'
+                )
             
             task_ids[res_name] = task_id
         
@@ -234,8 +310,8 @@ class ExportManager:
         for res_name, task_id in task_ids.items():
             if task_id in self.active_tasks:
                 task_info = self.active_tasks[task_id]
-                if self.config['export']['destination'] == 'cloud_storage':
-                    export_paths[res_name] = f"gs://{self.config['export']['bucket']}/{task_info['export_path']}"
+                if self.config.get('export_destination', 'cloud_storage') == 'cloud_storage':
+                    export_paths[res_name] = f"gs://{self.config.get('gcs_bucket', 'biodiv-gee-yl998')}/{task_info['export_path']}"
                 else:
                     export_paths[res_name] = task_info['export_path']
         
