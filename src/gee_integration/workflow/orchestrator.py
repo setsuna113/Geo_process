@@ -90,6 +90,10 @@ class GEEWorkflowOrchestrator:
             # Step 5: Export from GEE
             if not self.state.is_step_complete(WorkflowStep.EXPORT_COMPLETE):
                 self._export_from_gee()
+            elif self.state.current_step == WorkflowStep.PROCESSING_COMPLETE:
+                # Fix: If we're at processing_complete, move to export
+                self.logger.info("Resuming from processing_complete, starting export...")
+                self._export_from_gee()
             
             # Step 6: Download and convert
             if not self.state.is_step_complete(WorkflowStep.DOWNLOAD_COMPLETE):
