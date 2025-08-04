@@ -230,10 +230,35 @@ class CPWOPT:
         
         This solves: A = X_(n) (C ⊙ B)^T [(C^T C) * (B^T B)]^{-1}
         with modifications for missing values.
+        
+        Args:
+            tensor: Input tensor
+            weights: Weight mask
+            factors: List of factor matrices
+            mode: Mode to update
+            
+        Returns:
+            Updated factor matrix
+            
+        Raises:
+            ValueError: If input shapes are invalid
         """
+        # Input validation
+        if not isinstance(factors, list) or len(factors) != tensor.ndim:
+            raise ValueError(f"Expected {tensor.ndim} factors, got {len(factors)}")
+        if tensor.shape != weights.shape:
+            raise ValueError(f"Tensor shape {tensor.shape} != weights shape {weights.shape}")
+        if mode >= tensor.ndim:
+            raise ValueError(f"Mode {mode} out of range for {tensor.ndim}D tensor")
+            
         n_modes = len(factors)
         rank = factors[0].shape[1]
         mode_size = tensor.shape[mode]
+        
+        # Validate factor dimensions
+        for i, factor in enumerate(factors):
+            if factor.shape != (tensor.shape[i], rank):
+                raise ValueError(f"Factor {i} shape {factor.shape} incompatible with tensor")
         
         # Compute Gram matrices for other modes
         grams = []
@@ -241,67 +266,96 @@ class CPWOPT:
             if m != mode:
                 grams.append(factors[m].T @ factors[m])
         
-        # Initialize new factor
-        new_factor = np.zeros((mode_size, rank))
+        # Compute Hadamard product of Gram matrices once
+        gram_product = grams[0].copy()
+        for g in grams[1:]:
+            gram_product *= g  # Element-wise product
+        gram_product += np.eye(rank) * EPSILON  # Regularization
+        
+        # Pre-compute the Khatri-Rao product of other factors
+        # This is the most expensive operation - do it once outside the loop
+        other_factors = [factors[m] for m in range(n_modes) if m != mode]
+        V = self._compute_khatri_rao_product(other_factors)
         
         # Unfold tensor and weights along mode
         tensor_unfold = unfold(tensor, mode)
         weights_unfold = unfold(weights, mode)
         
-        # Update each row of the factor matrix
-        for i in range(mode_size):
-            # Get weights for this fiber
-            w_i = weights_unfold[i, :]
-            
-            # Skip if no observed values
-            if np.sum(w_i) == 0:
-                continue
-            
-            # Build the system for this row
-            # Left-hand side: weighted MTTKRP
-            # Right-hand side: weighted Hadamard product of Gram matrices
-            
-            # Compute V = (C ⊙ B ⊙ ...) for other modes
-            V = factors[0] if mode != 0 else factors[1]
-            for m in range(n_modes):
-                if m != mode and m != (0 if mode != 0 else 1):
-                    # Khatri-Rao product
-                    V_new = np.zeros((V.shape[0] * factors[m].shape[0], rank))
-                    for r in range(rank):
-                        V_new[:, r] = np.kron(V[:, r], factors[m][:, r])
-                    V = V_new
-            
-            # Apply weights
-            V_weighted = V * w_i[:, np.newaxis]
-            
-            # Left-hand side
-            lhs = tensor_unfold[i, :] @ V_weighted
-            
-            # Right-hand side (Hadamard product of Gram matrices)
-            rhs = grams[0]
-            for g in grams[1:]:
-                rhs = rhs * g  # Element-wise product
-                
-            # Add regularization for numerical stability
-            rhs += np.eye(rank) * EPSILON
-            
-            # Solve the system
-            try:
-                new_factor[i, :] = np.linalg.solve(rhs, lhs)
-            except np.linalg.LinAlgError:
-                # Use pseudo-inverse if singular
-                new_factor[i, :] = lhs @ np.linalg.pinv(rhs)
+        # Vectorized update for all rows at once
+        # Find rows with non-zero weights
+        valid_rows = np.sum(weights_unfold, axis=1) > 0
+        n_valid = np.sum(valid_rows)
         
-        # Normalize to prevent numerical issues
-        for r in range(rank):
-            norm = np.linalg.norm(new_factor[:, r])
-            if norm > MIN_COMPONENT_NORM:
-                new_factor[:, r] /= norm
-            else:
-                # Reinitialize near-zero components
-                new_factor[:, r] = np.random.rand(mode_size) * 0.01
+        if n_valid == 0:
+            # No valid data, return random initialization
+            logger.warning(f"No valid data for mode {mode}, using random initialization")
+            return np.random.rand(mode_size, rank) * 0.01
+        
+        # Initialize new factor
+        new_factor = np.zeros((mode_size, rank))
+        
+        # Batch process valid rows for better performance
+        batch_size = min(1000, n_valid)  # Process in chunks to balance memory/speed
+        valid_indices = np.where(valid_rows)[0]
+        
+        for start_idx in range(0, n_valid, batch_size):
+            end_idx = min(start_idx + batch_size, n_valid)
+            batch_indices = valid_indices[start_idx:end_idx]
+            
+            # Get batch data
+            batch_tensor = tensor_unfold[batch_indices, :]
+            batch_weights = weights_unfold[batch_indices, :]
+            
+            # Weighted Khatri-Rao product for batch
+            V_weighted = V * batch_weights[:, :, np.newaxis]  # Broadcasting
+            
+            # Batch matrix multiplication
+            lhs_batch = np.einsum('ij,ijk->ik', batch_tensor, V_weighted.reshape(batch_weights.shape[1], -1, rank))
+            
+            # Solve for all rows in batch
+            try:
+                # Use Cholesky decomposition for speed (gram_product is positive definite)
+                L = np.linalg.cholesky(gram_product)
+                y = np.linalg.solve(L, lhs_batch.T)
+                new_factor[batch_indices, :] = np.linalg.solve(L.T, y).T
+            except np.linalg.LinAlgError:
+                # Fall back to standard solve
+                new_factor[batch_indices, :] = np.linalg.solve(gram_product, lhs_batch.T).T
+        
+        # Normalize columns to prevent numerical issues
+        norms = np.linalg.norm(new_factor, axis=0)
+        valid_norms = norms > MIN_COMPONENT_NORM
+        
+        # Vectorized normalization
+        new_factor[:, valid_norms] /= norms[valid_norms]
+        
+        # Reinitialize near-zero components
+        if not np.all(valid_norms):
+            new_factor[:, ~valid_norms] = np.random.rand(mode_size, np.sum(~valid_norms)) * 0.01
                 
         return new_factor
+    
+    def _compute_khatri_rao_product(self, factors: List[np.ndarray]) -> np.ndarray:
+        """Compute Khatri-Rao product of factors efficiently.
+        
+        Args:
+            factors: List of factor matrices
+            
+        Returns:
+            Khatri-Rao product
+        """
+        if not factors:
+            raise ValueError("No factors provided")
+            
+        result = factors[0]
+        for factor in factors[1:]:
+            # Efficient Khatri-Rao using broadcasting
+            n1, r = result.shape
+            n2 = factor.shape[0]
+            kr_product = (result[:, np.newaxis, :] * factor[np.newaxis, :, :]).reshape(n1 * n2, r)
+            result = kr_product
+            
+        return result
     
     def transform(self, tensor_data: TensorData) -> np.ndarray:
         """Transform tensor data to component space.
