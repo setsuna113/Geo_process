@@ -384,7 +384,8 @@ class GEEMerger:
                 bounds = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
                 return bounds
         except Exception as e:
-            self.logger.warning(f"Could not detect bounds automatically: {e}")
+            self.logger.error(f"Error in reduceRegion bounds detection: {e}")
+            self.logger.debug(f"Full traceback:", exc_info=True)
         
         # Method 3: Fallback to using the footprint of the first band
         try:
@@ -392,9 +393,10 @@ class GEEMerger:
             bounds = footprint.bounds()
             self.logger.info("Using image footprint as bounds")
             return bounds
-        except:
-            pass
+        except Exception as e:
+            self.logger.error(f"Error getting image footprint: {e}")
         
         # Final fallback: return None to indicate bounds detection failed
-        self.logger.warning("Could not detect data bounds, export will use image default")
+        self.logger.error("Failed to detect data bounds - all methods failed")
+        self.logger.warning("Export will proceed without explicit bounds (may use image default)")
         return None

@@ -93,6 +93,11 @@ gee:
     temp_dir: "data/temp/gee"
     cleanup_temp: true
   
+  # Performance settings
+  performance:
+    parquet_chunk_size: 100000  # Rows per chunk for parquet conversion
+    # Adjust based on available memory: lower for limited memory, higher for speed
+    
   # Validation settings
   validation:
     check_alignment: true

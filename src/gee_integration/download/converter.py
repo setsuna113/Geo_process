@@ -354,6 +354,7 @@ class ParquetConverter:
                     data = src.read(window=window)  # Shape: (bands, height, width)
                     
                     # Get coordinates for this window
+                    # Memory optimization: process in chunks defined by rasterio blocks
                     rows, cols = np.meshgrid(
                         np.arange(window.row_off, window.row_off + window.height),
                         np.arange(window.col_off, window.col_off + window.width),
@@ -378,13 +379,23 @@ class ParquetConverter:
                     
                     # Create mask for valid pixels (not NoData in any band)
                     # Only include pixels where at least one biodiversity band has data
-                    biodiv_bands = ['am_fungi', 'am_fungi_cv', 'am_fungi_extrap', 'ecm_fungi']
+                    # Get biodiversity bands from metadata or use defaults
+                    if metadata and 'biodiversity_bands' in metadata:
+                        biodiv_bands = metadata['biodiversity_bands']
+                    else:
+                        # Default bands - should match config
+                        biodiv_bands = ['am_fungi', 'am_fungi_cv', 'am_fungi_extrap', 'ecm_fungi']
+                    
                     valid_mask = np.zeros(len(xs), dtype=bool)
                     
                     for band_name in biodiv_bands:
                         if band_name in batch_data:
                             band_data = batch_data[band_name]
-                            valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
+                            # Type safety check
+                            if isinstance(band_data, np.ndarray) and np.issubdtype(band_data.dtype, np.number):
+                                valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
+                            else:
+                                self.logger.warning(f"Skipping non-numeric band {band_name} in validity check")
                     
                     # Apply mask
                     if np.any(valid_mask):
