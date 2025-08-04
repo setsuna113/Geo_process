@@ -90,6 +90,10 @@ class GEEWorkflowOrchestrator:
             # Step 5: Export from GEE
             if not self.state.is_step_complete(WorkflowStep.EXPORT_COMPLETE):
                 self._export_from_gee()
+            elif self.state.current_step == WorkflowStep.PROCESSING_COMPLETE:
+                # Fix: If we're at processing_complete, move to export
+                self.logger.info("Resuming from processing_complete, starting export...")
+                self._export_from_gee()
             
             # Step 6: Download and convert
             if not self.state.is_step_complete(WorkflowStep.DOWNLOAD_COMPLETE):
@@ -255,8 +259,43 @@ class GEEWorkflowOrchestrator:
             validator = GEEAlignmentValidator(self.config.tolerance)
             validation = validator.validate_images(biodiv_images, biodiv_configs)
             
+            # Log detailed validation results
+            self.logger.info("=" * 60)
+            self.logger.info("ALIGNMENT VALIDATION RESULTS:")
+            self.logger.info("=" * 60)
+            
+            # Log metadata for each image
+            for img_meta in validation['metadata']:
+                self.logger.info(f"\nImage: {img_meta['name']}")
+                self.logger.info(f"  - CRS: {img_meta['crs']}")
+                self.logger.info(f"  - Dimensions: {img_meta['dimensions']}")
+                self.logger.info(f"  - Data type: {img_meta['data_type']}")
+                self.logger.info(f"  - Bands: {img_meta['bands']} ({', '.join(img_meta['band_names'])})")
+                if 'bounds' in img_meta:
+                    self.logger.info(f"  - Bounds: {img_meta['bounds']}")
+                if 'crs_transform' in img_meta:
+                    self.logger.info(f"  - Transform: {img_meta['crs_transform']}")
+            
+            # Log summary
+            summary = validation['summary']
+            self.logger.info(f"\nSummary:")
+            self.logger.info(f"  - Total images: {summary['total_images']}")
+            self.logger.info(f"  - CRS list: {summary['crs_list']}")
+            self.logger.info(f"  - Total bands: {summary['total_bands']}")
+            self.logger.info(f"  - Data types: {summary['data_types']}")
+            if 'overall_bounds' in summary:
+                self.logger.info(f"  - Overall bounds: {summary['overall_bounds']}")
+            
+            # Log validation status
+            self.logger.info(f"\nValidation Status: {'✅ PASSED' if validation['valid'] else '❌ FAILED'}")
             if not validation['valid']:
-                self.logger.warning(f"Alignment issues: {validation['issues']}")
+                self.logger.warning(f"Alignment issues found:")
+                for issue in validation['issues']:
+                    self.logger.warning(f"  - {issue}")
+            else:
+                self.logger.info("  - All images are compatible for merging")
+            
+            self.logger.info("=" * 60)
             
             # Load WorldClim
             merger = GEEMerger()
@@ -330,40 +369,19 @@ class GEEWorkflowOrchestrator:
             # Recreate images (since we can't serialize ee.Image)
             merger = GEEMerger()
             
-            # Get bounds for sampling
-            bounds = (-180, -90, 180, 90)  # Default global
-            if self.config.biodiversity_datasets:
-                # Could get from parquet metadata if available
-                pass
-            
             # Export both resolutions
             task_ids = {}
             
+            # Prepare images for all resolutions
+            processed_images_for_export = {}
+            
             for res_name, res_config in self.config.resolutions.items():
-                self.logger.info(f"\n   Exporting {res_name}...")
-                
-                # Create sampling grid
-                sampling_grid = merger.create_sampling_grid(
-                    bounds=bounds,
-                    resolution=res_config.resolution
-                )
-                
-                # Recreate merged image for export
-                self.logger.info("   Recreating merged image for export...")
-                
-                # Re-authenticate if needed
-                import ee
-                if not self._authenticator:
-                    self._authenticator = GEEAuthenticator(self.config.__dict__)
-                    self._authenticator.authenticate(
-                        method=self.config.auth_method,
-                        service_account_key=self.config.service_account_key,
-                        project_id=self.config.project_id
-                    )
+                self.logger.info(f"\n   Preparing {res_name} for export...")
                 
                 # Reload biodiversity images
                 upload_results = self.state.get_metadata('upload_results', {})
                 biodiv_images = []
+                biodiv_configs = []
                 
                 for dataset in self.config.biodiversity_datasets:
                     if dataset.name in upload_results and upload_results[dataset.name].get('success'):
@@ -372,6 +390,7 @@ class GEEWorkflowOrchestrator:
                         # Rename band to expected name
                         image = image.rename([dataset.band_name])
                         biodiv_images.append(image)
+                        biodiv_configs.append(dataset.__dict__)
                 
                 # Reload WorldClim
                 worldclim = merger.load_worldclim_v2(self.config.climate_variables)
@@ -382,50 +401,112 @@ class GEEWorkflowOrchestrator:
                     target_crs='EPSG:4326'
                 )
                 
-                # Resample and merge
-                if len(biodiv_images) == 1:
-                    biodiv_combined = biodiv_images[0]
-                else:
-                    biodiv_combined = biodiv_images[0]
-                    for img in biodiv_images[1:]:
-                        biodiv_combined = biodiv_combined.addBands(img)
-                
-                # Resample biodiversity
-                biodiv_resampled = resampler.resample_image(biodiv_combined, {
-                    'name': 'biodiversity',
-                    'data_type': 'continuous',
-                    'resampling': 'bilinear'
-                })
+                # Resample biodiversity images
+                biodiv_resampled = resampler.resample_collection(biodiv_images, biodiv_configs)
                 
                 # Resample climate
-                climate_resampled = resampler.resample_image(worldclim, {
-                    'name': 'climate', 
+                worldclim_config = {
+                    'name': 'worldclim',
+                    'band_name': 'climate',
                     'data_type': 'continuous',
                     'resampling': 'bilinear'
-                })
+                }
+                climate_resampled = resampler.resample_image(worldclim, worldclim_config)
                 
-                # Merge
-                merged = biodiv_resampled.addBands(climate_resampled)
-                
-                # Export the merged image
-                export_path = f"{self.config.export_folder}/{res_name}/merged_data"
-                
-                # Create export task
-                task = ee.batch.Export.table.toCloudStorage(
-                    collection=merged.sampleRegions(
-                        collection=sampling_grid,
-                        scale=res_config.resolution * 111320,  # Convert degrees to meters
-                        tileScale=self.config.tile_scale
-                    ),
-                    description=f'export_{res_name}_{self.experiment_name}',
-                    bucket=self.config.gcs_bucket,
-                    fileNamePrefix=export_path,
-                    fileFormat=self.config.export_format
+                # Merge all datasets
+                merged = merger.merge_datasets(
+                    biodiv_resampled,
+                    climate_resampled,
+                    self.config.merge_strategy
                 )
                 
-                # Start the task
-                task.start()
-                task_id = task.id
+                processed_images_for_export[res_name] = merged
+            
+            # Now export each resolution using ExportManager
+            self.logger.info(f"\n   Using {self.config.export_format} export format...")
+            
+            for res_name, merged_image in processed_images_for_export.items():
+                self.logger.info(f"\n   Exporting {res_name}...")
+                
+                # Automatically detect data bounds from the merged image
+                # Use a coarser scale for faster bounds detection
+                bounds_scale = self.config.resolutions[res_name].resolution * 111320 * 10  # 10x coarser
+                data_bounds = merger.get_data_bounds(merged_image, scale=bounds_scale)
+                
+                if self.config.export_format == 'GeoTIFF':
+                    if data_bounds is not None:
+                        # Export as GeoTIFF with detected bounds
+                        task_id = self._export_manager._export_as_geotiff(
+                            merged_image=merged_image,
+                            bounds=data_bounds,  # Use automatically detected bounds
+                            resolution_name=res_name,
+                            resolution_config=self.config.resolutions[res_name].__dict__,
+                            description=f'export_{res_name}_{self.experiment_name}'
+                        )
+                    else:
+                        # Export without specifying bounds (use image footprint)
+                        self.logger.info(f"   Exporting without explicit bounds (using image footprint)")
+                        
+                        # Direct export without bounds parameter
+                        export_path = f"{self.config.export_folder}/{res_name}/merged_data"
+                        scale_meters = self.config.resolutions[res_name].resolution * 111320
+                        
+                        task = ee.batch.Export.image.toCloudStorage(
+                            image=merged_image,
+                            description=f'export_{res_name}_{self.experiment_name}',
+                            bucket=self.config.gcs_bucket,
+                            fileNamePrefix=export_path,
+                            # No region specified - will use image footprint
+                            scale=scale_meters,
+                            crs='EPSG:4326',
+                            fileFormat='GeoTIFF',
+                            formatOptions=self.config.file_format_options or {
+                                'cloudOptimized': True,
+                                'noData': -9999
+                            },
+                            maxPixels=self.config.export_max_pixels
+                        )
+                        task.start()
+                        task_id = task.id
+                        self.logger.info(f"   Started export task: {task_id}")
+                else:
+                    # Export as CSV (existing logic)
+                    # Add pixel coordinates as bands
+                    lon = ee.Image.pixelLonLat().select('longitude').rename('x')
+                    lat = ee.Image.pixelLonLat().select('latitude').rename('y')
+                    
+                    # Add coordinates to the merged image
+                    image_with_coords = lon.addBands(lat).addBands(merged_image)
+                    
+                    # Sample the image using detected bounds or global bounds
+                    if data_bounds is not None:
+                        sample_region = ee.FeatureCollection([ee.Feature(data_bounds)])
+                    else:
+                        # Use a global region if bounds detection failed
+                        global_bounds = ee.Geometry.Rectangle([-180, -90, 180, 90])
+                        sample_region = ee.FeatureCollection([ee.Feature(global_bounds)])
+                        
+                    sampled = image_with_coords.sampleRegions(
+                        collection=sample_region,
+                        scale=self.config.resolutions[res_name].resolution * 111320,
+                        projection='EPSG:4326',
+                        tileScale=4
+                    )
+                    
+                    # Export as CSV
+                    export_path = f"{self.config.export_folder}/{res_name}/merged_data"
+                    task = ee.batch.Export.table.toCloudStorage(
+                        collection=sampled,
+                        description=f'export_{res_name}_{self.experiment_name}',
+                        bucket=self.config.gcs_bucket,
+                        fileNamePrefix=export_path,
+                        fileFormat='CSV'
+                    )
+                    
+                    # Start the task
+                    task.start()
+                    task_id = task.id
+                
                 self.logger.info(f"   Started export task: {task_id}")
                 task_ids[res_name] = task_id
             
@@ -446,7 +527,12 @@ class GEEWorkflowOrchestrator:
                 all_completed = True
                 
                 for res_name, task_id in task_ids.items():
-                    status = self._task_monitor.get_task_status(task_id)
+                    # Get task status directly from Earth Engine
+                    task_info = ee.data.getTaskStatus(task_id)[0]
+                    status = {
+                        'state': task_info.get('state', 'UNKNOWN'),
+                        'error_message': task_info.get('error_message', '')
+                    }
                     statuses[res_name] = status
                     
                     # Update progress tracking
@@ -506,11 +592,55 @@ class GEEWorkflowOrchestrator:
             else:
                 # Download from GCS
                 fetcher = GCSFetcher(self.config.temp_dir)
-                downloads = fetcher.download_multiple_exports(export_paths)
+                # Pass export format to fetcher
+                downloads = fetcher.download_multiple_exports(
+                    export_paths, 
+                    export_format=self.config.export_format
+                )
                 
                 # Convert to parquet
                 converter = ParquetConverter(self.config.parquet_dir)
-                final_outputs = converter.convert_all_resolutions(downloads)
+                
+                # Build band names from config
+                band_names = []
+                biodiversity_bands = []
+                
+                # Add biodiversity bands
+                for dataset in self.config.biodiversity_datasets:
+                    band_names.append(dataset.band_name)
+                    biodiversity_bands.append(dataset.band_name)
+                    
+                # Add climate bands
+                if hasattr(self.config, 'climate_variables'):
+                    band_names.extend(self.config.climate_variables)
+                    
+                # Add elevation if configured
+                if hasattr(self.config, 'include_elevation') and self.config.include_elevation:
+                    band_names.append('elevation')
+                
+                # Pass metadata for converter
+                metadata = {
+                    'band_names': band_names,
+                    'biodiversity_bands': biodiversity_bands,  # For validity checking
+                    'format': self.config.export_format,
+                    'chunk_size': getattr(self.config, 'parquet_chunk_size', 100000)
+                }
+                
+                # Convert based on format
+                if self.config.export_format == 'GeoTIFF':
+                    # For GeoTIFF, we expect one file per resolution
+                    final_outputs = {}
+                    for res_name, downloaded_files in downloads.items():
+                        if downloaded_files:
+                            output_path = converter.convert(
+                                downloaded_files[0],  # GeoTIFF is single file
+                                res_name,
+                                metadata
+                            )
+                            final_outputs[res_name] = output_path
+                else:
+                    # CSV format - use existing method
+                    final_outputs = converter.convert_all_resolutions(downloads)
                 
                 # Cleanup temp files if requested
                 if self.config.cleanup_temp:

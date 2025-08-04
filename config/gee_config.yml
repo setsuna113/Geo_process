@@ -10,87 +10,53 @@ gee:
   target_resolutions:
     fine:
       name: "1_8km"
-      resolution: 0.016667  # ~1.8km at equator
+      resolution: 0.016667  # ~1.8km at equator (same as plant/vertebrate data)
       description: "Native resolution, no upsampling"
     coarse:
-      name: "18km"
-      resolution: 0.16667   # ~18km at equator
-      description: "10x coarser for fast processing"
+      name: "45km"
+      resolution: 0.41667   # ~45km at equator (25x coarser)
+      description: "25x coarser for fast processing"
   
   # Input datasets
   inputs:
     biodiversity:
       # Fungal richness data - SDM predictions
-      - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
+      - path: "data/test_gee_realistic/sparse_fungal_richness.tif"
         name: "am_fungi_richness"
         band_name: "am_fungi"
         data_type: "continuous"
         resampling: "bilinear"
-        no_data: -9999
+        no_data: -3.4e+38
         
       # AM Fungi uncertainty (coefficient of variation)
-      - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
+      - path: "data/test_gee_realistic/sparse_fungal_cv.tif"
         name: "am_fungi_cv"
         band_name: "am_fungi_cv"
         data_type: "continuous"
         resampling: "bilinear"
-        no_data: -9999
+        no_data: -3.4e+38
         
-      # AM Fungi extrapolation flag
-      - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Extrapolation.tif"
-        name: "am_fungi_extrap"
-        band_name: "am_fungi_extrap"
-        data_type: "categorical"
-        resampling: "mode"  # Mode for binary/categorical data
-        no_data: -9999
         
-      # EcM Fungi richness - SDM predictions
-      - path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
-        name: "ecm_fungi_richness"
-        band_name: "ecm_fungi"
-        data_type: "continuous"
-        resampling: "bilinear"
-        no_data: -9999
-        
-      # EcM Fungi uncertainty (coefficient of variation)
-      - path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_CoeffVar.tif"
-        name: "ecm_fungi_cv"
-        band_name: "ecm_fungi_cv"
-        data_type: "continuous"
-        resampling: "bilinear"
-        no_data: -9999
-        
-      # EcM Fungi extrapolation flag
-      - path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Extrapolation.tif"
-        name: "ecm_fungi_extrap"
-        band_name: "ecm_fungi_extrap"
-        data_type: "categorical"
-        resampling: "mode"  # Mode for binary/categorical data
-        no_data: -9999
-      
-      # Species richness maps  
-      - path: "data/richness_maps/daru-plants-richness.tif"
-        name: "plant_richness"
-        band_name: "plants"
-        data_type: "count"
-        resampling: "max"  # Max for species counts
-        no_data: null
-        
-      - path: "data/richness_maps/iucn-terrestrial-richness.tif"
-        name: "terrestrial_richness"
-        band_name: "terrestrial"
-        data_type: "count"
-        resampling: "max"
-        no_data: null
     
     climate:
       source: "WORLDCLIM/V2/BIO"
-      variables: "all"  # All 19 bioclimatic variables
+      # Selected bioclimatic variables:
+      # bio01: Annual Mean Temperature
+      # bio04: Temperature Seasonality 
+      # bio12: Annual Precipitation
+      # bio15: Precipitation Seasonality
+      variables: ["bio01", "bio04", "bio12", "bio15"]
+    
+    # Additional environmental data
+    elevation:
+      source: "MERIT/DEM/v1_0_3"  # MERIT DEM - error-removed global elevation
+      band: "dem"  # Elevation in meters
+      # High quality: removes errors from SRTM/ASTER through ML filtering
   
   # Upload settings
   upload:
     bucket: "biodiv-gee-yl998"  # Update with your bucket name
-    asset_prefix: "projects/earthengine-legacy/assets/users/geebiodiversity/biodiversity"
+    asset_prefix: "projects/earthengine-legacy/assets/users/geebiodiversity/test_exact_res"
     chunk_size_mb: 100
     parallel_uploads: 4
   
@@ -98,15 +64,27 @@ gee:
   processing:
     merge_strategy: "addBands"
     scale: 1000  # meters
+    mask_ocean: true  # Exclude ocean areas from export
+    # Latitude bounds to exclude polar regions (optional)
+    # Common boundaries:
+    #   - Arctic/Antarctic Circles: [-66.5, 66.5]
+    #   - Tree line (more restrictive): [-55, 70]
+    #   - Conservative biodiversity range: [-60, 75]
+    #   - Inclusive (keeps all terrestrial data): [-90, 84]
+    latitude_bounds: [-90, 84]  # Include all data, ocean mask will handle the rest
     tileScale: 16  # For large exports
-    maxPixels: 1e13
+    maxPixels: 10000000000000  # 1e13
   
   # Export settings
   export:
     destination: "cloud_storage"
     bucket: "biodiv-gee-yl998"  # Same bucket as upload
     folder: "merged_outputs"
-    format: "CSV"  # Export as CSV for parquet conversion
+    format: "GeoTIFF"  # Options: "CSV", "GeoTIFF"
+    file_format_options:
+      cloudOptimized: true
+      noData: -9999
+    maxPixels: 10000000000000  # 1e13
   
   # Output settings
   output:
@@ -115,6 +93,11 @@ gee:
     temp_dir: "data/temp/gee"
     cleanup_temp: true
   
+  # Performance settings
+  performance:
+    parquet_chunk_size: 100000  # Rows per chunk for parquet conversion
+    # Adjust based on available memory: lower for limited memory, higher for speed
+    
   # Validation settings
   validation:
     check_alignment: true
