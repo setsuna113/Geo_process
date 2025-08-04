@@ -603,12 +603,17 @@ class GEEWorkflowOrchestrator:
                 
                 # Build band names from config
                 band_names = []
+                biodiversity_bands = []
+                
                 # Add biodiversity bands
                 for dataset in self.config.biodiversity_datasets:
                     band_names.append(dataset.band_name)
+                    biodiversity_bands.append(dataset.band_name)
+                    
                 # Add climate bands
                 if hasattr(self.config, 'climate_variables'):
                     band_names.extend(self.config.climate_variables)
+                    
                 # Add elevation if configured
                 if hasattr(self.config, 'include_elevation') and self.config.include_elevation:
                     band_names.append('elevation')
@@ -616,7 +621,9 @@ class GEEWorkflowOrchestrator:
                 # Pass metadata for converter
                 metadata = {
                     'band_names': band_names,
-                    'format': self.config.export_format
+                    'biodiversity_bands': biodiversity_bands,  # For validity checking
+                    'format': self.config.export_format,
+                    'chunk_size': getattr(self.config, 'parquet_chunk_size', 100000)
                 }
                 
                 # Convert based on format

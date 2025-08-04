@@ -51,7 +51,7 @@ class ExportManager:
         
         sampled = merged_image.sampleRegions(
             collection=sampling_points,
-            scale=resolution_config.get('resolution', 0.016667) * 111320,  # Convert degrees to meters
+            scale=0.016667 * 111320,  # Default ~1.8km resolution in meters
             projection='EPSG:4326',
             tileScale=self.config.get('tile_scale', 16)
         )

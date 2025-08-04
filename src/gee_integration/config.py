@@ -74,6 +74,9 @@ class GEEConfig:
     temp_dir: Path = Path("data/temp/gee")
     cleanup_temp: bool = True
     
+    # Performance settings
+    parquet_chunk_size: int = 100000  # Rows per chunk for parquet conversion
+    
     # Validation settings
     check_alignment: bool = True
     check_bounds: bool = True
@@ -143,6 +146,7 @@ class GEEConfig:
             parquet_dir=Path(data.get('gee', {}).get('output', {}).get('parquet_dir', 'data/merged')),
             temp_dir=Path(data.get('gee', {}).get('output', {}).get('temp_dir', 'data/temp/gee')),
             cleanup_temp=data.get('gee', {}).get('output', {}).get('cleanup_temp', True),
+            parquet_chunk_size=data.get('gee', {}).get('performance', {}).get('parquet_chunk_size', 100000),
             check_alignment=data.get('gee', {}).get('validation', {}).get('check_alignment', True),
             check_bounds=data.get('gee', {}).get('validation', {}).get('check_bounds', True),
             tolerance=data.get('gee', {}).get('validation', {}).get('tolerance', 0.0001),
