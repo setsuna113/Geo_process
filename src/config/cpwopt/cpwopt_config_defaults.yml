@@ -1,0 +1,152 @@
+# Default CP-WOPT Configuration
+# These are fallback values if not specified in main config
+
+# Quick presets for common use cases
+presets:
+  # Fast exploration - low rank, fewer iterations
+  fast:
+    algorithm:
+      rank: 10
+      max_iterations: 100
+      convergence_threshold: 1e-4
+    minibatch:
+      batch_size: 50000
+    
+  # Balanced - good quality/speed tradeoff  
+  balanced:
+    algorithm:
+      rank: 20
+      max_iterations: 500
+      convergence_threshold: 1e-5
+    minibatch:
+      batch_size: 25000
+      
+  # High quality - higher rank, tight convergence
+  quality:
+    algorithm:
+      rank: 50
+      max_iterations: 1000
+      convergence_threshold: 1e-6
+    minibatch:
+      batch_size: 10000
+      
+  # Memory constrained - aggressive batching
+  low_memory:
+    algorithm:
+      rank: 15
+    minibatch:
+      batch_size: 5000
+      memory_threshold: 0.6
+    sparse:
+      force_sparse: true
+      
+  # Interpretability - constraints for cleaner patterns
+  interpretable:
+    algorithm:
+      rank: 15
+      optimizer: 'nonnegative'
+    constraints:
+      nonnegative: true
+      sparsity: 0.1
+    interpretation:
+      top_n_features: 20
+      
+# Default values for all parameters
+defaults:
+  algorithm:
+    rank: 20
+    max_iterations: 1000
+    convergence_threshold: 1e-6
+    init_method: 'random'
+    optimizer: 'als'
+    random_state: null
+    
+  tensor_construction:
+    lat_bins: 50
+    lon_bins: 50
+    aggregation: 'sum'
+    transform: 'log1p'
+    min_observations: 1
+    fill_value: 0
+    
+  weights:
+    missing_value_weight: 0.0
+    use_observation_counts: true
+    min_weight: 0.0
+    max_weight: 1.0
+    
+  minibatch:
+    enabled: true
+    batch_size: 10000
+    shuffle: false
+    drop_last: false
+    memory_threshold: 0.8
+    
+  sparse:
+    auto_sparse: true
+    sparsity_threshold: 0.95
+    force_sparse: false
+    storage_format: 'coo'
+    
+  constraints:
+    nonnegative: false
+    orthogonal: false
+    sparsity: 0.0
+    smoothness: 0.0
+    
+  optimization:
+    learning_rate: 0.01
+    momentum: 0.9
+    gradient_iterations: 10
+    line_search: true
+    regularization: 0.0
+    
+  interpretation:
+    top_n_features: 10
+    significance_threshold: 0.1
+    sort_components: true
+    normalize_loadings: true
+    
+  memory:
+    max_tensor_gb: 8.0
+    chunk_memory_fraction: 0.8
+    enable_checkpointing: true
+    checkpoint_interval: 50
+    
+  parallel:
+    n_workers: -1
+    backend: 'threading'
+    batch_parallelism: true
+    factor_parallelism: false
+    
+  convergence:
+    patience: 10
+    min_improvement: 1e-4
+    check_interval: 10
+    early_stopping: true
+    
+  output:
+    save_factors: true
+    save_metrics: true
+    save_reconstructed: false
+    compression: 'gzip'
+    decimal_places: 6
+    
+  validation:
+    cross_validation: false
+    n_folds: 5
+    validation_fraction: 0.1
+    stability_runs: 3
+    
+  reporting:
+    generate_plots: true
+    plot_components: 5
+    plot_format: 'png'
+    plot_dpi: 150
+    colormap: 'viridis'
+    
+  logging:
+    level: 'INFO'
+    progress_bar: true
+    log_memory: true
+    log_timing: true

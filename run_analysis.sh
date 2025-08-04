@@ -63,7 +63,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -e, --experiment NAME    Analysis experiment name from config.yml"
             echo "  -i, --input PATH         Input parquet file (overrides experiment config)"
-            echo "  -m, --method METHOD      Analysis method: som|gwpca|maxp_regions"
+            echo "  -m, --method METHOD      Analysis method: som|gwpca|maxp_regions|cpwopt"
             echo "  --monitor                Run with tmux monitoring"
             echo "  -d, --daemon             Run as daemon process"
             echo "  -r, --resume             Resume from checkpoint"
@@ -88,6 +88,7 @@ while [[ $# -gt 0 ]]; do
             echo "  som          - Self-Organizing Maps for clustering biodiversity patterns"
             echo "  gwpca        - Geographically Weighted Principal Component Analysis"
             echo "  maxp_regions - MaxP regionalization for spatial clustering"
+            echo "  cpwopt       - CP-WOPT tensor factorization for sparse biodiversity data"
             exit 0
             ;;
         *)
