@@ -788,18 +788,34 @@ class CPWOPTAnalyzer(IAnalyzer):
         # Convert to Path object and resolve to absolute path
         output_path = Path(output_path).resolve()
         
-        # Define allowed base directories
+        # SECURITY: Check for symbolic links in the path
+        current = output_path
+        while current != current.parent:
+            if current.exists() and current.is_symlink():
+                raise SecurityError(
+                    f"Symbolic link detected in path: {current}. "
+                    "Symbolic links are not allowed for security reasons."
+                )
+            current = current.parent
+        
+        # Define allowed base directories with stricter whitelist
         allowed_bases = [
             Path.cwd() / "outputs",
-            Path("/scratch"),  # HPC scratch directory
-            Path("/tmp"),      # Temporary directory
+            Path("/scratch") / os.environ.get("USER", ""),  # User-specific scratch
+            Path("/tmp") / f"cpwopt_{os.getpid()}",  # Process-specific temp
         ]
+        
+        # Filter out non-existent bases
+        allowed_bases = [base for base in allowed_bases if base.parent.exists()]
         
         # Check if the resolved path is under an allowed directory
         is_allowed = False
         for base in allowed_bases:
             try:
-                output_path.relative_to(base.resolve())
+                # Ensure both paths are resolved to catch symlink traversals
+                base_resolved = base.resolve()
+                output_resolved = output_path.resolve()
+                output_resolved.relative_to(base_resolved)
                 is_allowed = True
                 break
             except ValueError:
@@ -811,14 +827,28 @@ class CPWOPTAnalyzer(IAnalyzer):
                 f"Allowed bases: {[str(b) for b in allowed_bases]}"
             )
         
-        # Check for suspicious patterns
-        suspicious_patterns = ["../", "..", "~", "${", "$(", "`"]
+        # Check for suspicious patterns (expanded list)
+        suspicious_patterns = [
+            "../", "..", "~", "${", "$(", "`",  # Original patterns
+            "%", "\\", "//", "..\\", ".\\",     # Windows-style and URL encoding
+            "\x00", "\n", "\r", "|", ";", "&",  # Null bytes and command separators
+            "file://", "ftp://", "http://"      # Protocol handlers
+        ]
         path_str = str(output_path)
         for pattern in suspicious_patterns:
             if pattern in path_str:
                 raise SecurityError(
                     f"Suspicious pattern '{pattern}' found in path: {path_str}"
                 )
+        
+        # SECURITY: Validate filename characters (alphanumeric, dash, underscore, dot)
+        import re
+        filename = output_path.name
+        if filename and not re.match(r'^[a-zA-Z0-9._\-]+$', filename):
+            raise SecurityError(
+                f"Invalid characters in filename: {filename}. "
+                "Only alphanumeric, dash, underscore, and dot are allowed."
+            )
         
         return output_path
     

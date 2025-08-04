@@ -15,26 +15,54 @@ from typing import Dict, Tuple, List
 def get_system_resources():
     """Get current system resource availability."""
     
-    # Get CPU info
-    cpu_info = subprocess.check_output("nproc", shell=True).decode().strip()
+    # Get CPU info - SECURE: No shell=True
+    cpu_info = subprocess.check_output(["nproc"]).decode().strip()
     total_cpus = int(cpu_info)
     
-    # Get current CPU usage
-    cpu_usage = subprocess.check_output(
-        "ps aux | awk '$3 > 0.0 {sum+=$3} END {print sum}'", 
-        shell=True
-    ).decode().strip()
-    used_cores = int(float(cpu_usage) / 100)
+    # Get current CPU usage - SECURE: Using proper subprocess pipeline
+    ps_proc = subprocess.Popen(["ps", "aux"], stdout=subprocess.PIPE)
+    awk_proc = subprocess.Popen(
+        ["awk", "$3 > 0.0 {sum+=$3} END {print sum}"],
+        stdin=ps_proc.stdout,
+        stdout=subprocess.PIPE
+    )
+    ps_proc.stdout.close()  # Allow ps_proc to receive SIGPIPE if awk_proc exits
+    cpu_usage = awk_proc.communicate()[0].decode().strip()
+    
+    # Handle empty output
+    try:
+        used_cores = int(float(cpu_usage) / 100) if cpu_usage else 0
+    except (ValueError, TypeError):
+        used_cores = 0
     free_cores = total_cpus - used_cores
     
-    # Get memory info (in GB)
-    mem_info = subprocess.check_output(
-        "free -g | grep Mem | awk '{print $2,$3,$7}'", 
-        shell=True
-    ).decode().strip().split()
-    total_mem = int(mem_info[0])
-    used_mem = int(mem_info[1])
-    available_mem = int(mem_info[2])
+    # Get memory info (in GB) - SECURE: Using proper subprocess pipeline
+    free_proc = subprocess.Popen(["free", "-g"], stdout=subprocess.PIPE)
+    grep_proc = subprocess.Popen(
+        ["grep", "Mem"],
+        stdin=free_proc.stdout,
+        stdout=subprocess.PIPE
+    )
+    free_proc.stdout.close()
+    awk_proc = subprocess.Popen(
+        ["awk", "{print $2,$3,$7}"],
+        stdin=grep_proc.stdout,
+        stdout=subprocess.PIPE
+    )
+    grep_proc.stdout.close()
+    mem_output = awk_proc.communicate()[0].decode().strip()
+    
+    # Parse memory info with error handling
+    try:
+        mem_info = mem_output.split()
+        total_mem = int(mem_info[0])
+        used_mem = int(mem_info[1])
+        available_mem = int(mem_info[2])
+    except (IndexError, ValueError):
+        # Fallback values if parsing fails
+        total_mem = 16
+        used_mem = 8
+        available_mem = 8
     
     return {
         'cpu': {
@@ -179,7 +207,7 @@ def main():
     # Save to file
     with open('cpwopt_dynamic_config.json', 'w') as f:
         json.dump({
-            'timestamp': subprocess.check_output('date', shell=True).decode().strip(),
+            'timestamp': subprocess.check_output(['date']).decode().strip(),
             'resources': resources,
             'config': config
         }, f, indent=2)

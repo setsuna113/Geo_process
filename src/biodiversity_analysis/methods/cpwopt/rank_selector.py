@@ -88,6 +88,9 @@ class CPWOPTRankSelector:
         rank_times = {}
         
         # Test each rank
+        # OPTIMIZATION: Use fewer iterations for initial screening
+        screening_iterations = min(50, self.max_iterations // 2)
+        
         for rank in range(self.min_rank, self.max_rank + 1):
             if verbose:
                 logger.info(f"Testing rank {rank}...")
@@ -96,11 +99,14 @@ class CPWOPTRankSelector:
             fits = []
             times = []
             
-            for trial in range(self.n_trials):
+            # OPTIMIZATION: Use only 1 trial for initial screening if many ranks
+            n_trials_to_use = 1 if (self.max_rank - self.min_rank) > 10 else self.n_trials
+            
+            for trial in range(n_trials_to_use):
                 model = CPWOPT(
                     rank=rank,
-                    max_iterations=self.max_iterations,
-                    convergence_threshold=self.convergence_threshold,
+                    max_iterations=screening_iterations,  # Reduced iterations
+                    convergence_threshold=self.convergence_threshold * 10,  # Looser convergence
                     random_state=trial,
                     verbose=False
                 )
