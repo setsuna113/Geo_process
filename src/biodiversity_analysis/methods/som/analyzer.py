@@ -182,11 +182,22 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 predicted_cols
             )
         
-        # Determine grid size
-        grid_size = self._determine_grid_size(
-            len(features_processed),
-            kwargs.get('grid_size', 'auto')
-        )
+        # Determine grid size - check config first
+        logger.info(f"Checking config for grid size. Config type: {type(self.config)}")
+        logger.info(f"Config keys: {list(self.config.keys()) if isinstance(self.config, dict) else 'Not a dict'}")
+        
+        config_grid_size = self.config.get('architecture_config', {}).get('grid_size', None)
+        logger.info(f"Config grid size from architecture_config: {config_grid_size}")
+        
+        if config_grid_size and isinstance(config_grid_size, list) and len(config_grid_size) == 2:
+            grid_size = tuple(config_grid_size)
+            logger.info(f"Using grid size from config: {grid_size[0]}x{grid_size[1]}")
+        else:
+            logger.info(f"Using auto-determine because config_grid_size={config_grid_size}")
+            grid_size = self._determine_grid_size(
+                len(features_processed),
+                kwargs.get('grid_size', 'auto')
+            )
         
         # Create GeoSOM configuration
         # Remove grid_size from kwargs if present to avoid duplicate argument
@@ -272,8 +283,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _create_geosom_config(self, grid_size: Tuple[int, int], **kwargs) -> GeoSOMConfig:
         """Create GeoSOM configuration from settings."""
-        # Use the default config we loaded, not the biodiversity config
-        default_config = self._load_default_config()
+        # Use the config we already loaded in __init__, not load it again
+        default_config = self.config
         arch_config = default_config['architecture_config']
         conv_config = arch_config['convergence']
         
@@ -339,6 +350,28 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Create spatial blocks
         validation_config = self.config.get('validation_config', {})
         n_folds = kwargs.get('cv_folds', validation_config.get('n_folds', 5))
+        
+        # Special case: n_folds=1 means no CV, use all data
+        if n_folds == 1:
+            logger.info("n_folds=1 specified, skipping cross-validation and using all data")
+            # Create dummy CV results that indicate we used all data
+            return {
+                'fold_results': [{
+                    'fold': 0,
+                    'train_size': len(features),
+                    'test_size': 0,
+                    'test_qe': np.nan,  # No test set
+                    'geographic_coherence': np.nan,  # No test set
+                    'convergence_epoch': None,
+                    'note': 'No CV performed - used all data for training'
+                }],
+                'mean_qe': np.nan,
+                'std_qe': 0.0,
+                'mean_geographic_coherence': np.nan,
+                'std_geographic_coherence': 0.0,
+                'cv_performed': False
+            }
+        
         block_size = validation_config.get('block_size', '750km')
         block_size_km = float(block_size.replace('km', ''))
         block_gen = SpatialBlockGenerator(block_size_km=block_size_km, random_state=config.random_seed)

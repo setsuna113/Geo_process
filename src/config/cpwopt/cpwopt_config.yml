@@ -3,17 +3,17 @@
 
 # Algorithm parameters
 algorithm:
-  rank: 20                    # Number of components to extract
+  rank: 50                    # Number of components to extract (increased for richer analysis)
   max_iterations: 1000        # Maximum ALS iterations
   convergence_threshold: 1e-6 # Relative error threshold
-  init_method: 'random'       # Initialization: 'random', 'svd', 'nndsvd'
+  init_method: 'svd'          # Initialization: 'random', 'svd', 'nndsvd' (svd better for large-scale)
   optimizer: 'als'            # Optimizer: 'als', 'gradient', 'nonnegative', 'sparse'
   random_state: 42            # For reproducibility
 
 # Tensor construction parameters
 tensor_construction:
-  lat_bins: 50               # Number of latitude bins
-  lon_bins: 50               # Number of longitude bins
+  lat_bins: 180              # Number of latitude bins (1-degree resolution)
+  lon_bins: 360              # Number of longitude bins (1-degree resolution)
   aggregation: 'sum'         # Aggregation method: 'sum', 'mean', 'max'
   transform: 'log1p'         # Transform: 'none', 'log1p', 'sqrt', 'asinh'
   min_observations: 1        # Minimum observations per cell
@@ -29,10 +29,10 @@ weights:
 # Mini-batch processing
 minibatch:
   enabled: true               # Use mini-batch processing
-  batch_size: 10000          # Samples per batch
+  batch_size: 38000          # Samples per batch (based on available memory calculation)
   shuffle: false             # Shuffle batches
   drop_last: false           # Drop incomplete last batch
-  memory_threshold: 0.8      # Memory usage threshold for auto-adjustment
+  memory_threshold: 0.7      # Memory usage threshold for auto-adjustment (conservative)
 
 # Sparse tensor handling
 sparse:
@@ -65,17 +65,17 @@ interpretation:
 
 # Memory management
 memory:
-  max_tensor_gb: 8.0        # Maximum tensor size in memory
-  chunk_memory_fraction: 0.8 # Fraction of limit per chunk
+  max_tensor_gb: 72.0       # Maximum tensor size in memory (50% of 144GB safe allocation)
+  chunk_memory_fraction: 0.7 # Fraction of limit per chunk (conservative due to memory pressure)
   enable_checkpointing: true # Save intermediate results
-  checkpoint_interval: 50    # Iterations between checkpoints
+  checkpoint_interval: 50    # More frequent checkpoints due to memory pressure
 
 # Parallel processing
 parallel:
-  n_workers: -1             # Number of workers (-1 for all CPUs)
-  backend: 'threading'      # Joblib backend: 'threading', 'multiprocessing'
+  n_workers: 157            # Number of workers (70% of 225 free cores as of latest check)
+  backend: 'multiprocessing' # Joblib backend: 'threading', 'multiprocessing' (better for CPU-bound)
   batch_parallelism: true   # Parallelize across batches
-  factor_parallelism: false # Parallelize factor updates
+  factor_parallelism: false # Parallelize factor updates (disabled to reduce overhead)
 
 # Convergence monitoring
 convergence:
@@ -102,9 +102,9 @@ validation:
 # Reporting
 reporting:
   generate_plots: true      # Generate visualization plots
-  plot_components: 5        # Number of components to plot
+  plot_components: 10       # Number of components to plot (increased to show more)
   plot_format: 'png'        # Plot format: 'png', 'pdf', 'svg'
-  plot_dpi: 150            # Plot resolution
+  plot_dpi: 300            # Plot resolution (higher quality)
   colormap: 'viridis'      # Colormap for visualizations
 
 # Logging

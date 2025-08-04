@@ -310,7 +310,12 @@ class CPWOPT:
             V_weighted = V * batch_weights[:, :, np.newaxis]  # Broadcasting
             
             # Batch matrix multiplication
-            lhs_batch = np.einsum('ij,ijk->ik', batch_tensor, V_weighted.reshape(batch_weights.shape[1], -1, rank))
+            # Compute weighted MTTKRP for batch
+            lhs_batch = np.zeros((len(batch_indices), rank))
+            for i in range(len(batch_indices)):
+                # Element-wise multiply data by weights, then multiply by KR product
+                weighted_row = batch_tensor[i, :] * batch_weights[i, :]
+                lhs_batch[i, :] = weighted_row @ V
             
             # Solve for all rows in batch
             try:

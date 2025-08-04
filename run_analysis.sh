@@ -21,6 +21,7 @@ DAEMON_MODE=false
 RESUME_MODE=false
 PROCESS_NAME=""
 CONFIG_OVERRIDE=""
+SKIP_RESOURCE_CHECK=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -57,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             CONFIG_OVERRIDE="$2"
             shift 2
             ;;
+        --skip-resource-check)
+            SKIP_RESOURCE_CHECK=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -69,6 +74,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -r, --resume             Resume from checkpoint"
             echo "  -p, --process-name NAME  Process name for daemon mode"
             echo "  --config KEY=VALUE       Override config values"
+            echo "  --skip-resource-check    Skip resource availability check"
             echo "  -h, --help               Show this help"
             echo ""
             echo "Examples:"
@@ -139,6 +145,69 @@ detect_python_env() {
 
 PYTHON_CMD=$(detect_python_env)
 echo "🐍 Using Python: $PYTHON_CMD"
+
+# Resource availability check
+if [ "$SKIP_RESOURCE_CHECK" = false ]; then
+    echo ""
+    echo "🔍 Checking resource availability..."
+    
+    # Determine method from experiment or parameter
+    CHECK_METHOD="$ANALYSIS_METHOD"
+    if [ -z "$CHECK_METHOD" ]; then
+        # Try to detect method from experiment name
+        if [[ "$EXPERIMENT_NAME" == *"cpwopt"* ]]; then
+            CHECK_METHOD="cpwopt"
+        elif [[ "$EXPERIMENT_NAME" == *"som"* ]]; then
+            CHECK_METHOD="som"
+        fi
+    fi
+    
+    if [ -n "$CHECK_METHOD" ]; then
+        # Run resource check
+        RESOURCE_CHECK_RESULT=$($PYTHON_CMD -c "
+import sys
+sys.path.insert(0, '$PROJECT_ROOT')
+from src.utils.resource_monitoring.resource_checker import check_method_resources, get_system_resources
+
+# Get current resources
+resources = get_system_resources()
+print(f'Current system state:')
+print(f'  CPU: {resources[\"cpu\"][\"used\"]}/{resources[\"cpu\"][\"total\"]} cores in use ({resources[\"cpu\"][\"free\"]} free)')
+print(f'  Memory: {resources[\"memory\"][\"used_gb\"]}/{resources[\"memory\"][\"total_gb\"]}GB in use ({resources[\"memory\"][\"available_gb\"]}GB free)')
+print()
+
+# Check method resources
+is_safe, warnings, suggestions = check_method_resources('$CHECK_METHOD')
+
+if not is_safe:
+    print('⚠️  RESOURCE WARNING: Configuration may exceed available resources!')
+    for warning in warnings:
+        print(f'  {warning}')
+    print()
+    print('Suggested adjustments:')
+    for param, value in suggestions.items():
+        print(f'  export CPWOPT_{param.upper()}={value}')
+    sys.exit(1)
+else:
+    print('✅ Resource check passed - configuration is compatible with available resources')
+" 2>&1)
+        
+        RESOURCE_CHECK_EXIT=$?
+        echo "$RESOURCE_CHECK_RESULT"
+        
+        if [ $RESOURCE_CHECK_EXIT -ne 0 ]; then
+            echo ""
+            echo "⚠️  Resource check failed. Options:"
+            echo "  1. Apply suggested environment variables and retry"
+            echo "  2. Wait for system resources to become available"
+            echo "  3. Use --skip-resource-check to proceed anyway (not recommended)"
+            exit 1
+        fi
+    else
+        echo "ℹ️  Skipping resource check (method not detected)"
+    fi
+    echo ""
+fi
 
 # Build analysis pipeline command
 ANALYSIS_CMD="$PYTHON_CMD $PROJECT_ROOT/scripts/run_analysis.py"

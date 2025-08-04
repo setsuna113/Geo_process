@@ -12,6 +12,9 @@ from typing import Optional, Tuple, Dict, Any, Callable
 from dataclasses import dataclass
 import logging
 import time
+import os
+from pathlib import Path
+import json
 from scipy.spatial.distance import cdist
 # Moran's I calculation is in spatial_utils module
 
@@ -121,6 +124,7 @@ class GeoSOMVLRSOM:
             'learning_rates': [],
             'radii': [],
             'geographic_coherence': [],
+            'topographic_errors': [],
             'convergence_checks': []
         }
         
@@ -386,6 +390,17 @@ class GeoSOMVLRSOM:
         converged = False
         best_qe = np.inf
         patience_counter = 0
+        start_epoch = 0
+        
+        # Check for resume from checkpoint
+        resume_checkpoint = getattr(self.config, 'resume_checkpoint', None)
+        if resume_checkpoint and os.path.exists(resume_checkpoint):
+            logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
+            checkpoint_data = self.load_checkpoint(resume_checkpoint)
+            start_epoch = checkpoint_data['epoch']
+            best_qe = checkpoint_data['best_qe']
+            patience_counter = checkpoint_data['patience_counter']
+            # Training history already restored in load_checkpoint
         
         # Calculate initial QE on a sample for large datasets
         if len(data) > 10000:
@@ -398,10 +413,12 @@ class GeoSOMVLRSOM:
         else:
             initial_qe = self.calculate_quantization_error(data, coordinates)
         
-        self.training_history['quantization_errors'].append(initial_qe)
-        best_qe = initial_qe
+        # Only calculate initial QE if not resuming
+        if start_epoch == 0:
+            self.training_history['quantization_errors'].append(initial_qe)
+            best_qe = initial_qe
         
-        for epoch in range(self.config.max_epochs):
+        for epoch in range(start_epoch, self.config.max_epochs):
             logger.info(f"Starting epoch {epoch+1}/{self.config.max_epochs}")
             
             # Decay radius
@@ -461,6 +478,45 @@ class GeoSOMVLRSOM:
             self.training_history['learning_rates'].append(self.current_lr)
             self.training_history['radii'].append(self.current_radius)
             
+            # Calculate topographic error every 10 epochs
+            if epoch % 10 == 0 and epoch > 0:
+                logger.info(f"Calculating topographic error for epoch {epoch+1}")
+                te = self.calculate_topographic_error(data, coordinates, sample_size=10000)
+                logger.info(f"Topographic error: {te:.4f}")
+                self.training_history['topographic_errors'].append(te)
+                
+                # Adjust radius based on TE if enabled
+                te_radius_adjustment = getattr(self.config, 'te_radius_adjustment', True)
+                if te_radius_adjustment:
+                    # Get scheduled radius for next epoch
+                    next_epoch_radius = self._get_scheduled_radius(epoch + 1)
+                    
+                    # Adjust based on TE thresholds
+                    te_high_threshold = getattr(self.config, 'te_high_threshold', 0.15)
+                    te_low_threshold = getattr(self.config, 'te_low_threshold', 0.05)
+                    
+                    if te > te_high_threshold:
+                        # High TE: slow down radius decay
+                        radius_modifier = getattr(self.config, 'te_high_radius_modifier', 1.1)
+                        adjusted_radius = next_epoch_radius * radius_modifier
+                        logger.info(f"High TE ({te:.3f} > {te_high_threshold}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
+                    elif te < te_low_threshold:
+                        # Low TE: can decay faster
+                        radius_modifier = getattr(self.config, 'te_low_radius_modifier', 0.95)
+                        adjusted_radius = next_epoch_radius * radius_modifier
+                        logger.info(f"Low TE ({te:.3f} < {te_low_threshold}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
+                    else:
+                        # Normal TE: use scheduled radius
+                        adjusted_radius = next_epoch_radius
+                    
+                    # Apply bounds
+                    adjusted_radius = np.clip(adjusted_radius, self.config.final_radius, self.config.initial_radius)
+                    
+                    # Store adjustment for next update
+                    self._radius_adjustment = adjusted_radius / next_epoch_radius
+                else:
+                    self._radius_adjustment = 1.0
+            
             # Calculate geographic coherence
             if coordinates is not None and epoch % 10 == 0 and epoch > 0:
                 logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
@@ -476,6 +532,21 @@ class GeoSOMVLRSOM:
                     geo_coherence = self._calculate_geographic_coherence(data, coordinates)
                     logger.info(f"Geographic coherence: {geo_coherence:.4f}")
                 self.training_history['geographic_coherence'].append(geo_coherence)
+                
+                # Save checkpoint if enabled
+                # Access nested config properly
+                progress_config = getattr(self.config, 'progress_tracking', {})
+                if isinstance(progress_config, dict):
+                    checkpoint_frequency = progress_config.get('checkpoint_frequency', 10)
+                    checkpoint_dir = progress_config.get('checkpoint_dir', 'checkpoints/som')
+                else:
+                    checkpoint_frequency = getattr(progress_config, 'checkpoint_frequency', 10)
+                    checkpoint_dir = getattr(progress_config, 'checkpoint_dir', 'checkpoints/som')
+                
+                logger.info(f"Checkpoint check: frequency={checkpoint_frequency}, epoch={epoch}, "
+                           f"should_save={(epoch) % checkpoint_frequency == 0}")
+                if checkpoint_frequency > 0 and epoch % checkpoint_frequency == 0:
+                    self.save_checkpoint(checkpoint_dir, epoch, best_qe, patience_counter)
                 
                 # Check convergence
                 if self._check_convergence(geo_coherence, patience_counter):
@@ -578,19 +649,31 @@ class GeoSOMVLRSOM:
                 self.config.low_qe_lr_max
             )
     
-    def _update_radius(self, epoch: int):
-        """Update neighborhood radius."""
+    def _get_scheduled_radius(self, epoch: int) -> float:
+        """Get the scheduled radius for a given epoch without adjustment."""
         if self.config.radius_decay == "linear":
             progress = epoch / self.config.max_epochs
-            self.current_radius = self.config.initial_radius * (1 - progress) + \
-                                 self.config.final_radius * progress
+            return self.config.initial_radius * (1 - progress) + \
+                   self.config.final_radius * progress
         elif self.config.radius_decay == "exponential":
             # Exponential decay: r(t) = r_init * exp(-lambda * t)
             # where lambda is chosen so that r(max_epochs) ≈ r_final
             decay_rate = -np.log(self.config.final_radius / self.config.initial_radius) / self.config.max_epochs
-            self.current_radius = self.config.initial_radius * np.exp(-decay_rate * epoch)
+            return self.config.initial_radius * np.exp(-decay_rate * epoch)
         else:
             raise NotImplementedError(f"Decay {self.config.radius_decay} not implemented")
+    
+    def _update_radius(self, epoch: int):
+        """Update neighborhood radius with optional TE-based adjustment."""
+        # Get base scheduled radius
+        scheduled_radius = self._get_scheduled_radius(epoch)
+        
+        # Apply TE adjustment if available
+        adjustment = getattr(self, '_radius_adjustment', 1.0)
+        self.current_radius = scheduled_radius * adjustment
+        
+        # Reset adjustment for next epoch
+        self._radius_adjustment = 1.0
     
     def _batch_update(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
         """Perform batch update of weights using vectorized operations."""
@@ -1040,6 +1123,88 @@ class GeoSOMVLRSOM:
         
         return total_error / n_valid if n_valid > 0 else np.inf
     
+    def calculate_topographic_error(self, data: np.ndarray, 
+                                  coordinates: Optional[np.ndarray] = None,
+                                  sample_size: int = 10000) -> float:
+        """Calculate topographic error with sampling for efficiency.
+        
+        TE measures how well the SOM preserves the topology of the input space.
+        For each data point, TE = 1 if BMU and 2nd BMU are not neighbors, 0 otherwise.
+        
+        Args:
+            data: Input data
+            coordinates: Geographic coordinates (optional)
+            sample_size: Sample size for efficiency (default 10000)
+            
+        Returns:
+            Topographic error (fraction of samples with non-adjacent BMUs)
+        """
+        n_samples = len(data)
+        
+        # Use sampling for efficiency
+        if n_samples > sample_size:
+            indices = np.random.choice(n_samples, sample_size, replace=False)
+            data = data[indices]
+            coordinates = coordinates[indices] if coordinates is not None else None
+            n_samples = sample_size
+            logger.debug(f"Using {sample_size} samples for TE calculation")
+        
+        # Pre-filter valid samples
+        valid_features = (~np.isnan(data)).sum(axis=1)
+        valid_mask = valid_features >= self.config.min_valid_features
+        
+        if not valid_mask.any():
+            return 1.0  # Maximum error if no valid samples
+        
+        data_valid = data[valid_mask]
+        coords_valid = coordinates[valid_mask] if coordinates is not None else None
+        
+        # Calculate distances to all neurons
+        if coordinates is not None and hasattr(self, 'neuron_coords'):
+            distances = self._vectorized_combined_distance(
+                data_valid, self.weights, coords_valid, self.neuron_coords
+            )
+        else:
+            distances = self._vectorized_partial_bray_curtis_chunk(data_valid, self.weights)
+        
+        # Find BMU and 2nd BMU for each sample
+        te_errors = 0
+        n_valid = 0
+        
+        for i in range(len(distances)):
+            dist_row = distances[i]
+            if np.all(np.isinf(dist_row)):
+                continue
+                
+            # Find BMU
+            bmu_idx = np.argmin(dist_row)
+            
+            # Find 2nd BMU by masking out the BMU
+            dist_row_2nd = dist_row.copy()
+            dist_row_2nd[bmu_idx] = np.inf
+            second_bmu_idx = np.argmin(dist_row_2nd)
+            
+            # Check if they are neighbors on the grid
+            bmu_pos = self._get_neuron_position(bmu_idx)
+            second_bmu_pos = self._get_neuron_position(second_bmu_idx)
+            
+            # Calculate grid distance (Manhattan distance for rectangular grid)
+            grid_distance = abs(bmu_pos[0] - second_bmu_pos[0]) + abs(bmu_pos[1] - second_bmu_pos[1])
+            
+            # Neighbors are adjacent if grid distance is 1
+            if grid_distance > 1:
+                te_errors += 1
+            
+            n_valid += 1
+        
+        return te_errors / n_valid if n_valid > 0 else 1.0
+    
+    def _get_neuron_position(self, neuron_idx: int) -> Tuple[int, int]:
+        """Get grid position (row, col) from neuron index."""
+        row = neuron_idx // self.grid_cols
+        col = neuron_idx % self.grid_cols
+        return (row, col)
+    
     def _calculate_geographic_coherence(self, data: np.ndarray, 
                                       coordinates: np.ndarray) -> float:
         """Calculate geographic coherence using Moran's I.
@@ -1124,8 +1289,21 @@ class GeoSOMVLRSOM:
         converged_qe = False
         converged_geo = False
         
-        # Check QE improvement threshold
-        if len(self.training_history['quantization_errors']) > 10:
+        # Check QE stability over window (new criterion)
+        qe_stability_window = getattr(self.config, 'qe_stability_window', 20)
+        qe_stability_threshold = getattr(self.config, 'qe_stability_threshold', 0.001)
+        
+        if len(self.training_history['quantization_errors']) >= qe_stability_window:
+            recent_qes = self.training_history['quantization_errors'][-qe_stability_window:]
+            qe_range = max(recent_qes) - min(recent_qes)
+            qe_relative_range = qe_range / np.mean(recent_qes)
+            
+            if qe_relative_range < qe_stability_threshold:
+                logger.info(f"QE stable over {qe_stability_window} epochs (range = {qe_relative_range:.5f} < {qe_stability_threshold})")
+                converged_qe = True
+        
+        # Alternative: Check QE improvement threshold (original criterion)
+        if not converged_qe and len(self.training_history['quantization_errors']) > 10:
             recent_qes = self.training_history['quantization_errors'][-10:]
             qe_improvement = abs(recent_qes[-1] - recent_qes[0]) / recent_qes[0]
             if qe_improvement < self.config.qe_improvement_threshold:
@@ -1160,6 +1338,101 @@ class GeoSOMVLRSOM:
     def get_weights(self) -> np.ndarray:
         """Get weight matrix in grid shape."""
         return self.weights.reshape(self.grid_rows, self.grid_cols, self.input_dim)
+    
+    def save_checkpoint(self, checkpoint_dir: str, epoch: int, best_qe: float, patience_counter: int):
+        """Save training checkpoint to disk.
+        
+        Args:
+            checkpoint_dir: Directory to save checkpoint
+            epoch: Current epoch number
+            best_qe: Best QE achieved so far
+            patience_counter: Current patience counter value
+        """
+        logger.info(f"Saving checkpoint at epoch {epoch} to {checkpoint_dir}")
+        checkpoint_path = Path(checkpoint_dir)
+        checkpoint_path.mkdir(parents=True, exist_ok=True)
+        
+        # Checkpoint filename with epoch
+        checkpoint_file = checkpoint_path / f"som_checkpoint_epoch_{epoch}.npz"
+        
+        # Prepare checkpoint data
+        checkpoint_data = {
+            'epoch': epoch,
+            'weights': self.weights,
+            'current_lr': self.current_lr,
+            'current_radius': self.current_radius,
+            'best_qe': best_qe,
+            'patience_counter': patience_counter,
+            'grid_size': self.config.grid_size,
+            'input_dim': self.input_dim,
+            'spatial_weight': self.config.spatial_weight,
+            'training_history': json.dumps(self.training_history)  # JSON for nested dict
+        }
+        
+        # Save numpy arrays and scalars
+        np.savez_compressed(checkpoint_file, **checkpoint_data)
+        logger.info(f"Saved checkpoint to {checkpoint_file}")
+        
+        # Also save a 'latest' symlink for easy access
+        latest_link = checkpoint_path / "som_checkpoint_latest.npz"
+        if latest_link.exists():
+            latest_link.unlink()
+        latest_link.symlink_to(checkpoint_file.name)
+        
+        logger.info(f"Saved checkpoint at epoch {epoch} to {checkpoint_file}")
+        
+        # Clean up old checkpoints (keep last 3)
+        checkpoints = sorted(checkpoint_path.glob("som_checkpoint_epoch_*.npz"))
+        if len(checkpoints) > 3:
+            for old_checkpoint in checkpoints[:-3]:
+                old_checkpoint.unlink()
+                logger.debug(f"Removed old checkpoint: {old_checkpoint}")
+    
+    def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
+        """Load training checkpoint from disk.
+        
+        Args:
+            checkpoint_path: Path to checkpoint file
+            
+        Returns:
+            Dictionary with checkpoint data
+        """
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        
+        # Load checkpoint
+        checkpoint = np.load(checkpoint_path, allow_pickle=True)
+        
+        # Extract data
+        checkpoint_data = {
+            'epoch': int(checkpoint['epoch']),
+            'weights': checkpoint['weights'],
+            'current_lr': float(checkpoint['current_lr']),
+            'current_radius': float(checkpoint['current_radius']),
+            'best_qe': float(checkpoint['best_qe']),
+            'patience_counter': int(checkpoint['patience_counter']),
+            'training_history': json.loads(str(checkpoint['training_history']))
+        }
+        
+        # Validate checkpoint compatibility
+        if checkpoint['grid_size'].tolist() != self.config.grid_size:
+            raise ValueError(f"Grid size mismatch: checkpoint has {checkpoint['grid_size']}, "
+                           f"config has {self.config.grid_size}")
+        
+        if int(checkpoint['input_dim']) != self.input_dim:
+            raise ValueError(f"Input dimension mismatch: checkpoint has {checkpoint['input_dim']}, "
+                           f"current data has {self.input_dim}")
+        
+        # Restore state
+        self.weights = checkpoint_data['weights']
+        self.current_lr = checkpoint_data['current_lr']
+        self.current_radius = checkpoint_data['current_radius']
+        self.training_history = checkpoint_data['training_history']
+        
+        logger.info(f"Loaded checkpoint from epoch {checkpoint_data['epoch']}")
+        logger.info(f"Resumed with LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
+        
+        return checkpoint_data
     
     def cleanup(self):
         """Clean up resources used during training."""

@@ -24,12 +24,11 @@ class SOMAnalyzer(IAnalyzer):
             db: Database manager (used by factory, ignored here)
         """
         # Extract SOM-specific config if available
-        som_config = None
-        if hasattr(config, 'get'):
-            som_config = config.get('spatial_analysis', {}).get('som', {})
+        # Don't pass any config - let GeoSOMAnalyzer load its own config
+        # from som_config_optimized.yml via _load_default_config()
         
         # Initialize the actual GeoSOM analyzer
-        self._analyzer = GeoSOMAnalyzer(som_config)
+        self._analyzer = GeoSOMAnalyzer()
         self._last_data_path = None
     
     def get_default_parameters(self) -> Dict[str, Any]:
