@@ -133,6 +133,8 @@ class FactorUpdater:
                                    skip_mode: int) -> np.ndarray:
         """Compute Khatri-Rao product of all factors except one mode.
         
+        Uses broadcasting and chunking to avoid memory overflow for large tensors.
+        
         Args:
             factors: List of factor matrices
             skip_mode: Mode to skip
@@ -149,16 +151,53 @@ class FactorUpdater:
         # Start with first factor
         result = other_factors[0]
         
-        # Successive Khatri-Rao products
+        # Memory-efficient successive Khatri-Rao products
         for factor in other_factors[1:]:
             n1, r = result.shape
             n2, _ = factor.shape
             
-            # Compute Khatri-Rao product
-            kr_product = np.zeros((n1 * n2, r))
-            for j in range(r):
-                kr_product[:, j] = np.kron(result[:, j], factor[:, j])
-            result = kr_product
+            # Check if result will be too large
+            result_size = n1 * n2 * r * 8  # 8 bytes per float64
+            if result_size > 1e9:  # More than 1GB
+                # Use chunked computation
+                result = self._compute_khatri_rao_chunked(result, factor)
+            else:
+                # Use efficient broadcasting method
+                # This avoids the loop and uses NumPy's optimized operations
+                result = (result[:, np.newaxis, :] * factor[np.newaxis, :, :]).reshape(n1 * n2, r)
+        
+        return result
+    
+    def _compute_khatri_rao_chunked(self, A: np.ndarray, B: np.ndarray, 
+                                   chunk_size: int = 10000) -> np.ndarray:
+        """Compute Khatri-Rao product in chunks to avoid memory overflow.
+        
+        Args:
+            A: First factor matrix (n1 x r)
+            B: Second factor matrix (n2 x r)
+            chunk_size: Number of rows to process at once
+            
+        Returns:
+            Khatri-Rao product (n1*n2 x r)
+        """
+        n1, r = A.shape
+        n2 = B.shape[0]
+        
+        # Pre-allocate result
+        result = np.empty((n1 * n2, r), dtype=A.dtype)
+        
+        # Process in chunks
+        for i in range(0, n1, chunk_size):
+            end_i = min(i + chunk_size, n1)
+            chunk_A = A[i:end_i]
+            
+            # Compute Khatri-Rao for this chunk
+            chunk_result = (chunk_A[:, np.newaxis, :] * B[np.newaxis, :, :])
+            
+            # Store in result
+            start_idx = i * n2
+            end_idx = end_i * n2
+            result[start_idx:end_idx] = chunk_result.reshape(-1, r)
         
         return result
     

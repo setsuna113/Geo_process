@@ -256,7 +256,8 @@ class CPWOPTAnalyzer(IAnalyzer):
         if not self.is_fitted or self.results is None:
             raise ValueError("No results to save")
         
-        output_dir = Path(output_dir)
+        # Validate and secure the output path
+        output_dir = self._validate_output_path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir = output_dir
         
@@ -283,13 +284,8 @@ class CPWOPTAnalyzer(IAnalyzer):
         np.save(output_dir / 'convergence_history.npy', 
                 np.array(self.model.convergence_history_))
         
-        # Save configuration
-        # Handle case where config might be a ConfigWrapper object
-        config_to_save = self.config
-        if hasattr(config_to_save, 'settings'):
-            config_to_save = config_to_save.settings
-        elif hasattr(config_to_save, '__dict__') and not isinstance(config_to_save, dict):
-            config_to_save = config_to_save.__dict__
+        # Save configuration with security sanitization
+        config_to_save = self._sanitize_config_for_export(self.config)
             
         with open(output_dir / 'config.json', 'w') as f:
             json.dump(config_to_save, f, indent=2)
@@ -726,6 +722,130 @@ class CPWOPTAnalyzer(IAnalyzer):
                 current[keys[-1]] = value
         
         return self
+    
+    def _validate_output_path(self, output_path: Path) -> Path:
+        """Validate output path to prevent directory traversal attacks.
+        
+        Args:
+            output_path: Requested output path
+            
+        Returns:
+            Validated absolute path
+            
+        Raises:
+            SecurityError: If path validation fails
+        """
+        from .exceptions import SecurityError
+        
+        # Convert to Path object and resolve to absolute path
+        output_path = Path(output_path).resolve()
+        
+        # Define allowed base directories
+        allowed_bases = [
+            Path.cwd() / "outputs",
+            Path("/scratch"),  # HPC scratch directory
+            Path("/tmp"),      # Temporary directory
+        ]
+        
+        # Check if the resolved path is under an allowed directory
+        is_allowed = False
+        for base in allowed_bases:
+            try:
+                output_path.relative_to(base.resolve())
+                is_allowed = True
+                break
+            except ValueError:
+                continue
+        
+        if not is_allowed:
+            raise SecurityError(
+                f"Output path '{output_path}' is not in an allowed directory. "
+                f"Allowed bases: {[str(b) for b in allowed_bases]}"
+            )
+        
+        # Check for suspicious patterns
+        suspicious_patterns = ["../", "..", "~", "${", "$(", "`"]
+        path_str = str(output_path)
+        for pattern in suspicious_patterns:
+            if pattern in path_str:
+                raise SecurityError(
+                    f"Suspicious pattern '{pattern}' found in path: {path_str}"
+                )
+        
+        return output_path
+    
+    def _sanitize_config_for_export(self, config: Any) -> Dict[str, Any]:
+        """Sanitize configuration for safe export.
+        
+        Removes sensitive information and ensures only safe data is exported.
+        
+        Args:
+            config: Configuration to sanitize
+            
+        Returns:
+            Sanitized configuration dictionary
+        """
+        # Handle different config types
+        if hasattr(config, 'settings'):
+            config_dict = config.settings
+        elif hasattr(config, '__dict__') and not isinstance(config, dict):
+            config_dict = config.__dict__
+        else:
+            config_dict = config
+        
+        # Deep copy to avoid modifying original
+        import copy
+        sanitized = copy.deepcopy(config_dict)
+        
+        # Remove sensitive keys
+        sensitive_keys = [
+            'password', 'token', 'key', 'secret', 'credential',
+            'auth', 'private', 'api_key', 'access_key'
+        ]
+        
+        def remove_sensitive(d: Dict[str, Any]) -> None:
+            """Recursively remove sensitive keys."""
+            if not isinstance(d, dict):
+                return
+                
+            keys_to_remove = []
+            for key in d:
+                # Check if key contains sensitive patterns
+                key_lower = str(key).lower()
+                if any(sensitive in key_lower for sensitive in sensitive_keys):
+                    keys_to_remove.append(key)
+                # Recurse into nested dicts
+                elif isinstance(d[key], dict):
+                    remove_sensitive(d[key])
+                # Sanitize lists of dicts
+                elif isinstance(d[key], list):
+                    for item in d[key]:
+                        if isinstance(item, dict):
+                            remove_sensitive(item)
+            
+            # Remove sensitive keys
+            for key in keys_to_remove:
+                d[key] = "[REDACTED]"
+        
+        remove_sensitive(sanitized)
+        
+        # Ensure all values are JSON serializable
+        def make_serializable(obj: Any) -> Any:
+            """Convert non-serializable objects."""
+            if isinstance(obj, (Path, type)):
+                return str(obj)
+            elif isinstance(obj, dict):
+                return {k: make_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [make_serializable(item) for item in obj]
+            elif hasattr(obj, '__dict__'):
+                return make_serializable(obj.__dict__)
+            else:
+                return obj
+        
+        sanitized = make_serializable(sanitized)
+        
+        return sanitized
 
 
 def create_cpwopt_analyzer(experiment_name: str,
