@@ -528,18 +528,29 @@ class GEEWorkflowOrchestrator:
             for res_name, merged_image in processed_images_for_export.items():
                 self.logger.info(f"\n   Exporting {res_name}...")
                 
-                # Always use hardcoded region for reliability
-                # Use latitude bounds from masking config
-                if self.config.masking.enabled:
-                    lat_min = self.config.masking.latitude_bounds.get('min', -60)
-                    lat_max = self.config.masking.latitude_bounds.get('max', 75)
-                else:
-                    lat_min, lat_max = -90, 90  # Full global if masking disabled
-                
-                self.logger.info(f"   Using export region with latitude range: [{lat_min}, {lat_max}]")
-                
-                # Create simple bounded region
-                export_region = ee.Geometry.Rectangle([-180, lat_min, 180, lat_max])
+                # Try to detect actual data bounds for more accurate exports
+                try:
+                    # Get actual data bounds from the merged image
+                    detected_bounds = merger.get_data_bounds(merged_image, scale=10000)
+                    if detected_bounds:
+                        self.logger.info("   Using detected data bounds for export")
+                        export_region = detected_bounds
+                    else:
+                        raise Exception("Could not detect data bounds")
+                except Exception as e:
+                    self.logger.warning(f"   Could not detect data bounds: {e}")
+                    # Fallback to configured bounds
+                    # Use latitude bounds from masking config
+                    if self.config.masking.enabled:
+                        lat_min = self.config.masking.latitude_bounds.get('min', -60)
+                        lat_max = self.config.masking.latitude_bounds.get('max', 75)
+                    else:
+                        lat_min, lat_max = -90, 90  # Full global if masking disabled
+                    
+                    self.logger.info(f"   Using fallback region with latitude range: [{lat_min}, {lat_max}]")
+                    
+                    # Create simple bounded region (full longitude range)
+                    export_region = ee.Geometry.Rectangle([-180, lat_min, 180, lat_max])
                 
                 if self.config.export_format == 'GeoTIFF':
                     # Export as GeoTIFF with fixed region
