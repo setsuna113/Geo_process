@@ -105,8 +105,7 @@ class ExportManager:
                           bounds: ee.Geometry,
                           resolution_name: str,
                           resolution_config: Dict,
-                          description: Optional[str] = None,
-                          use_regional_export: bool = True) -> str:
+                          description: Optional[str] = None) -> str:
         """
         Export merged image as GeoTIFF.
         
@@ -116,10 +115,9 @@ class ExportManager:
             resolution_name: Resolution identifier
             resolution_config: Resolution configuration dict
             description: Export description
-            use_regional_export: Whether to split into regional exports for large areas
             
         Returns:
-            Task ID or list of task IDs for regional exports
+            Task ID or list of task IDs if hemisphere splitting is enabled
         """
         if not description:
             description = f'biodiversity_climate_{resolution_name}'
@@ -129,19 +127,34 @@ class ExportManager:
         # Get scale in meters
         scale_meters = resolution_config.get('resolution', 0.016667) * 111320  # degrees to meters at equator
         
-        # For coarse resolution with global bounds, we need to split into regions
-        # to avoid GEE's tiling bug that creates 1-pixel wide strips
-        if resolution_name == 'coarse' and use_regional_export:
-            # Get bounds coordinates
+        # Check if hemisphere splitting is needed/enabled
+        hemisphere_config = self.config.get('hemisphere_split', {})
+        use_hemisphere_split = hemisphere_config.get('enabled', False)
+        
+        # Auto-detect if enabled (not recommended)
+        if hemisphere_config.get('auto_detect', False) and not use_hemisphere_split:
+            # Check if this is a global export at coarse resolution
+            coords = bounds.coordinates().getInfo()[0]
+            min_lon = min(c[0] for c in coords)
+            max_lon = max(c[0] for c in coords)
+            
+            # Auto-enable for global exports at coarse resolution
+            if (max_lon - min_lon) > 300 and resolution_name == 'coarse':
+                use_hemisphere_split = True
+                self.logger.info("Auto-enabled hemisphere splitting for global coarse export")
+        
+        # Handle hemisphere splitting if enabled
+        if use_hemisphere_split:
+            # Get bounds for splitting
             coords = bounds.coordinates().getInfo()[0]
             min_lon = min(c[0] for c in coords)
             max_lon = max(c[0] for c in coords)
             min_lat = min(c[1] for c in coords)
             max_lat = max(c[1] for c in coords)
             
-            # If it's a global or near-global export
+            # Only split if actually global
             if (max_lon - min_lon) > 300:  # More than 300 degrees wide
-                self.logger.warning("Detected global export at coarse resolution - splitting into hemispheres to avoid tiling bug")
+                self.logger.info("Using hemisphere split for global export (enabled in config)")
                 
                 # Export in two hemispheres
                 task_ids = []
@@ -209,65 +222,39 @@ class ExportManager:
                         'format': 'GeoTIFF',
                         'hemisphere': 'west' if tid == task_west.id else 'east'
                     }
-            else:
-                # Normal export for non-global regions
-                task = ee.batch.Export.image.toCloudStorage(
-                    image=merged_image,
-                    description=description,
-                    bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
-                    fileNamePrefix=export_path,
-                    region=bounds,
-                    scale=scale_meters,
-                    crs='EPSG:4326',
-                    fileFormat='GeoTIFF',
-                    formatOptions=self.config.get('file_format_options', {
-                        'cloudOptimized': True,
-                        'noData': -9999
-                    }),
-                    maxPixels=self.config.get('export_max_pixels', 1e13)
-                )
-                task.start()
-                task_id = task.id
                 
-                # Track task
-                self.active_tasks[task_id] = {
-                    'task': task,
-                    'description': description,
-                    'resolution': resolution_name,
-                    'export_path': export_path,
-                    'start_time': time.time(),
-                    'format': 'GeoTIFF'
-                }
-        else:
-            # Standard export (non-coarse or non-regional)
-            task = ee.batch.Export.image.toCloudStorage(
-                image=merged_image,
-                description=description,
-                bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
-                fileNamePrefix=export_path,
-                region=bounds,
-                scale=scale_meters,
-                crs='EPSG:4326',
-                fileFormat='GeoTIFF',
-                formatOptions=self.config.get('file_format_options', {
-                    'cloudOptimized': True,
-                    'noData': -9999
-                }),
-                maxPixels=self.config.get('export_max_pixels', 1e13)
-            )
-            
-            task.start()
-            task_id = task.id
-            
-            # Track task
-            self.active_tasks[task_id] = {
-                'task': task,
-                'description': description,
-                'resolution': resolution_name,
-                'export_path': export_path,
-                'start_time': time.time(),
-                'format': 'GeoTIFF'
-            }
+                return task_id  # Return the comma-separated task IDs
+        
+        # Standard single export (no hemisphere splitting)
+        self.logger.info(f"Exporting as single GeoTIFF: {resolution_name}")
+        task = ee.batch.Export.image.toCloudStorage(
+            image=merged_image,
+            description=description,
+            bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
+            fileNamePrefix=export_path,
+            region=bounds,
+            scale=scale_meters,
+            crs='EPSG:4326',
+            fileFormat='GeoTIFF',
+            formatOptions=self.config.get('file_format_options', {
+                'cloudOptimized': True,
+                'noData': -9999
+            }),
+            maxPixels=self.config.get('export_max_pixels', 1e13)
+        )
+        
+        task.start()
+        task_id = task.id
+        
+        # Track task
+        self.active_tasks[task_id] = {
+            'task': task,
+            'description': description,
+            'resolution': resolution_name,
+            'export_path': export_path,
+            'start_time': time.time(),
+            'format': 'GeoTIFF'
+        }
         
         self.logger.info(f"🚀 GeoTIFF export task started: {task_id}")
         self.logger.info(f"   Resolution: {resolution_name} ({scale_meters:.1f}m)")
