@@ -118,6 +118,41 @@ class WorkflowState:
         self.save()
         self.logger.info("Workflow state reset")
     
+    def cleanup_old_tasks(self) -> None:
+        """Clean up old task IDs from metadata to prevent clutter"""
+        if 'upload_results' in self.state['metadata']:
+            # Keep asset IDs but remove old task IDs
+            upload_results = self.state['metadata']['upload_results']
+            for name, result in upload_results.items():
+                if 'task_id' in result:
+                    # Remove task_id but keep other info
+                    del result['task_id']
+            self.logger.debug("Cleaned up old task IDs from state")
+        
+        if 'export_tasks' in self.state['metadata']:
+            # Clear old export tasks
+            self.state['metadata']['export_tasks'] = {}
+            self.logger.debug("Cleared old export tasks")
+        
+        self.save()
+    
+    def recover_from_failure(self, failed_step: WorkflowStep) -> None:
+        """Recover from a failed step by rolling back to previous step"""
+        # Determine previous step
+        step_order = list(WorkflowStep)
+        current_idx = step_order.index(failed_step)
+        
+        if current_idx > 0:
+            previous_step = step_order[current_idx - 1]
+            self.state['current_step'] = previous_step.value
+            
+            # Remove failed step from completed list
+            if failed_step.value in self.state['completed_steps']:
+                self.state['completed_steps'].remove(failed_step.value)
+            
+            self.logger.info(f"Recovered from {failed_step.value}, rolled back to {previous_step.value}")
+            self.save()
+    
     def get_summary(self) -> Dict[str, Any]:
         """Get workflow summary"""
         return {

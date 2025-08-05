@@ -2,7 +2,7 @@
 # This configuration file controls the GEE data processing workflow
 
 # Experiment name
-experiment_name: "test_pipeline_verification"
+experiment_name: "test_50percent_nodata"
 
 # =============================================================================
 # DATA SOURCES

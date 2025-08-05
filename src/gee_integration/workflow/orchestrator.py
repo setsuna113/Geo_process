@@ -47,6 +47,9 @@ class GEEWorkflowOrchestrator:
         self._upload_manager = None
         self._export_manager = None
         self._task_monitor = None
+        
+        # Clean up old tasks on initialization to prevent clutter
+        self.state.cleanup_old_tasks()
     
     @log_operation("gee_workflow_complete")
     def run(self, resume: bool = True, force_step: Optional[WorkflowStep] = None) -> Dict[str, Path]:
@@ -216,6 +219,18 @@ class GEEWorkflowOrchestrator:
                 # Check all succeeded
                 failed = [name for name, success in task_statuses.items() if not success]
                 if failed:
+                    self.logger.error(f"Asset upload failed for: {failed}")
+                    # Try to provide helpful error details
+                    for name in failed:
+                        if name in upload_results and 'task_id' in upload_results[name]:
+                            task_id = upload_results[name]['task_id']
+                            self.logger.error(f"   {name}: Check task {task_id} with 'earthengine task info {task_id}'")
+                    
+                    # Check if this is likely a folder issue
+                    self.logger.info("\n💡 Common issues:")
+                    self.logger.info("   - Asset folder may not exist (now auto-created)")
+                    self.logger.info("   - Permissions issue with service account")
+                    self.logger.info("   - Asset name conflicts")
                     raise RuntimeError(f"Asset upload failed for: {failed}")
             
             self.state.update_step(WorkflowStep.ASSETS_UPLOADED)
