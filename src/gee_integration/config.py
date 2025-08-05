@@ -58,6 +58,7 @@ class GEEConfig:
     merge_strategy: str = "addBands"
     tile_scale: int = 16
     max_pixels: float = 1e13
+    latitude_bounds: List[float] = field(default_factory=lambda: [-90, 84])
     
     # Export settings
     export_destination: str = "cloud_storage"
@@ -135,6 +136,7 @@ class GEEConfig:
             merge_strategy=data.get('gee', {}).get('processing', {}).get('merge_strategy', 'addBands'),
             tile_scale=data.get('gee', {}).get('processing', {}).get('tileScale', 16),
             max_pixels=data.get('gee', {}).get('processing', {}).get('maxPixels', 1e13),
+            latitude_bounds=data.get('gee', {}).get('processing', {}).get('latitude_bounds', [-90, 84]),
             export_destination=data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
             export_folder=data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
             export_format=data.get('gee', {}).get('export', {}).get('format', 'CSV'),

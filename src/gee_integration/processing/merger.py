@@ -66,6 +66,11 @@ class GEEMerger:
         biodiv_combined = ee.Image(biodiv_combined)
         climate_image = ee.Image(climate_image)
         
+        # Convert all images to Float32 for consistent export
+        self.logger.info("Converting all bands to Float32 for export compatibility")
+        biodiv_combined = biodiv_combined.toFloat()
+        climate_image = climate_image.toFloat()
+        
         # Get band info (lazy - don't call getInfo)
         biodiv_bands = biodiv_combined.bandNames()
         climate_bands = climate_image.bandNames()
@@ -79,7 +84,7 @@ class GEEMerger:
             # Add elevation if requested
             if include_elevation:
                 self.logger.info("Adding elevation data")
-                elevation = self.load_elevation()
+                elevation = self.load_elevation().toFloat()
                 merged = merged.addBands(elevation)
         else:
             raise ValueError(f"Unknown merge strategy: {merge_strategy}")
@@ -378,11 +383,15 @@ class GEEMerger:
                 min_lat = bounds_info.get('latitude_min', -90)
                 max_lat = bounds_info.get('latitude_max', 90)
                 
-                self.logger.info(f"Detected data bounds: ({min_lon:.2f}, {min_lat:.2f}, {max_lon:.2f}, {max_lat:.2f})")
-                
-                # Create bounds geometry
-                bounds = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
-                return bounds
+                # Check if we got valid values
+                if all(v is not None for v in [min_lon, max_lon, min_lat, max_lat]):
+                    self.logger.info(f"Detected data bounds: ({min_lon:.2f}, {min_lat:.2f}, {max_lon:.2f}, {max_lat:.2f})")
+                    
+                    # Create bounds geometry
+                    bounds = ee.Geometry.Rectangle([min_lon, min_lat, max_lon, max_lat])
+                    return bounds
+                else:
+                    self.logger.warning("Got None values in bounds detection")
         except Exception as e:
             self.logger.error(f"Error in reduceRegion bounds detection: {e}")
             self.logger.debug(f"Full traceback:", exc_info=True)

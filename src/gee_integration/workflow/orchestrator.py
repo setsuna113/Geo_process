@@ -298,7 +298,7 @@ class GEEWorkflowOrchestrator:
             self.logger.info("=" * 60)
             
             # Load WorldClim
-            merger = GEEMerger()
+            merger = GEEMerger(config={'processing': {'latitude_bounds': self.config.latitude_bounds}})
             worldclim = merger.load_worldclim_v2(self.config.climate_variables)
             
             # Process for each resolution
@@ -367,7 +367,7 @@ class GEEWorkflowOrchestrator:
             processed_info = self.state.get_metadata('processed_images', {})
             
             # Recreate images (since we can't serialize ee.Image)
-            merger = GEEMerger()
+            merger = GEEMerger(config={'processing': {'latitude_bounds': self.config.latitude_bounds}})
             
             # Export both resolutions
             task_ids = {}
@@ -428,47 +428,23 @@ class GEEWorkflowOrchestrator:
             for res_name, merged_image in processed_images_for_export.items():
                 self.logger.info(f"\n   Exporting {res_name}...")
                 
-                # Automatically detect data bounds from the merged image
-                # Use a coarser scale for faster bounds detection
-                bounds_scale = self.config.resolutions[res_name].resolution * 111320 * 10  # 10x coarser
-                data_bounds = merger.get_data_bounds(merged_image, scale=bounds_scale)
+                # Always use hardcoded region for reliability
+                # Use latitude bounds from config or conservative defaults
+                lat_bounds = getattr(self.config, 'latitude_bounds', [-60, 75])
+                self.logger.info(f"   Using export region with latitude range: {lat_bounds}")
+                
+                # Create simple bounded region
+                export_region = ee.Geometry.Rectangle([-180, lat_bounds[0], 180, lat_bounds[1]])
                 
                 if self.config.export_format == 'GeoTIFF':
-                    if data_bounds is not None:
-                        # Export as GeoTIFF with detected bounds
-                        task_id = self._export_manager._export_as_geotiff(
-                            merged_image=merged_image,
-                            bounds=data_bounds,  # Use automatically detected bounds
-                            resolution_name=res_name,
-                            resolution_config=self.config.resolutions[res_name].__dict__,
-                            description=f'export_{res_name}_{self.experiment_name}'
-                        )
-                    else:
-                        # Export without specifying bounds (use image footprint)
-                        self.logger.info(f"   Exporting without explicit bounds (using image footprint)")
-                        
-                        # Direct export without bounds parameter
-                        export_path = f"{self.config.export_folder}/{res_name}/merged_data"
-                        scale_meters = self.config.resolutions[res_name].resolution * 111320
-                        
-                        task = ee.batch.Export.image.toCloudStorage(
-                            image=merged_image,
-                            description=f'export_{res_name}_{self.experiment_name}',
-                            bucket=self.config.gcs_bucket,
-                            fileNamePrefix=export_path,
-                            # No region specified - will use image footprint
-                            scale=scale_meters,
-                            crs='EPSG:4326',
-                            fileFormat='GeoTIFF',
-                            formatOptions=self.config.file_format_options or {
-                                'cloudOptimized': True,
-                                'noData': -9999
-                            },
-                            maxPixels=self.config.export_max_pixels
-                        )
-                        task.start()
-                        task_id = task.id
-                        self.logger.info(f"   Started export task: {task_id}")
+                    # Export as GeoTIFF with fixed region
+                    task_id = self._export_manager._export_as_geotiff(
+                        merged_image=merged_image,
+                        bounds=export_region,
+                        resolution_name=res_name,
+                        resolution_config=self.config.resolutions[res_name].__dict__,
+                        description=f'export_{res_name}_{self.experiment_name}'
+                    )
                 else:
                     # Export as CSV (existing logic)
                     # Add pixel coordinates as bands
