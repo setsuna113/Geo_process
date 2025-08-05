@@ -128,3 +128,12 @@ gee:
 export:
   format: "GeoTIFF"  # or "CSV"
   destination: "cloud_storage"
+  
+  # Hemisphere splitting for global exports (workaround for GEE antimeridian bug)
+  hemisphere_split:
+    enabled: false  # Set to true only if you encounter antimeridian artifacts
+    # Only applies when:
+    # - Data covers full longitude range (-180 to 180)
+    # - Resolution is coarse (> 1km)
+    # - You see 1-pixel strips at -180/180 boundary
+    auto_detect: false  # Auto-enable for global+coarse exports (not recommended)
