@@ -284,7 +284,8 @@ class ParquetConverter:
             return self._convert_geotiff_to_parquet(
                 first_file, 
                 resolution_name,
-                chunk_size=metadata.get('chunk_size', 100000)
+                chunk_size=metadata.get('chunk_size', 100000) if metadata else 100000,
+                metadata=metadata
             )
         else:
             # CSV conversion (existing method)
@@ -293,7 +294,8 @@ class ParquetConverter:
     @log_operation("convert_geotiff_to_parquet")
     def _convert_geotiff_to_parquet(self, tif_path: Path, 
                                    resolution_name: str,
-                                   chunk_size: int = 100000) -> Path:
+                                   chunk_size: int = 100000,
+                                   metadata: Optional[Dict] = None) -> Path:
         """
         Convert GeoTIFF to parquet with streaming.
         
@@ -379,31 +381,26 @@ class ParquetConverter:
                         if i < n_bands:
                             batch_data[band_name] = data[i].flatten().astype(np.float32)
                     
-                    # Create mask for valid pixels (not NoData in any band)
-                    # Only include pixels where at least one biodiversity band has data
-                    # Get biodiversity bands from metadata
-                    if metadata and 'biodiversity_bands' in metadata:
-                        biodiv_bands = metadata['biodiversity_bands']
-                    else:
-                        # If no biodiversity bands specified, use first 4 bands as default
-                        # This avoids hardcoding specific band names
-                        biodiv_bands = self.band_names[:min(4, len(self.band_names))]
-                        self.logger.warning(f"No biodiversity bands specified in metadata, using first {len(biodiv_bands)} bands")
-                    
+                    # Create mask for valid pixels
+                    # Include ALL pixels that have valid data in ANY band (not just biodiversity)
+                    # This ensures we keep climate and elevation data even where biodiversity is missing
                     valid_mask = np.zeros(len(xs), dtype=bool)
                     
-                    for band_name in biodiv_bands:
-                        if band_name in batch_data:
-                            band_data = batch_data[band_name]
-                            # Type safety check
-                            if isinstance(band_data, np.ndarray) and np.issubdtype(band_data.dtype, np.number):
-                                valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
-                            else:
-                                self.logger.warning(f"Skipping non-numeric band {band_name} in validity check")
+                    # Check ALL bands for valid data
+                    for band_name, band_data in batch_data.items():
+                        if isinstance(band_data, np.ndarray) and np.issubdtype(band_data.dtype, np.number):
+                            # Include pixels that have non-NoData values in this band
+                            valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
                     
                     # Apply mask
                     if np.any(valid_mask):
                         filtered_data = {k: v[valid_mask] for k, v in batch_data.items()}
+                        
+                        # Ensure all schema fields are present (fill missing with NaN)
+                        for field in schema.names:
+                            if field not in filtered_data:
+                                # Fill missing bands with NaN
+                                filtered_data[field] = np.full(np.sum(valid_mask), np.nan, dtype=np.float32)
                         
                         # Write batch
                         batch = pa.RecordBatch.from_pydict(filtered_data, schema=schema)
