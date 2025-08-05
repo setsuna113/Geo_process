@@ -129,6 +129,14 @@ export:
   format: "GeoTIFF"  # or "CSV"
   destination: "cloud_storage"
   
+  # Explicit export bounds (optional - if not set, will try to detect from data)
+  # Useful for test data or when automatic detection fails
+  # bounds:
+  #   min_lon: -0.5
+  #   max_lon: 0.5
+  #   min_lat: -0.5
+  #   max_lat: 0.5
+  
   # Hemisphere splitting for global exports (workaround for GEE antimeridian bug)
   hemisphere_split:
     enabled: false  # Set to true only if you encounter antimeridian artifacts
