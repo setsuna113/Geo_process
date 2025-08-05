@@ -106,8 +106,10 @@ class AssetUploader:
             return True
         
         # Build earthengine command
+        # Use full path to earthengine CLI in conda environment
+        earthengine_path = '/home/jason/anaconda3/envs/geo/bin/earthengine'
         cmd = [
-            'earthengine',
+            earthengine_path,
             '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
             '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
             'upload',
@@ -166,8 +168,9 @@ class AssetUploader:
         """Check if GEE asset already exists"""
         full_asset_id = f"{self.asset_prefix}/{asset_name}"
         
+        earthengine_path = '/home/jason/anaconda3/envs/geo/bin/earthengine'
         cmd = [
-            'earthengine',
+            earthengine_path,
             '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
             '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
             'asset', 'info', full_asset_id
@@ -201,7 +204,13 @@ class AssetUploader:
         while time.time() - start_time < timeout:
             try:
                 # Check task status
-                cmd = ['earthengine', 'task', 'info', task_id]
+                earthengine_path = '/home/jason/anaconda3/envs/geo/bin/earthengine'
+                cmd = [
+                    earthengine_path,
+                    '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
+                    '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
+                    'task', 'info', task_id
+                ]
                 result = subprocess.run(
                     cmd,
                     capture_output=True,

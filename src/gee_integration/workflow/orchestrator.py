@@ -35,9 +35,11 @@ class GEEWorkflowOrchestrator:
             experiment_name: Optional experiment name for logging
         """
         self.config = GEEConfig.from_yaml(config_path)
-        self.state = WorkflowState.load_or_create()
-        self.logger = logger
         self.experiment_name = experiment_name or f"gee_merge_{int(time.time())}"
+        # Use experiment-specific state file
+        state_file = Path.home() / '.biodiversity' / f'gee_workflow_state_{self.experiment_name}.json'
+        self.state = WorkflowState.load_or_create(state_file)
+        self.logger = logger
         self.logging_context = LoggingContext(experiment_id=self.experiment_name)
         
         # Initialize components (lazy loading)
@@ -297,9 +299,29 @@ class GEEWorkflowOrchestrator:
             
             self.logger.info("=" * 60)
             
-            # Load WorldClim
-            merger = GEEMerger(config={'processing': {'latitude_bounds': self.config.latitude_bounds}})
-            worldclim = merger.load_worldclim_v2(self.config.climate_variables)
+            # Initialize merger with masking config
+            merger_config = {
+                'masking': {
+                    'enabled': self.config.masking.enabled,
+                    'latitude_bounds': self.config.masking.latitude_bounds
+                }
+            }
+            merger = GEEMerger(config=merger_config)
+            
+            # Load climate if enabled
+            climate_image = None
+            if 'climate' in self.config.additional_layers and self.config.additional_layers['climate'].enabled:
+                climate_layer = self.config.additional_layers['climate']
+                self.logger.info(f"Loading climate data from {climate_layer.source}")
+                climate_image = merger.load_worldclim_v2(climate_layer.variables)
+            else:
+                self.logger.info("Climate data disabled in config")
+            
+            # Check elevation setting
+            include_elevation = False
+            if 'elevation' in self.config.additional_layers and self.config.additional_layers['elevation'].enabled:
+                include_elevation = True
+                self.logger.info("Elevation will be included during merge")
             
             # Process for each resolution
             processed_images = {}
@@ -317,21 +339,44 @@ class GEEWorkflowOrchestrator:
                     biodiv_images, biodiv_configs
                 )
                 
-                # Resample WorldClim
-                worldclim_config = {
-                    'name': 'worldclim',
-                    'band_name': 'climate',
-                    'data_type': 'continuous',
-                    'resampling': 'bilinear'
-                }
-                resampled_climate = resampler.resample_image(worldclim, worldclim_config)
+                # Resample climate if enabled
+                resampled_climate = None
+                if climate_image is not None:
+                    climate_config = {
+                        'name': 'climate',
+                        'band_name': 'climate',
+                        'data_type': 'continuous',
+                        'resampling': 'bilinear'
+                    }
+                    resampled_climate = resampler.resample_image(climate_image, climate_config)
                 
-                # Merge
-                merged = merger.merge_datasets(
-                    resampled_biodiv,
-                    resampled_climate,
-                    self.config.merge_strategy
-                )
+                # Merge - handle case where climate might be disabled
+                if resampled_climate is not None:
+                    # Convert resolution in degrees to scale in meters
+                    scale_meters = res_config.resolution * 111320  # Approximate meters per degree at equator
+                    merged = merger.merge_datasets(
+                        resampled_biodiv,
+                        resampled_climate,
+                        self.config.merge_strategy,
+                        mask_ocean=self.config.masking.enabled,
+                        include_elevation=include_elevation,
+                        scale=scale_meters
+                    )
+                else:
+                    # Climate disabled - just combine biodiversity
+                    self.logger.info("Merging biodiversity data only (no climate)")
+                    if len(resampled_biodiv) == 1:
+                        merged = resampled_biodiv[0]
+                    else:
+                        merged = resampled_biodiv[0]
+                        for img in resampled_biodiv[1:]:
+                            merged = merged.addBands(img)
+                    
+                    # Apply masking if enabled
+                    if self.config.masking.enabled:
+                        lat_bounds = (self.config.masking.latitude_bounds['min'], 
+                                     self.config.masking.latitude_bounds['max'])
+                        merged = merger.apply_land_mask(merged, latitude_bounds=lat_bounds)
                 
                 processed_images[res_name] = merged
             
@@ -367,7 +412,13 @@ class GEEWorkflowOrchestrator:
             processed_info = self.state.get_metadata('processed_images', {})
             
             # Recreate images (since we can't serialize ee.Image)
-            merger = GEEMerger(config={'processing': {'latitude_bounds': self.config.latitude_bounds}})
+            merger_config = {
+                'masking': {
+                    'enabled': self.config.masking.enabled,
+                    'latitude_bounds': self.config.masking.latitude_bounds
+                }
+            }
+            merger = GEEMerger(config=merger_config)
             
             # Export both resolutions
             task_ids = {}
@@ -396,8 +447,16 @@ class GEEWorkflowOrchestrator:
                         biodiv_images.append(image)
                         biodiv_configs.append(dataset.__dict__)
                 
-                # Reload WorldClim
-                worldclim = merger.load_worldclim_v2(self.config.climate_variables)
+                # Reload climate if enabled
+                climate_image = None
+                if 'climate' in self.config.additional_layers and self.config.additional_layers['climate'].enabled:
+                    climate_layer = self.config.additional_layers['climate']
+                    climate_image = merger.load_worldclim_v2(climate_layer.variables)
+                
+                # Check elevation setting
+                include_elevation = False
+                if 'elevation' in self.config.additional_layers and self.config.additional_layers['elevation'].enabled:
+                    include_elevation = True
                 
                 # Resample to target resolution
                 resampler = GEEResampler(
@@ -408,21 +467,43 @@ class GEEWorkflowOrchestrator:
                 # Resample biodiversity images
                 biodiv_resampled = resampler.resample_collection(biodiv_images, biodiv_configs)
                 
-                # Resample climate
-                worldclim_config = {
-                    'name': 'worldclim',
-                    'band_name': 'climate',
-                    'data_type': 'continuous',
-                    'resampling': 'bilinear'
-                }
-                climate_resampled = resampler.resample_image(worldclim, worldclim_config)
+                # Resample climate if enabled
+                climate_resampled = None
+                if climate_image is not None:
+                    climate_config = {
+                        'name': 'climate',
+                        'band_name': 'climate',
+                        'data_type': 'continuous',
+                        'resampling': 'bilinear'
+                    }
+                    climate_resampled = resampler.resample_image(climate_image, climate_config)
                 
-                # Merge all datasets
-                merged = merger.merge_datasets(
-                    biodiv_resampled,
-                    climate_resampled,
-                    self.config.merge_strategy
-                )
+                # Merge all datasets - handle case where climate might be disabled
+                if climate_resampled is not None:
+                    # Convert resolution in degrees to scale in meters
+                    scale_meters = res_config.resolution * 111320  # Approximate meters per degree at equator
+                    merged = merger.merge_datasets(
+                        biodiv_resampled,
+                        climate_resampled,
+                        self.config.merge_strategy,
+                        mask_ocean=self.config.masking.enabled,
+                        include_elevation=include_elevation,
+                        scale=scale_meters
+                    )
+                else:
+                    # Climate disabled - just combine biodiversity
+                    if len(biodiv_resampled) == 1:
+                        merged = biodiv_resampled[0]
+                    else:
+                        merged = biodiv_resampled[0]
+                        for img in biodiv_resampled[1:]:
+                            merged = merged.addBands(img)
+                    
+                    # Apply masking if enabled
+                    if self.config.masking.enabled:
+                        lat_bounds = (self.config.masking.latitude_bounds['min'], 
+                                     self.config.masking.latitude_bounds['max'])
+                        merged = merger.apply_land_mask(merged, latitude_bounds=lat_bounds)
                 
                 processed_images_for_export[res_name] = merged
             
@@ -433,12 +514,17 @@ class GEEWorkflowOrchestrator:
                 self.logger.info(f"\n   Exporting {res_name}...")
                 
                 # Always use hardcoded region for reliability
-                # Use latitude bounds from config or conservative defaults
-                lat_bounds = getattr(self.config, 'latitude_bounds', [-60, 75])
-                self.logger.info(f"   Using export region with latitude range: {lat_bounds}")
+                # Use latitude bounds from masking config
+                if self.config.masking.enabled:
+                    lat_min = self.config.masking.latitude_bounds.get('min', -60)
+                    lat_max = self.config.masking.latitude_bounds.get('max', 75)
+                else:
+                    lat_min, lat_max = -90, 90  # Full global if masking disabled
+                
+                self.logger.info(f"   Using export region with latitude range: [{lat_min}, {lat_max}]")
                 
                 # Create simple bounded region
-                export_region = ee.Geometry.Rectangle([-180, lat_bounds[0], 180, lat_bounds[1]])
+                export_region = ee.Geometry.Rectangle([-180, lat_min, 180, lat_max])
                 
                 if self.config.export_format == 'GeoTIFF':
                     # Export as GeoTIFF with fixed region
