@@ -273,6 +273,25 @@ class ParquetConverter:
         first_file = source_files[0]
         
         if first_file.suffix.lower() in ['.tif', '.tiff']:
+            # Check if we have hemisphere files that need merging
+            if len(source_files) == 2:
+                # Check if these are hemisphere files
+                file_names = [f.stem for f in source_files]
+                if any('west' in name for name in file_names) and any('east' in name for name in file_names):
+                    self.logger.info("Detected hemisphere files, merging before conversion...")
+                    
+                    # Find west and east files
+                    west_file = next(f for f in source_files if 'west' in f.stem)
+                    east_file = next(f for f in source_files if 'east' in f.stem)
+                    
+                    # Merge hemispheres
+                    from src.gee_integration.processing.hemisphere_merger import merge_hemispheres
+                    merged_path = self.output_dir / f"merged_{resolution_name}.tif"
+                    merge_hemispheres(west_file, east_file, merged_path)
+                    
+                    # Convert the merged file
+                    source_files = [merged_path]
+            
             # GeoTIFF conversion
             if len(source_files) > 1:
                 self.logger.warning("Multiple GeoTIFF files provided, using first one")
@@ -282,7 +301,7 @@ class ParquetConverter:
                 self.band_names = metadata['band_names']
             
             return self._convert_geotiff_to_parquet(
-                first_file, 
+                source_files[0], 
                 resolution_name,
                 chunk_size=metadata.get('chunk_size', 100000) if metadata else 100000,
                 metadata=metadata

@@ -389,6 +389,10 @@ class GEEWorkflowOrchestrator:
                         image = ee.Image(asset_id)
                         # Rename band to expected name
                         image = image.rename([dataset.band_name])
+                        
+                        # No need to unmask since we're uploading without nodata flag
+                        # This preserves the distinction between ocean mask and missing data
+                        
                         biodiv_images.append(image)
                         biodiv_configs.append(dataset.__dict__)
                 
