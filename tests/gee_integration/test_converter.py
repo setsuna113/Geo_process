@@ -74,20 +74,23 @@ class TestParquetConverter(unittest.TestCase):
         }
         
         # Simulate the filtering logic (OR operation - keep if ANY band valid)
-        # Note: The actual code includes x,y in the check, which always pass
+        # Now correctly excludes x,y from the check
         nodata = -9999
         valid_mask = np.zeros(len(test_data['x']), dtype=bool)
         
         for band_name, band_data in test_data.items():
+            # Skip coordinate columns
+            if band_name in ['x', 'y']:
+                continue
             if isinstance(band_data, np.ndarray) and np.issubdtype(band_data.dtype, np.number):
                 valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
         
         # Apply mask
         filtered_data = {k: v[valid_mask] for k, v in test_data.items()}
         
-        # Since x,y coordinates (10,11,12,13 and 50,51,52,53) are all != -9999,
-        # ALL rows will be kept (x,y make every row "valid")
-        self.assertEqual(len(filtered_data['x']), 4)  # All rows kept due to x,y
+        # Rows 0 and 2 have valid data in at least one band
+        # Rows 1 and 3 have -9999 in all data bands (should be removed)
+        self.assertEqual(len(filtered_data['x']), 2)  # Only rows with valid data kept
         # Row 1 might be kept because x,y are valid
         # Actually, x and y are not checked for nodata, only data bands
         

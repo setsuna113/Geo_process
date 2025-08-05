@@ -401,8 +401,11 @@ class ParquetConverter:
                     # This ensures we keep climate and elevation data even where biodiversity is missing
                     valid_mask = np.zeros(len(xs), dtype=bool)
                     
-                    # Check ALL bands for valid data
+                    # Check ALL bands for valid data (excluding coordinates)
                     for band_name, band_data in batch_data.items():
+                        # Skip coordinate columns - they should not determine validity
+                        if band_name in ['x', 'y']:
+                            continue
                         if isinstance(band_data, np.ndarray) and np.issubdtype(band_data.dtype, np.number):
                             # Include pixels that have non-NoData values in this band
                             valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
