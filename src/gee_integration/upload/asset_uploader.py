@@ -117,8 +117,15 @@ class AssetUploader:
         ]
         
         # Add nodata if specified
+        # Skip nodata flag for biodiversity datasets to prevent automatic masking
+        # This preserves the distinction between ocean (geographic) and missing data (value)
         if no_data_value is not None:
-            cmd.extend(['--nodata_value=' + str(no_data_value)])
+            # Only apply nodata flag to climate/elevation datasets
+            if any(keyword in asset_name.lower() for keyword in ['climate', 'elevation', 'worldclim']):
+                cmd.extend(['--nodata_value=' + str(no_data_value)])
+                self.logger.info(f"Using nodata value {no_data_value} for {asset_name}")
+            else:
+                self.logger.info(f"Skipping nodata flag for {asset_name} to preserve all pixels as data")
         
         try:
             self.logger.info(f"Creating GEE asset: {asset_name}")

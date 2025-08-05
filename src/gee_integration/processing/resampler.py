@@ -49,10 +49,20 @@ class GEEResampler:
         
         self.logger.debug(f"Resampling {band_name} with method: {method}")
         
-        # Handle nodata values
+        # Handle nodata values and sparse data
         no_data = config.get('no_data')
-        if no_data is not None:
-            # Mask nodata values
+        
+        # Handle masking differently based on data type
+        # For biodiversity data uploaded without nodata flag, no masking needed
+        # For climate data with proper nodata values, mask them
+        data_type = config.get('data_type', 'continuous')
+        if data_type == 'discrete' and band_name != 'climate':
+            # Biodiversity data - no unmasking needed since uploaded without nodata flag
+            # This preserves the distinction between ocean mask and missing data values
+            self.logger.debug(f"Processing {band_name} without additional masking")
+        elif no_data is not None and any(keyword in str(band_name).lower() for keyword in ['climate', 'worldclim', 'elevation']):
+            # Only mask nodata for climate/elevation data that was uploaded with nodata flag
+            self.logger.debug(f"Masking nodata values ({no_data}) for {band_name}")
             image = image.updateMask(image.neq(no_data))
         
         # Apply resampling based on method

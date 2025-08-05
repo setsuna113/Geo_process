@@ -57,27 +57,59 @@ class GCSFetcher:
             self.logger.info(f"Downloading from {gcs_path}...")
             
             if export_format == 'GeoTIFF':
-                # Download single GeoTIFF file
-                cmd = [
-                    'gsutil',
-                    '-m',
-                    'cp',
-                    f"{gcs_path}.tif",
-                    str(local_dir)
-                ]
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                # Check if this is a hemisphere export (look for _west and _east files)
+                base_path = gcs_path.rstrip('/')
                 
-                # Find downloaded file
-                tif_file = local_dir / f"{Path(gcs_path).name}.tif"
-                if tif_file.exists():
-                    downloaded_files = [tif_file]
+                # Try to download hemisphere files first
+                hemisphere_files = []
+                for suffix in ['_west.tif', '_east.tif']:
+                    try:
+                        cmd = [
+                            'gsutil',
+                            '-m',
+                            'cp',
+                            f"{base_path}{suffix}",
+                            str(local_dir)
+                        ]
+                        result = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
+                        if result.returncode == 0:
+                            hemisphere_file = local_dir / f"{Path(base_path).name}{suffix}"
+                            if hemisphere_file.exists():
+                                hemisphere_files.append(hemisphere_file)
+                                self.logger.info(f"Downloaded hemisphere file: {hemisphere_file.name}")
+                    except:
+                        pass
+                
+                if len(hemisphere_files) == 2:
+                    # We have both hemispheres
+                    downloaded_files = hemisphere_files
                 else:
-                    downloaded_files = []
+                    # Try downloading single GeoTIFF file
+                    cmd = [
+                        'gsutil',
+                        '-m',
+                        'cp',
+                        f"{gcs_path}.tif",
+                        str(local_dir)
+                    ]
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                    
+                    # Find downloaded file
+                    tif_file = local_dir / f"{Path(gcs_path).name}.tif"
+                    if tif_file.exists():
+                        downloaded_files = [tif_file]
+                    else:
+                        downloaded_files = []
             else:
                 # First try to download numbered CSV files (for large exports)
                 cmd = [
