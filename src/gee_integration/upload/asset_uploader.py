@@ -100,6 +100,9 @@ class AssetUploader:
         """
         full_asset_id = f"{self.asset_prefix}/{asset_name}"
         
+        # Ensure parent folder exists
+        self._ensure_asset_folder_exists()
+        
         # Check if asset already exists
         if self.check_asset_exists(asset_name):
             self.logger.info(f"Asset already exists, skipping: {asset_name}")
@@ -163,6 +166,56 @@ class AssetUploader:
         except FileNotFoundError:
             self.logger.error("earthengine CLI not found. Please install with: pip install earthengine-api")
             return False
+    
+    def _ensure_asset_folder_exists(self) -> None:
+        """Ensure the parent asset folder exists, create if needed"""
+        # Check if folder already exists
+        earthengine_path = '/home/jason/anaconda3/envs/geo/bin/earthengine'
+        cmd_check = [
+            earthengine_path,
+            '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
+            '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
+            'asset', 'info', self.asset_prefix
+        ]
+        
+        try:
+            result = subprocess.run(
+                cmd_check,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                # Folder exists
+                return
+        except:
+            pass
+        
+        # Create the folder
+        self.logger.info(f"Creating GEE asset folder: {self.asset_prefix}")
+        cmd_create = [
+            earthengine_path,
+            '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
+            '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
+            'create', 'folder', self.asset_prefix
+        ]
+        
+        try:
+            result = subprocess.run(
+                cmd_create,
+                capture_output=True,
+                text=True,
+                check=False  # Don't raise on error
+            )
+            if result.returncode == 0:
+                self.logger.info(f"✅ Created asset folder: {self.asset_prefix}")
+            elif 'already exists' in result.stderr.lower():
+                # Folder already exists, that's fine
+                self.logger.debug(f"Asset folder already exists: {self.asset_prefix}")
+            else:
+                # Log warning but continue - upload might still work
+                self.logger.warning(f"Could not create asset folder: {result.stderr}")
+        except Exception as e:
+            self.logger.warning(f"Error creating asset folder: {e}")
     
     def check_asset_exists(self, asset_name: str) -> bool:
         """Check if GEE asset already exists"""
