@@ -415,6 +415,20 @@ class ParquetConverter:
                     if np.any(valid_mask):
                         filtered_data = {k: v[valid_mask] for k, v in batch_data.items()}
                         
+                        # Convert zeros to NaN for biodiversity bands
+                        # (0 represents nodata from unmask operation)
+                        # Identify biodiversity bands (exclude climate/elevation bands)
+                        climate_bands = ['bio01', 'bio02', 'bio03', 'bio04', 'bio05', 'bio06', 
+                                       'bio07', 'bio08', 'bio09', 'bio10', 'bio11', 'bio12',
+                                       'bio13', 'bio14', 'bio15', 'bio16', 'bio17', 'bio18', 'bio19']
+                        known_non_biodiv = ['x', 'y', 'elevation', 'dem'] + climate_bands
+                        
+                        for band_name, band_data in filtered_data.items():
+                            # If it's not a known non-biodiversity band, it's biodiversity
+                            if band_name not in known_non_biodiv and isinstance(band_data, np.ndarray):
+                                # Convert 0 to NaN for biodiversity bands
+                                filtered_data[band_name] = np.where(band_data == 0, np.nan, band_data)
+                        
                         # Ensure all schema fields are present (fill missing with NaN)
                         for field in schema.names:
                             if field not in filtered_data:
