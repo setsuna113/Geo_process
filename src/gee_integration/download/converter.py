@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union
 import glob
 import numpy as np
+import pandas as pd
 
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
@@ -52,7 +53,6 @@ class ParquetConverter:
             self.logger.warning(f"No CSV files for {resolution_name}, creating placeholder parquet")
             output_path = self.output_dir / f"biodiversity_climate_{resolution_name}.parquet"
             # Create a minimal DataFrame for testing
-            import pandas as pd
             test_df = pd.DataFrame({
                 'x': [0.0],
                 'y': [0.0],
@@ -75,7 +75,6 @@ class ParquetConverter:
             
             try:
                 # Read CSV in chunks for memory efficiency
-                import pandas as pd
                 for chunk_df in pd.read_csv(csv_file, chunksize=chunk_size):
                     # Clean and validate chunk
                     chunk_df = self._clean_dataframe(chunk_df)
@@ -102,7 +101,6 @@ class ParquetConverter:
             raise RuntimeError("Failed to create parquet file")
         
         # Get final statistics
-        import pandas as pd
         final_df = pd.read_parquet(output_path)
         stats = self._compute_statistics(final_df)
         
@@ -129,7 +127,6 @@ class ParquetConverter:
             raise ValueError(f"Missing coordinate columns: {missing}")
         
         # Convert data types
-        import pandas as pd
         for col in self.COORD_COLUMNS:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
@@ -146,7 +143,6 @@ class ParquetConverter:
                            append: bool = False) -> None:
         """Write dataframes to parquet"""
         # Combine dataframes
-        import pandas as pd
         combined_df = pd.concat(dfs, ignore_index=True)
         
         if append and output_path.exists():
@@ -180,7 +176,7 @@ class ParquetConverter:
         data_cols = [col for col in df.columns if col not in self.COORD_COLUMNS]
         
         for col in data_cols:
-            import pandas as pd
+
             if pd.api.types.is_numeric_dtype(df[col]):
                 stats['data_columns'][col] = {
                     'min': float(df[col].min()),
@@ -452,7 +448,6 @@ class ParquetConverter:
             raise RuntimeError("Failed to create parquet file")
         
         # Get final statistics
-        import pandas as pd
         final_df = pd.read_parquet(output_path)
         stats = self._compute_statistics(final_df)
         

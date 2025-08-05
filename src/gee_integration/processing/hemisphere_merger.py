@@ -6,9 +6,10 @@ import rasterio
 from rasterio.merge import merge
 from pathlib import Path
 from typing import List
-import logging
 
-logger = logging.getLogger(__name__)
+from src.infrastructure.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 def merge_hemispheres(west_path: Path, east_path: Path, output_path: Path) -> Path:
@@ -26,10 +27,8 @@ def merge_hemispheres(west_path: Path, east_path: Path, output_path: Path) -> Pa
     logger.info(f"Merging hemispheres: {west_path.name} + {east_path.name}")
     
     # Open both files
-    datasets = []
-    try:
-        west_ds = rasterio.open(west_path)
-        east_ds = rasterio.open(east_path)
+    # Use context managers for automatic resource cleanup
+    with rasterio.open(west_path) as west_ds, rasterio.open(east_path) as east_ds:
         datasets = [west_ds, east_ds]
         
         # Merge
@@ -56,9 +55,3 @@ def merge_hemispheres(west_path: Path, east_path: Path, output_path: Path) -> Pa
         
         logger.info(f"✅ Merged hemispheres to: {output_path}")
         return output_path
-        
-    finally:
-        # Close datasets
-        for ds in datasets:
-            if hasattr(ds, 'close'):
-                ds.close()
