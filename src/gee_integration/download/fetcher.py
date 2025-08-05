@@ -82,8 +82,10 @@ class GCSFetcher:
                             if hemisphere_file.exists():
                                 hemisphere_files.append(hemisphere_file)
                                 self.logger.info(f"Downloaded hemisphere file: {hemisphere_file.name}")
-                    except:
-                        pass
+                    except subprocess.CalledProcessError as e:
+                        self.logger.warning(f"Failed to download hemisphere file {suffix}: {e}")
+                    except Exception as e:
+                        self.logger.warning(f"Unexpected error downloading hemisphere file {suffix}: {e}")
                 
                 if len(hemisphere_files) == 2:
                     # We have both hemispheres
