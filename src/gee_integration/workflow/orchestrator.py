@@ -528,18 +528,21 @@ class GEEWorkflowOrchestrator:
             for res_name, merged_image in processed_images_for_export.items():
                 self.logger.info(f"\n   Exporting {res_name}...")
                 
-                # Try to detect actual data bounds for more accurate exports
-                try:
-                    # Get actual data bounds from the merged image
-                    detected_bounds = merger.get_data_bounds(merged_image, scale=10000)
-                    if detected_bounds:
-                        self.logger.info("   Using detected data bounds for export")
-                        export_region = detected_bounds
-                    else:
-                        raise Exception("Could not detect data bounds")
-                except Exception as e:
-                    self.logger.warning(f"   Could not detect data bounds: {e}")
-                    # Fallback to configured bounds
+                # Check if explicit bounds are configured
+                export_bounds_config = self.config.export.get('bounds') if self.config.export else None
+                if export_bounds_config and all(k in export_bounds_config for k in ['min_lon', 'max_lon', 'min_lat', 'max_lat']):
+                    # Use explicit bounds from config
+                    self.logger.info(f"   Using explicit export bounds from config")
+                    export_region = ee.Geometry.Rectangle([
+                        export_bounds_config['min_lon'],
+                        export_bounds_config['min_lat'],
+                        export_bounds_config['max_lon'],
+                        export_bounds_config['max_lat']
+                    ])
+                else:
+                    # For production data, skip expensive bounds detection and use configured bounds
+                    # The detection often fails for large global datasets anyway
+                    
                     # Use latitude bounds from masking config
                     if self.config.masking.enabled:
                         lat_min = self.config.masking.latitude_bounds.get('min', -60)
@@ -547,10 +550,17 @@ class GEEWorkflowOrchestrator:
                     else:
                         lat_min, lat_max = -90, 90  # Full global if masking disabled
                     
-                    self.logger.info(f"   Using fallback region with latitude range: [{lat_min}, {lat_max}]")
+                    self.logger.info(f"   Using configured region with latitude range: [{lat_min}, {lat_max}]")
                     
-                    # Create simple bounded region (full longitude range)
-                    export_region = ee.Geometry.Rectangle([-180, lat_min, 180, lat_max])
+                    # Create NON-GEODESIC rectangle to avoid antimeridian bug
+                    # Using -179.999 instead of -180 and explicitly setting geodesic=False
+                    # This prevents the geometry from collapsing to a thin line at the dateline
+                    export_region = ee.Geometry.Rectangle(
+                        [-179.999, lat_min, 180, lat_max], 
+                        proj='EPSG:4326', 
+                        geodesic=False
+                    )
+                    self.logger.info("   Using non-geodesic rectangle to avoid antimeridian collapse")
                 
                 if self.config.export_format == 'GeoTIFF':
                     # Export as GeoTIFF with fixed region

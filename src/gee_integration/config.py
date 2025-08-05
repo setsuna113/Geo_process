@@ -105,6 +105,7 @@ class GEEConfig:
     file_format_options: Optional[Dict] = None
     export_max_pixels: float = 1e13
     hemisphere_split: Optional[Dict] = None  # Hemisphere splitting config
+    export: Optional[Dict] = None  # Full export config including bounds
     
     # Output settings
     output_dir: Path = Path("data/gee_merged")
@@ -203,6 +204,7 @@ class GEEConfig:
             export_check_interval=data.get('gee', {}).get('export', {}).get('check_interval', 30),
             export_max_pixels=data.get('gee', {}).get('export', {}).get('maxPixels', 1e13),
             hemisphere_split=data.get('export', {}).get('hemisphere_split'),
+            export=data.get('export'),  # Pass the full export config
             output_dir=Path(data.get('gee', {}).get('output', {}).get('local_dir', 'data/gee_merged')),
             parquet_dir=Path(data.get('gee', {}).get('output', {}).get('parquet_dir', 'data/merged')),
             temp_dir=Path(data.get('gee', {}).get('output', {}).get('temp_dir', 'data/temp/gee')),
