@@ -17,12 +17,23 @@ logger = get_logger(__name__)
 @dataclass
 class DatasetConfig:
     """Configuration for a single dataset"""
-    path: str
     name: str
     band_name: str
+    gcs_path: Optional[str] = None  # For new config
+    path: Optional[str] = None  # For old config compatibility
+    description: Optional[str] = None
+    no_data_value: Optional[float] = None
+    no_data: Optional[float] = None  # Old field name
+    asset_name: Optional[str] = None
     data_type: str = "continuous"  # continuous, count, categorical
     resampling: str = "bilinear"  # bilinear, bicubic, max, min, mean, mode
-    no_data: Optional[float] = None
+    
+    def __post_init__(self):
+        # Handle old vs new field names
+        if self.gcs_path and not self.path:
+            self.path = self.gcs_path
+        if self.no_data_value is not None and self.no_data is None:
+            self.no_data = self.no_data_value
 
 
 @dataclass
@@ -34,8 +45,29 @@ class ResolutionConfig:
 
 
 @dataclass
+class AdditionalLayerConfig:
+    """Configuration for additional data layers from GEE"""
+    enabled: bool
+    source: str
+    band: Optional[str] = None
+    bands: Optional[List[str]] = None
+    variables: Optional[List[str]] = None
+    description: Optional[str] = None
+
+
+@dataclass
+class MaskingConfig:
+    """Configuration for masking options"""
+    enabled: bool = True
+    latitude_bounds: Dict[str, float] = field(default_factory=lambda: {"min": -60, "max": 75})
+
+
+@dataclass
 class GEEConfig:
     """Complete GEE workflow configuration"""
+    # Experiment
+    experiment_name: str = "biodiversity_analysis"
+    
     # Authentication
     auth_method: str = "service_account"
     service_account_key: Optional[str] = None
@@ -46,7 +78,12 @@ class GEEConfig:
     
     # Input datasets
     biodiversity_datasets: List[DatasetConfig] = field(default_factory=list)
-    climate_variables: List[str] = field(default_factory=list)
+    
+    # Additional layers from GEE (climate, elevation, etc.)
+    additional_layers: Dict[str, AdditionalLayerConfig] = field(default_factory=dict)
+    
+    # Masking configuration
+    masking: MaskingConfig = field(default_factory=MaskingConfig)
     
     # Upload settings
     gcs_bucket: Optional[str] = None
@@ -58,7 +95,6 @@ class GEEConfig:
     merge_strategy: str = "addBands"
     tile_scale: int = 16
     max_pixels: float = 1e13
-    latitude_bounds: List[float] = field(default_factory=lambda: [-90, 84])
     
     # Export settings
     export_destination: str = "cloud_storage"
@@ -97,49 +133,70 @@ class GEEConfig:
         # Expand environment variables
         data = cls._expand_env_vars(data)
         
-        # Parse resolutions
+        # Parse resolutions (check both old and new locations)
         resolutions = {}
-        for res_name, res_data in data.get('gee', {}).get('target_resolutions', {}).items():
-            resolutions[res_name] = ResolutionConfig(**res_data)
+        res_data_source = data.get('resolutions', {}) or data.get('gee', {}).get('target_resolutions', {})
+        for res_name, res_data in res_data_source.items():
+            # Handle both old and new resolution format
+            if 'scale' in res_data:
+                resolutions[res_name] = ResolutionConfig(
+                    name=res_name,
+                    resolution=res_data['scale'] / 111320.0,  # Convert meters to degrees (approximate)
+                    description=res_data.get('description', f'{res_name} resolution')
+                )
+            else:
+                resolutions[res_name] = ResolutionConfig(**res_data)
         
-        # Parse biodiversity datasets
+        # Parse biodiversity datasets (check both old and new locations)
         biodiv_datasets = []
-        for dataset_data in data.get('gee', {}).get('inputs', {}).get('biodiversity', []):
+        biodiv_source = data.get('biodiversity_datasets', []) or data.get('gee', {}).get('inputs', {}).get('biodiversity', [])
+        for dataset_data in biodiv_source:
             biodiv_datasets.append(DatasetConfig(**dataset_data))
         
-        # Parse climate variables
-        climate_config = data.get('gee', {}).get('inputs', {}).get('climate', {})
-        if climate_config.get('variables') == 'all':
-            # All 19 bioclimatic variables
-            climate_vars = [f'bio{i:02d}' for i in range(1, 20)]
-        else:
-            variables = climate_config.get('variables', [])
-            if variables and isinstance(variables[0], str):
-                # Direct list of variable names
-                climate_vars = variables
-            else:
-                # List of dicts with 'name' field
-                climate_vars = [v['name'] for v in variables]
+        # Parse additional layers (climate, elevation, etc.)
+        additional_layers = {}
+        layers_config = data.get('additional_layers', {})
+        for layer_name, layer_data in layers_config.items():
+            if isinstance(layer_data, dict):
+                additional_layers[layer_name] = AdditionalLayerConfig(
+                    enabled=layer_data.get('enabled', False),
+                    source=layer_data.get('source', ''),
+                    band=layer_data.get('band'),
+                    bands=layer_data.get('bands'),
+                    variables=layer_data.get('variables'),
+                    description=layer_data.get('description')
+                )
+        
+        # Parse masking configuration
+        mask_config = data.get('masking', {})
+        masking = MaskingConfig(
+            enabled=mask_config.get('enabled', True),
+            latitude_bounds={
+                'min': mask_config.get('latitude_bounds', {}).get('min', -60),
+                'max': mask_config.get('latitude_bounds', {}).get('max', 75)
+            }
+        )
         
         # Create config instance
         return cls(
+            experiment_name=data.get('experiment_name', 'biodiversity_analysis'),
             auth_method=data.get('gee', {}).get('auth', {}).get('method', 'service_account'),
             service_account_key=data.get('gee', {}).get('auth', {}).get('service_account_key'),
             project_id=data.get('gee', {}).get('auth', {}).get('project_id'),
             resolutions=resolutions,
             biodiversity_datasets=biodiv_datasets,
-            climate_variables=climate_vars,
-            gcs_bucket=data.get('gee', {}).get('upload', {}).get('bucket'),
-            asset_prefix=data.get('gee', {}).get('upload', {}).get('asset_prefix', 'biodiversity'),
-            chunk_size_mb=data.get('gee', {}).get('upload', {}).get('chunk_size_mb', 100),
-            parallel_uploads=data.get('gee', {}).get('upload', {}).get('parallel_uploads', 4),
-            merge_strategy=data.get('gee', {}).get('processing', {}).get('merge_strategy', 'addBands'),
-            tile_scale=data.get('gee', {}).get('processing', {}).get('tileScale', 16),
-            max_pixels=data.get('gee', {}).get('processing', {}).get('maxPixels', 1e13),
-            latitude_bounds=data.get('gee', {}).get('processing', {}).get('latitude_bounds', [-90, 84]),
-            export_destination=data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
-            export_folder=data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
-            export_format=data.get('gee', {}).get('export', {}).get('format', 'CSV'),
+            additional_layers=additional_layers,
+            masking=masking,
+            gcs_bucket=data.get('gcs', {}).get('bucket') or data.get('gee', {}).get('upload', {}).get('bucket'),
+            asset_prefix=data.get('earth_engine', {}).get('asset_prefix') or data.get('gee', {}).get('upload', {}).get('asset_prefix', 'biodiversity'),
+            chunk_size_mb=data.get('gcs', {}).get('chunk_size_mb', 100) or data.get('gee', {}).get('upload', {}).get('chunk_size_mb', 100),
+            parallel_uploads=data.get('gcs', {}).get('parallel_uploads', 4) or data.get('gee', {}).get('upload', {}).get('parallel_uploads', 4),
+            merge_strategy=data.get('processing', {}).get('merge_strategy', 'addBands') or data.get('gee', {}).get('processing', {}).get('merge_strategy', 'addBands'),
+            tile_scale=data.get('processing', {}).get('tileScale', 16) or data.get('gee', {}).get('processing', {}).get('tileScale', 16),
+            max_pixels=data.get('processing', {}).get('maxPixels', 1e13) or data.get('gee', {}).get('processing', {}).get('maxPixels', 1e13),
+            export_destination=data.get('export', {}).get('destination', 'cloud_storage') or data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
+            export_folder=data.get('gcs', {}).get('export_folder') or data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
+            export_format=data.get('export', {}).get('format', 'GeoTIFF') or data.get('gee', {}).get('export', {}).get('format', 'CSV'),
             file_format_options=data.get('gee', {}).get('export', {}).get('file_format_options'),
             export_timeout=data.get('gee', {}).get('export', {}).get('timeout', 7200),
             export_check_interval=data.get('gee', {}).get('export', {}).get('check_interval', 30),

@@ -1,138 +1,130 @@
-# GEE Integration Configuration
+# Google Earth Engine Configuration - Improved Structure
+# This configuration file controls the GEE data processing workflow
+
+# Experiment name
+experiment_name: "test_pipeline_verification"
+
+# =============================================================================
+# DATA SOURCES
+# =============================================================================
+
+# Biodiversity datasets to process
+biodiversity_datasets:
+  - name: "animals"
+    gcs_path: "data/test_biodiversity/test_animals.tif"
+    band_name: "animal_richness"
+    description: "Animal species richness"
+    no_data_value: -3.4e+38
+    asset_name: "test_animals_richness"
+    
+  - name: "plants"
+    gcs_path: "data/test_biodiversity/test_plants.tif"
+    band_name: "plant_richness"
+    description: "Plant species richness"
+    no_data_value: -3.4e+38
+    asset_name: "test_plants_richness"
+    
+  - name: "fungi"
+    gcs_path: "data/test_biodiversity/test_fungi.tif"
+    band_name: "fungi_richness"
+    description: "Fungi species richness"
+    no_data_value: -3.4e+38
+    asset_name: "test_fungi_richness"
+
+# =============================================================================
+# ADDITIONAL DATA LAYERS (from GEE catalog)
+# =============================================================================
+
+additional_layers:
+  # Climate data
+  climate:
+    enabled: true  # Set to false to exclude climate data
+    source: "WORLDCLIM/V1/BIO"  # GEE asset ID
+    variables:  # Which bioclimatic variables to include
+      - "bio01"  # Annual Mean Temperature
+      - "bio04"  # Temperature Seasonality
+      - "bio12"  # Annual Precipitation
+      - "bio15"  # Precipitation Seasonality
+    # Could add more: bio02-bio19 available
+    
+  # Elevation data
+  elevation:
+    enabled: true  # Set to false to exclude elevation
+    source: "MERIT/DEM/v1_0_3"
+    band: "dem"
+    description: "Elevation in meters, ~90m resolution"
+    
+  # Future: Add more GEE datasets as needed
+  # soil:
+  #   enabled: false
+  #   source: "OpenLandMap/SOL/SOL_ORGANIC-CARBON_USDA-6A1C_M/v02"
+  #   bands: ["b0", "b10", "b30"]
+  
+  # landcover:
+  #   enabled: false
+  #   source: "MODIS/006/MCD12Q1"
+  #   band: "LC_Type1"
+
+# =============================================================================
+# MASKING OPTIONS
+# =============================================================================
+
+masking:
+  enabled: true  # Single on/off switch for all masking
+  
+  # The unified mask excludes:
+  # 1. Deep ocean (MODIS water class 0)
+  # 2. Areas outside latitude bounds
+  # Note: Shallow water (class 2) is kept for coastal biodiversity
+  
+  latitude_bounds:
+    min: -60  # Southern bound (no fungi data beyond)
+    max: 75   # Northern bound (minimal fungi data beyond)
+
+# =============================================================================
+# PROCESSING OPTIONS
+# =============================================================================
+
+processing:
+  merge_strategy: "addBands"  # How to combine datasets
+  tileScale: 16              # For large exports
+  maxPixels: 10000000000000  # 1e13
+
+# =============================================================================
+# OUTPUT RESOLUTIONS
+# =============================================================================
+
+resolutions:
+  fine:
+    name: "fine"
+    resolution: 0.00898315284  # ~1km in degrees (1000m / 111320m per degree)
+    description: "Fine resolution (~1km)"
+
+# =============================================================================
+# INFRASTRUCTURE
+# =============================================================================
+
+# Google Cloud Storage
+gcs:
+  bucket: "biodiv-gee-yl998"
+  upload_folder: "test_uploads"
+  export_folder: "test_merged_outputs"
+  chunk_size_mb: 100
+  parallel_uploads: 4
+
+# Earth Engine
+earth_engine:
+  asset_prefix: "projects/earthengine-legacy/assets/users/geebiodiversity/test_pipeline"
+  project_id: "triple-carrier-441622-t1"  # Update with your GCP project
+  
+# Authentication (for backward compatibility)
 gee:
-  # Authentication
   auth:
     method: "service_account"
-    service_account_key: ".gee/service-account-key.json"  # Relative to project root
+    service_account_key: ".gee/service-account-key.json"
     project_id: "triple-carrier-441622-t1"
-  
-  # Target resolutions - two outputs as discussed
-  target_resolutions:
-    fine:
-      name: "1_8km"
-      resolution: 0.016667  # ~1.8km at equator (same as plant/vertebrate data)
-      description: "Native resolution, no upsampling"
-    coarse:
-      name: "45km"
-      resolution: 0.41667   # ~45km at equator (25x coarser)
-      description: "25x coarser for fast processing"
-  
-  # Input datasets
-  inputs:
-    biodiversity:
-      # AM Fungi richness data - SDM predictions
-      - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
-        name: "am_fungi_richness"
-        band_name: "am_fungi"
-        data_type: "continuous"
-        resampling: "bilinear"
-        no_data: -3.4e+38
-        
-      # AM Fungi uncertainty (coefficient of variation)
-      - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
-        name: "am_fungi_cv"
-        band_name: "am_fungi_cv"
-        data_type: "continuous"
-        resampling: "bilinear"
-        no_data: -3.4e+38
-        
-      # AM Fungi extrapolation flag
-      - path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Extrapolation.tif"
-        name: "am_fungi_extrap"
-        band_name: "am_fungi_extrap"
-        data_type: "categorical"
-        resampling: "mode"  # Mode for binary/categorical data
-        no_data: -3.4e+38
-        
-      # EcM Fungi richness - SDM predictions
-      - path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
-        name: "ecm_fungi_richness"
-        band_name: "ecm_fungi"
-        data_type: "continuous"
-        resampling: "bilinear"
-        no_data: -3.4e+38
-        
-      # Plant species richness
-      - path: "data/richness_maps/daru-plants-richness.tif"
-        name: "plant_richness"
-        band_name: "plants"
-        data_type: "count"
-        resampling: "max"  # Max for species counts
-        no_data: 0
-        
-      # Terrestrial vertebrate richness  
-      - path: "data/richness_maps/iucn-terrestrial-richness.tif"
-        name: "terrestrial_richness"
-        band_name: "terrestrial"
-        data_type: "count"
-        resampling: "max"
-        no_data: 0
-        
-        
-    
-    climate:
-      source: "WORLDCLIM/V2/BIO"
-      # Selected bioclimatic variables:
-      # bio01: Annual Mean Temperature
-      # bio04: Temperature Seasonality 
-      # bio12: Annual Precipitation
-      # bio15: Precipitation Seasonality
-      variables: ["bio01", "bio04", "bio12", "bio15"]
-    
-    # Additional environmental data
-    elevation:
-      source: "MERIT/DEM/v1_0_3"  # MERIT DEM - error-removed global elevation
-      band: "dem"  # Elevation in meters
-      # High quality: removes errors from SRTM/ASTER through ML filtering
-  
-  # Upload settings
-  upload:
-    bucket: "biodiv-gee-yl998"  # Update with your bucket name
-    asset_prefix: "projects/earthengine-legacy/assets/users/geebiodiversity/biodiversity_production"
-    chunk_size_mb: 100
-    parallel_uploads: 4
-  
-  # Processing settings
-  processing:
-    merge_strategy: "addBands"
-    scale: 1000  # meters
-    mask_ocean: true  # Exclude ocean areas from export
-    # Latitude bounds to exclude polar regions (optional)
-    # Common boundaries:
-    #   - Arctic/Antarctic Circles: [-66.5, 66.5]
-    #   - Tree line (more restrictive): [-55, 70]
-    #   - Conservative biodiversity range: [-60, 75]
-    #   - Inclusive (keeps all terrestrial data): [-90, 84]
-    latitude_bounds: [-90, 84]  # Include all data, ocean mask will handle the rest
-    tileScale: 16  # For large exports
-    maxPixels: 10000000000000  # 1e13
-  
-  # Export settings
-  export:
-    destination: "cloud_storage"
-    bucket: "biodiv-gee-yl998"  # Same bucket as upload
-    folder: "merged_outputs"
-    format: "GeoTIFF"  # Options: "CSV", "GeoTIFF"
-    file_format_options:
-      cloudOptimized: true
-      noData: -9999
-    maxPixels: 10000000000000  # 1e13
-  
-  # Output settings
-  output:
-    local_dir: "data/gee_merged"
-    parquet_dir: "data/merged"
-    temp_dir: "data/temp/gee"
-    cleanup_temp: true
-  
-  # Performance settings
-  performance:
-    parquet_chunk_size: 100000  # Rows per chunk for parquet conversion
-    # Adjust based on available memory: lower for limited memory, higher for speed
-    
-  # Validation settings
-  validation:
-    check_alignment: true
-    check_bounds: true
-    check_nodata: true
-    tolerance: 0.0001  # degrees
+
+# Export settings
+export:
+  format: "GeoTIFF"  # or "CSV"
+  destination: "cloud_storage"
