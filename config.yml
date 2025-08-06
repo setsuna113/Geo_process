@@ -525,60 +525,15 @@ spatial_analysis:
     
   # Named analysis experiments for reproducibility
   experiments:
-    # Quick SOM test with small sample
-    test_som_small:
-      input_parquet: 'outputs/test_biodiversity_sample.parquet'  # Create with sample script
-      method: 'som'
-      grid_size: [6, 6]
-      max_iterations: 2000
-      convergence_threshold: 1e-6
-      enable_dynamic_convergence: true
-      convergence_method: 'unified'
-      
-    # SOM experiment - all SOM-specific params in src/config/som/som_config.yml
+    # IMPORTANT: Method-specific parameters (grid_size, learning_rate, etc.) are BANNED here!
+    # All SOM parameters MUST be in src/config/som/som_config.yml
+    # All CP-WOPT parameters MUST be in src/config/cpwopt/cpwopt_config.yml
+    # This config should ONLY specify: input data path and method name
+    
+    # SOM experiment - ALL parameters from src/config/som/som_config.yml
     test_som:
-      input_parquet: '/home/yl998/dev/geo/outputs/45d78409-3818-4eb6-960f-c00216110460/merged_data_45d78409-3818-4eb6-960f-c00216110460_20250801_001157.parquet'
+      input_parquet: 'outputs/biodiversity_test_data.parquet'
       method: 'som'
-      grid_size: [20, 20]  # Override from som_config.yml if needed
-      cv_folds: 3  # Override from som_config.yml if needed
-      observed_columns: [0, 1]
-      predicted_columns: [2, 3]
-      save_results: true
-      output_dir: 'outputs/analysis_results/som/production_run_20250801'
-      
-    # Production SOM analysis with advanced convergence
-    production_som:
-      input_parquet: 'outputs/biodiversity_global.parquet'
-      method: 'som'
-      grid_size: [12, 12]
-      max_iterations: 8000
-      convergence_threshold: 1e-7
-      enable_dynamic_convergence: true
-      convergence_method: 'unified'
-      sigma: 1.5
-      learning_rate: 0.5
-      
-    # Batch SOM test with batch unified convergence
-    test_batch_som:
-      input_parquet: 'outputs/test_biodiversity.parquet'
-      method: 'som'
-      grid_size: [8, 8]
-      max_iterations: 1000
-      enable_dynamic_convergence: true
-      convergence_method: 'batch_unified'  # Uses batch training + unified convergence index!
-      sigma: 1.0
-      learning_rate: 0.3
-      
-    # Advanced unified convergence test
-    test_advanced_som:
-      input_parquet: 'outputs/test_biodiversity.parquet'
-      method: 'som'
-      grid_size: [10, 10]
-      max_iterations: 2000
-      enable_dynamic_convergence: true
-      convergence_method: 'unified'  # Uses VLRSOM + unified convergence index!
-      sigma: 1.2
-      learning_rate: 0.4
       
     # GWPCA test
     test_gwpca:

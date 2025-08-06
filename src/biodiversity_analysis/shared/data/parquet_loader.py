@@ -24,7 +24,10 @@ class ParquetLoader:
              coordinate_cols: Optional[List[str]] = None,
              feature_cols: Optional[List[str]] = None,
              species_cols: Optional[List[str]] = None,
-             validate: bool = True) -> BiodiversityData:
+             validate: bool = True,
+             sample_size: Optional[int] = None,
+             random_seed: Optional[int] = None,
+             spatial_grid_step: int = 1) -> BiodiversityData:
         """Load biodiversity data from parquet file.
         
         Args:
@@ -33,6 +36,9 @@ class ParquetLoader:
             feature_cols: Feature columns to use (all numeric if None)
             species_cols: Species column names if applicable
             validate: Whether to validate the loaded data
+            sample_size: Random sample size (used if spatial_grid_step=1)
+            random_seed: Random seed for sampling
+            spatial_grid_step: Take every Nth point in spatial grid (1=all points, 10=every 10th)
             
         Returns:
             BiodiversityData object
@@ -47,9 +53,82 @@ class ParquetLoader:
         
         logger.info(f"Loading parquet file: {data_path}")
         
-        # Load parquet file
-        df = pd.read_parquet(data_path)
-        logger.info(f"Loaded {len(df)} rows with {len(df.columns)} columns")
+        # Apply spatial grid sampling if requested
+        if spatial_grid_step > 1:
+            logger.info(f"Applying spatial grid sampling during load: taking every {spatial_grid_step}th point")
+            
+            # Import PyArrow for efficient filtering
+            import pyarrow.parquet as pq
+            import pyarrow.compute as pc
+            
+            # Open parquet file for metadata inspection
+            parquet_file = pq.ParquetFile(data_path)
+            
+            # Auto-detect coordinate columns if needed
+            if coordinate_cols is None:
+                # Read just first row to detect columns (minimal memory)
+                first_batch = next(parquet_file.iter_batches(batch_size=1))
+                first_df = first_batch.to_pandas()
+                coordinate_cols = self._detect_coordinate_columns(first_df)
+            
+            x_col, y_col = coordinate_cols[0], coordinate_cols[1]
+            
+            # EFFICIENT APPROACH: Read coordinates in batches to find unique values
+            logger.info(f"Scanning coordinates to determine spatial grid...")
+            unique_x = set()
+            unique_y = set()
+            
+            # Read coordinates in batches (memory efficient)
+            batch_size = 1000000  # Process 1M rows at a time
+            for batch in parquet_file.iter_batches(columns=coordinate_cols, batch_size=batch_size):
+                batch_df = batch.to_pandas()
+                unique_x.update(batch_df[x_col].unique())
+                unique_y.update(batch_df[y_col].unique())
+            
+            # Sort and select every Nth value
+            unique_x = sorted(unique_x)
+            unique_y = sorted(unique_y)
+            selected_x = set(unique_x[::spatial_grid_step])
+            selected_y = set(unique_y[::spatial_grid_step])
+            
+            logger.info(f"Spatial grid: {len(unique_x)}x{len(unique_y)} -> "
+                       f"{len(selected_x)}x{len(selected_y)} grid points")
+            
+            # EFFICIENT FILTERING: Use PyArrow expressions for filtering
+            # Build filter expression
+            x_filter = pc.field(x_col).isin(selected_x)
+            y_filter = pc.field(y_col).isin(selected_y)
+            combined_filter = pc.and_(x_filter, y_filter)
+            
+            # Read and filter in one operation (most efficient)
+            logger.info(f"Loading filtered data using PyArrow predicate pushdown...")
+            filtered_table = pq.read_table(
+                data_path,
+                filters=[
+                    (x_col, 'in', list(selected_x)),
+                    (y_col, 'in', list(selected_y))
+                ]
+            )
+            
+            # Convert filtered table to pandas (only filtered data in memory)
+            df = filtered_table.to_pandas()
+            
+            # Get actual row count
+            total_rows = parquet_file.metadata.num_rows
+            logger.info(f"Loaded {len(df):,} rows after spatial sampling (from {total_rows:,} total)")
+        else:
+            # Load full parquet file
+            df = pd.read_parquet(data_path)
+            logger.info(f"Loaded {len(df)} rows with {len(df.columns)} columns")
+            
+        # Apply random sampling if requested (only if not using spatial grid)
+        if sample_size and sample_size < len(df) and spatial_grid_step == 1:
+            logger.info(f"Random sampling {sample_size:,} rows from {len(df):,} total rows")
+            if random_seed is not None:
+                df = df.sample(n=sample_size, random_state=random_seed)
+            else:
+                df = df.sample(n=sample_size)
+            logger.info(f"Sampled data shape: {df.shape}")
         
         # Auto-detect coordinate columns if not specified
         if coordinate_cols is None:

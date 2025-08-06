@@ -103,7 +103,10 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
                   data_path: str,
                   coordinate_cols: Optional[List[str]] = None,
                   feature_cols: Optional[List[str]] = None,
-                  species_cols: Optional[List[str]] = None) -> BiodiversityData:
+                  species_cols: Optional[List[str]] = None,
+                  sample_size: Optional[int] = None,
+                  random_seed: Optional[int] = None,
+                  spatial_grid_step: int = 1) -> BiodiversityData:
         """
         Load biodiversity data from parquet file.
         
@@ -124,7 +127,10 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
                 coordinate_cols=coordinate_cols,
                 feature_cols=feature_cols,
                 species_cols=species_cols,
-                validate=True
+                validate=True,
+                sample_size=sample_size,
+                random_seed=random_seed,
+                spatial_grid_step=spatial_grid_step
             )
             
             logger.info(f"Loaded {data.n_samples} samples with {data.n_features} features")

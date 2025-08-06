@@ -109,19 +109,47 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         start_time = time.time()
         logger.info("Starting GeoSOM analysis for biodiversity data")
         
-        # Load data
+        # Load data with flexible coordinate column names and spatial sampling
+        # First check kwargs, then fall back to config
+        logger.info(f"self.config keys: {self.config.keys() if self.config else 'None'}")
+        data_config = self.config.get('data_config', {})
+        logger.info(f"data_config from self.config: {data_config}")
+        coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinate_columns', ['longitude', 'latitude']))
+        feature_cols = kwargs.get('feature_cols', data_config.get('feature_cols', None))
+        sample_size = kwargs.get('sample_size', None)  # Optional random sampling
+        random_seed = kwargs.get('random_seed', None)
+        spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
+        
+        logger.info(f"Data config: spatial_grid_step={spatial_grid_step}, feature_cols={feature_cols}, coord_cols={coord_cols}")
+        
         biodiv_data = self.load_data(
             data_path,
-            coordinate_cols=kwargs.get('coordinate_columns', ['longitude', 'latitude'])
+            coordinate_cols=coord_cols,
+            feature_cols=feature_cols,
+            sample_size=sample_size,
+            random_seed=random_seed,
+            spatial_grid_step=spatial_grid_step
         )
+        
+        # Handle coordinate column renaming if needed (x,y -> longitude,latitude)
+        if coord_cols == ['x', 'y']:
+            logger.info("Renaming coordinates: x -> longitude, y -> latitude")
+            # The data loader should handle this, but we'll ensure it's done
         
         # Validate missing data handling
         missing_stats = validate_missing_data_handling(biodiv_data.features)
         logger.info(f"Data has {missing_stats['overall_missing_proportion']:.1%} missing values")
         
-        # Get column indices
-        observed_cols = kwargs.get('observed_columns', [0, 1])
-        predicted_cols = kwargs.get('predicted_columns', [2, 3])
+        # Get column indices from kwargs first, then data_config, then defaults
+        observed_cols = kwargs.get('observed_columns', data_config.get('observed_columns', [0, 1]))
+        predicted_cols = kwargs.get('predicted_columns', data_config.get('predicted_columns', [2, 3]))
+        
+        # For biodiversity-only analysis with no predicted columns, ensure it's empty
+        if not predicted_cols or predicted_cols == []:
+            predicted_cols = []
+            logger.info(f"No predicted columns for biodiversity-only analysis")
+        
+        logger.info(f"Column indices - observed: {observed_cols}, predicted: {predicted_cols}")
         
         # Preprocess data
         features_processed = self.preprocessor.fit_transform(
@@ -130,10 +158,18 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             predicted_cols
         )
         
-        # Determine grid size
+        # Determine grid size - first check config file, then kwargs, then auto
+        arch_config = self.config.get('architecture_config', {})
+        config_grid_size = arch_config.get('grid_size', 'auto')
+        
+        # Use kwargs grid_size if provided, otherwise use config, otherwise auto
+        grid_size_param = kwargs.get('grid_size', config_grid_size)
+        
+        logger.info(f"Grid size source - kwargs: {kwargs.get('grid_size')}, config: {config_grid_size}, using: {grid_size_param}")
+        
         grid_size = self._determine_grid_size(
             len(features_processed),
-            kwargs.get('grid_size', 'auto')
+            grid_size_param
         )
         
         # Create GeoSOM configuration
@@ -146,13 +182,27 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         experiment_name = kwargs.get('experiment_name', f'som_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
         self.progress_tracker = SOMProgressTracker(output_dir, experiment_name)
         
-        # Perform spatial block cross-validation
-        cv_results = self._spatial_cross_validation(
-            features_processed,
-            biodiv_data.coordinates,
-            self._geosom_config,
-            **kwargs
-        )
+        # Check if we should skip CV for exploratory analysis
+        skip_cv = kwargs.get('skip_cv', False)
+        cv_folds = kwargs.get('cv_folds', self.config.get('validation_config', {}).get('n_folds', 5))
+        
+        # For exploratory analysis, set cv_folds=0 or skip_cv=True to skip cross-validation
+        if cv_folds == 0:
+            skip_cv = True
+            logger.info("CV folds set to 0, skipping cross-validation for exploratory analysis")
+        
+        cv_results = None
+        if not skip_cv:
+            logger.info(f"Performing {cv_folds}-fold spatial block cross-validation")
+            # Perform spatial block cross-validation
+            cv_results = self._spatial_cross_validation(
+                features_processed,
+                biodiv_data.coordinates,
+                self._geosom_config,
+                **kwargs
+            )
+        else:
+            logger.info("Skipping cross-validation for exploratory analysis - training on full dataset")
         
         # Train final model on all data
         self.som = GeoSOMVLRSOM(self._geosom_config)
@@ -516,14 +566,14 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         return reports
     
     def _create_result(self, features: np.ndarray, biodiv_data,
-                      cv_results: Dict, final_metrics: Dict,
+                      cv_results: Optional[Dict], final_metrics: Dict,
                       reports: Dict, runtime: float) -> AnalysisResult:
         """Create analysis result object."""
         # Prepare result data
         result_data = {
             'labels': final_metrics['grid_coordinates'],
             'statistics': {
-                'cv_results': cv_results,
+                'cv_results': cv_results if cv_results else {'skipped': True, 'reason': 'exploratory_analysis'},
                 'final_metrics': final_metrics,
                 'preprocessing': reports['preprocessing_info']
             }
