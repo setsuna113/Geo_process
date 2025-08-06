@@ -233,11 +233,14 @@ class StandaloneAnalysisRunner:
                     analysis_method=analysis_method
                 )
                 
-                # Check for existing checkpoint
-                latest_checkpoint = checkpointer.load_latest_checkpoint()
-                if latest_checkpoint:
-                    self.logger.info("Found existing checkpoint, resuming...")
-                    resume_info = checkpointer.resume_from_checkpoint(latest_checkpoint)
+                # Check for existing checkpoint if resume flag is set
+                if analysis_config.get('resume', False):
+                    latest_checkpoint = checkpointer.load_latest_checkpoint()
+                    if latest_checkpoint:
+                        self.logger.info("Found existing checkpoint, resuming...")
+                        resume_info = checkpointer.resume_from_checkpoint(latest_checkpoint)
+                    else:
+                        self.logger.warning("Resume requested but no checkpoint found, starting fresh")
             
             # Create analyzer (database-free)
             self.logger.info("Creating analyzer...")
@@ -249,6 +252,11 @@ class StandaloneAnalysisRunner:
                 config_wrapper,
                 db=None  # No database dependency
             )
+            
+            # Restore analyzer state if resuming from checkpoint
+            if resume_info and 'method_state' in resume_info:
+                self.logger.info("Restoring analyzer state from checkpoint...")
+                analyzer.load_checkpoint_state(resume_info['method_state'])
             
             # Progress tracking is handled by UnifiedMonitor
             self.logger.info("Progress tracking initialized")
@@ -331,43 +339,33 @@ class StandaloneAnalysisRunner:
         self.logger.info(f"Progress tracking initialized for {analysis_method}")
     
     def _get_analysis_parameters(self, analysis_config: Dict[str, Any], analysis_method: str) -> Dict[str, Any]:
-        """Extract analysis-specific parameters from configuration."""
-        # Get method-specific config section
-        method_config = self.config.get(f'{analysis_method}_analysis', {})
+        """Extract analysis-specific parameters from configuration.
         
-        # Start with method-specific defaults
-        params = {}
+        IMPORTANT: This should ONLY pass generic parameters like output paths.
+        Method-specific parameters (grid_size, learning_rate, etc.) are BANNED.
+        Each analyzer reads its own config from its method-specific config file.
+        """
+        # ONLY pass generic parameters that all methods need
+        params = {
+            'save_results': analysis_config.get('save_results', True),
+            'output_dir': analysis_config.get('output_dir', f'outputs/analysis_results/{analysis_method}'),
+            'experiment_name': analysis_config.get('experiment_name', 'default'),
+            'resume': analysis_config.get('resume', False)  # Pass resume flag
+        }
         
-        if analysis_method == 'som':
-            # Only pass parameters that are explicitly set in the experiment config
-            # Let the SOM analyzer load its own defaults from som_config_optimized.yml
-            som_params = ['grid_size', 'iterations', 'max_iterations', 'sigma', 'learning_rate', 
-                         'neighborhood_function', 'random_seed', 'convergence_threshold', 
-                         'enable_dynamic_convergence', 'cv_folds', 'observed_columns', 
-                         'predicted_columns', 'save_results', 'output_dir']
-            params.update({
-                k: v for k, v in analysis_config.items() 
-                if k in som_params and v is not None
-            })
+        # Log warning if method-specific parameters are detected
+        banned_params = ['grid_size', 'iterations', 'learning_rate', 'sigma', 
+                        'convergence_threshold', 'max_iterations', 'cv_folds',
+                        'observed_columns', 'predicted_columns', 'convergence_method']
         
-        elif analysis_method == 'gwpca':
-            params.update({
-                'n_components': analysis_config.get('n_components', method_config.get('n_components', 3)),
-                'bandwidth': analysis_config.get('bandwidth', method_config.get('bandwidth', 'adaptive')),
-                'kernel': analysis_config.get('kernel', method_config.get('kernel', 'gaussian')),
-                'adaptive_bw': analysis_config.get('adaptive_bw', method_config.get('adaptive_bw', 50))
-            })
+        found_banned = [p for p in banned_params if p in analysis_config]
+        if found_banned:
+            self.logger.warning(f"BANNED method-specific parameters found in config.yml: {found_banned}")
+            self.logger.warning(f"These should be in src/config/{analysis_method}/{analysis_method}_config.yml")
+            self.logger.warning("Ignoring these parameters - using method-specific config file instead")
+            
         
-        elif analysis_method == 'maxp_regions':
-            params.update({
-                'min_region_size': analysis_config.get('min_region_size', method_config.get('min_region_size', 5)),
-                'spatial_weights': analysis_config.get('spatial_weights', method_config.get('spatial_weights', 'queen')),
-                'method': analysis_config.get('method_type', method_config.get('method', 'ward')),
-                'threshold_variable': analysis_config.get('threshold_variable', 'total_richness'),
-                'random_seed': analysis_config.get('random_seed', method_config.get('random_seed', 42))
-            })
-        
-        elif analysis_method == 'cpwopt':
+        if analysis_method == 'cpwopt':
             # CP-WOPT tensor factorization parameters
             cpwopt_params = ['rank', 'max_iterations', 'convergence_threshold', 
                            'initialization', 'use_minibatch', 'minibatch_size',
@@ -669,6 +667,9 @@ Running Experiments:
         
         if args.method:
             analysis_config['method'] = args.method
+        
+        if args.resume:
+            analysis_config['resume'] = True
         
         # Validate required fields
         if 'input_parquet' not in analysis_config:

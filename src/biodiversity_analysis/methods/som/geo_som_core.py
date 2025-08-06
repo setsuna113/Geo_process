@@ -9,6 +9,7 @@ This implementation follows the specifications in final_som_configuration_decisi
 
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, Callable
+from pathlib import Path
 from dataclasses import dataclass
 import logging
 import time
@@ -26,6 +27,13 @@ from .constants import (
 from .minibatch_distance_calculator import MiniBatchDistanceCalculator
 
 logger = logging.getLogger(__name__)
+
+# Configuration constants (can be overridden via config or environment variables)
+DEFAULT_CHUNK_SIZE = int(os.environ.get('SOM_CHUNK_SIZE', '50000'))
+DEFAULT_GEO_DISTANCE_NORM = float(os.environ.get('SOM_GEO_DISTANCE_NORM', '20000.0'))
+DEFAULT_QE_SAMPLE_SIZE = int(os.environ.get('SOM_QE_SAMPLE_SIZE', '50000'))
+DEFAULT_PROGRESS_LOG_INTERVAL = int(os.environ.get('SOM_PROGRESS_LOG_INTERVAL', '50000'))
+MEMORY_THRESHOLD_BYTES = int(os.environ.get('SOM_MEMORY_THRESHOLD', '100000000'))
 
 
 @dataclass
@@ -74,7 +82,7 @@ class GeoSOMConfig:
     random_seed: Optional[int] = None
     
     # Performance settings
-    chunk_size: int = 50000  # Chunk size for batch processing
+    chunk_size: int = 50000  # Default chunk size for batch processing (override with config)
     qe_sample_size: int = 100000  # Sample size for QE calculation
     use_parallel: bool = True  # Enable parallel chunk processing
     n_workers: Optional[int] = None  # Number of parallel workers (None=auto)
@@ -95,9 +103,25 @@ class GeoSOMVLRSOM:
     
     def __init__(self, config: GeoSOMConfig):
         self.config = config
+        
+        # Validate grid size configuration
+        if not isinstance(config.grid_size, (list, tuple)) or len(config.grid_size) != 2:
+            raise ValueError(f"grid_size must be a 2-element list/tuple, got: {config.grid_size}")
+        
+        if config.grid_size[0] <= 0 or config.grid_size[1] <= 0:
+            raise ValueError(f"grid_size dimensions must be positive, got: {config.grid_size}")
+        
+        # Warn if grid is too large relative to expected data
+        grid_neurons = config.grid_size[0] * config.grid_size[1]
+        max_neurons_warning = getattr(config, 'max_grid_neurons_warning', 10000)
+        if grid_neurons > max_neurons_warning:
+            logger.warning(f"Large grid size ({config.grid_size[0]}x{config.grid_size[1]} = {grid_neurons} neurons) "
+                         f"exceeds warning threshold ({max_neurons_warning}). "
+                         f"May lead to slow training and memory issues")
+        
         self.weights = None
         self.input_dim = None
-        self.n_neurons = config.grid_size[0] * config.grid_size[1]
+        self.n_neurons = grid_neurons
         self.grid_rows, self.grid_cols = config.grid_size
         
         # Initialize grid positions
@@ -142,6 +166,55 @@ class GeoSOMVLRSOM:
             self._grid_positions = np.array(positions)
         else:
             raise NotImplementedError(f"Topology {self.config.topology} not implemented")
+    
+    def _validate_coordinates(self, coordinates: np.ndarray, n_samples: int) -> None:
+        """Validate coordinate array for proper shape and values.
+        
+        Args:
+            coordinates: Geographic coordinates to validate
+            n_samples: Expected number of samples
+            
+        Raises:
+            ValueError: If coordinates have invalid shape or dimensions
+        """
+        # Check shape
+        if len(coordinates.shape) != 2:
+            raise ValueError(f"Coordinates must be 2D array, got shape {coordinates.shape}")
+        if len(coordinates) == 0:
+            raise ValueError("Coordinates array is empty")
+        if coordinates.shape[0] != n_samples:
+            raise ValueError(f"Coordinates samples ({coordinates.shape[0]}) must match data samples ({n_samples})")
+        if coordinates.shape[1] != 2:
+            raise ValueError(f"Coordinates must have 2 columns [latitude, longitude], got {coordinates.shape[1]}")
+        
+        # Check for NaN values
+        nan_coords = np.isnan(coordinates).any(axis=1)
+        if nan_coords.any():
+            n_nan = nan_coords.sum()
+            logger.warning(f"Found {n_nan} samples with NaN coordinates ({n_nan/len(coordinates)*100:.1f}%)")
+        
+        # Validate coordinate ranges (assuming lat/lon)
+        # Note: coordinates are expected to be [latitude, longitude] order
+        lat_values = coordinates[:, 0]  # First column is latitude
+        lon_values = coordinates[:, 1]  # Second column is longitude
+        
+        # Check latitude range [-90, 90]
+        valid_lat_mask = ~np.isnan(lat_values)
+        if valid_lat_mask.any():
+            invalid_lat = valid_lat_mask & ((lat_values < -90) | (lat_values > 90))
+            if invalid_lat.any():
+                logger.warning(f"Found {invalid_lat.sum()} samples with invalid latitude values "
+                             f"(outside [-90, 90]): min={lat_values[valid_lat_mask].min():.2f}, "
+                             f"max={lat_values[valid_lat_mask].max():.2f}")
+        
+        # Check longitude range [-180, 180]
+        valid_lon_mask = ~np.isnan(lon_values)
+        if valid_lon_mask.any():
+            invalid_lon = valid_lon_mask & ((lon_values < -180) | (lon_values > 180))
+            if invalid_lon.any():
+                logger.warning(f"Found {invalid_lon.sum()} samples with invalid longitude values "
+                             f"(outside [-180, 180]): min={lon_values[valid_lon_mask].min():.2f}, "
+                             f"max={lon_values[valid_lon_mask].max():.2f}")
     
     def partial_bray_curtis(self, u: np.ndarray, v: np.ndarray) -> float:
         """Bray-Curtis distance for vectors with missing values.
@@ -216,7 +289,7 @@ class GeoSOMVLRSOM:
         if sample_coord is not None and neuron_coord is not None:
             geo_dist = self.haversine_distance(sample_coord, neuron_coord)
             # Normalize geographic distance (rough earth circumference / 2)
-            geo_dist_norm = geo_dist / 20000.0
+            geo_dist_norm = geo_dist / DEFAULT_GEO_DISTANCE_NORM
         else:
             geo_dist_norm = 0.0
         
@@ -237,12 +310,9 @@ class GeoSOMVLRSOM:
         """
         self.input_dim = data.shape[1]
         
-        # Validate coordinates shape if provided
+        # Validate coordinates if provided
         if coordinates is not None:
-            if coordinates.shape[0] != data.shape[0]:
-                raise ValueError(f"Coordinates samples ({coordinates.shape[0]}) must match data samples ({data.shape[0]})")
-            if coordinates.shape[1] != 2:
-                raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
+            self._validate_coordinates(coordinates, data.shape[0])
         
         if method == "pca_transformed":
             self._init_pca_transformed(data)
@@ -366,7 +436,7 @@ class GeoSOMVLRSOM:
                 idx += 1
     
     def train_batch(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None,
-                   progress_callback: Optional[Callable] = None) -> SOMTrainingResult:
+                   progress_callback: Optional[Callable] = None, **kwargs) -> SOMTrainingResult:
         """Train using batch mode with geographic awareness.
         
         Args:
@@ -397,9 +467,11 @@ class GeoSOMVLRSOM:
         if resume_checkpoint and os.path.exists(resume_checkpoint):
             logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
             checkpoint_data = self.load_checkpoint(resume_checkpoint)
-            start_epoch = checkpoint_data['epoch']
+            # Resume from NEXT epoch after checkpoint
+            start_epoch = checkpoint_data['epoch'] + 1
             best_qe = checkpoint_data['best_qe']
             patience_counter = checkpoint_data['patience_counter']
+            logger.info(f"Resuming training from epoch {start_epoch+1} (checkpoint was at epoch {checkpoint_data['epoch']+1})")
             # Training history already restored in load_checkpoint
         
         # Calculate initial QE on a sample for large datasets
@@ -434,17 +506,21 @@ class GeoSOMVLRSOM:
             logger.info(f"Calculating QE for epoch {epoch+1}")
             if len(data) > 100000:
                 # Large datasets: use aggressive sampling
-                if epoch % 10 == 0:
-                    # Every 10 epochs: larger sample for accuracy
+                qe_sample_freq = getattr(self.config.progress_tracking, 'qe_sample_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
+                if epoch % qe_sample_freq == 0:
+                    # Every N epochs: larger sample for accuracy
                     logger.debug("Using 50k sample for QE calculation (validation epoch)")
-                    qe = self.calculate_quantization_error(data, coordinates, sample_size=50000)
+                    qe = self.calculate_quantization_error(data, coordinates, sample_size=DEFAULT_QE_SAMPLE_SIZE)
                 else:
                     # Other epochs: smaller sample for speed
                     logger.debug("Using 10k sample for QE calculation")
                     qe = self.calculate_quantization_error(data, coordinates, sample_size=10000)
             elif len(data) > 10000:
                 # Medium datasets: moderate sampling
-                sample_size = min(len(data) // 10, 50000)
+                # Use configurable sample size
+                sample_divisor = getattr(self.config.progress_tracking, 'quick_sample_divisor', 10) if hasattr(self.config, 'progress_tracking') else 10
+                max_sample = getattr(self.config.progress_tracking, 'large_sample_size', 50000) if hasattr(self.config, 'progress_tracking') else 50000
+                sample_size = min(len(data) // sample_divisor, max_sample)
                 logger.debug(f"Using {sample_size} sample for QE calculation")
                 qe = self.calculate_quantization_error(data, coordinates, sample_size=sample_size)
             else:
@@ -478,8 +554,9 @@ class GeoSOMVLRSOM:
             self.training_history['learning_rates'].append(self.current_lr)
             self.training_history['radii'].append(self.current_radius)
             
-            # Calculate topographic error every 10 epochs
-            if epoch % 10 == 0 and epoch > 0:
+            # Calculate topographic error every N epochs
+            te_freq = getattr(self.config.progress_tracking, 'te_calculation_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
+            if epoch % te_freq == 0 and epoch > 0:
                 logger.info(f"Calculating topographic error for epoch {epoch+1}")
                 te = self.calculate_topographic_error(data, coordinates, sample_size=10000)
                 logger.info(f"Topographic error: {te:.4f}")
@@ -518,11 +595,15 @@ class GeoSOMVLRSOM:
                     self._radius_adjustment = 1.0
             
             # Calculate geographic coherence
-            if coordinates is not None and epoch % 10 == 0 and epoch > 0:
+            # Calculate geographic coherence every N epochs
+            geo_freq = getattr(self.config.progress_tracking, 'geographic_coherence_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
+            if coordinates is not None and epoch % geo_freq == 0 and epoch > 0:
                 logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
                 # Sample for large datasets to avoid O(n²) computation
-                if len(data) > 10000:
-                    sample_size = 5000
+                coherence_sample_threshold = getattr(self.config, 'coherence_sample_threshold', 10000)
+                coherence_sample_size = getattr(self.config, 'coherence_sample_size', 5000)
+                if len(data) > coherence_sample_threshold:
+                    sample_size = coherence_sample_size
                     indices = np.random.choice(len(data), sample_size, replace=False)
                     geo_coherence = self._calculate_geographic_coherence(
                         data[indices], coordinates[indices]
@@ -577,6 +658,20 @@ class GeoSOMVLRSOM:
                     logger.error(f"Error in progress callback: {e}")
                     raise
             
+            # Checkpoint saving is now handled by the unified checkpoint system
+            # The analyzer's save_checkpoint_state() method will be called externally
+            # checkpoint_freq = getattr(self.config, 'checkpoint_frequency', 10)
+            # if (epoch + 1) % checkpoint_freq == 0:
+            #     checkpoint_dir = kwargs.get('checkpoint_dir', 
+            #         f'outputs/analysis_results/som/{kwargs.get("experiment_name", "biodiv_fine_som_grid10")}/checkpoints')
+            #     # Use standardized save_checkpoint method with all required parameters
+            #     self.save_checkpoint(
+            #         checkpoint_dir=checkpoint_dir,
+            #         epoch=epoch + 1,
+            #         best_qe=best_qe,
+            #         patience_counter=patience_counter
+            #     )
+            
             logger.info(f"Completed epoch {epoch+1}/{self.config.max_epochs}")
         
         # Create result
@@ -591,6 +686,8 @@ class GeoSOMVLRSOM:
             n_samples_trained=len(data)
         )
     
+    # Note: Checkpoint saving is handled by the standardized save_checkpoint method at line 1376
+    
     def _adapt_learning_rate(self, current_qe: float, best_qe: float):
         """VLRSOM: Adapt learning rate based on QE improvement."""
         # Calculate improvement ratio
@@ -600,32 +697,43 @@ class GeoSOMVLRSOM:
             improvement = 0
         
         # Check if learning rate is critically low and needs recovery
-        if self.current_lr < 0.02 and current_qe > 0.055:  # LR too low and QE still poor
+        lr_recovery_threshold = getattr(self.config, 'lr_recovery_threshold', 0.02)
+        qe_poor_threshold = getattr(self.config, 'qe_poor_threshold', 0.055)
+        lr_recovery_target = getattr(self.config, 'lr_recovery_target', 0.05)
+        if self.current_lr < lr_recovery_threshold and current_qe > qe_poor_threshold:
             # Force a small recovery to escape local minimum
-            self.current_lr = min(self.current_lr * 1.5, 0.05)
+            self.current_lr = min(self.current_lr * 1.5, lr_recovery_target)
             logger.info(f"Learning rate recovery triggered: LR={self.current_lr:.4f}")
             return
         
         # More nuanced adaptation based on improvement magnitude
-        if improvement > 0.05:  # Significant improvement (>5%)
+        # Get thresholds from config
+        significant_improvement = getattr(self.config, 'significant_improvement', 0.05)
+        small_improvement = getattr(self.config, 'small_improvement', 0.01)
+        small_degradation = getattr(self.config, 'small_degradation', -0.02)
+        moderate_degradation = getattr(self.config, 'moderate_degradation', -0.05)
+        small_increase_factor = getattr(self.config, 'small_increase_factor', 1.02)
+        gentle_decrease_factor = getattr(self.config, 'gentle_decrease_factor', 0.98)
+        
+        if improvement > significant_improvement:
             # Increase learning rate
             self.current_lr = min(
                 self.current_lr * self.config.lr_increase_factor,
                 self.config.max_learning_rate
             )
-        elif improvement > 0.01:  # Small improvement (1-5%)
+        elif improvement > small_improvement:
             # Keep learning rate stable or slightly increase
             self.current_lr = min(
-                self.current_lr * 1.02,  # Slight increase to encourage progress
+                self.current_lr * small_increase_factor,  # Slight increase to encourage progress
                 self.config.max_learning_rate
             )
-        elif improvement > -0.02:  # Very small degradation (0-2%)
+        elif improvement > small_degradation:
             # Keep stable - this might be noise
             pass
-        elif improvement > -0.05:  # Small degradation (2-5%)
+        elif improvement > moderate_degradation:
             # Slightly decrease learning rate
             self.current_lr = max(
-                self.current_lr * 0.98,  # Very gentle decrease
+                self.current_lr * gentle_decrease_factor,  # Very gentle decrease
                 self.config.min_learning_rate
             )
         else:  # Significant degradation (>5%)
@@ -636,13 +744,16 @@ class GeoSOMVLRSOM:
             )
         
         # Adaptive regions based on QE level
-        if current_qe > 0.5:  # High QE region (poor performance)
+        high_qe_threshold = getattr(self.config, 'high_qe_threshold', 0.5)
+        low_qe_threshold = getattr(self.config, 'low_qe_threshold', 0.02)
+        
+        if current_qe > high_qe_threshold:  # High QE region (poor performance)
             self.current_lr = np.clip(
                 self.current_lr,
                 self.config.high_qe_lr_min,
                 self.config.high_qe_lr_max
             )
-        elif current_qe < 0.02:  # Very low QE region (excellent performance)
+        elif current_qe < low_qe_threshold:  # Very low QE region (excellent performance)
             self.current_lr = np.clip(
                 self.current_lr,
                 self.config.low_qe_lr_min,
@@ -678,7 +789,8 @@ class GeoSOMVLRSOM:
     def _batch_update(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
         """Perform batch update of weights using vectorized operations."""
         # Use vectorized implementation for large datasets
-        if len(data) > 1000:
+        vectorized_threshold = getattr(self.config, 'vectorized_threshold', 1000)
+        if len(data) > vectorized_threshold:
             self._batch_update_vectorized(data, coordinates)
         else:
             self._batch_update_sequential(data, coordinates)
@@ -861,7 +973,7 @@ class GeoSOMVLRSOM:
         geo_distances = self._vectorized_haversine_distances(coords_chunk, neuron_coords)
         
         # Normalize geographic distances (rough earth circumference / 2)
-        geo_distances_norm = geo_distances / 20000.0
+        geo_distances_norm = geo_distances / DEFAULT_GEO_DISTANCE_NORM
         
         # Combined distance with spatial weighting
         # Handle invalid feature distances
@@ -932,13 +1044,18 @@ class GeoSOMVLRSOM:
         n_samples, n_features = data.shape
         
         # Get chunk size
-        chunk_size = getattr(self.config, 'chunk_size', 50000)
+        chunk_size = getattr(self.config, 'chunk_size', DEFAULT_CHUNK_SIZE)
         chunk_size = min(chunk_size, n_samples)
         
-        # Create parallel processor (reuse if exists to avoid worker churn)
-        if not hasattr(self, '_processor'):
-            self._processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
-        processor = self._processor
+        # Create a new processor instance for each training run to ensure isolation
+        # This prevents thread safety issues and ensures clean state
+        processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
+        
+        # Note: We create a new processor per call rather than reusing to avoid:
+        # 1. Thread safety issues in multi-threaded environments
+        # 2. State contamination between training runs
+        # 3. Memory leaks from accumulated state
+        # The overhead is minimal as processor creation is lightweight
         
         # Process chunks in parallel
         numerator, denominator = processor.process_chunks_parallel(
@@ -1095,7 +1212,7 @@ class GeoSOMVLRSOM:
         coords_valid = coordinates[valid_mask] if coordinates is not None else None
         
         # Process in chunks for memory efficiency
-        chunk_size = 1000
+        chunk_size = getattr(self.config, 'qe_calc_chunk_size', 1000)
         total_error = 0.0
         n_valid = 0
         
@@ -1414,14 +1531,20 @@ class GeoSOMVLRSOM:
             'training_history': json.loads(str(checkpoint['training_history']))
         }
         
-        # Validate checkpoint compatibility
-        if checkpoint['grid_size'].tolist() != self.config.grid_size:
-            raise ValueError(f"Grid size mismatch: checkpoint has {checkpoint['grid_size']}, "
-                           f"config has {self.config.grid_size}")
+        # Validate checkpoint compatibility (convert both to list for comparison)
+        checkpoint_grid = checkpoint['grid_size'].tolist() if hasattr(checkpoint['grid_size'], 'tolist') else list(checkpoint['grid_size'])
+        config_grid = list(self.config.grid_size)
+        if checkpoint_grid != config_grid:
+            raise ValueError(f"Grid size mismatch: checkpoint has {checkpoint_grid}, "
+                           f"config has {config_grid}")
         
-        if int(checkpoint['input_dim']) != self.input_dim:
+        # Only check input_dim if already initialized
+        if self.input_dim is not None and int(checkpoint['input_dim']) != self.input_dim:
             raise ValueError(f"Input dimension mismatch: checkpoint has {checkpoint['input_dim']}, "
                            f"current data has {self.input_dim}")
+        elif self.input_dim is None:
+            # Set input_dim from checkpoint when resuming
+            self.input_dim = int(checkpoint['input_dim'])
         
         # Restore state
         self.weights = checkpoint_data['weights']
@@ -1436,13 +1559,10 @@ class GeoSOMVLRSOM:
     
     def cleanup(self):
         """Clean up resources used during training."""
-        # Clean up parallel processor if it exists
-        if hasattr(self, '_processor'):
-            try:
-                self._processor.cleanup()
-            except:
-                pass
-            delattr(self, '_processor')
+        # Note: Processor cleanup is now handled automatically
+        # Since we create a new processor per training run (not stored as instance variable),
+        # Python's garbage collector will clean it up when it goes out of scope.
+        # This is safer than manual cleanup and prevents memory leaks.
     
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
         """Predict BMU indices for data using vectorized operations."""
@@ -1457,7 +1577,8 @@ class GeoSOMVLRSOM:
         bmu_indices = np.full(n_samples, INVALID_INDEX, dtype=np.int32)
         
         # Process in chunks for memory efficiency
-        chunk_size = min(5000, n_samples)  # Smaller chunks for prediction
+        prediction_chunk_size = getattr(self.config, 'prediction_chunk_size', 5000)
+        chunk_size = min(prediction_chunk_size, n_samples)
         
         for start_idx in range(0, n_samples, chunk_size):
             end_idx = min(start_idx + chunk_size, n_samples)
@@ -1480,7 +1601,7 @@ class GeoSOMVLRSOM:
                 bmu_indices[start_idx + valid_indices] = chunk_bmus
             
             # Log progress for large datasets
-            if n_samples > 50000 and (end_idx % 50000 == 0 or end_idx == n_samples):
+            if n_samples > DEFAULT_PROGRESS_LOG_INTERVAL and (end_idx % DEFAULT_PROGRESS_LOG_INTERVAL == 0 or end_idx == n_samples):
                 logger.debug(f"Predicted {end_idx}/{n_samples} samples")
         
         return bmu_indices
