@@ -36,8 +36,8 @@ regression_analysis:
       fit_intercept: true
     
     lightgbm:  # For DML (lines 849-859)
-      objective: "tweedie"
-      tweedie_variance_power: 1.5
+      objective: "regression"  # Use standard regression for DML residuals
+      metric: "rmse"
       num_leaves: 255
       learning_rate: 0.05
       feature_fraction: 0.8
