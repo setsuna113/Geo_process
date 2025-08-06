@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, Optional, Union, Tuple
 
 from ...models.glm import NegativeBinomialGLM, PoissonGLM
-from ...spatial import compute_mesf_optimized as compute_mesf  # Using optimized version
+from ...spatial import compute_mesf  # Now uses vectorized implementation
 from ...config_loader import MLRegressionConfig
 
 logger = logging.getLogger(__name__)

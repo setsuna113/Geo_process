@@ -15,7 +15,7 @@ import lightgbm as lgb
 from scipy import stats
 
 from ...config_loader import MLRegressionConfig
-from ...spatial import compute_mesf_optimized as compute_mesf  # Using optimized version
+from ...spatial import compute_mesf  # Now uses vectorized implementation
 from ...utils import MemoryMonitor, MemoryContext  # Memory optimization utilities
 
 logger = logging.getLogger(__name__)
