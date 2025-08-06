@@ -28,6 +28,13 @@ from .minibatch_distance_calculator import MiniBatchDistanceCalculator
 
 logger = logging.getLogger(__name__)
 
+# Configuration constants (can be overridden via config or environment variables)
+DEFAULT_CHUNK_SIZE = int(os.environ.get('SOM_CHUNK_SIZE', '50000'))
+DEFAULT_GEO_DISTANCE_NORM = float(os.environ.get('SOM_GEO_DISTANCE_NORM', '20000.0'))
+DEFAULT_QE_SAMPLE_SIZE = int(os.environ.get('SOM_QE_SAMPLE_SIZE', '50000'))
+DEFAULT_PROGRESS_LOG_INTERVAL = int(os.environ.get('SOM_PROGRESS_LOG_INTERVAL', '50000'))
+MEMORY_THRESHOLD_BYTES = int(os.environ.get('SOM_MEMORY_THRESHOLD', '100000000'))
+
 
 @dataclass
 class GeoSOMConfig:
@@ -75,7 +82,7 @@ class GeoSOMConfig:
     random_seed: Optional[int] = None
     
     # Performance settings
-    chunk_size: int = 50000  # Chunk size for batch processing
+    chunk_size: int = 50000  # Default chunk size for batch processing (override with config)
     qe_sample_size: int = 100000  # Sample size for QE calculation
     use_parallel: bool = True  # Enable parallel chunk processing
     n_workers: Optional[int] = None  # Number of parallel workers (None=auto)
@@ -282,7 +289,7 @@ class GeoSOMVLRSOM:
         if sample_coord is not None and neuron_coord is not None:
             geo_dist = self.haversine_distance(sample_coord, neuron_coord)
             # Normalize geographic distance (rough earth circumference / 2)
-            geo_dist_norm = geo_dist / 20000.0
+            geo_dist_norm = geo_dist / DEFAULT_GEO_DISTANCE_NORM
         else:
             geo_dist_norm = 0.0
         
@@ -503,7 +510,7 @@ class GeoSOMVLRSOM:
                 if epoch % qe_sample_freq == 0:
                     # Every N epochs: larger sample for accuracy
                     logger.debug("Using 50k sample for QE calculation (validation epoch)")
-                    qe = self.calculate_quantization_error(data, coordinates, sample_size=50000)
+                    qe = self.calculate_quantization_error(data, coordinates, sample_size=DEFAULT_QE_SAMPLE_SIZE)
                 else:
                     # Other epochs: smaller sample for speed
                     logger.debug("Using 10k sample for QE calculation")
@@ -949,7 +956,7 @@ class GeoSOMVLRSOM:
         geo_distances = self._vectorized_haversine_distances(coords_chunk, neuron_coords)
         
         # Normalize geographic distances (rough earth circumference / 2)
-        geo_distances_norm = geo_distances / 20000.0
+        geo_distances_norm = geo_distances / DEFAULT_GEO_DISTANCE_NORM
         
         # Combined distance with spatial weighting
         # Handle invalid feature distances
@@ -1020,19 +1027,18 @@ class GeoSOMVLRSOM:
         n_samples, n_features = data.shape
         
         # Get chunk size
-        chunk_size = getattr(self.config, 'chunk_size', 50000)
+        chunk_size = getattr(self.config, 'chunk_size', DEFAULT_CHUNK_SIZE)
         chunk_size = min(chunk_size, n_samples)
         
-        # Create parallel processor with thread safety considerations
-        # Using thread-local storage to avoid conflicts in multi-threaded environments
-        import threading
-        if not hasattr(self, '_processor_lock'):
-            self._processor_lock = threading.Lock()
+        # Create a new processor instance for each training run to ensure isolation
+        # This prevents thread safety issues and ensures clean state
+        processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
         
-        with self._processor_lock:
-            if not hasattr(self, '_processor'):
-                self._processor = ParallelBatchProcessor(n_workers=self.config.n_workers)
-            processor = self._processor
+        # Note: We create a new processor per call rather than reusing to avoid:
+        # 1. Thread safety issues in multi-threaded environments
+        # 2. State contamination between training runs
+        # 3. Memory leaks from accumulated state
+        # The overhead is minimal as processor creation is lightweight
         
         # Process chunks in parallel
         numerator, denominator = processor.process_chunks_parallel(
@@ -1536,15 +1542,10 @@ class GeoSOMVLRSOM:
     
     def cleanup(self):
         """Clean up resources used during training."""
-        # Clean up parallel processor if it exists
-        if hasattr(self, '_processor'):
-            try:
-                self._processor.cleanup()
-            except Exception as e:
-                logger.warning(f"Error during processor cleanup (continuing anyway): {e}")
-            finally:
-                # Always delete the processor to prevent memory leak
-                delattr(self, '_processor')
+        # Note: Processor cleanup is now handled automatically
+        # Since we create a new processor per training run (not stored as instance variable),
+        # Python's garbage collector will clean it up when it goes out of scope.
+        # This is safer than manual cleanup and prevents memory leaks.
     
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
         """Predict BMU indices for data using vectorized operations."""
@@ -1582,7 +1583,7 @@ class GeoSOMVLRSOM:
                 bmu_indices[start_idx + valid_indices] = chunk_bmus
             
             # Log progress for large datasets
-            if n_samples > 50000 and (end_idx % 50000 == 0 or end_idx == n_samples):
+            if n_samples > DEFAULT_PROGRESS_LOG_INTERVAL and (end_idx % DEFAULT_PROGRESS_LOG_INTERVAL == 0 or end_idx == n_samples):
                 logger.debug(f"Predicted {end_idx}/{n_samples} samples")
         
         return bmu_indices

@@ -1,0 +1,117 @@
+# Test SOM Configuration for Development and Quick Testing
+#
+# This is the TEST configuration - use for development and quick tests
+# For production analysis, use som_config_production.yml
+#
+# Test settings:
+# - Aggressive sampling (every 100th point) for speed
+# - Reduced epochs (15) for quick iteration
+# - Smaller grid option available
+# - Lower worker count for development machines
+
+# Data selection and sampling
+data_config:
+  spatial_grid_step: 100  # TEST: Aggressive sampling - every 100th point
+  feature_cols: ['animal_richness', 'plant_richness', 'fungi_richness']
+  coordinate_columns: ['x', 'y']
+  observed_columns: [0, 1, 2]
+  predicted_columns: []
+
+# Distance calculation configuration
+distance_config:
+  input_space: 'bray_curtis'
+  missing_data_handling: 'pairwise'
+  min_valid_features: 2
+  map_space: 'euclidean'
+
+# Data preprocessing
+preprocessing_config:
+  transformation: 'log1p'
+  standardization: 'z_score_by_type'
+  missing_data: 'keep_nan'
+  use_advanced: false
+  spatial_sampling:
+    method: 'block_sampling'
+    block_size: '750km'
+    for_data_at: '100km_resolution'
+
+# SOM architecture  
+architecture_config:
+  grid_size: [10, 10]  # TEST: Smaller grid for quick testing
+  grid_type: 'hexagonal'
+  initialization: 'pca_transformed'
+  distance_metric: 'euclidean'
+  topology: 'toroidal'
+
+# Training parameters
+training_config:
+  max_epochs: 15  # TEST: Reduced epochs for quick iteration
+  batch_size: 10000
+  initial_lr: 0.4
+  min_lr: 0.01
+  lr_schedule: 'vlrsom'
+  lr_increase_factor: 1.3  # More aggressive for quick convergence
+  lr_decrease_factor: 0.90  # Gentler decay for testing
+  initial_radius: 5.0  # Smaller for 10x10 grid
+  min_radius: 1.0
+  radius_schedule: 'exponential'
+  radius_decay: 0.95
+  n_workers: 10  # TEST: Lower worker count for dev machines
+  chunk_size: 25000
+  update_method: 'chunked_vectorized'
+  learning_rule: 'vlrsom'
+  qe_window_size: 1
+  parallelization:
+    enabled: true
+    n_jobs: -1
+    backend: 'threading'
+  weight_normalization: false
+  missing_data_strategy: 'partial_update'
+  neighborhood_function: 'gaussian'
+  spatial_weight: 0.2
+  feature_weights: [1.0, 1.0, 1.0]
+  checkpoint_frequency: 10  # TEST: Save every 10 epochs
+
+# Validation settings
+validation_config:
+  n_folds: 0  # TEST: Skip CV for speed
+  validation_split: 0.2
+  metrics: ['quantization_error']  # TEST: Only essential metrics
+  patience: 5
+  min_delta: 0.001
+
+# Memory and performance settings
+memory_config:
+  max_memory_gb: 8  # TEST: Lower memory limit
+  chunk_size_adaptive: true
+  memory_threshold: 0.8
+
+# Early stopping
+early_stopping:
+  enabled: false  # TEST: Disabled for quick runs
+  monitor: 'quantization_error'
+  patience: 5
+  min_delta: 0.001
+  mode: 'min'
+
+# Spatial metrics
+spatial_metrics:
+  compute_regional_coherence: false  # TEST: Skip expensive metrics
+  compute_distance_preservation: false
+  compute_spatial_autocorrelation: false
+
+# Output configuration
+output_config:
+  save_weights: true
+  save_activations: false  # TEST: Skip to save space
+  save_qe_history: true
+  save_checkpoints: true
+  checkpoint_dir: 'checkpoints/som'
+  output_format: 'npz'
+
+# Logging
+logging:
+  level: 'DEBUG'  # TEST: More verbose logging
+  log_every_n_epochs: 1  # TEST: Log every epoch
+  log_memory_usage: true
+  log_timing: true

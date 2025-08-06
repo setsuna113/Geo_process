@@ -326,21 +326,60 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         return result
     
     def _determine_grid_size(self, n_samples: int, grid_size_param: Any) -> Tuple[int, int]:
-        """Determine appropriate grid size based on data."""
+        """Determine appropriate grid size based on data with memory validation."""
+        import psutil
+        
         # Handle both list and tuple
         if isinstance(grid_size_param, (list, tuple)) and len(grid_size_param) == 2:
-            return tuple(grid_size_param)
+            grid_size = tuple(grid_size_param)
+        else:
+            # Auto-determine based on sample size
+            # Rule of thumb: sqrt(n_samples) neurons, arranged in square grid
+            n_neurons = int(np.sqrt(n_samples))
+            grid_dim = int(np.sqrt(n_neurons))
+            
+            # Ensure reasonable bounds
+            grid_dim = max(5, min(grid_dim, 50))
+            grid_size = (grid_dim, grid_dim)
         
-        # Auto-determine based on sample size
-        # Rule of thumb: sqrt(n_samples) neurons, arranged in square grid
-        n_neurons = int(np.sqrt(n_samples))
-        grid_dim = int(np.sqrt(n_neurons))
+        # Memory validation
+        n_features = 3  # Default for biodiversity data (animal, plant, fungi)
+        n_neurons = grid_size[0] * grid_size[1]
         
-        # Ensure reasonable bounds
-        grid_dim = max(5, min(grid_dim, 50))
+        # Estimate memory requirements (in bytes)
+        # Weights: n_neurons * n_features * 8 bytes (float64)
+        weights_memory = n_neurons * n_features * 8
+        # Distance matrix (temporary): n_samples * n_neurons * 8 bytes
+        distance_memory = n_samples * n_neurons * 8
+        # Additional buffers and overhead: ~2x the weights
+        overhead_memory = weights_memory * 2
         
-        logger.info(f"Auto-determined grid size: {grid_dim}x{grid_dim} for {n_samples} samples")
-        return (grid_dim, grid_dim)
+        total_required = weights_memory + distance_memory + overhead_memory
+        total_required_mb = total_required / (1024 * 1024)
+        
+        # Get available memory
+        available_memory = psutil.virtual_memory().available
+        available_mb = available_memory / (1024 * 1024)
+        
+        # Check if we have enough memory (use 50% of available as safe threshold)
+        safe_available = available_mb * 0.5
+        
+        if total_required_mb > safe_available:
+            # Reduce grid size to fit memory
+            max_neurons = int((safe_available * 1024 * 1024 - overhead_memory) / 
+                            (n_features * 8 + n_samples * 8))
+            max_grid_dim = int(np.sqrt(max_neurons))
+            max_grid_dim = max(5, max_grid_dim)  # Minimum 5x5
+            
+            logger.warning(f"Grid size {grid_size} requires {total_required_mb:.1f} MB, "
+                         f"but only {safe_available:.1f} MB safely available. "
+                         f"Reducing to {max_grid_dim}x{max_grid_dim}")
+            grid_size = (max_grid_dim, max_grid_dim)
+        else:
+            logger.info(f"Grid size {grid_size[0]}x{grid_size[1]} will use "
+                       f"{total_required_mb:.1f} MB of {available_mb:.1f} MB available")
+        
+        return grid_size
     
     def _create_geosom_config(self, grid_size: Tuple[int, int], **kwargs) -> GeoSOMConfig:
         """Create GeoSOM configuration from settings."""
