@@ -243,21 +243,30 @@ class Method2CategoricalGLM:
         # Create prediction data for each group
         me_cols = [col for col in self.data_processed.columns if col.startswith('ME')]
         
+        # Get the same feature columns used during training
+        feature_cols = [
+            'bio1_std', 'bio12_std', 'bio15_std',
+            'elevation_std'
+        ] + me_cols + ['plant_high', 'temperate', 'plant_high_temperate']
+        
         for plant_high, temperate in groups:
             # Create prediction dataset with mean values for covariates
-            pred_data = pd.DataFrame({
-                'bio1_std': [0],  # Mean (standardized)
-                'bio12_std': [0],
-                'bio15_std': [0],
-                'elevation_std': [0],
-                'plant_high': [plant_high],
-                'temperate': [temperate],
-                'plant_high_temperate': [plant_high * temperate]
-            })
+            pred_dict = {
+                'bio1_std': 0,  # Mean (standardized)
+                'bio12_std': 0,
+                'bio15_std': 0,
+                'elevation_std': 0,
+                'plant_high': plant_high,
+                'temperate': temperate,
+                'plant_high_temperate': plant_high * temperate
+            }
             
             # Add mean ME values
             for me_col in me_cols:
-                pred_data[me_col] = [self.data_processed[me_col].mean()]
+                pred_dict[me_col] = self.data_processed[me_col].mean()
+            
+            # Create DataFrame with correct column order
+            pred_data = pd.DataFrame([pred_dict])[feature_cols]
             
             # Get prediction
             pred = self.model.predict(pred_data)[0]
