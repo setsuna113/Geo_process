@@ -73,8 +73,11 @@ class GEEConfig:
     service_account_key: Optional[str] = None
     project_id: Optional[str] = None
     
-    # Target resolutions
+    # Target resolutions (old format)
     resolutions: Dict[str, ResolutionConfig] = field(default_factory=dict)
+    
+    # New recursive resolution settings
+    resolution_settings: Optional[Dict] = None
     
     # Input datasets
     biodiversity_datasets: List[DatasetConfig] = field(default_factory=list)
@@ -186,6 +189,7 @@ class GEEConfig:
             service_account_key=data.get('gee', {}).get('auth', {}).get('service_account_key'),
             project_id=data.get('gee', {}).get('auth', {}).get('project_id'),
             resolutions=resolutions,
+            resolution_settings=data.get('resolution_settings'),  # New recursive resolution settings
             biodiversity_datasets=biodiv_datasets,
             additional_layers=additional_layers,
             masking=masking,

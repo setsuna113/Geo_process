@@ -103,28 +103,19 @@ processing:
 # OUTPUT RESOLUTIONS
 # =============================================================================
 
-# Control which resolutions to process
+# Recursive downsampling configuration
+# Each level represents 2x downsampling from the previous level
 resolution_settings:
-  # Process multiple resolutions in single run or just selected ones
-  process_resolutions: ["fine", "coarse"]  # Process both resolutions
-  # To process all: ["fine", "coarse"]
-  # To process just one: ["fine"]
-
-# Available resolution definitions
-resolutions:
-  fine:
-    name: "fine"
-    resolution: 0.016666666666667  # 1x - native plant/animal resolution (~1.85km)
-    description: "Fine resolution matching plant/animal data (~1.85km)"
-  coarse:
-    name: "coarse"
-    resolution: 0.08333333333333  # 5x aggregation (~9.25km)
-    description: "Coarse resolution for ML (~9.25km, 5x5 aggregation)"
-  # Alternative options:
-  # medium_10x:
-  #   resolution: 0.08983  # 10x aggregation (~10km, 100 pixels per output)
-  # maximum_43x:
-  #   resolution: 0.38627  # 43x aggregation (~43km, 1849 pixels - max safe)
+  # Base resolution for alignment (all datasets aligned to this first)
+  base_resolution: 0.016666666666667  # ~1.85km at equator
+  
+  # Which resolutions to export (can disable to save compute/storage)
+  # Each number represents power of 2 downsampling (max 8x recommended)
+  outputs:
+    1x: true   # Base resolution (0.0167°, ~1.85km)
+    2x: false  # One 2x downsample (0.0334°, ~3.7km)
+    4x: true   # Two 2x downsamples (0.0668°, ~7.4km)
+    8x: false  # Three 2x downsamples (0.1336°, ~14.8km)
 
 # =============================================================================
 # INFRASTRUCTURE

@@ -90,7 +90,11 @@ class GEEResampler:
                               "Please install with: pip install earthengine-api") from e
     
     def _resample_with_reducer(self, image: 'ee.Image', method: str) -> 'ee.Image':
-        """Resample using reducer (for aggregation methods)"""
+        """Resample using reducer (for aggregation methods)
+        
+        NOTE: This is deprecated for large aggregation factors.
+        Use RecursiveResampler for multi-resolution processing.
+        """
         # Initialize resampling methods if not done
         if self.RESAMPLING_METHODS is None:
             try:
@@ -117,53 +121,23 @@ class GEEResampler:
             # For bilinear/bicubic, use standard resampling
             return self._resample_standard(image, method)
         
-        # APPROACH 1: Aggregate then export without scale
-        # This gives us control over aggregation method
         import ee
         
-        # For coarse resolution (5x aggregation), we need more aggressive settings
-        # Check if this is a significant downsampling (more than 3x)
-        is_coarse = self.target_resolution > 0.05  # Coarse if > 0.05 degrees
+        # Simple approach for alignment to base resolution
+        # For larger aggregations, use RecursiveResampler instead
+        target_projection = ee.Projection(self.target_crs).atScale(self.target_scale)
         
-        if is_coarse:
-            # For coarse resolution, properly chain reduceResolution with reproject
-            # Following the documented pattern from GEE
-            
-            # Get the projection at the target scale
-            # This is critical - we need the projection AT the target scale
-            original_projection = image.projection()
-            target_projection = original_projection.atScale(self.target_scale)
-            
-            # Apply reduceResolution to aggregate pixels
-            aggregated = image.reduceResolution(
-                reducer=reducer,
-                maxPixels=64,  # Conservative value
-                bestEffort=True
-            )
-            
-            # Reproject to the target projection at the correct scale
-            # This ensures the output has the correct resolution
-            reprojected = aggregated.reproject(
-                crs=target_projection
-            )
-            
-            self.logger.debug(f"Coarse: aggregated and reprojected to {self.target_scale}m scale")
-            return reprojected
-        else:
-            # For fine resolution, use the standard approach
-            target_projection = ee.Projection(self.target_crs).atScale(self.target_scale)
-            
-            aggregated = image.reduceResolution(
-                reducer=reducer,
-                maxPixels=64,
-                bestEffort=True
-            )
-            
-            reprojected = aggregated.reproject(
-                crs=target_projection
-            )
-            
-            return reprojected
+        aggregated = image.reduceResolution(
+            reducer=reducer,
+            maxPixels=64,
+            bestEffort=True
+        )
+        
+        reprojected = aggregated.reproject(
+            crs=target_projection
+        )
+        
+        return reprojected
     
     def _resample_standard(self, image: 'ee.Image', method: str) -> 'ee.Image':
         """Standard resampling (bilinear, bicubic)"""

@@ -14,9 +14,10 @@ from ..config import GEEConfig
 from ..auth import GEEAuthenticator
 from ..upload import BatchUploadManager
 from ..processing import (
-    GEEMerger, GEEResampler, GEEAlignmentValidator,
+    GEEMerger, GEEAlignmentValidator,
     ExportManager, GEETaskMonitor
 )
+from ..processing.recursive_resampler import RecursiveResampler
 from ..download import GCSFetcher, ParquetConverter
 from .state_manager import WorkflowState, WorkflowStep
 
@@ -62,27 +63,28 @@ class GEEWorkflowOrchestrator:
         # Clean up old tasks on initialization to prevent clutter
         self.state.cleanup_old_tasks()
     
-    def _get_resolutions_to_process(self) -> Dict:
-        """Get the resolutions to process based on config settings."""
-        # Check if resolution_settings exists in config
+    def _get_resolution_outputs(self) -> Dict[str, bool]:
+        """Get the resolution outputs configuration."""
+        # Check for new resolution_settings format
         if hasattr(self.config, 'resolution_settings') and self.config.resolution_settings:
-            process_list = self.config.resolution_settings.get('process_resolutions', [])
-            if process_list:
-                # Filter resolutions to only those in the process list
-                selected = {}
-                for res_name in process_list:
-                    if res_name in self.config.resolutions:
-                        selected[res_name] = self.config.resolutions[res_name]
-                    else:
-                        self.logger.warning(f"Resolution '{res_name}' in process_resolutions not found in resolutions definition")
-                
-                if selected:
-                    self.logger.info(f"Processing selected resolutions: {list(selected.keys())}")
-                    return selected
+            outputs = self.config.resolution_settings.get('outputs', {})
+            if outputs:
+                self.logger.info(f"Resolution outputs configured: {outputs}")
+                return outputs
         
-        # Default: process all resolutions
-        self.logger.info(f"Processing all resolutions: {list(self.config.resolutions.keys())}")
-        return self.config.resolutions
+        # Fallback to old format if exists
+        if hasattr(self.config, 'resolutions'):
+            # Convert old format to new format (all enabled)
+            outputs = {}
+            for res_name in self.config.resolutions.keys():
+                if res_name == 'fine':
+                    outputs['1x'] = True
+                elif res_name == 'coarse':
+                    outputs['5x'] = True  # Note: 5x not supported in recursive, will use 4x
+            return outputs
+        
+        # Default: just base resolution
+        return {'1x': True}
     
     @log_operation("gee_workflow_complete")
     def run(self, resume: bool = True, force_step: Optional[WorkflowStep] = None) -> Dict[str, Path]:
@@ -371,43 +373,57 @@ class GEEWorkflowOrchestrator:
                 include_elevation = True
                 self.logger.info("Elevation will be included during merge")
             
-            # Process for each resolution
+            # Use recursive resampler for multi-resolution processing
+            resolution_outputs = self._get_resolution_outputs()
+            base_resolution = self.config.resolution_settings.get('base_resolution', 0.016666666666667)
+            
+            self.logger.info(f"\n   Using recursive 2x downsampling with base resolution: {base_resolution}°")
+            self.logger.info(f"   Outputs configured: {resolution_outputs}")
+            
+            # Initialize recursive resampler
+            resampler = RecursiveResampler(
+                base_resolution=base_resolution,
+                outputs=resolution_outputs,
+                target_crs='EPSG:4326'
+            )
+            
+            # Process biodiversity datasets through recursive downsampling
+            biodiv_resolution_sets = resampler.process_collection(
+                biodiv_images, biodiv_configs
+            )
+            
+            # Process climate if enabled
+            climate_resolution_sets = {}
+            if climate_image is not None:
+                climate_config = {
+                    'name': 'climate',
+                    'band_name': 'climate',
+                    'data_type': 'continuous',
+                    'resampling': 'bilinear'
+                }
+                climate_resolution_sets = resampler.process_dataset(climate_image, climate_config)
+            
+            # Merge datasets at each resolution
             processed_images = {}
             
-            # Get resolutions to process from config
-            resolutions_to_process = self._get_resolutions_to_process()
-            
-            for res_name, res_config in resolutions_to_process.items():
-                self.logger.info(f"\n   Processing {res_name} ({res_config.description})...")
+            for res_name in biodiv_resolution_sets.keys():
+                self.logger.info(f"\n   Merging datasets for {res_name}...")
                 
-                # Resample biodiversity images
-                resampler = GEEResampler(
-                    target_resolution=res_config.resolution,
-                    target_crs='EPSG:4326'
-                )
+                # Get biodiversity images for this resolution
+                biodiv_images_at_res = biodiv_resolution_sets[res_name]
                 
-                resampled_biodiv = resampler.resample_collection(
-                    biodiv_images, biodiv_configs
-                )
+                # Get climate image for this resolution if available
+                climate_at_res = climate_resolution_sets.get(res_name)
                 
-                # Resample climate if enabled
-                resampled_climate = None
-                if climate_image is not None:
-                    climate_config = {
-                        'name': 'climate',
-                        'band_name': 'climate',
-                        'data_type': 'continuous',
-                        'resampling': 'bilinear'
-                    }
-                    resampled_climate = resampler.resample_image(climate_image, climate_config)
-                
-                # Merge - handle case where climate might be disabled
-                if resampled_climate is not None:
-                    # Convert resolution in degrees to scale in meters
-                    scale_meters = res_config.resolution * 111320  # Approximate meters per degree at equator
+                # Merge datasets
+                if climate_at_res is not None:
+                    # Calculate scale from resolution name
+                    factor = int(res_name[:-1]) if res_name.endswith('x') else 1
+                    scale_meters = base_resolution * factor * 111320
+                    
                     merged = merger.merge_datasets(
-                        resampled_biodiv,
-                        resampled_climate,
+                        biodiv_images_at_res,
+                        climate_at_res,
                         self.config.merge_strategy,
                         mask_ocean=self.config.masking.enabled,
                         include_elevation=include_elevation,
@@ -415,12 +431,11 @@ class GEEWorkflowOrchestrator:
                     )
                 else:
                     # Climate disabled - just combine biodiversity
-                    self.logger.info("Merging biodiversity data only (no climate)")
-                    if len(resampled_biodiv) == 1:
-                        merged = resampled_biodiv[0]
+                    if len(biodiv_images_at_res) == 1:
+                        merged = biodiv_images_at_res[0]
                     else:
-                        merged = resampled_biodiv[0]
-                        for img in resampled_biodiv[1:]:
+                        merged = biodiv_images_at_res[0]
+                        for img in biodiv_images_at_res[1:]:
                             merged = merged.addBands(img)
                     
                     # Apply masking if enabled
@@ -474,13 +489,17 @@ class GEEWorkflowOrchestrator:
             # Export selected resolutions
             task_ids = {}
             
-            # Get resolutions to process from config
-            resolutions_to_process = self._get_resolutions_to_process()
+            # Get resolution outputs configuration
+            resolution_outputs = self._get_resolution_outputs()
+            base_resolution = self.config.resolution_settings.get('base_resolution', 0.016666666666667)
             
             # Prepare images for selected resolutions
             processed_images_for_export = {}
             
-            for res_name, res_config in resolutions_to_process.items():
+            # Process each enabled resolution
+            for res_name, should_export in resolution_outputs.items():
+                if not should_export:
+                    continue
                 self.logger.info(f"\n   Preparing {res_name} for export...")
                 
                 # Reload biodiversity images
@@ -512,16 +531,18 @@ class GEEWorkflowOrchestrator:
                 if 'elevation' in self.config.additional_layers and self.config.additional_layers['elevation'].enabled:
                     include_elevation = True
                 
-                # Resample to target resolution
-                resampler = GEEResampler(
-                    target_resolution=res_config.resolution,
+                # Use recursive resampler
+                resampler = RecursiveResampler(
+                    base_resolution=base_resolution,
+                    outputs=resolution_outputs,
                     target_crs='EPSG:4326'
                 )
                 
-                # Resample biodiversity images
-                biodiv_resampled = resampler.resample_collection(biodiv_images, biodiv_configs)
+                # Process biodiversity images for this specific resolution
+                biodiv_results = resampler.process_collection(biodiv_images, biodiv_configs)
+                biodiv_resampled = biodiv_results.get(res_name, [])
                 
-                # Resample climate if enabled
+                # Process climate if enabled
                 climate_resampled = None
                 if climate_image is not None:
                     climate_config = {
@@ -530,12 +551,14 @@ class GEEWorkflowOrchestrator:
                         'data_type': 'continuous',
                         'resampling': 'bilinear'
                     }
-                    climate_resampled = resampler.resample_image(climate_image, climate_config)
+                    climate_results = resampler.process_dataset(climate_image, climate_config)
+                    climate_resampled = climate_results.get(res_name)
                 
                 # Merge all datasets - handle case where climate might be disabled
                 if climate_resampled is not None:
-                    # Convert resolution in degrees to scale in meters
-                    scale_meters = res_config.resolution * 111320  # Approximate meters per degree at equator
+                    # Calculate scale from resolution name
+                    factor = int(res_name[:-1]) if res_name.endswith('x') else 1
+                    scale_meters = base_resolution * factor * 111320
                     merged = merger.merge_datasets(
                         biodiv_resampled,
                         climate_resampled,
@@ -600,12 +623,19 @@ class GEEWorkflowOrchestrator:
                     self.logger.info("   Using non-geodesic rectangle to avoid antimeridian collapse")
                 
                 if self.config.export_format == 'GeoTIFF':
+                    # Calculate resolution config for this level
+                    factor = int(res_name[:-1]) if res_name.endswith('x') else 1
+                    resolution_config = {
+                        'resolution': base_resolution * factor,
+                        'description': f'{factor}x downsampled ({base_resolution * factor:.6f}°)'
+                    }
+                    
                     # Export as GeoTIFF with fixed region
                     task_id = self._export_manager._export_as_geotiff(
                         merged_image=merged_image,
                         bounds=export_region,
                         resolution_name=res_name,
-                        resolution_config=self.config.resolutions[res_name].__dict__,
+                        resolution_config=resolution_config,
                         description=f'export_{res_name}_{self.experiment_name}',
                         export_base_path=self.export_base_path
                     )
@@ -745,9 +775,10 @@ class GEEWorkflowOrchestrator:
             if not export_paths:
                 # For testing, create dummy paths
                 self.logger.warning("No export paths found, using test mode")
+                resolution_outputs = self._get_resolution_outputs()
                 final_outputs = {
                     res: self.config.parquet_dir / f"biodiversity_climate_{res}.parquet"
-                    for res in self.config.resolutions.keys()
+                    for res in resolution_outputs.keys() if resolution_outputs[res]
                 }
             else:
                 # Download from GCS
