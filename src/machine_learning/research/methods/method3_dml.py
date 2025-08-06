@@ -183,7 +183,10 @@ class Method3DML:
                 g_model: E[Y|X] model
                 m_model: E[D|X] model
         """
-        # Configure LightGBM parameters
+        # Configure LightGBM parameters with massive parallelization
+        import os
+        n_threads = os.cpu_count() or 256  # Use all 256 cores
+        
         lgb_params = {
             'objective': self.lightgbm_config.get('objective', 'regression'),
             'num_leaves': self.lightgbm_config.get('num_leaves', 255),
@@ -195,9 +198,14 @@ class Method3DML:
             'bagging_freq': self.lightgbm_config.get('bagging_freq', 5),
             'lambda_l1': self.lightgbm_config.get('lambda_l1', 0.0),
             'lambda_l2': self.lightgbm_config.get('lambda_l2', 0.0),
+            'num_threads': n_threads,  # Use all available cores
+            'device_type': 'cpu',  # Explicitly use CPU
+            'force_row_wise': True,  # Better for high thread count
             'verbose': -1,
             'random_state': 42
         }
+        
+        logger.info(f"Configured LightGBM with {n_threads} threads for parallel processing")
         
         # Fit g(X) = E[Y|X]
         g_train_data = lgb.Dataset(X_train, label=Y_train)
@@ -462,33 +470,43 @@ class Method3DML:
         self.lightgbm_config = original_params
         
         # 3. Bootstrap confidence intervals (lines 880-887)
-        # OPTIMIZED: Using index-based bootstrap without copying data
-        logger.info("Computing bootstrap confidence intervals (memory-optimized)...")
+        # PARALLEL & MEMORY-OPTIMIZED: Using joblib for parallel bootstrap
+        logger.info("Computing bootstrap confidence intervals (parallel & memory-optimized)...")
+        
+        from joblib import Parallel, delayed
+        import os
         
         n_bootstrap = 100
-        bootstrap_effects = []
+        n_jobs = min(32, os.cpu_count() // 4)  # Use subset of cores to avoid memory issues
         
         # Store reference to original data (no copy)
         original_data = self.data_processed
         n = len(original_data)
         
-        for b in range(n_bootstrap):
-            if b % 20 == 0:
-                logger.info(f"  Bootstrap iteration {b}/{n_bootstrap}")
-            
-            # Generate bootstrap indices (memory efficient)
+        def bootstrap_iteration(seed):
+            """Single bootstrap iteration for parallel execution."""
+            np.random.seed(seed)
             boot_idx = np.random.choice(n, n, replace=True)
             
-            # Use view instead of copy - massive memory savings
-            self.data_processed = original_data.iloc[boot_idx]  # View, not copy
+            # Create temporary instance for this bootstrap
+            temp_instance = Method3DML(self.config)
+            temp_instance.data_processed = original_data.iloc[boot_idx]
             
-            # Re-run DML on bootstrap sample
-            h1_boot = self.cross_fit_dml('h1')
-            bootstrap_effects.append(h1_boot['causal_effect'])
+            # Run DML
+            h1_boot = temp_instance.cross_fit_dml('h1')
             
-            # Explicit memory cleanup
-            import gc
+            # Clean up
+            del temp_instance
             gc.collect()
+            
+            return h1_boot['causal_effect']
+        
+        logger.info(f"Running {n_bootstrap} bootstrap iterations with {n_jobs} parallel jobs...")
+        
+        # Parallel bootstrap
+        bootstrap_effects = Parallel(n_jobs=n_jobs, backend='loky')(
+            delayed(bootstrap_iteration)(42 + b) for b in range(n_bootstrap)
+        )
         
         # Restore original data reference
         self.data_processed = original_data
