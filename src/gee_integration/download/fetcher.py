@@ -57,27 +57,94 @@ class GCSFetcher:
             self.logger.info(f"Downloading from {gcs_path}...")
             
             if export_format == 'GeoTIFF':
-                # Download single GeoTIFF file
-                cmd = [
-                    'gsutil',
-                    '-m',
-                    'cp',
-                    f"{gcs_path}.tif",
-                    str(local_dir)
-                ]
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                # Check if this is a hemisphere export (look for _west and _east files)
+                base_path = gcs_path.rstrip('/')
                 
-                # Find downloaded file
-                tif_file = local_dir / f"{Path(gcs_path).name}.tif"
-                if tif_file.exists():
-                    downloaded_files = [tif_file]
+                # Try to download hemisphere files first
+                hemisphere_files = []
+                for suffix in ['_west.tif', '_east.tif']:
+                    try:
+                        cmd = [
+                            'gsutil',
+                            '-m',
+                            'cp',
+                            f"{base_path}{suffix}",
+                            str(local_dir)
+                        ]
+                        result = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            check=False
+                        )
+                        if result.returncode == 0:
+                            hemisphere_file = local_dir / f"{Path(base_path).name}{suffix}"
+                            if hemisphere_file.exists():
+                                hemisphere_files.append(hemisphere_file)
+                                self.logger.info(f"Downloaded hemisphere file: {hemisphere_file.name}")
+                    except subprocess.CalledProcessError as e:
+                        self.logger.warning(f"Failed to download hemisphere file {suffix}: {e}")
+                    except Exception as e:
+                        self.logger.warning(f"Unexpected error downloading hemisphere file {suffix}: {e}")
+                
+                if len(hemisphere_files) == 2:
+                    # We have both hemispheres
+                    downloaded_files = hemisphere_files
                 else:
-                    downloaded_files = []
+                    # Try downloading single GeoTIFF file
+                    cmd = [
+                        'gsutil',
+                        '-m',
+                        'cp',
+                        f"{gcs_path}.tif",
+                        str(local_dir)
+                    ]
+                    result = subprocess.run(
+                        cmd,
+                        capture_output=True,
+                        text=True,
+                        check=False  # Don't raise, check manually
+                    )
+                    
+                    if result.returncode == 0:
+                        # Single file downloaded successfully
+                        tif_file = local_dir / f"{Path(gcs_path).name}.tif"
+                        if tif_file.exists():
+                            downloaded_files = [tif_file]
+                            self.logger.info(f"Downloaded single GeoTIFF: {tif_file.name}")
+                        else:
+                            downloaded_files = []
+                    else:
+                        # Try downloading tiled GeoTIFF files (GEE splits large exports)
+                        # Pattern: baseFilename[0-9]*-[0-9]*.tif
+                        self.logger.info("Single file not found, checking for tiled export...")
+                        cmd = [
+                            'gsutil',
+                            '-m',
+                            'cp',
+                            f"{gcs_path}*.tif",  # Match all tiles
+                            str(local_dir)
+                        ]
+                        result = subprocess.run(
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            check=True
+                        )
+                        
+                        # Find all downloaded tile files
+                        tile_pattern = str(local_dir / f"{Path(gcs_path).name}*.tif")
+                        downloaded_files = sorted(glob.glob(tile_pattern))
+                        downloaded_files = [Path(f) for f in downloaded_files]
+                        
+                        if downloaded_files:
+                            self.logger.info(f"Downloaded {len(downloaded_files)} tile files")
+                            for f in downloaded_files[:3]:  # Show first 3 as examples
+                                self.logger.info(f"  - {f.name}")
+                            if len(downloaded_files) > 3:
+                                self.logger.info(f"  ... and {len(downloaded_files) - 3} more")
+                        else:
+                            raise RuntimeError(f"No GeoTIFF files found at {gcs_path}")
             else:
                 # First try to download numbered CSV files (for large exports)
                 cmd = [
