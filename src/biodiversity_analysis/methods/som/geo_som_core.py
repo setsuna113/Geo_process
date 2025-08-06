@@ -600,8 +600,10 @@ class GeoSOMVLRSOM:
             if coordinates is not None and epoch % geo_freq == 0 and epoch > 0:
                 logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
                 # Sample for large datasets to avoid O(n²) computation
-                if len(data) > 10000:
-                    sample_size = 5000
+                coherence_sample_threshold = getattr(self.config, 'coherence_sample_threshold', 10000)
+                coherence_sample_size = getattr(self.config, 'coherence_sample_size', 5000)
+                if len(data) > coherence_sample_threshold:
+                    sample_size = coherence_sample_size
                     indices = np.random.choice(len(data), sample_size, replace=False)
                     geo_coherence = self._calculate_geographic_coherence(
                         data[indices], coordinates[indices]
@@ -695,32 +697,43 @@ class GeoSOMVLRSOM:
             improvement = 0
         
         # Check if learning rate is critically low and needs recovery
-        if self.current_lr < 0.02 and current_qe > 0.055:  # LR too low and QE still poor
+        lr_recovery_threshold = getattr(self.config, 'lr_recovery_threshold', 0.02)
+        qe_poor_threshold = getattr(self.config, 'qe_poor_threshold', 0.055)
+        lr_recovery_target = getattr(self.config, 'lr_recovery_target', 0.05)
+        if self.current_lr < lr_recovery_threshold and current_qe > qe_poor_threshold:
             # Force a small recovery to escape local minimum
-            self.current_lr = min(self.current_lr * 1.5, 0.05)
+            self.current_lr = min(self.current_lr * 1.5, lr_recovery_target)
             logger.info(f"Learning rate recovery triggered: LR={self.current_lr:.4f}")
             return
         
         # More nuanced adaptation based on improvement magnitude
-        if improvement > 0.05:  # Significant improvement (>5%)
+        # Get thresholds from config
+        significant_improvement = getattr(self.config, 'significant_improvement', 0.05)
+        small_improvement = getattr(self.config, 'small_improvement', 0.01)
+        small_degradation = getattr(self.config, 'small_degradation', -0.02)
+        moderate_degradation = getattr(self.config, 'moderate_degradation', -0.05)
+        small_increase_factor = getattr(self.config, 'small_increase_factor', 1.02)
+        gentle_decrease_factor = getattr(self.config, 'gentle_decrease_factor', 0.98)
+        
+        if improvement > significant_improvement:
             # Increase learning rate
             self.current_lr = min(
                 self.current_lr * self.config.lr_increase_factor,
                 self.config.max_learning_rate
             )
-        elif improvement > 0.01:  # Small improvement (1-5%)
+        elif improvement > small_improvement:
             # Keep learning rate stable or slightly increase
             self.current_lr = min(
-                self.current_lr * 1.02,  # Slight increase to encourage progress
+                self.current_lr * small_increase_factor,  # Slight increase to encourage progress
                 self.config.max_learning_rate
             )
-        elif improvement > -0.02:  # Very small degradation (0-2%)
+        elif improvement > small_degradation:
             # Keep stable - this might be noise
             pass
-        elif improvement > -0.05:  # Small degradation (2-5%)
+        elif improvement > moderate_degradation:
             # Slightly decrease learning rate
             self.current_lr = max(
-                self.current_lr * 0.98,  # Very gentle decrease
+                self.current_lr * gentle_decrease_factor,  # Very gentle decrease
                 self.config.min_learning_rate
             )
         else:  # Significant degradation (>5%)
@@ -731,13 +744,16 @@ class GeoSOMVLRSOM:
             )
         
         # Adaptive regions based on QE level
-        if current_qe > 0.5:  # High QE region (poor performance)
+        high_qe_threshold = getattr(self.config, 'high_qe_threshold', 0.5)
+        low_qe_threshold = getattr(self.config, 'low_qe_threshold', 0.02)
+        
+        if current_qe > high_qe_threshold:  # High QE region (poor performance)
             self.current_lr = np.clip(
                 self.current_lr,
                 self.config.high_qe_lr_min,
                 self.config.high_qe_lr_max
             )
-        elif current_qe < 0.02:  # Very low QE region (excellent performance)
+        elif current_qe < low_qe_threshold:  # Very low QE region (excellent performance)
             self.current_lr = np.clip(
                 self.current_lr,
                 self.config.low_qe_lr_min,
@@ -773,7 +789,8 @@ class GeoSOMVLRSOM:
     def _batch_update(self, data: np.ndarray, coordinates: Optional[np.ndarray]):
         """Perform batch update of weights using vectorized operations."""
         # Use vectorized implementation for large datasets
-        if len(data) > 1000:
+        vectorized_threshold = getattr(self.config, 'vectorized_threshold', 1000)
+        if len(data) > vectorized_threshold:
             self._batch_update_vectorized(data, coordinates)
         else:
             self._batch_update_sequential(data, coordinates)
@@ -1195,7 +1212,7 @@ class GeoSOMVLRSOM:
         coords_valid = coordinates[valid_mask] if coordinates is not None else None
         
         # Process in chunks for memory efficiency
-        chunk_size = 1000
+        chunk_size = getattr(self.config, 'qe_calc_chunk_size', 1000)
         total_error = 0.0
         n_valid = 0
         
@@ -1560,7 +1577,8 @@ class GeoSOMVLRSOM:
         bmu_indices = np.full(n_samples, INVALID_INDEX, dtype=np.int32)
         
         # Process in chunks for memory efficiency
-        chunk_size = min(5000, n_samples)  # Smaller chunks for prediction
+        prediction_chunk_size = getattr(self.config, 'prediction_chunk_size', 5000)
+        chunk_size = min(prediction_chunk_size, n_samples)
         
         for start_idx in range(0, n_samples, chunk_size):
             end_idx = min(start_idx + chunk_size, n_samples)

@@ -71,7 +71,7 @@ architecture_config:
   
   # Convergence criteria - adjusted for sparse data
   convergence:
-    max_epochs: 15  # REDUCED FOR QUICK TEST (checkpoint at 10)
+    max_epochs: 100  # DEFAULT: Moderate training (override with test/production configs)
     geographic_coherence_threshold: 0.6  # Ensure meaningful geographic organization
     lr_stability_threshold: 0.1  # Increased from 0.05
     lr_stability_window: 3  # Check over 3 epochs

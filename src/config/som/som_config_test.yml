@@ -52,6 +52,20 @@ training_config:
   lr_schedule: 'vlrsom'
   lr_increase_factor: 1.3  # More aggressive for quick convergence
   lr_decrease_factor: 0.90  # Gentler decay for testing
+  # Adaptive learning rate thresholds
+  lr_recovery_threshold: 0.02
+  qe_poor_threshold: 0.055
+  lr_recovery_target: 0.05
+  # Improvement thresholds
+  significant_improvement: 0.05
+  small_improvement: 0.01
+  small_degradation: -0.02
+  moderate_degradation: -0.05
+  small_increase_factor: 1.02
+  gentle_decrease_factor: 0.98
+  # QE region thresholds
+  high_qe_threshold: 0.5
+  low_qe_threshold: 0.02
   initial_radius: 5.0  # Smaller for 10x10 grid
   min_radius: 1.0
   radius_schedule: 'exponential'
@@ -85,6 +99,9 @@ memory_config:
   max_memory_gb: 8  # TEST: Lower memory limit
   chunk_size_adaptive: true
   memory_threshold: 0.8
+  qe_calc_chunk_size: 1000
+  prediction_chunk_size: 5000
+  vectorized_threshold: 1000
 
 # Early stopping
 early_stopping:
@@ -99,6 +116,8 @@ spatial_metrics:
   compute_regional_coherence: false  # TEST: Skip expensive metrics
   compute_distance_preservation: false
   compute_spatial_autocorrelation: false
+  coherence_sample_threshold: 10000
+  coherence_sample_size: 5000
 
 # Output configuration
 output_config:
