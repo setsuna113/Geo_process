@@ -526,15 +526,20 @@ spatial_analysis:
     
   # Named analysis experiments for reproducibility
   experiments:
+    # IMPORTANT: Method-specific parameters (grid_size, learning_rate, etc.) are BANNED here!
+    # All SOM parameters MUST be in src/config/som/som_config.yml
+    # All CP-WOPT parameters MUST be in src/config/cpwopt/cpwopt_config.yml
+    # This config should ONLY specify: input data path and method name
+    
     # Quick SOM test with small sample
     test_som_small:
       input_parquet: 'outputs/test_biodiversity_sample.parquet'  # Create with sample script
       method: 'som'
       # NO method-specific parameters here!
       
-    # SOM experiment - all params in src/config/som/som_config_optimized.yml
+    # SOM experiment - ALL parameters from src/config/som/som_config.yml
     test_som:
-      input_parquet: '/home/yl998/dev/geo/outputs/45d78409-3818-4eb6-960f-c00216110460/merged_data_45d78409-3818-4eb6-960f-c00216110460_20250801_001157.parquet'
+      input_parquet: 'outputs/biodiversity_test_data.parquet'
       method: 'som'
       # All SOM config in src/config/som/som_config_optimized.yml
       
