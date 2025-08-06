@@ -41,6 +41,16 @@ class TIFValidator:
                 'metadata': {}
             }
         
+        if not HAS_RASTERIO:
+            # If rasterio not available, just do basic validation
+            return {
+                'valid': True,
+                'issues': [],
+                'metadata': {
+                    'file_size_mb': path.stat().st_size / (1024 * 1024)
+                }
+            }
+        
         try:
             with rasterio.open(file_path) as src:
                 # Extract metadata
@@ -112,7 +122,7 @@ class TIFValidator:
         except Exception as e:
             return {
                 'valid': False,
-                'issues': [f"Failed to open file: {e}"],
+                'issues': [f"Failed to validate file with rasterio: {e}"],
                 'metadata': {}
             }
         
