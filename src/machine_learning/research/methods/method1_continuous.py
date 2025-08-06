@@ -9,7 +9,8 @@ import pandas as pd
 import logging
 from typing import Dict, Any, Optional, Union, Tuple
 
-from ...models.glm import NegativeBinomialGLM, PoissonGLM
+from ...models.glm import PoissonGLM
+from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
 from ...spatial import compute_mesf  # Now uses vectorized implementation
 from ...config_loader import MLRegressionConfig
 
@@ -155,9 +156,10 @@ class Method1ContinuousGLM:
         dispersion_ratio = data['fungi_richness'].var() / data['fungi_richness'].mean()
         distribution = self.config.get_distribution_family(dispersion_ratio)
         
-        # Select GLM class
+        # Select GLM class - use H2O for negative binomial (massive parallelization)
         if distribution == 'negative_binomial':
-            GLMClass = NegativeBinomialGLM
+            GLMClass = H2ONegativeBinomialGLM
+            logger.info("Using H2O Negative Binomial GLM for 256-core parallelization")
         else:
             GLMClass = PoissonGLM
         
