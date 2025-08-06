@@ -68,9 +68,13 @@ class StandardMESF:
         selected_eigenvectors = eigenvectors[:, selected_idx]
         
         n_selected = len(selected_idx)
-        cumvar = np.sum(eigenvalues[selected_idx]) / np.sum(np.abs(eigenvalues)) * 100
         
-        logger.info(f"Selected {n_selected} eigenvectors explaining {cumvar:.1f}% of spatial variance")
+        # Calculate variance explained (handle empty selection)
+        if n_selected > 0 and np.sum(np.abs(eigenvalues)) > 0:
+            cumvar = np.sum(eigenvalues[selected_idx]) / np.sum(np.abs(eigenvalues)) * 100
+            logger.info(f"Selected {n_selected} eigenvectors explaining {cumvar:.1f}% of spatial variance")
+        else:
+            logger.info(f"Selected {n_selected} eigenvectors")
         
         return selected_eigenvectors
     
@@ -139,14 +143,30 @@ class StandardMESF:
         # Find number of eigenvectors needed to explain threshold variance
         n_select = np.searchsorted(cumvar, self.variance_threshold) + 1
         
-        # Enforce min/max constraints
-        n_select = max(self.min_eigenvectors, 
-                      min(n_select, self.max_eigenvectors, len(positive_idx)))
+        # Enforce constraints
+        # First, don't exceed available positive eigenvalues
+        n_select = min(n_select, len(positive_idx))
+        
+        # Then apply max constraint
+        n_select = min(n_select, self.max_eigenvectors)
+        
+        # Apply min constraint only if we have enough eigenvalues
+        if len(positive_idx) >= self.min_eigenvectors:
+            n_select = max(n_select, self.min_eigenvectors)
+        
+        # Ensure we don't exceed what's available
+        n_select = min(n_select, len(positive_idx))
         
         selected_idx = positive_idx[:n_select]
         
-        logger.info(f"Eigenvalue selection: {n_select} eigenvectors explain "
-                   f"{cumvar[n_select-1]*100:.1f}% of positive spatial variance")
+        # Calculate actual variance explained (handle case where n_select > len(cumvar))
+        if n_select > 0 and len(cumvar) > 0:
+            actual_idx = min(n_select - 1, len(cumvar) - 1)
+            variance_explained = cumvar[actual_idx] * 100
+            logger.info(f"Eigenvalue selection: {n_select} eigenvectors explain "
+                       f"{variance_explained:.1f}% of positive spatial variance")
+        else:
+            logger.info(f"Selected {n_select} eigenvectors")
         
         return selected_idx
 
