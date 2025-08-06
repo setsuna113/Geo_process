@@ -112,6 +112,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                     if not isinstance(config, dict):
                         raise ValueError(f"Config must be dict, got {type(config)}")
                     logger.info(f"Loaded SOM config from: {config_path}")
+                    self._validate_config_memory_requirements(config)
                     return config
             except (yaml.YAMLError, IOError, ValueError) as e:
                 logger.warning(f"Failed to load config from {config_path}: {e}")
@@ -325,6 +326,34 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         return result
     
+    def _validate_config_memory_requirements(self, config: Dict[str, Any]) -> None:
+        """Validate that configured grid size fits in available memory."""
+        import psutil
+        
+        # Extract grid size from config
+        arch_config = config.get('architecture_config', {})
+        grid_size = arch_config.get('grid_size', [10, 10])
+        if not isinstance(grid_size, (list, tuple)) or len(grid_size) != 2:
+            return  # Skip validation for auto-determined sizes
+        
+        # Estimate requirements
+        n_neurons = grid_size[0] * grid_size[1]
+        n_features = 3  # Default for biodiversity
+        
+        # Conservative estimate (assuming 1M samples)
+        estimated_samples = 1000000
+        weights_memory = n_neurons * n_features * 8
+        distance_memory = estimated_samples * n_neurons * 8
+        total_mb = (weights_memory + distance_memory) / (1024 * 1024)
+        
+        available_mb = psutil.virtual_memory().available / (1024 * 1024)
+        
+        if total_mb > available_mb * 0.5:
+            logger.warning(f"Config specifies {grid_size[0]}x{grid_size[1]} grid "
+                         f"which may require up to {total_mb:.1f} MB. "
+                         f"Only {available_mb:.1f} MB available. "
+                         f"Grid size will be adjusted at runtime if needed.")
+    
     def _determine_grid_size(self, n_samples: int, grid_size_param: Any) -> Tuple[int, int]:
         """Determine appropriate grid size based on data with memory validation."""
         import psutil
@@ -407,7 +436,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         use_minibatch = minibatch_config.get('enabled', False)
         minibatch_size = minibatch_config.get('size', 1000)
         
-        return GeoSOMConfig(
+        # Get memory and performance config
+        memory_config = default_config.get('memory_config', {})
+        
+        # Create config object and set attributes
+        config = GeoSOMConfig(
             grid_size=grid_size,
             topology=arch_config['topology'],
             spatial_weight=arch_config['spatial_weight'],
@@ -441,6 +474,27 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             use_minibatch=kwargs.get('use_minibatch', use_minibatch),
             minibatch_size=kwargs.get('minibatch_size', minibatch_size)
         )
+        
+        # Add the new config parameters from training_config and memory_config
+        for attr in ['lr_recovery_threshold', 'qe_poor_threshold', 'lr_recovery_target',
+                    'significant_improvement', 'small_improvement', 'small_degradation',
+                    'moderate_degradation', 'small_increase_factor', 'gentle_decrease_factor',
+                    'high_qe_threshold', 'low_qe_threshold']:
+            if attr in training_config:
+                setattr(config, attr, training_config[attr])
+        
+        # Add memory config parameters
+        for attr in ['qe_calc_chunk_size', 'prediction_chunk_size', 'vectorized_threshold']:
+            if attr in memory_config:
+                setattr(config, attr, memory_config[attr])
+        
+        # Add spatial metrics parameters
+        spatial_metrics = default_config.get('spatial_metrics', {})
+        for attr in ['coherence_sample_threshold', 'coherence_sample_size']:
+            if attr in spatial_metrics:
+                setattr(config, attr, spatial_metrics[attr])
+        
+        return config
     
     def _spatial_cross_validation(self, features: np.ndarray, 
                                 coordinates: np.ndarray,

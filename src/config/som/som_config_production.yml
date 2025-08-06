@@ -52,6 +52,20 @@ training_config:
   lr_schedule: 'vlrsom'
   lr_increase_factor: 1.2
   lr_decrease_factor: 0.85
+  # Adaptive learning rate thresholds
+  lr_recovery_threshold: 0.02  # Trigger recovery when LR drops below this
+  qe_poor_threshold: 0.055  # Consider QE poor above this value
+  lr_recovery_target: 0.05  # Target LR after recovery
+  # Improvement thresholds for LR adaptation
+  significant_improvement: 0.05  # >5% improvement
+  small_improvement: 0.01  # 1-5% improvement  
+  small_degradation: -0.02  # 0-2% degradation (noise)
+  moderate_degradation: -0.05  # 2-5% degradation
+  small_increase_factor: 1.02  # Factor for small LR increase
+  gentle_decrease_factor: 0.98  # Factor for gentle LR decrease
+  # QE region thresholds
+  high_qe_threshold: 0.5  # QE above this indicates poor performance
+  low_qe_threshold: 0.02  # QE below this indicates excellent performance
   initial_radius: 30.0
   min_radius: 1.0
   radius_schedule: 'exponential'
@@ -85,6 +99,9 @@ memory_config:
   max_memory_gb: 32  # Maximum memory to use
   chunk_size_adaptive: true  # Automatically adjust chunk size based on memory
   memory_threshold: 0.8  # Start reducing when 80% of max_memory is used
+  qe_calc_chunk_size: 1000  # Chunk size for QE calculation
+  prediction_chunk_size: 5000  # Chunk size for prediction
+  vectorized_threshold: 1000  # Use vectorized ops above this sample count
 
 # Early stopping
 early_stopping:
@@ -99,6 +116,8 @@ spatial_metrics:
   compute_regional_coherence: true
   compute_distance_preservation: true
   compute_spatial_autocorrelation: true
+  coherence_sample_threshold: 10000  # Sample when dataset exceeds this
+  coherence_sample_size: 5000  # Sample size for coherence calculation
 
 # Output configuration
 output_config:
