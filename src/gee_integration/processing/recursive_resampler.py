@@ -209,8 +209,8 @@ class RecursiveResampler:
         
         # Reproject to target scale
         downsampled = downsampled.reproject(
-            crs=target_projection,
-            scale=target_scale
+            crs=target_projection
+            # Don't pass scale - use the projection's native scale
         )
         
         return downsampled
