@@ -126,22 +126,29 @@ class GEEResampler:
         is_coarse = self.target_resolution > 0.05  # Coarse if > 0.05 degrees
         
         if is_coarse:
-            # For coarse resolution, use very conservative settings
-            # This should produce ~4320x2160 pixels for global coverage at 5x
+            # For coarse resolution, properly chain reduceResolution with reproject
+            # Following the documented pattern from GEE
+            
+            # Get the projection at the target scale
+            # This is critical - we need the projection AT the target scale
+            original_projection = image.projection()
+            target_projection = original_projection.atScale(self.target_scale)
+            
+            # Apply reduceResolution to aggregate pixels
             aggregated = image.reduceResolution(
                 reducer=reducer,
-                maxPixels=25,  # Very low for coarse resolution
+                maxPixels=64,  # Conservative value
                 bestEffort=True
             )
             
-            # Set default projection at target scale
-            # This forces the output to the correct resolution
-            aggregated = aggregated.setDefaultProjection(
-                crs=self.target_crs,
-                scale=self.target_scale
+            # Reproject to the target projection at the correct scale
+            # This ensures the output has the correct resolution
+            reprojected = aggregated.reproject(
+                crs=target_projection
             )
             
-            return aggregated
+            self.logger.debug(f"Coarse: aggregated and reprojected to {self.target_scale}m scale")
+            return reprojected
         else:
             # For fine resolution, use the standard approach
             target_projection = ee.Projection(self.target_crs).atScale(self.target_scale)
