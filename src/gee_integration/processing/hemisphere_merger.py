@@ -156,8 +156,8 @@ def merge_hemispheres_to_parquet(west_file: Path, east_file: Path,
         if writer:
             try:
                 writer.close()
-            except:
-                pass
+            except Exception as close_error:
+                logger.warning(f"Failed to close parquet writer during cleanup: {close_error}")
         raise
 
 
