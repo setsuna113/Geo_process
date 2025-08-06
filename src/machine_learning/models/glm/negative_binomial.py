@@ -162,7 +162,8 @@ class NegativeBinomialGLM(BaseMLAnalyzer):
         
         # Add intercept if configured
         if self.fit_intercept:
-            X_array = sm.add_constant(X_array)
+            # Force adding constant for single-row predictions
+            X_array = sm.add_constant(X_array, has_constant='add')
         
         # Make predictions
         predictions = self.model_result.predict(X_array)
@@ -178,13 +179,16 @@ class NegativeBinomialGLM(BaseMLAnalyzer):
         if not self.is_fitted:
             raise ValueError("Model must be fitted first")
         
+        # Get confidence intervals as a 2D array
+        conf_int = self.model_result.conf_int()
+        
         summary = pd.DataFrame({
             'coefficient': self.model_result.params,
             'std_error': self.model_result.bse,
             'z_value': self.model_result.tvalues,
             'p_value': self.model_result.pvalues,
-            'ci_lower': self.model_result.conf_int()[0],
-            'ci_upper': self.model_result.conf_int()[1]
+            'ci_lower': conf_int[:, 0],  # First column is lower bounds
+            'ci_upper': conf_int[:, 1]   # Second column is upper bounds
         })
         
         summary.index = self.feature_names
