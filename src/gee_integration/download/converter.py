@@ -8,6 +8,8 @@ from typing import List, Dict, Optional, Tuple, Union
 import glob
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
@@ -147,6 +149,8 @@ class ParquetConverter:
         
         if append and output_path.exists():
             # Read existing data
+            # TODO: For very large files, consider using PyArrow for streaming append
+            # instead of reading entire file into memory
             existing_df = pd.read_parquet(output_path)
             combined_df = pd.concat([existing_df, combined_df], ignore_index=True)
         
@@ -328,8 +332,6 @@ class ParquetConverter:
             Path to output parquet file
         """
         import rasterio
-        import pyarrow as pa
-        import pyarrow.parquet as pq
         
         output_path = self.output_dir / f"biodiversity_climate_{resolution_name}.parquet"
         
@@ -494,8 +496,6 @@ class ParquetConverter:
             Path to output parquet file
         """
         import rasterio
-        import pyarrow as pa
-        import pyarrow.parquet as pq
         
         output_path = self.output_dir / f"biodiversity_climate_{resolution_name}.parquet"
         
