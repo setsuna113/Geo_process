@@ -51,6 +51,28 @@ class GEEWorkflowOrchestrator:
         # Clean up old tasks on initialization to prevent clutter
         self.state.cleanup_old_tasks()
     
+    def _get_resolutions_to_process(self) -> Dict:
+        """Get the resolutions to process based on config settings."""
+        # Check if resolution_settings exists in config
+        if hasattr(self.config, 'resolution_settings') and self.config.resolution_settings:
+            process_list = self.config.resolution_settings.get('process_resolutions', [])
+            if process_list:
+                # Filter resolutions to only those in the process list
+                selected = {}
+                for res_name in process_list:
+                    if res_name in self.config.resolutions:
+                        selected[res_name] = self.config.resolutions[res_name]
+                    else:
+                        self.logger.warning(f"Resolution '{res_name}' in process_resolutions not found in resolutions definition")
+                
+                if selected:
+                    self.logger.info(f"Processing selected resolutions: {list(selected.keys())}")
+                    return selected
+        
+        # Default: process all resolutions
+        self.logger.info(f"Processing all resolutions: {list(self.config.resolutions.keys())}")
+        return self.config.resolutions
+    
     @log_operation("gee_workflow_complete")
     def run(self, resume: bool = True, force_step: Optional[WorkflowStep] = None) -> Dict[str, Path]:
         """
@@ -341,7 +363,10 @@ class GEEWorkflowOrchestrator:
             # Process for each resolution
             processed_images = {}
             
-            for res_name, res_config in self.config.resolutions.items():
+            # Get resolutions to process from config
+            resolutions_to_process = self._get_resolutions_to_process()
+            
+            for res_name, res_config in resolutions_to_process.items():
                 self.logger.info(f"\n   Processing {res_name} ({res_config.description})...")
                 
                 # Resample biodiversity images
@@ -435,13 +460,16 @@ class GEEWorkflowOrchestrator:
             }
             merger = GEEMerger(config=merger_config)
             
-            # Export both resolutions
+            # Export selected resolutions
             task_ids = {}
             
-            # Prepare images for all resolutions
+            # Get resolutions to process from config
+            resolutions_to_process = self._get_resolutions_to_process()
+            
+            # Prepare images for selected resolutions
             processed_images_for_export = {}
             
-            for res_name, res_config in self.config.resolutions.items():
+            for res_name, res_config in resolutions_to_process.items():
                 self.logger.info(f"\n   Preparing {res_name} for export...")
                 
                 # Reload biodiversity images
@@ -552,13 +580,11 @@ class GEEWorkflowOrchestrator:
                     
                     self.logger.info(f"   Using configured region with latitude range: [{lat_min}, {lat_max}]")
                     
-                    # Create NON-GEODESIC rectangle to avoid antimeridian bug
-                    # Using -179.999 instead of -180 and explicitly setting geodesic=False
-                    # This prevents the geometry from collapsing to a thin line at the dateline
-                    export_region = ee.Geometry.Rectangle(
-                        [-179.999, lat_min, 180, lat_max], 
-                        proj='EPSG:4326', 
-                        geodesic=False
+                    # Create global rectangle by using BBox instead of Rectangle
+                    # This avoids the antimeridian collapse issue
+                    # Using BBox with specific coordinates ensures proper global coverage
+                    export_region = ee.Geometry.BBox(
+                        -180, lat_min, 180, lat_max
                     )
                     self.logger.info("   Using non-geodesic rectangle to avoid antimeridian collapse")
                 
@@ -730,12 +756,32 @@ class GEEWorkflowOrchestrator:
                 
                 # Convert based on format
                 if self.config.export_format == 'GeoTIFF':
-                    # For GeoTIFF, we expect one file per resolution
+                    # For GeoTIFF, handle multiple scenarios:
+                    # 1. Single file (small export)
+                    # 2. Multiple tiles (large export automatically tiled by GEE)
+                    # 3. Two hemisphere files (_west.tif, _east.tif)
                     final_outputs = {}
                     for res_name, downloaded_files in downloads.items():
                         if downloaded_files:
+                            self.logger.info(f"   Processing {len(downloaded_files)} files for {res_name}")
+                            
+                            # Check what type of files we have
+                            file_names = [f.name for f in downloaded_files]
+                            
+                            # Detect hemisphere files
+                            has_hemispheres = any('_west' in name for name in file_names) and \
+                                            any('_east' in name for name in file_names)
+                            
+                            if has_hemispheres:
+                                self.logger.info(f"   Detected hemisphere split files")
+                            elif len(downloaded_files) > 2:
+                                self.logger.info(f"   Detected {len(downloaded_files)} tile files")
+                            else:
+                                self.logger.info(f"   Processing single file")
+                            
+                            # Convert all files (converter handles merging internally)
                             output_path = converter.convert(
-                                downloaded_files[0],  # GeoTIFF is single file
+                                downloaded_files,  # Pass all files
                                 res_name,
                                 metadata
                             )
