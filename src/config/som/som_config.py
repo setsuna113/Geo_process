@@ -68,10 +68,10 @@ class SOMConfig:
     
     def _find_config_file(self) -> Path:
         """
-        Find the SOM configuration file with automatic test/production selection.
+        Find the SOM configuration file.
         
         Returns:
-            Path to appropriate config file (test or production)
+            Path to the unified config file
             
         Raises:
             SOMConfigError: If configuration file cannot be found
@@ -81,51 +81,30 @@ class SOMConfig:
         if env_path and Path(env_path).exists():
             return Path(env_path)
         
-        # Strategy 2: Mode-based selection (test vs production)
+        # Strategy 2: Use the unified config
         current_dir = Path(__file__).parent
-        config_mode = os.environ.get('SOM_CONFIG_MODE', 'auto').lower()
-        
-        # Determine which config to use
-        if config_mode == 'test':
-            config_name = 'som_config_test.yml'
-        elif config_mode == 'production':
-            config_name = 'som_config_production.yml'
-        else:  # auto mode
-            # Auto-detect based on environment indicators
-            if any([
-                os.environ.get('CI'),  # Running in CI/CD
-                os.environ.get('PYTEST_CURRENT_TEST'),  # Running pytest
-                os.environ.get('SOM_MAX_EPOCHS', '').isdigit() and int(os.environ.get('SOM_MAX_EPOCHS', '1000')) < 100,
-                os.environ.get('SOM_SPATIAL_GRID_STEP', '').isdigit() and int(os.environ.get('SOM_SPATIAL_GRID_STEP', '1')) > 10,
-            ]):
-                config_name = 'som_config_test.yml'
-                print(f"Auto-detected test environment, using {config_name}")
-            else:
-                config_name = 'som_config_production.yml'
-                print(f"Auto-detected production environment, using {config_name}")
-        
-        # Try to load the selected config
-        config_path = current_dir / config_name
-        if config_path.exists():
-            return config_path
-            
-        # Fallback to unified config if specific config not found
         unified_path = current_dir / 'som_config_unified.yml'
+        
         if unified_path.exists():
+            return unified_path
+        
+        # Fallback: try som_config.yml (legacy name)
+        legacy_path = current_dir / 'som_config.yml'
+        if legacy_path.exists():
             import warnings
             warnings.warn(
-                f"Could not find {config_name}, falling back to unified config",
+                "Using legacy config name 'som_config.yml', consider renaming to 'som_config_unified.yml'",
                 UserWarning,
                 stacklevel=2
             )
-            return unified_path
+            return legacy_path
         
         raise SOMConfigError(
             f"Could not find SOM configuration. Searched for:\n" +
             f"  - Environment variable SOM_CONFIG_PATH: {env_path}\n" +
-            f"  - Mode-specific config: {current_dir}/{config_name}\n" +
-            f"  - Unified config: {current_dir}/som_config_unified.yml\n" +
-            "Set SOM_CONFIG_MODE to 'test' or 'production', or provide SOM_CONFIG_PATH"
+            f"  - Unified config: {unified_path}\n" +
+            f"  - Legacy config: {legacy_path}\n" +
+            "Provide SOM_CONFIG_PATH or ensure som_config_unified.yml exists"
         )
     
     def _load_config(self):
