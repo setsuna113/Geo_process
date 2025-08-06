@@ -49,10 +49,20 @@ class GEEResampler:
         
         self.logger.debug(f"Resampling {band_name} with method: {method}")
         
-        # Handle nodata values
+        # Handle nodata values and sparse data
         no_data = config.get('no_data')
-        if no_data is not None:
-            # Mask nodata values
+        
+        # Handle masking differently based on data type
+        # For biodiversity data uploaded without nodata flag, no masking needed
+        # For climate data with proper nodata values, mask them
+        data_type = config.get('data_type', 'continuous')
+        if data_type == 'discrete' and band_name != 'climate':
+            # Biodiversity data - no unmasking needed since uploaded without nodata flag
+            # This preserves the distinction between ocean mask and missing data values
+            self.logger.debug(f"Processing {band_name} without additional masking")
+        elif no_data is not None and any(keyword in str(band_name).lower() for keyword in ['climate', 'worldclim', 'elevation']):
+            # Only mask nodata for climate/elevation data that was uploaded with nodata flag
+            self.logger.debug(f"Masking nodata values ({no_data}) for {band_name}")
             image = image.updateMask(image.neq(no_data))
         
         # Apply resampling based on method
@@ -99,13 +109,21 @@ class GEEResampler:
         
         reducer = self.RESAMPLING_METHODS[method]
         
-        # Use reduceResolution for proper aggregation
-        resampled = image.reduceResolution(
-            reducer=reducer,
-            maxPixels=65536
-        ).reproject(
+        # CRITICAL FIX: Set default projection before reduceResolution
+        # This prevents "Can't transform" errors on coarse resolution exports
+        import ee
+        image = image.setDefaultProjection(
             crs=self.target_crs,
             scale=self.target_scale
+        )
+        
+        # Use reduceResolution for proper aggregation
+        # For coarse resolution, we need to handle ~11401 input pixels per output pixel
+        # Use bestEffort to automatically adjust if needed
+        resampled = image.reduceResolution(
+            reducer=reducer,
+            maxPixels=15000,  # Increased to handle coarse resolution
+            bestEffort=True   # Allow GEE to auto-adjust to avoid pixel limit errors
         )
         
         return resampled
@@ -119,11 +137,15 @@ class GEEResampler:
             # Default bilinear
             resampled = image.resample('bilinear')
         
-        # Reproject to target resolution
-        resampled = resampled.reproject(
-            crs=self.target_crs,
-            scale=self.target_scale
-        )
+        # DON'T reproject here - let the export handle the scale
+        # Reprojecting before export can cause coordinate transform errors
+        # The export will automatically resample to the specified scale
+        
+        # COMMENTED OUT to fix hemisphere export issues
+        # resampled = resampled.reproject(
+        #     crs=self.target_crs,
+        #     scale=self.target_scale
+        # )
         
         return resampled
     

@@ -117,7 +117,7 @@ class ExportManager:
             description: Export description
             
         Returns:
-            Task ID
+            Task ID or list of task IDs if hemisphere splitting is enabled
         """
         if not description:
             description = f'biodiversity_climate_{resolution_name}'
@@ -127,7 +127,126 @@ class ExportManager:
         # Get scale in meters
         scale_meters = resolution_config.get('resolution', 0.016667) * 111320  # degrees to meters at equator
         
-        # Create export task
+        # Check if hemisphere splitting is needed/enabled
+        hemisphere_config = self.config.get('hemisphere_split', {})
+        use_hemisphere_split = hemisphere_config.get('enabled', False)
+        
+        # Auto-detect if enabled (not recommended)
+        if hemisphere_config.get('auto_detect', False) and not use_hemisphere_split:
+            # Check if this is a global export at coarse resolution
+            coords = bounds.coordinates().getInfo()[0]
+            min_lon = min(c[0] for c in coords)
+            max_lon = max(c[0] for c in coords)
+            
+            # Auto-enable for global exports at coarse resolution
+            if (max_lon - min_lon) > 300 and resolution_name == 'coarse':
+                use_hemisphere_split = True
+                self.logger.info("Auto-enabled hemisphere splitting for global coarse export")
+        
+        # Handle hemisphere splitting if enabled
+        if use_hemisphere_split:
+            # For hemisphere splitting, use fixed global bounds
+            # Don't try to extract from geometry which can have coordinate issues
+            # Use latitude bounds from masking config if available
+            if hasattr(self.config, 'masking') and hasattr(self.config.masking, 'enabled') and self.config.masking.enabled:
+                if hasattr(self.config.masking, 'latitude_bounds'):
+                    min_lat = self.config.masking.latitude_bounds.get('min', -60)
+                    max_lat = self.config.masking.latitude_bounds.get('max', 75)
+                else:
+                    min_lat = -60
+                    max_lat = 75
+            else:
+                min_lat = -90
+                max_lat = 90
+            
+            min_lon = -180
+            max_lon = 180
+            
+            # Always do hemisphere split when enabled (config already controls this)
+            if True:  # Simplified - config controls whether we get here
+                self.logger.info("Using hemisphere split for global export (enabled in config)")
+                
+                # Export in two hemispheres
+                task_ids = []
+                
+                # Add timestamp to make descriptions unique
+                timestamp = int(time.time())
+                
+                # Western hemisphere - use non-geodesic polygon to avoid dateline issues
+                # Using -179.999 instead of -180 to avoid boundary issues
+                west_bounds = ee.Geometry.Polygon(
+                    [[[-179.999, min_lat], [-179.999, max_lat], [0, max_lat], [0, min_lat], [-179.999, min_lat]]],
+                    None, False  # geodesic=False is crucial for global exports
+                )
+                west_path = f"{export_path}_west"
+                
+                task_west = ee.batch.Export.image.toCloudStorage(
+                    image=merged_image,
+                    description=f"{description}_west_{timestamp}",
+                    bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
+                    fileNamePrefix=west_path,
+                    region=west_bounds,
+                    scale=scale_meters,
+                    crs='EPSG:4326',
+                    fileFormat='GeoTIFF',
+                    formatOptions=self.config.get('file_format_options', {
+                        'cloudOptimized': True,
+                        'noData': 0  # Use 0 to match original biodiversity data NoData value
+                    }),
+                    maxPixels=self.config.get('export_max_pixels', 1e13),
+                    shardSize=256  # Add sharding to help with large exports
+                )
+                task_west.start()
+                task_ids.append(task_west.id)
+                self.logger.info(f"   Started western hemisphere export: {task_west.id}")
+                
+                # Eastern hemisphere - use non-geodesic polygon  
+                # Using 179.999 instead of 180 to avoid boundary issues
+                east_bounds = ee.Geometry.Polygon(
+                    [[[0, min_lat], [0, max_lat], [179.999, max_lat], [179.999, min_lat], [0, min_lat]]],
+                    None, False  # geodesic=False is crucial for global exports
+                )
+                east_path = f"{export_path}_east"
+                
+                task_east = ee.batch.Export.image.toCloudStorage(
+                    image=merged_image,
+                    description=f"{description}_east_{timestamp}",
+                    bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
+                    fileNamePrefix=east_path,
+                    region=east_bounds,
+                    scale=scale_meters,
+                    crs='EPSG:4326',
+                    fileFormat='GeoTIFF',
+                    formatOptions=self.config.get('file_format_options', {
+                        'cloudOptimized': True,
+                        'noData': 0  # Use 0 to match original biodiversity data NoData value
+                    }),
+                    maxPixels=self.config.get('export_max_pixels', 1e13),
+                    shardSize=256  # Add sharding to help with large exports
+                )
+                task_east.start()
+                task_ids.append(task_east.id)
+                self.logger.info(f"   Started eastern hemisphere export: {task_east.id}")
+                
+                # Store both task IDs
+                task_id = ','.join(task_ids)  # Return comma-separated task IDs
+                
+                # Track both tasks
+                for tid in task_ids:
+                    self.active_tasks[tid] = {
+                        'task': task_west if tid == task_west.id else task_east,
+                        'description': description,
+                        'resolution': resolution_name,
+                        'export_path': export_path,
+                        'start_time': time.time(),
+                        'format': 'GeoTIFF',
+                        'hemisphere': 'west' if tid == task_west.id else 'east'
+                    }
+                
+                return task_id  # Return the comma-separated task IDs
+        
+        # Standard single export (no hemisphere splitting)
+        self.logger.info(f"Exporting as single GeoTIFF: {resolution_name}")
         task = ee.batch.Export.image.toCloudStorage(
             image=merged_image,
             description=description,
@@ -139,12 +258,12 @@ class ExportManager:
             fileFormat='GeoTIFF',
             formatOptions=self.config.get('file_format_options', {
                 'cloudOptimized': True,
-                'noData': -9999
+                'noData': 0  # Use 0 to match original biodiversity data NoData value
             }),
-            maxPixels=self.config.get('export_max_pixels', 1e13)
+            maxPixels=self.config.get('export_max_pixels', 1e13),
+            shardSize=256  # Add sharding to help with large exports
         )
         
-        # Start task
         task.start()
         task_id = task.id
         
@@ -228,7 +347,7 @@ class ExportManager:
         Monitor multiple export tasks.
         
         Args:
-            task_ids: List of task IDs to monitor
+            task_ids: List of task IDs to monitor (may contain comma-separated IDs for hemisphere exports)
             check_interval: Check interval in seconds
             timeout: Overall timeout in seconds
             
@@ -236,15 +355,24 @@ class ExportManager:
             Dict mapping task ID to final status
         """
         start_time = time.time()
-        task_statuses = {tid: {'status': 'RUNNING'} for tid in task_ids}
         
-        self.logger.info(f"Monitoring {len(task_ids)} export tasks...")
+        # Expand comma-separated task IDs
+        all_task_ids = []
+        for task_id_str in task_ids:
+            if ',' in task_id_str:
+                all_task_ids.extend(task_id_str.split(','))
+            else:
+                all_task_ids.append(task_id_str)
+        
+        task_statuses = {tid: {'status': 'RUNNING'} for tid in all_task_ids}
+        
+        self.logger.info(f"Monitoring {len(all_task_ids)} export tasks...")
         
         while True:
             # Check each task
             all_complete = True
             
-            for task_id in task_ids:
+            for task_id in all_task_ids:
                 if task_statuses[task_id]['status'] in ['COMPLETED', 'FAILED', 'CANCELLED']:
                     continue
                 
@@ -265,10 +393,14 @@ class ExportManager:
                     # Log progress
                     if status['state'] == 'RUNNING':
                         progress = status.get('progress', 0) * 100
-                        self.logger.debug(f"Task {task_id}: {progress:.1f}% complete")
+                        hemisphere = self.active_tasks[task_id].get('hemisphere', '')
+                        hemisphere_str = f" ({hemisphere})" if hemisphere else ""
+                        self.logger.debug(f"Task {task_id}{hemisphere_str}: {progress:.1f}% complete")
                     elif status['state'] == 'COMPLETED':
                         duration = task_statuses[task_id]['duration']
-                        self.logger.info(f"✅ Task {task_id} completed in {duration/60:.1f} minutes")
+                        hemisphere = self.active_tasks[task_id].get('hemisphere', '')
+                        hemisphere_str = f" ({hemisphere})" if hemisphere else ""
+                        self.logger.info(f"✅ Task {task_id}{hemisphere_str} completed in {duration/60:.1f} minutes")
                     elif status['state'] == 'FAILED':
                         self.logger.error(f"❌ Task {task_id} failed: {status.get('error_message')}")
                     elif status['state'] == 'CANCELLED':
@@ -280,7 +412,7 @@ class ExportManager:
             # Check timeout
             if time.time() - start_time > timeout:
                 self.logger.error(f"Export monitoring timed out after {timeout}s")
-                for task_id in task_ids:
+                for task_id in all_task_ids:
                     if task_statuses[task_id]['status'] == 'RUNNING':
                         task_statuses[task_id]['status'] = 'TIMEOUT'
                 break
@@ -291,7 +423,7 @@ class ExportManager:
         completed = sum(1 for s in task_statuses.values() if s['status'] == 'COMPLETED')
         failed = sum(1 for s in task_statuses.values() if s['status'] in ['FAILED', 'TIMEOUT'])
         
-        self.logger.info(f"Export tasks complete: {completed}/{len(task_ids)} successful, {failed} failed")
+        self.logger.info(f"Export tasks complete: {completed}/{len(all_task_ids)} successful, {failed} failed")
         
         return task_statuses
     
@@ -307,12 +439,26 @@ class ExportManager:
         """
         export_paths = {}
         
-        for res_name, task_id in task_ids.items():
-            if task_id in self.active_tasks:
-                task_info = self.active_tasks[task_id]
-                if self.config.get('export_destination', 'cloud_storage') == 'cloud_storage':
-                    export_paths[res_name] = f"gs://{self.config.get('gcs_bucket', 'biodiv-gee-yl998')}/{task_info['export_path']}"
-                else:
-                    export_paths[res_name] = task_info['export_path']
+        for res_name, task_id_str in task_ids.items():
+            # Handle comma-separated task IDs for hemisphere exports
+            if ',' in task_id_str:
+                # Hemisphere export - just return the base path
+                # The fetcher will look for _west and _east files
+                task_ids_list = task_id_str.split(',')
+                if task_ids_list[0] in self.active_tasks:
+                    task_info = self.active_tasks[task_ids_list[0]]
+                    base_path = task_info['export_path'].replace('_west', '').replace('_east', '')
+                    if self.config.get('export_destination', 'cloud_storage') == 'cloud_storage':
+                        export_paths[res_name] = f"gs://{self.config.get('gcs_bucket', 'biodiv-gee-yl998')}/{base_path}"
+                    else:
+                        export_paths[res_name] = base_path
+            else:
+                # Single task
+                if task_id_str in self.active_tasks:
+                    task_info = self.active_tasks[task_id_str]
+                    if self.config.get('export_destination', 'cloud_storage') == 'cloud_storage':
+                        export_paths[res_name] = f"gs://{self.config.get('gcs_bucket', 'biodiv-gee-yl998')}/{task_info['export_path']}"
+                    else:
+                        export_paths[res_name] = task_info['export_path']
         
         return export_paths

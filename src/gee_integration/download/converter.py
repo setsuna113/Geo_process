@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple, Union
 import glob
 import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
@@ -52,7 +55,6 @@ class ParquetConverter:
             self.logger.warning(f"No CSV files for {resolution_name}, creating placeholder parquet")
             output_path = self.output_dir / f"biodiversity_climate_{resolution_name}.parquet"
             # Create a minimal DataFrame for testing
-            import pandas as pd
             test_df = pd.DataFrame({
                 'x': [0.0],
                 'y': [0.0],
@@ -75,7 +77,6 @@ class ParquetConverter:
             
             try:
                 # Read CSV in chunks for memory efficiency
-                import pandas as pd
                 for chunk_df in pd.read_csv(csv_file, chunksize=chunk_size):
                     # Clean and validate chunk
                     chunk_df = self._clean_dataframe(chunk_df)
@@ -102,7 +103,6 @@ class ParquetConverter:
             raise RuntimeError("Failed to create parquet file")
         
         # Get final statistics
-        import pandas as pd
         final_df = pd.read_parquet(output_path)
         stats = self._compute_statistics(final_df)
         
@@ -129,7 +129,6 @@ class ParquetConverter:
             raise ValueError(f"Missing coordinate columns: {missing}")
         
         # Convert data types
-        import pandas as pd
         for col in self.COORD_COLUMNS:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
@@ -146,11 +145,12 @@ class ParquetConverter:
                            append: bool = False) -> None:
         """Write dataframes to parquet"""
         # Combine dataframes
-        import pandas as pd
         combined_df = pd.concat(dfs, ignore_index=True)
         
         if append and output_path.exists():
             # Read existing data
+            # TODO: For very large files, consider using PyArrow for streaming append
+            # instead of reading entire file into memory
             existing_df = pd.read_parquet(output_path)
             combined_df = pd.concat([existing_df, combined_df], ignore_index=True)
         
@@ -180,7 +180,7 @@ class ParquetConverter:
         data_cols = [col for col in df.columns if col not in self.COORD_COLUMNS]
         
         for col in data_cols:
-            import pandas as pd
+
             if pd.api.types.is_numeric_dtype(df[col]):
                 stats['data_columns'][col] = {
                     'min': float(df[col].min()),
@@ -273,8 +273,32 @@ class ParquetConverter:
         first_file = source_files[0]
         
         if first_file.suffix.lower() in ['.tif', '.tiff']:
+            # Check if we have hemisphere files that need merging
+            if len(source_files) == 2:
+                # Check if these are hemisphere files
+                file_names = [f.stem for f in source_files]
+                if any('west' in name for name in file_names) and any('east' in name for name in file_names):
+                    self.logger.info("Detected hemisphere files, streaming directly to parquet...")
+                    
+                    # Find west and east files
+                    west_file = next(f for f in source_files if 'west' in f.stem)
+                    east_file = next(f for f in source_files if 'east' in f.stem)
+                    
+                    # Merge hemispheres directly to parquet
+                    from src.gee_integration.processing.hemisphere_merger import merge_hemispheres_to_parquet
+                    output_path = self.output_dir / f"biodiversity_climate_{resolution_name}.parquet"
+                    return merge_hemispheres_to_parquet(west_file, east_file, output_path, metadata)
+            
             # GeoTIFF conversion
-            if len(source_files) > 1:
+            if len(source_files) > 2:
+                # More than 2 files - likely tiled export from GEE
+                self.logger.info(f"Detected {len(source_files)} GeoTIFF tiles, merging...")
+                return self._convert_tiled_geotiffs_to_parquet(
+                    source_files,
+                    resolution_name,
+                    metadata=metadata
+                )
+            elif len(source_files) > 1:
                 self.logger.warning("Multiple GeoTIFF files provided, using first one")
             
             # Set band names from metadata if available
@@ -282,7 +306,7 @@ class ParquetConverter:
                 self.band_names = metadata['band_names']
             
             return self._convert_geotiff_to_parquet(
-                first_file, 
+                source_files[0], 
                 resolution_name,
                 chunk_size=metadata.get('chunk_size', 100000) if metadata else 100000,
                 metadata=metadata
@@ -290,6 +314,170 @@ class ParquetConverter:
         else:
             # CSV conversion (existing method)
             return self.convert_csv_files(source_files, resolution_name)
+    
+    @log_operation("convert_tiled_geotiffs_to_parquet")
+    def _convert_tiled_geotiffs_to_parquet(self, tile_paths: List[Path],
+                                          resolution_name: str,
+                                          metadata: Optional[Dict] = None) -> Path:
+        """
+        Convert multiple GeoTIFF tiles to a single parquet file by streaming.
+        Processes each tile sequentially and appends to the same parquet file.
+        
+        Args:
+            tile_paths: List of GeoTIFF tile paths
+            resolution_name: Resolution identifier
+            metadata: Optional metadata including band names
+            
+        Returns:
+            Path to output parquet file
+        """
+        import rasterio
+        
+        output_path = self.output_dir / f"biodiversity_climate_{resolution_name}.parquet"
+        
+        self.logger.info(f"Streaming {len(tile_paths)} GeoTIFF tiles to parquet...")
+        
+        # Sort tiles to ensure consistent ordering
+        sorted_tiles = sorted(tile_paths)
+        
+        # Initialize writer and tracking variables
+        writer = None
+        total_pixels_written = 0
+        tiles_processed = 0
+        schema = None
+        
+        try:
+            for tile_idx, tile_path in enumerate(sorted_tiles, 1):
+                self.logger.info(f"Processing tile {tile_idx}/{len(sorted_tiles)}: {tile_path.name}")
+                
+                with rasterio.open(tile_path) as src:
+                    # Get tile info
+                    width = src.width
+                    height = src.height
+                    n_bands = src.count
+                    transform = src.transform
+                    nodata = src.nodata or -9999
+                    
+                    # On first tile, setup band names and schema
+                    if writer is None:
+                        # Prepare band names
+                        if not self.band_names:
+                            if metadata and 'band_names' in metadata:
+                                self.band_names = metadata['band_names'][:n_bands]
+                            else:
+                                self.logger.warning("No band names in metadata, using defaults")
+                                self.band_names = [f'band_{i+1}' for i in range(n_bands)]
+                        
+                        # Define schema
+                        schema_fields = [
+                            ('x', pa.float64()),
+                            ('y', pa.float64())
+                        ]
+                        for band_name in self.band_names:
+                            schema_fields.append((band_name, pa.float32()))
+                        schema = pa.schema(schema_fields)
+                        
+                        # Create writer
+                        writer = pq.ParquetWriter(
+                            output_path, 
+                            schema, 
+                            compression='snappy',
+                            use_dictionary=True,
+                            write_statistics=True
+                        )
+                        
+                        self.logger.info(f"   Schema initialized with {len(self.band_names)} bands")
+                    
+                    # Process tile in windows for memory efficiency
+                    tile_pixels = 0
+                    
+                    for ji, window in src.block_windows(1):
+                        # Read all bands for this window
+                        data = src.read(window=window)
+                        
+                        # Get coordinates for this window
+                        rows, cols = np.meshgrid(
+                            np.arange(window.row_off, window.row_off + window.height),
+                            np.arange(window.col_off, window.col_off + window.width),
+                            indexing='ij'
+                        )
+                        
+                        # Convert pixel indices to coordinates
+                        xs, ys = rasterio.transform.xy(transform, rows.flatten(), cols.flatten())
+                        xs = np.array(xs)
+                        ys = np.array(ys)
+                        
+                        # Build batch data
+                        batch_data = {
+                            'x': xs,
+                            'y': ys
+                        }
+                        
+                        # Add each band
+                        for i, band_name in enumerate(self.band_names):
+                            if i < n_bands:
+                                batch_data[band_name] = data[i].flatten().astype(np.float32)
+                        
+                        # Create mask for valid pixels
+                        valid_mask = np.zeros(len(xs), dtype=bool)
+                        
+                        # Check ALL bands for valid data
+                        for band_name, band_data in batch_data.items():
+                            if band_name in ['x', 'y']:
+                                continue
+                            if isinstance(band_data, np.ndarray):
+                                valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
+                        
+                        # Apply mask and process valid pixels
+                        if np.any(valid_mask):
+                            filtered_data = {k: v[valid_mask] for k, v in batch_data.items()}
+                            
+                            # Convert zeros to NaN for biodiversity bands
+                            climate_bands = ['bio01', 'bio02', 'bio03', 'bio04', 'bio05', 'bio06', 
+                                           'bio07', 'bio08', 'bio09', 'bio10', 'bio11', 'bio12',
+                                           'bio13', 'bio14', 'bio15', 'bio16', 'bio17', 'bio18', 'bio19']
+                            known_non_biodiv = ['x', 'y', 'elevation', 'dem'] + climate_bands
+                            
+                            for band_name, band_data in filtered_data.items():
+                                if band_name not in known_non_biodiv and isinstance(band_data, np.ndarray):
+                                    filtered_data[band_name] = np.where(band_data == 0, np.nan, band_data)
+                            
+                            # Ensure all schema fields are present
+                            for field in schema.names:
+                                if field not in filtered_data:
+                                    filtered_data[field] = np.full(np.sum(valid_mask), np.nan, dtype=np.float32)
+                            
+                            # Write batch to parquet
+                            batch = pa.RecordBatch.from_pydict(filtered_data, schema=schema)
+                            writer.write_batch(batch)
+                            
+                            tile_pixels += len(filtered_data['x'])
+                    
+                    self.logger.info(f"   Tile {tile_idx}: wrote {tile_pixels:,} valid pixels")
+                    total_pixels_written += tile_pixels
+                    tiles_processed += 1
+            
+            # Close writer
+            if writer:
+                writer.close()
+                self.logger.info(f"✅ Successfully processed {tiles_processed} tiles")
+                self.logger.info(f"   Total pixels written: {total_pixels_written:,}")
+                
+                # Verify output
+                if output_path.exists():
+                    file_size = output_path.stat().st_size / (1024**3)
+                    self.logger.info(f"   Output file size: {file_size:.2f} GB")
+            
+            return output_path
+            
+        except Exception as e:
+            self.logger.error(f"Failed to convert tiles: {e}")
+            if writer:
+                try:
+                    writer.close()
+                except:
+                    pass
+            raise
     
     @log_operation("convert_geotiff_to_parquet")
     def _convert_geotiff_to_parquet(self, tif_path: Path, 
@@ -308,8 +496,6 @@ class ParquetConverter:
             Path to output parquet file
         """
         import rasterio
-        import pyarrow as pa
-        import pyarrow.parquet as pq
         
         output_path = self.output_dir / f"biodiversity_climate_{resolution_name}.parquet"
         
@@ -386,8 +572,11 @@ class ParquetConverter:
                     # This ensures we keep climate and elevation data even where biodiversity is missing
                     valid_mask = np.zeros(len(xs), dtype=bool)
                     
-                    # Check ALL bands for valid data
+                    # Check ALL bands for valid data (excluding coordinates)
                     for band_name, band_data in batch_data.items():
+                        # Skip coordinate columns - they should not determine validity
+                        if band_name in ['x', 'y']:
+                            continue
                         if isinstance(band_data, np.ndarray) and np.issubdtype(band_data.dtype, np.number):
                             # Include pixels that have non-NoData values in this band
                             valid_mask |= (band_data != nodata) & ~np.isnan(band_data)
@@ -395,6 +584,20 @@ class ParquetConverter:
                     # Apply mask
                     if np.any(valid_mask):
                         filtered_data = {k: v[valid_mask] for k, v in batch_data.items()}
+                        
+                        # Convert zeros to NaN for biodiversity bands
+                        # (0 represents nodata from unmask operation)
+                        # Identify biodiversity bands (exclude climate/elevation bands)
+                        climate_bands = ['bio01', 'bio02', 'bio03', 'bio04', 'bio05', 'bio06', 
+                                       'bio07', 'bio08', 'bio09', 'bio10', 'bio11', 'bio12',
+                                       'bio13', 'bio14', 'bio15', 'bio16', 'bio17', 'bio18', 'bio19']
+                        known_non_biodiv = ['x', 'y', 'elevation', 'dem'] + climate_bands
+                        
+                        for band_name, band_data in filtered_data.items():
+                            # If it's not a known non-biodiversity band, it's biodiversity
+                            if band_name not in known_non_biodiv and isinstance(band_data, np.ndarray):
+                                # Convert 0 to NaN for biodiversity bands
+                                filtered_data[band_name] = np.where(band_data == 0, np.nan, band_data)
                         
                         # Ensure all schema fields are present (fill missing with NaN)
                         for field in schema.names:
@@ -419,7 +622,6 @@ class ParquetConverter:
             raise RuntimeError("Failed to create parquet file")
         
         # Get final statistics
-        import pandas as pd
         final_df = pd.read_parquet(output_path)
         stats = self._compute_statistics(final_df)
         
