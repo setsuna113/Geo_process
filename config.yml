@@ -539,9 +539,10 @@ spatial_analysis:
       
     # SOM experiment - ALL parameters from src/config/som/som_config.yml
     test_som:
-      input_parquet: 'outputs/biodiversity_test_data.parquet'
+      input_parquet: '/scratch/yl998/biodiversity_climate_fine_v5.parquet'
       method: 'som'
       # All SOM config in src/config/som/som_config_optimized.yml
+      # WARNING: NEVER add method-specific parameters here!
       
     # Production SOM analysis
     production_som:

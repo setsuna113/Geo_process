@@ -236,12 +236,20 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Check if we should skip CV for exploratory analysis
         skip_cv = kwargs.get('skip_cv', False)
-        cv_folds = kwargs.get('cv_folds', self.config.get('validation_config', {}).get('n_folds', 5))
+        cv_folds = kwargs.get('cv_folds', self.config.get('validation_config', {}).get('cv_folds', 5))
         
         # For exploratory analysis, set cv_folds=0 or skip_cv=True to skip cross-validation
         if cv_folds == 0:
             skip_cv = True
             logger.info("CV folds set to 0, skipping cross-validation for exploratory analysis")
+        
+        # Also skip CV if resuming from checkpoint
+        if kwargs.get('resume', False):
+            checkpoint_dir = 'checkpoints/som'
+            latest_checkpoint = os.path.join(checkpoint_dir, 'som_checkpoint_latest.npz')
+            if os.path.exists(latest_checkpoint):
+                skip_cv = True
+                logger.info("Resume requested with existing checkpoint - skipping cross-validation")
         
         cv_results = None
         if not skip_cv:
@@ -258,6 +266,20 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Train final model on all data
         self.som = GeoSOMVLRSOM(self._geosom_config)
+        
+        # Check if we should resume from a SOM checkpoint
+        # Look for latest checkpoint in the standard location
+        checkpoint_dir = 'checkpoints/som'
+        latest_checkpoint = os.path.join(checkpoint_dir, 'som_checkpoint_latest.npz')
+        logger.info(f"Resume check: resume={kwargs.get('resume', False)}, checkpoint exists={os.path.exists(latest_checkpoint)}, path={latest_checkpoint}")
+        if kwargs.get('resume', False) and os.path.exists(latest_checkpoint):
+            logger.info(f"Found SOM checkpoint, loading from: {latest_checkpoint}")
+            # Set resume_checkpoint in config so geo_som_core.py will load it
+            self._geosom_config.resume_checkpoint = latest_checkpoint
+            # Recreate SOM with resume config
+            self.som = GeoSOMVLRSOM(self._geosom_config)
+        else:
+            logger.info(f"Not resuming: resume flag={kwargs.get('resume', False)}, checkpoint exists={os.path.exists(latest_checkpoint)}")
         
         # Create a simple progress callback if we have one
         progress_cb = None
@@ -781,3 +803,68 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             issues.append(f"File not found: {data}")
         
         return len(issues) == 0, issues
+    
+    def save_checkpoint_state(self) -> Dict[str, Any]:
+        """Save SOM-specific checkpoint state.
+        
+        Returns:
+            Dictionary containing SOM weights, learning state, and training history
+        """
+        if not hasattr(self, 'som') or self.som is None:
+            return {}
+        
+        # Gather SOM state
+        state = {
+            'weights': self.som.get_weights().tolist() if hasattr(self.som, 'get_weights') else None,
+            'current_lr': getattr(self.som, 'current_lr', None),
+            'current_radius': getattr(self.som, 'current_radius', None),
+            'current_epoch': getattr(self.som, 'current_epoch', 0),
+            'training_history': getattr(self.som, 'training_history', {}),
+            'grid_size': self._geosom_config.grid_size if hasattr(self, '_geosom_config') else None,
+            'spatial_weight': self._geosom_config.spatial_weight if hasattr(self, '_geosom_config') else None,
+        }
+        
+        # Add cross-validation state if in CV
+        if hasattr(self, '_cv_results'):
+            state['cv_fold'] = len(self._cv_results)
+            state['cv_results'] = self._cv_results
+        
+        return state
+    
+    def load_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        """Load SOM-specific checkpoint state.
+        
+        Args:
+            state: Dictionary containing SOM state to restore
+        """
+        if not state:
+            return
+        
+        # Restore SOM if we have weights
+        if 'weights' in state and state['weights'] is not None:
+            import numpy as np
+            
+            # Create SOM if not exists
+            if not hasattr(self, 'som') or self.som is None:
+                # Recreate config from state
+                grid_size = state.get('grid_size', [10, 10])
+                self._geosom_config = self._create_geosom_config(tuple(grid_size))
+                self.som = GeoSOMVLRSOM(self._geosom_config)
+            
+            # Restore weights
+            if hasattr(self.som, 'weights'):
+                self.som.weights = np.array(state['weights'])
+            
+            # Restore learning parameters
+            if 'current_lr' in state:
+                self.som.current_lr = state['current_lr']
+            if 'current_radius' in state:
+                self.som.current_radius = state['current_radius']
+            if 'current_epoch' in state:
+                self.som.current_epoch = state['current_epoch']
+            if 'training_history' in state:
+                self.som.training_history = state['training_history']
+        
+        # Restore CV state
+        if 'cv_results' in state:
+            self._cv_results = state['cv_results']
