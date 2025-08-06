@@ -1,8 +1,8 @@
-# Google Earth Engine Configuration - Improved Structure
-# This configuration file controls the GEE data processing workflow
+# Google Earth Engine Configuration - PRODUCTION
+# This configuration uses real biodiversity data
 
 # Experiment name
-experiment_name: "test_50percent_nodata"
+experiment_name: "production_coarse_40x"
 
 # =============================================================================
 # DATA SOURCES
@@ -11,25 +11,25 @@ experiment_name: "test_50percent_nodata"
 # Biodiversity datasets to process
 biodiversity_datasets:
   - name: "animals"
-    gcs_path: "data/test_biodiversity/test_animals.tif"
+    gcs_path: "data/richness_maps/iucn-terrestrial-richness.tif"
     band_name: "animal_richness"
-    description: "Animal species richness"
+    description: "IUCN terrestrial animal species richness"
     no_data_value: -3.4e+38
-    asset_name: "test_animals_richness"
+    asset_name: "iucn_terrestrial_richness"
     
   - name: "plants"
-    gcs_path: "data/test_biodiversity/test_plants.tif"
+    gcs_path: "data/richness_maps/daru-plants-richness.tif"
     band_name: "plant_richness"
-    description: "Plant species richness"
+    description: "Daru plant species richness"
     no_data_value: -3.4e+38
-    asset_name: "test_plants_richness"
+    asset_name: "daru_plants_richness"
     
   - name: "fungi"
-    gcs_path: "data/test_biodiversity/test_fungi.tif"
+    gcs_path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
     band_name: "fungi_richness"
-    description: "Fungi species richness"
+    description: "AM Fungi species richness"
     no_data_value: -3.4e+38
-    asset_name: "test_fungi_richness"
+    asset_name: "am_fungi_richness"
 
 # =============================================================================
 # ADDITIONAL DATA LAYERS (from GEE catalog)
@@ -38,45 +38,27 @@ biodiversity_datasets:
 additional_layers:
   # Climate data
   climate:
-    enabled: true  # Set to false to exclude climate data
-    source: "WORLDCLIM/V1/BIO"  # GEE asset ID
-    variables:  # Which bioclimatic variables to include
+    enabled: true
+    source: "WORLDCLIM/V1/BIO"
+    variables:
       - "bio01"  # Annual Mean Temperature
       - "bio04"  # Temperature Seasonality
       - "bio12"  # Annual Precipitation
       - "bio15"  # Precipitation Seasonality
-    # Could add more: bio02-bio19 available
     
   # Elevation data
   elevation:
-    enabled: true  # Set to false to exclude elevation
+    enabled: true
     source: "MERIT/DEM/v1_0_3"
     band: "dem"
     description: "Elevation in meters, ~90m resolution"
-    
-  # Future: Add more GEE datasets as needed
-  # soil:
-  #   enabled: false
-  #   source: "OpenLandMap/SOL/SOL_ORGANIC-CARBON_USDA-6A1C_M/v02"
-  #   bands: ["b0", "b10", "b30"]
-  
-  # landcover:
-  #   enabled: false
-  #   source: "MODIS/006/MCD12Q1"
-  #   band: "LC_Type1"
 
 # =============================================================================
 # MASKING OPTIONS
 # =============================================================================
 
 masking:
-  enabled: true  # Single on/off switch for all masking
-  
-  # The unified mask excludes:
-  # 1. Deep ocean (MODIS water class 0)
-  # 2. Areas outside latitude bounds
-  # Note: Shallow water (class 2) is kept for coastal biodiversity
-  
+  enabled: true
   latitude_bounds:
     min: -60  # Southern bound (no fungi data beyond)
     max: 75   # Northern bound (minimal fungi data beyond)
@@ -86,19 +68,36 @@ masking:
 # =============================================================================
 
 processing:
-  merge_strategy: "addBands"  # How to combine datasets
-  tileScale: 16              # For large exports
+  merge_strategy: "addBands"
+  tileScale: 16
   maxPixels: 10000000000000  # 1e13
 
 # =============================================================================
 # OUTPUT RESOLUTIONS
 # =============================================================================
 
+# Control which resolutions to process
+resolution_settings:
+  # Process multiple resolutions in single run or just selected ones
+  process_resolutions: ["fine", "coarse"]  # Process both resolutions
+  # To process all: ["fine", "coarse"]
+  # To process just one: ["fine"]
+
+# Available resolution definitions
 resolutions:
   fine:
     name: "fine"
-    resolution: 0.00898315284  # ~1km in degrees (1000m / 111320m per degree)
-    description: "Fine resolution (~1km)"
+    resolution: 0.008983152841195  # Keep original fungi resolution to avoid resampling issues
+    description: "Fine resolution matching fungi data (~1km)"
+  coarse:
+    name: "coarse"
+    resolution: 0.35932  # 40x aggregation (~40km, 1600 pixels per output)
+    description: "Coarse resolution for ML (~40km, 40x40 aggregation)"
+  # Alternative options:
+  # medium_10x:
+  #   resolution: 0.08983  # 10x aggregation (~10km, 100 pixels per output)
+  # maximum_43x:
+  #   resolution: 0.38627  # 43x aggregation (~43km, 1849 pixels - max safe)
 
 # =============================================================================
 # INFRASTRUCTURE
@@ -107,17 +106,17 @@ resolutions:
 # Google Cloud Storage
 gcs:
   bucket: "biodiv-gee-yl998"
-  upload_folder: "test_uploads"
-  export_folder: "test_merged_outputs"
+  upload_folder: "production_uploads"
+  export_folder: "production_merged_outputs"
   chunk_size_mb: 100
   parallel_uploads: 4
 
 # Earth Engine
 earth_engine:
-  asset_prefix: "projects/earthengine-legacy/assets/users/geebiodiversity/test_pipeline"
-  project_id: "triple-carrier-441622-t1"  # Update with your GCP project
+  asset_prefix: "projects/earthengine-legacy/assets/users/geebiodiversity/production"
+  project_id: "triple-carrier-441622-t1"
   
-# Authentication (for backward compatibility)
+# Authentication
 gee:
   auth:
     method: "service_account"
@@ -126,22 +125,10 @@ gee:
 
 # Export settings
 export:
-  format: "GeoTIFF"  # or "CSV"
+  format: "GeoTIFF"
   destination: "cloud_storage"
   
-  # Explicit export bounds (optional - if not set, will try to detect from data)
-  # Useful for test data or when automatic detection fails
-  # bounds:
-  #   min_lon: -0.5
-  #   max_lon: 0.5
-  #   min_lat: -0.5
-  #   max_lat: 0.5
-  
-  # Hemisphere splitting for global exports (workaround for GEE antimeridian bug)
+  # No explicit bounds - will use global with latitude masking
+  # Hemisphere splitting - disable for testing coarse resolution fix
   hemisphere_split:
-    enabled: false  # Set to true only if you encounter antimeridian artifacts
-    # Only applies when:
-    # - Data covers full longitude range (-180 to 180)
-    # - Resolution is coarse (> 1km)
-    # - You see 1-pixel strips at -180/180 boundary
-    auto_detect: false  # Auto-enable for global+coarse exports (not recommended)
+    enabled: false  # Disable to test coarse resolution without hemisphere complexity

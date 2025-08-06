@@ -145,15 +145,25 @@ class ExportManager:
         
         # Handle hemisphere splitting if enabled
         if use_hemisphere_split:
-            # Get bounds for splitting
-            coords = bounds.coordinates().getInfo()[0]
-            min_lon = min(c[0] for c in coords)
-            max_lon = max(c[0] for c in coords)
-            min_lat = min(c[1] for c in coords)
-            max_lat = max(c[1] for c in coords)
+            # For hemisphere splitting, use fixed global bounds
+            # Don't try to extract from geometry which can have coordinate issues
+            # Use latitude bounds from masking config if available
+            if hasattr(self.config, 'masking') and hasattr(self.config.masking, 'enabled') and self.config.masking.enabled:
+                if hasattr(self.config.masking, 'latitude_bounds'):
+                    min_lat = self.config.masking.latitude_bounds.get('min', -60)
+                    max_lat = self.config.masking.latitude_bounds.get('max', 75)
+                else:
+                    min_lat = -60
+                    max_lat = 75
+            else:
+                min_lat = -90
+                max_lat = 90
             
-            # Only split if actually global
-            if (max_lon - min_lon) > 300:  # More than 300 degrees wide
+            min_lon = -180
+            max_lon = 180
+            
+            # Always do hemisphere split when enabled (config already controls this)
+            if True:  # Simplified - config controls whether we get here
                 self.logger.info("Using hemisphere split for global export (enabled in config)")
                 
                 # Export in two hemispheres
@@ -162,8 +172,12 @@ class ExportManager:
                 # Add timestamp to make descriptions unique
                 timestamp = int(time.time())
                 
-                # Western hemisphere
-                west_bounds = ee.Geometry.Rectangle([min_lon, min_lat, 0, max_lat])
+                # Western hemisphere - use non-geodesic polygon to avoid dateline issues
+                # Using -179.999 instead of -180 to avoid boundary issues
+                west_bounds = ee.Geometry.Polygon(
+                    [[[-179.999, min_lat], [-179.999, max_lat], [0, max_lat], [0, min_lat], [-179.999, min_lat]]],
+                    None, False  # geodesic=False is crucial for global exports
+                )
                 west_path = f"{export_path}_west"
                 
                 task_west = ee.batch.Export.image.toCloudStorage(
@@ -177,16 +191,21 @@ class ExportManager:
                     fileFormat='GeoTIFF',
                     formatOptions=self.config.get('file_format_options', {
                         'cloudOptimized': True,
-                        'noData': -9999
+                        'noData': 0  # Use 0 to match original biodiversity data NoData value
                     }),
-                    maxPixels=self.config.get('export_max_pixels', 1e13)
+                    maxPixels=self.config.get('export_max_pixels', 1e13),
+                    shardSize=256  # Add sharding to help with large exports
                 )
                 task_west.start()
                 task_ids.append(task_west.id)
                 self.logger.info(f"   Started western hemisphere export: {task_west.id}")
                 
-                # Eastern hemisphere
-                east_bounds = ee.Geometry.Rectangle([0, min_lat, max_lon, max_lat])
+                # Eastern hemisphere - use non-geodesic polygon  
+                # Using 179.999 instead of 180 to avoid boundary issues
+                east_bounds = ee.Geometry.Polygon(
+                    [[[0, min_lat], [0, max_lat], [179.999, max_lat], [179.999, min_lat], [0, min_lat]]],
+                    None, False  # geodesic=False is crucial for global exports
+                )
                 east_path = f"{export_path}_east"
                 
                 task_east = ee.batch.Export.image.toCloudStorage(
@@ -200,9 +219,10 @@ class ExportManager:
                     fileFormat='GeoTIFF',
                     formatOptions=self.config.get('file_format_options', {
                         'cloudOptimized': True,
-                        'noData': -9999
+                        'noData': 0  # Use 0 to match original biodiversity data NoData value
                     }),
-                    maxPixels=self.config.get('export_max_pixels', 1e13)
+                    maxPixels=self.config.get('export_max_pixels', 1e13),
+                    shardSize=256  # Add sharding to help with large exports
                 )
                 task_east.start()
                 task_ids.append(task_east.id)
@@ -238,9 +258,10 @@ class ExportManager:
             fileFormat='GeoTIFF',
             formatOptions=self.config.get('file_format_options', {
                 'cloudOptimized': True,
-                'noData': -9999
+                'noData': 0  # Use 0 to match original biodiversity data NoData value
             }),
-            maxPixels=self.config.get('export_max_pixels', 1e13)
+            maxPixels=self.config.get('export_max_pixels', 1e13),
+            shardSize=256  # Add sharding to help with large exports
         )
         
         task.start()

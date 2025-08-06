@@ -109,13 +109,21 @@ class GEEResampler:
         
         reducer = self.RESAMPLING_METHODS[method]
         
-        # Use reduceResolution for proper aggregation
-        resampled = image.reduceResolution(
-            reducer=reducer,
-            maxPixels=65536
-        ).reproject(
+        # CRITICAL FIX: Set default projection before reduceResolution
+        # This prevents "Can't transform" errors on coarse resolution exports
+        import ee
+        image = image.setDefaultProjection(
             crs=self.target_crs,
             scale=self.target_scale
+        )
+        
+        # Use reduceResolution for proper aggregation
+        # For coarse resolution, we need to handle ~11401 input pixels per output pixel
+        # Use bestEffort to automatically adjust if needed
+        resampled = image.reduceResolution(
+            reducer=reducer,
+            maxPixels=15000,  # Increased to handle coarse resolution
+            bestEffort=True   # Allow GEE to auto-adjust to avoid pixel limit errors
         )
         
         return resampled
@@ -129,11 +137,15 @@ class GEEResampler:
             # Default bilinear
             resampled = image.resample('bilinear')
         
-        # Reproject to target resolution
-        resampled = resampled.reproject(
-            crs=self.target_crs,
-            scale=self.target_scale
-        )
+        # DON'T reproject here - let the export handle the scale
+        # Reprojecting before export can cause coordinate transform errors
+        # The export will automatically resample to the specified scale
+        
+        # COMMENTED OUT to fix hemisphere export issues
+        # resampled = resampled.reproject(
+        #     crs=self.target_crs,
+        #     scale=self.target_scale
+        # )
         
         return resampled
     
