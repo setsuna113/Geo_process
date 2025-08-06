@@ -70,9 +70,11 @@ class HypothesisTester:
         # Use Method 1's preparation (common for all)
         self.data_prepared = self.method1.prepare_data(data)
         
-        # Also prepare for other methods
+        # Method 2 uses Method 1's prepared data
         self.method2.data_processed = self.data_prepared.copy()
-        self.method3.data_processed = self.data_prepared.copy()
+        
+        # Method 3 needs its own preparation (creates different columns)
+        self.method3.prepare_data(data)
         
         logger.info(f"Data prepared: {len(self.data_prepared)} samples")
         
