@@ -233,11 +233,14 @@ class StandaloneAnalysisRunner:
                     analysis_method=analysis_method
                 )
                 
-                # Check for existing checkpoint
-                latest_checkpoint = checkpointer.load_latest_checkpoint()
-                if latest_checkpoint:
-                    self.logger.info("Found existing checkpoint, resuming...")
-                    resume_info = checkpointer.resume_from_checkpoint(latest_checkpoint)
+                # Check for existing checkpoint if resume flag is set
+                if analysis_config.get('resume', False):
+                    latest_checkpoint = checkpointer.load_latest_checkpoint()
+                    if latest_checkpoint:
+                        self.logger.info("Found existing checkpoint, resuming...")
+                        resume_info = checkpointer.resume_from_checkpoint(latest_checkpoint)
+                    else:
+                        self.logger.warning("Resume requested but no checkpoint found, starting fresh")
             
             # Create analyzer (database-free)
             self.logger.info("Creating analyzer...")
@@ -249,6 +252,11 @@ class StandaloneAnalysisRunner:
                 config_wrapper,
                 db=None  # No database dependency
             )
+            
+            # Restore analyzer state if resuming from checkpoint
+            if resume_info and 'method_state' in resume_info:
+                self.logger.info("Restoring analyzer state from checkpoint...")
+                analyzer.load_checkpoint_state(resume_info['method_state'])
             
             # Progress tracking is handled by UnifiedMonitor
             self.logger.info("Progress tracking initialized")
@@ -341,7 +349,8 @@ class StandaloneAnalysisRunner:
         params = {
             'save_results': analysis_config.get('save_results', True),
             'output_dir': analysis_config.get('output_dir', f'outputs/analysis_results/{analysis_method}'),
-            'experiment_name': analysis_config.get('experiment_name', 'default')
+            'experiment_name': analysis_config.get('experiment_name', 'default'),
+            'resume': analysis_config.get('resume', False)  # Pass resume flag
         }
         
         # Log warning if method-specific parameters are detected
@@ -658,6 +667,9 @@ Running Experiments:
         
         if args.method:
             analysis_config['method'] = args.method
+        
+        if args.resume:
+            analysis_config['resume'] = True
         
         # Validate required fields
         if 'input_parquet' not in analysis_config:

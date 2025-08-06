@@ -8,18 +8,22 @@ import time
 import os
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import subprocess
 import re
+import psutil
 
 class SOMProgressMonitor:
     def __init__(self):
         self.log_dir = Path("logs")
+        self.checkpoint_dir = Path("checkpoints/som")
+        self.output_dir = Path("outputs/analysis_results/som")
         self.last_update = {}
+        self.start_time = None
         
     def find_latest_log(self):
         """Find the most recent SOM log file."""
-        patterns = ["analysis_standalone_*.log", "som_*.log"]
+        patterns = ["analysis_standalone_*.log", "som_*.log", "analysis_som_*.log"]
         all_logs = []
         
         for pattern in patterns:

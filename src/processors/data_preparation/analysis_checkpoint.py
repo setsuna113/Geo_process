@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class AnalysisCheckpoint:
-    """Simple checkpoint data structure for analysis."""
+    """Unified checkpoint data structure for analysis."""
     checkpoint_id: str
     experiment_name: str
     analysis_method: str
@@ -25,8 +25,11 @@ class AnalysisCheckpoint:
     total_chunks: int
     progress_percent: float
     
-    # Method-specific state
+    # Method-specific state (for high-level orchestration)
     analysis_state: Dict[str, Any]
+    
+    # Method internal state (SOM weights, learning rates, etc.)
+    method_state: Dict[str, Any]  # NEW: Stores method-specific checkpoint data
     
     # Metadata
     metadata: Dict[str, Any]
@@ -70,6 +73,7 @@ class SimpleAnalysisCheckpointer:
         chunk_idx: int,
         total_chunks: int,
         analysis_state: Dict[str, Any],
+        method_state: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> Path:
         """Save analysis checkpoint.
@@ -100,6 +104,7 @@ class SimpleAnalysisCheckpointer:
             total_chunks=total_chunks,
             progress_percent=progress_percent,
             analysis_state=analysis_state,
+            method_state=method_state or {},
             metadata=metadata or {}
         )
         
@@ -255,6 +260,7 @@ class SimpleAnalysisCheckpointer:
             'start_chunk': checkpoint.chunk_idx + 1,  # Resume from next chunk
             'total_chunks': checkpoint.total_chunks,
             'analysis_state': checkpoint.analysis_state,
+            'method_state': checkpoint.method_state,  # Include method state
             'metadata': checkpoint.metadata
         }
         

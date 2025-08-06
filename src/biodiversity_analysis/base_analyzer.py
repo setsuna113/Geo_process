@@ -220,3 +220,23 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
         result = func()
         runtime = time.time() - start_time
         return result, runtime
+    
+    def save_checkpoint_state(self) -> Dict[str, Any]:
+        """
+        Save method-specific checkpoint state.
+        
+        Returns:
+            Dictionary containing method-specific state to save
+        """
+        # Default implementation - methods should override
+        return {}
+    
+    def load_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        """
+        Load method-specific checkpoint state.
+        
+        Args:
+            state: Dictionary containing method-specific state to restore
+        """
+        # Default implementation - methods should override
+        pass
