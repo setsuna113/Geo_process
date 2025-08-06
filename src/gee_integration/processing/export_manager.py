@@ -197,7 +197,6 @@ class ExportManager:
                     region=west_bounds,
                     scale=scale_meters,
                     crs='EPSG:4326',
-                    crsTransform=crs_transform,
                     fileFormat='GeoTIFF',
                     formatOptions=self.config.get('file_format_options', {
                         'cloudOptimized': True,
@@ -225,8 +224,7 @@ class ExportManager:
                     fileNamePrefix=east_path,
                     region=east_bounds,
                     scale=scale_meters,
-                    crs='EPSG:4326',
-                    crsTransform=crs_transform,  # Use same transform as west for alignment
+                    crs='EPSG:4326',  # Use same transform as west for alignment
                     fileFormat='GeoTIFF',
                     formatOptions=self.config.get('file_format_options', {
                         'cloudOptimized': True,
@@ -264,15 +262,18 @@ class ExportManager:
         scale_degrees = scale_meters / 111319.5  # Approximate conversion at equator
         crs_transform = [scale_degrees, 0, -180, 0, -scale_degrees, 90]
         
+        # For recursive downsampling, image is already at target resolution
+        # Use crsTransform for pixel alignment as recommended by GEE docs
         task = ee.batch.Export.image.toCloudStorage(
             image=merged_image,
             description=description,
             bucket=self.config.get('gcs_bucket', 'biodiv-gee-yl998'),
             fileNamePrefix=export_path,
             region=bounds,
+            # Use EITHER scale OR crsTransform, not both
+            # Since image is pre-resampled, we use scale to ensure proper export resolution
             scale=scale_meters,
             crs='EPSG:4326',
-            crsTransform=crs_transform,  # Ensure consistent pixel grid across tiles
             fileFormat='GeoTIFF',
             formatOptions=self.config.get('file_format_options', {
                 'cloudOptimized': True,

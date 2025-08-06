@@ -75,6 +75,17 @@ class GEEMerger:
         biodiv_combined = biodiv_combined.toFloat()
         climate_image = climate_image.toFloat()
         
+        # CRITICAL: Ensure projection alignment for recursive downsampling
+        # Use the biodiversity projection as reference (already at target resolution)
+        target_projection = biodiv_combined.select(0).projection()
+        
+        # Reproject climate to match biodiversity projection
+        self.logger.info("Aligning climate projection to match biodiversity")
+        climate_image = climate_image.reproject(
+            crs=target_projection,
+            scale=target_projection.nominalScale()
+        )
+        
         # Get band info (lazy - don't call getInfo)
         biodiv_bands = biodiv_combined.bandNames()
         climate_bands = climate_image.bandNames()
@@ -92,6 +103,11 @@ class GEEMerger:
             if include_elevation:
                 self.logger.info("Adding elevation data")
                 elevation = self.load_elevation().toFloat()
+                # Reproject elevation to match target projection
+                elevation = elevation.reproject(
+                    crs=target_projection,
+                    scale=target_projection.nominalScale()
+                )
                 merged = merged.addBands(elevation)
             
             # Add any additional layers
