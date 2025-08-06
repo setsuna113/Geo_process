@@ -112,10 +112,10 @@ resolution_settings:
   # Which resolutions to export (can disable to save compute/storage)
   # Each number represents power of 2 downsampling (max 8x recommended)
   outputs:
-    1x: true   # Base resolution (0.0167°, ~1.85km)
+    1x: false  # Base resolution (0.0167°, ~1.85km)
     2x: false  # One 2x downsample (0.0334°, ~3.7km)
-    4x: true   # Two 2x downsamples (0.0668°, ~7.4km)
-    8x: false  # Three 2x downsamples (0.1336°, ~14.8km)
+    4x: false  # Two 2x downsamples (0.0668°, ~7.4km)
+    8x: true   # Three 2x downsamples (0.1336°, ~14.8km)
 
 # =============================================================================
 # INFRASTRUCTURE
