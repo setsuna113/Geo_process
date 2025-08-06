@@ -121,29 +121,42 @@ class GEEResampler:
         # This gives us control over aggregation method
         import ee
         
-        # CRITICAL: We must reproject to target scale AFTER reduceResolution
-        # The working pattern from GEE docs is:
-        # 1. Get target projection at desired scale
-        # 2. Apply reduceResolution with low maxPixels and bestEffort
-        # 3. Reproject to target projection
+        # For coarse resolution (5x aggregation), we need more aggressive settings
+        # Check if this is a significant downsampling (more than 3x)
+        is_coarse = self.target_resolution > 0.05  # Coarse if > 0.05 degrees
         
-        # Create target projection at desired scale
-        target_projection = ee.Projection(self.target_crs).atScale(self.target_scale)
-        
-        # Apply reduceResolution for aggregation
-        aggregated = image.reduceResolution(
-            reducer=reducer,
-            maxPixels=64,  # Low value to avoid "output too large" errors
-            bestEffort=True  # Handle edge cases gracefully
-        )
-        
-        # Reproject to target projection 
-        # This is necessary to properly set the output resolution
-        reprojected = aggregated.reproject(
-            crs=target_projection
-        )
-        
-        return reprojected
+        if is_coarse:
+            # For coarse resolution, use very conservative settings
+            # This should produce ~4320x2160 pixels for global coverage at 5x
+            aggregated = image.reduceResolution(
+                reducer=reducer,
+                maxPixels=25,  # Very low for coarse resolution
+                bestEffort=True
+            )
+            
+            # Set default projection at target scale
+            # This forces the output to the correct resolution
+            aggregated = aggregated.setDefaultProjection(
+                crs=self.target_crs,
+                scale=self.target_scale
+            )
+            
+            return aggregated
+        else:
+            # For fine resolution, use the standard approach
+            target_projection = ee.Projection(self.target_crs).atScale(self.target_scale)
+            
+            aggregated = image.reduceResolution(
+                reducer=reducer,
+                maxPixels=64,
+                bestEffort=True
+            )
+            
+            reprojected = aggregated.reproject(
+                crs=target_projection
+            )
+            
+            return reprojected
     
     def _resample_standard(self, image: 'ee.Image', method: str) -> 'ee.Image':
         """Standard resampling (bilinear, bicubic)"""
