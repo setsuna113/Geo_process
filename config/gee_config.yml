@@ -24,12 +24,19 @@ biodiversity_datasets:
     no_data_value: -3.4e+38
     asset_name: "daru_plants_richness"
     
-  - name: "fungi"
+  - name: "am_fungi"
     gcs_path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
-    band_name: "fungi_richness"
+    band_name: "am_fungi_richness"
     description: "AM Fungi species richness"
     no_data_value: -3.4e+38
     asset_name: "am_fungi_richness"
+    
+  - name: "ecm_fungi"
+    gcs_path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
+    band_name: "ecm_fungi_richness"
+    description: "EcM Fungi species richness"
+    no_data_value: -3.4e+38
+    asset_name: "ecm_fungi_richness"
 
 # =============================================================================
 # ADDITIONAL DATA LAYERS (from GEE catalog)
