@@ -1,15 +1,17 @@
 # Unified SOM Configuration for Sparse Biodiversity Data
-# Merges som_config.yml and som_config_optimized.yml into single source of truth
+# 
+# DEFAULT CONFIGURATION - Automatically selects based on environment:
+# - Production: som_config_production.yml (full data, 1000 epochs)
+# - Test: som_config_test.yml (sampled data, 15 epochs)
 #
-# Goal: Discover intercorrelations between observed and predicted richness
-# - Equal feature weights to find natural patterns
-# - Larger grid (60x60) for detailed pattern discovery  
-# - Balanced spatial weight (0.2) to maintain geographic coherence
-# - Log transformation preserved for richness data distributions
+# To override: Set SOM_CONFIG_MODE environment variable to 'test' or 'production'
+# Or use specific config file with SOM_CONFIG_PATH
+#
+# This file contains shared defaults used by both test and production configs
 
-# Data selection and sampling
+# Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 100  # AGGRESSIVE SAMPLING TEST - take every 100th point
+  spatial_grid_step: 10  # DEFAULT: Moderate sampling
   feature_cols: ['animal_richness', 'plant_richness', 'fungi_richness']  # All biodiversity columns
   coordinate_columns: ['x', 'y']  # Column names for coordinates
   observed_columns: [0, 1, 2]  # All three biodiversity columns are observed
