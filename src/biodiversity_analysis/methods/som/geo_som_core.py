@@ -9,6 +9,7 @@ This implementation follows the specifications in final_som_configuration_decisi
 
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, Callable
+from pathlib import Path
 from dataclasses import dataclass
 import logging
 import time
@@ -366,7 +367,7 @@ class GeoSOMVLRSOM:
                 idx += 1
     
     def train_batch(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None,
-                   progress_callback: Optional[Callable] = None) -> SOMTrainingResult:
+                   progress_callback: Optional[Callable] = None, **kwargs) -> SOMTrainingResult:
         """Train using batch mode with geographic awareness.
         
         Args:
@@ -577,6 +578,13 @@ class GeoSOMVLRSOM:
                     logger.error(f"Error in progress callback: {e}")
                     raise
             
+            # Save checkpoint every N epochs if configured
+            checkpoint_freq = 10  # Save every 10 epochs
+            if (epoch + 1) % checkpoint_freq == 0:
+                checkpoint_dir = kwargs.get('checkpoint_dir', 
+                    f'outputs/analysis_results/som/{kwargs.get("experiment_name", "biodiv_fine_som_grid10")}/checkpoints')
+                self.save_checkpoint(epoch + 1, checkpoint_dir)
+            
             logger.info(f"Completed epoch {epoch+1}/{self.config.max_epochs}")
         
         # Create result
@@ -590,6 +598,43 @@ class GeoSOMVLRSOM:
             final_neighborhood_radius=self.current_radius,
             n_samples_trained=len(data)
         )
+    
+    def save_checkpoint(self, epoch: int, checkpoint_dir: str = None):
+        """Save checkpoint to disk.
+        
+        Args:
+            epoch: Current epoch number  
+            checkpoint_dir: Directory to save checkpoint
+        """
+        if checkpoint_dir is None:
+            checkpoint_dir = 'outputs/analysis_results/som/checkpoints'
+        
+        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        checkpoint_file = Path(checkpoint_dir) / f'som_checkpoint_epoch{epoch}.npz'
+        
+        # Save checkpoint data
+        np.savez_compressed(
+            checkpoint_file,
+            weights=self.weights,
+            epoch=epoch,
+            current_lr=self.current_lr,
+            current_radius=self.current_radius,
+            training_history={k: np.array(v) for k, v in self.training_history.items()}
+        )
+        logger.info(f"Saved checkpoint at epoch {epoch} to {checkpoint_file}")
+        return checkpoint_file
+    
+    def load_checkpoint(self, checkpoint_file: str):
+        """Load checkpoint from disk."""
+        checkpoint = np.load(checkpoint_file, allow_pickle=True)
+        self.weights = checkpoint['weights']
+        self.current_lr = float(checkpoint['current_lr'])
+        self.current_radius = float(checkpoint['current_radius'])
+        self.training_history = {k: v.tolist() for k, v in checkpoint['training_history'].item().items()}
+        
+        epoch = int(checkpoint['epoch'])
+        logger.info(f"Loaded checkpoint from epoch {epoch}")
+        return epoch
     
     def _adapt_learning_rate(self, current_qe: float, best_qe: float):
         """VLRSOM: Adapt learning rate based on QE improvement."""
