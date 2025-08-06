@@ -15,7 +15,7 @@ import os
 from scipy import stats
 
 from ...models.glm import NegativeBinomialGLM, PoissonGLM
-from ...spatial import compute_mesf
+from ...spatial import compute_mesf_optimized as compute_mesf  # Using optimized version
 from ...config_loader import MLRegressionConfig
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,10 @@ class Method2CategoricalGLM:
             mean_val = data_clean[var].mean()
             sd_val = data_clean[var].std()
             data_clean[f'{var}_std'] = (data_clean[var] - mean_val) / (2 * sd_val)
+        
+        # Add quadratic elevation term (from regression_analysis_decisions.md lines 288, 301, 314)
+        data_clean['elevation_std_sq'] = data_clean['elevation_std'] ** 2
+        logger.info("Created quadratic elevation term: elevation_std_sq")
         
         # Create categorical variables for H2 testing (lines 57-67)
         h2_config = self.feature_eng_config.get('h2_testing', {})
@@ -170,7 +174,7 @@ class Method2CategoricalGLM:
         
         feature_cols = [
             'bio1_std', 'bio12_std', 'bio15_std',  # Excluding bio4_std
-            'elevation_std'
+            'elevation_std', 'elevation_std_sq'  # Added quadratic term
         ] + me_cols + ['plant_high', 'temperate']
         
         # Create interaction term in design matrix
@@ -246,7 +250,7 @@ class Method2CategoricalGLM:
         # Get the same feature columns used during training
         feature_cols = [
             'bio1_std', 'bio12_std', 'bio15_std',
-            'elevation_std'
+            'elevation_std', 'elevation_std_sq'  # Added quadratic term
         ] + me_cols + ['plant_high', 'temperate', 'plant_high_temperate']
         
         for plant_high, temperate in groups:
@@ -256,6 +260,7 @@ class Method2CategoricalGLM:
                 'bio12_std': 0,
                 'bio15_std': 0,
                 'elevation_std': 0,
+                'elevation_std_sq': 0,  # Mean of squared term
                 'plant_high': plant_high,
                 'temperate': temperate,
                 'plant_high_temperate': plant_high * temperate
@@ -375,7 +380,7 @@ class Method2CategoricalGLM:
         
         feature_cols = [
             'bio1_std', 'bio12_std', 'bio15_std',
-            'elevation_std'
+            'elevation_std', 'elevation_std_sq'  # Added quadratic term
         ] + me_cols + ['plant_high', 'temperate', 'plant_high_temperate']
         
         X = self.data_processed[feature_cols]
@@ -390,6 +395,40 @@ class Method2CategoricalGLM:
         )
         
         return results
+    
+    def create_visualization(self, save_path: Optional[str] = None) -> Any:
+        """Create comprehensive visualization for Method 2 results.
+        
+        Args:
+            save_path: Optional path to save the figure
+            
+        Returns:
+            Matplotlib figure
+        """
+        from ...visualization import create_h2_mismatch_visualization
+        
+        if self.model is None:
+            raise ValueError("Must fit model first")
+        
+        # Get emmeans results
+        emmeans_results = self.compute_emmeans()
+        h2_results = self.test_h2_contrast()
+        
+        # Combine results for visualization
+        viz_results = {
+            'marginal_means': emmeans_results['marginal_means'],
+            'h2_contrast': h2_results
+        }
+        
+        # Create the 4-panel visualization
+        fig = create_h2_mismatch_visualization(
+            self.data_processed,
+            viz_results,
+            save_path=save_path
+        )
+        
+        logger.info("Created Method 2 visualization")
+        return fig
     
     def summarize_results(self) -> Dict[str, Any]:
         """Summarize Method 2 results.

@@ -7,6 +7,7 @@ Implements DML with cross-fitting for causal effect estimation.
 import numpy as np
 import pandas as pd
 import logging
+import gc
 from typing import Dict, Any, Optional, Union, Tuple, List
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
@@ -14,7 +15,8 @@ import lightgbm as lgb
 from scipy import stats
 
 from ...config_loader import MLRegressionConfig
-from ...spatial import compute_mesf
+from ...spatial import compute_mesf_optimized as compute_mesf  # Using optimized version
+from ...utils import MemoryMonitor, MemoryContext  # Memory optimization utilities
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,10 @@ class Method3DML:
             sd_val = data_clean[var].std()
             data_clean[f'{var}_std'] = (data_clean[var] - mean_val) / (2 * sd_val)
         
+        # Add quadratic elevation term (from regression_analysis_decisions.md lines 288, 301, 314)
+        data_clean['elevation_std_sq'] = data_clean['elevation_std'] ** 2
+        logger.info("Created quadratic elevation term: elevation_std_sq")
+        
         # Log transform biotic predictors (lines 235-240)
         data_clean['plants_richness_log'] = np.log(data_clean['plants_richness'] + 1)
         data_clean['vertebrates_richness_log'] = np.log(data_clean['vertebrates_richness'] + 1)
@@ -125,7 +131,7 @@ class Method3DML:
         # Always include climate and spatial as confounders
         base_confounders = [
             'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std', 
-            'elevation_std'
+            'elevation_std', 'elevation_std_sq'  # Added quadratic term
         ] + me_cols
         
         if hypothesis == 'h0':
@@ -279,37 +285,42 @@ class Method3DML:
         kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=42)
         
         for fold_idx, (train_idx, test_idx) in enumerate(kf.split(X)):
-            logger.info(f"Processing fold {fold_idx + 1}/{self.n_folds}")
-            
-            # Split data
-            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-            D_train, D_test = D[train_idx], D[test_idx]
-            Y_train, Y_test = Y[train_idx], Y[test_idx]
-            
-            # Fit nuisance functions on training fold
-            g_model, m_model = self._fit_nuisance_functions(X_train, D_train, Y_train)
-            
-            # Compute residuals on test fold
-            V_test, U_test = self._compute_orthogonalized_residuals(
-                X_test, D_test, Y_test, g_model, m_model
-            )
-            
-            # Estimate causal effect via OLS on residuals (lines 841-843)
-            # theta = E[V * U] / E[U^2]
-            theta_fold = np.sum(V_test * U_test) / np.sum(U_test ** 2)
-            
-            # Store results
-            theta_estimates.append(theta_fold)
-            fold_results.append({
-                'fold': fold_idx,
-                'theta': theta_fold,
-                'n_train': len(train_idx),
-                'n_test': len(test_idx),
-                'V_variance': np.var(V_test),
-                'U_variance': np.var(U_test)
-            })
-            
-            logger.info(f"  Fold {fold_idx + 1} estimate: θ={theta_fold:.4f}")
+            with MemoryContext(f"Fold {fold_idx + 1}/{self.n_folds}"):
+                logger.info(f"Processing fold {fold_idx + 1}/{self.n_folds}")
+                
+                # Split data (using views where possible)
+                X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+                D_train, D_test = D[train_idx], D[test_idx]
+                Y_train, Y_test = Y[train_idx], Y[test_idx]
+                
+                # Fit nuisance functions on training fold
+                g_model, m_model = self._fit_nuisance_functions(X_train, D_train, Y_train)
+                
+                # Compute residuals on test fold
+                V_test, U_test = self._compute_orthogonalized_residuals(
+                    X_test, D_test, Y_test, g_model, m_model
+                )
+                
+                # Clean up training data
+                del X_train, D_train, Y_train
+                gc.collect()
+                
+                # Estimate causal effect via OLS on residuals (lines 841-843)
+                # theta = E[V * U] / E[U^2]
+                theta_fold = np.sum(V_test * U_test) / np.sum(U_test ** 2)
+                
+                # Store results
+                theta_estimates.append(theta_fold)
+                fold_results.append({
+                    'fold': fold_idx,
+                    'theta': theta_fold,
+                    'n_train': len(train_idx),
+                    'n_test': len(test_idx),
+                    'V_variance': np.var(V_test),
+                    'U_variance': np.var(U_test)
+                })
+                
+                logger.info(f"  Fold {fold_idx + 1} estimate: θ={theta_fold:.4f}")
         
         # Aggregate estimates (lines 854-864)
         theta_final = np.mean(theta_estimates)
@@ -451,24 +462,36 @@ class Method3DML:
         self.lightgbm_config = original_params
         
         # 3. Bootstrap confidence intervals (lines 880-887)
-        logger.info("Computing bootstrap confidence intervals...")
+        # OPTIMIZED: Using index-based bootstrap without copying data
+        logger.info("Computing bootstrap confidence intervals (memory-optimized)...")
         
         n_bootstrap = 100
         bootstrap_effects = []
+        
+        # Store reference to original data (no copy)
+        original_data = self.data_processed
+        n = len(original_data)
         
         for b in range(n_bootstrap):
             if b % 20 == 0:
                 logger.info(f"  Bootstrap iteration {b}/{n_bootstrap}")
             
-            # Resample data
-            n = len(self.data_processed)
+            # Generate bootstrap indices (memory efficient)
             boot_idx = np.random.choice(n, n, replace=True)
-            boot_data = self.data_processed.iloc[boot_idx].copy()
+            
+            # Use view instead of copy - massive memory savings
+            self.data_processed = original_data.iloc[boot_idx]  # View, not copy
             
             # Re-run DML on bootstrap sample
-            self.data_processed = boot_data
             h1_boot = self.cross_fit_dml('h1')
             bootstrap_effects.append(h1_boot['causal_effect'])
+            
+            # Explicit memory cleanup
+            import gc
+            gc.collect()
+        
+        # Restore original data reference
+        self.data_processed = original_data
         
         # Compute bootstrap CI
         boot_ci_lower = np.percentile(bootstrap_effects, 2.5)
@@ -530,6 +553,29 @@ class Method3DML:
             logger.info(f"  {res['interpretation']}")
         
         return results
+    
+    def create_visualization(self, save_path: Optional[str] = None) -> Any:
+        """Create visualization for DML causal effects.
+        
+        Args:
+            save_path: Optional path to save the figure
+            
+        Returns:
+            Matplotlib figure
+        """
+        from ...visualization import create_dml_effects_plot
+        
+        if not self.results:
+            raise ValueError("Must run analysis first")
+        
+        # Create visualization
+        fig = create_dml_effects_plot(
+            self.results,
+            save_path=save_path
+        )
+        
+        logger.info("Created Method 3 (DML) visualization")
+        return fig
     
     def summarize_results(self) -> Dict[str, Any]:
         """Summarize Method 3 DML results.

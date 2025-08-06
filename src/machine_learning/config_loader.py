@@ -4,6 +4,7 @@ import yaml
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
+from .utils.security_utils import ConfigValidator, PathValidator
 
 logger = logging.getLogger(__name__)
 
@@ -11,11 +12,12 @@ logger = logging.getLogger(__name__)
 class MLRegressionConfig:
     """Load and validate ML regression configuration."""
     
-    def __init__(self, config_path: Optional[Path] = None):
-        """Initialize configuration loader.
+    def __init__(self, config_path: Optional[Path] = None, validate: bool = True):
+        """Initialize configuration loader with optional validation.
         
         Args:
             config_path: Path to ml_config.yml. If None, uses default location.
+            validate: Whether to validate configuration against schema.
         """
         if config_path is None:
             # Try multiple default locations
@@ -37,8 +39,25 @@ class MLRegressionConfig:
         self.config_path = Path(config_path)
         logger.info(f"Loading ML configuration from {self.config_path}")
         
-        with open(self.config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+        if validate:
+            # Use ConfigValidator for secure loading and validation
+            validator = ConfigValidator()
+            try:
+                self.config = validator.validate_yaml_file(self.config_path)
+                logger.info("Configuration loaded and validated successfully")
+            except Exception as e:
+                logger.error(f"Configuration validation failed: {e}")
+                # Fall back to unsafe loading with warning
+                logger.warning("Falling back to unsafe YAML loading")
+                with open(self.config_path, 'r') as f:
+                    self.config = yaml.safe_load(f)
+                # Sanitize the config to remove dangerous patterns
+                self.config = validator.sanitize_config(self.config)
+        else:
+            # Legacy loading without validation
+            logger.warning("Loading configuration without schema validation")
+            with open(self.config_path, 'r') as f:
+                self.config = yaml.safe_load(f)
         
         # Extract regression analysis config
         self.regression_config = self.config.get('regression_analysis', {})
