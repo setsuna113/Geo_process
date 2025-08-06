@@ -11,7 +11,7 @@
 
 # Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 10  # DEFAULT: Moderate sampling
+  spatial_grid_step: 500  # VERY AGGRESSIVE: Every 500th point for quick testing
   feature_cols: ['animal_richness', 'plant_richness', 'fungi_richness']  # All biodiversity columns
   coordinate_columns: ['x', 'y']  # Column names for coordinates
   observed_columns: [0, 1, 2]  # All three biodiversity columns are observed
@@ -71,7 +71,7 @@ architecture_config:
   
   # Convergence criteria - adjusted for sparse data
   convergence:
-    max_epochs: 100  # DEFAULT: Moderate training (override with test/production configs)
+    max_epochs: 15  # Quick test to reach checkpoint at epoch 10
     geographic_coherence_threshold: 0.6  # Ensure meaningful geographic organization
     lr_stability_threshold: 0.1  # Increased from 0.05
     lr_stability_window: 3  # Check over 3 epochs
@@ -81,7 +81,7 @@ architecture_config:
 
 # Training parameters
 training_config:
-  max_epochs: 20  # REDUCED FOR QUICK TEST (normally 1000)
+  max_epochs: 15  # Test: Run to epoch 15 to test checkpoint at 10
   chunk_size: 25000  # Smaller chunks for better parallelization
   n_workers: 10  # Reduced for testing with memory constraints
   use_minibatch: true  # Enable mini-batch processing for memory efficiency
@@ -116,7 +116,7 @@ validation_config:
     
   progress_tracking:
     enabled: true
-    checkpoint_frequency: 10  # Every 10 epochs
+    checkpoint_frequency: 10  # Save checkpoint at epoch 10
     checkpoint_dir: 'checkpoints/som'  # Directory for checkpoints
     qe_sample_frequency: 10  # Calculate QE on larger sample every N epochs
     te_calculation_frequency: 10  # Calculate topographic error every N epochs

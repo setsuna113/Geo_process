@@ -543,6 +543,12 @@ spatial_analysis:
       method: 'som'
       # All SOM config in src/config/som/som_config_optimized.yml
       # WARNING: NEVER add method-specific parameters here!
+    
+    # Checkpoint test experiment  
+    test_checkpoint_demo:
+      input_parquet: '/scratch/yl998/biodiversity_climate_fine_v5.parquet'
+      method: 'som'
+      # Uses aggressive sampling from som_config_unified.yml for checkpoint testing
       
     # Production SOM analysis
     production_som:

@@ -775,6 +775,148 @@ Standard presentation order:
 - No domain-specific ecological knowledge required for statistical interpretation
 - Results are robust to model specification through dual testing approach (LRT + AIC)
 
+## Alternative Method: Double Machine Learning (DML)
+
+### Overview
+Double Machine Learning provides causal effect estimation for H0-H1 testing (plants/vertebrates → fungi) using machine learning to control for confounders while maintaining valid inference.
+
+### DML Methodology for Biodiversity Analysis
+
+#### Variable Definitions
+- **Y (Outcome)**: Fungi richness (raw counts)
+- **A (Treatments)**: 
+  - A₁ = Plants richness (raw counts)
+  - A₂ = Vertebrates richness (raw counts)
+- **X (Confounders)**: bio1, bio4, bio12, bio15, elevation, ME1...MEn
+
+#### Cross-fitting Procedure (K=5 folds)
+
+```python
+# Step 1: Split data into 5 folds
+from sklearn.model_selection import KFold
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+
+# Step 2: For each fold k, train on other K-1 folds
+for k, (train_idx, test_idx) in enumerate(kf.split(X)):
+    # Train nuisance functions on 80% of data (129.6M rows)
+    # Model 1: Predict E[fungi|climate,elevation,ME]
+    model_Y = LGBMRegressor(**params).fit(X[train_idx], fungi[train_idx])
+    
+    # Model 2: Predict E[plants|climate,elevation,ME]
+    model_A1 = LGBMRegressor(**params).fit(X[train_idx], plants[train_idx])
+    
+    # Model 3: Predict E[vertebrates|climate,elevation,ME]
+    model_A2 = LGBMRegressor(**params).fit(X[train_idx], vertebrates[train_idx])
+    
+    # Get residuals on held-out fold (20% of data)
+    residuals_Y[test_idx] = fungi[test_idx] - model_Y.predict(X[test_idx])
+    residuals_A1[test_idx] = plants[test_idx] - model_A1.predict(X[test_idx])
+    residuals_A2[test_idx] = vertebrates[test_idx] - model_A2.predict(X[test_idx])
+
+# Step 3: Pool ALL residuals and run final regression
+from statsmodels.regression.linear_model import OLS
+final_model = OLS(residuals_Y, np.column_stack([residuals_A1, residuals_A2])).fit()
+
+# Extract causal effects
+θ₁ = final_model.params[0]  # Causal effect of plants on fungi
+θ₂ = final_model.params[1]  # Causal effect of vertebrates on fungi
+```
+
+#### Key Points
+- **No validation set**: All data contributes to final estimate
+- **Pooling, not averaging**: Residuals from all folds are pooled for final regression
+- **Each row used twice**: Once for training (in 4 models), once for residual calculation
+
+### DML Configuration
+
+```python
+DML_CONFIG = {
+    # Data
+    'n_samples': 'all_162M',  # Use full dataset
+    'missing_data': 'complete_case',  # Same as GLM approach
+    
+    # Variables (raw counts, no transformation)
+    'outcome': 'fungi_richness',
+    'treatments': ['plants_richness', 'vertebrates_richness'],
+    'controls': ['bio1', 'bio4', 'bio12', 'bio15', 'elevation'] + ME_vars,
+    
+    # Machine Learning
+    'ml_algorithm': 'LightGBM',
+    'k_folds': 5,
+    'threads_per_fold': 80,  # Optimal for 256-core system
+    
+    # LightGBM parameters (no tuning needed)
+    'lgb_params': {
+        'objective': 'tweedie',
+        'tweedie_variance_power': 1.5,  # Between Poisson and Gamma
+        'num_leaves': 255,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.8,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'min_data_in_leaf': 100,
+        'num_threads': 80,
+    },
+    
+    # Analysis
+    'interaction_term': False,  # Primary analysis without interaction
+    'standard_errors': 'asymptotic',  # From DML theory
+}
+```
+
+### Interpretation
+
+The ML models answer:
+- **μ_Y(X)**: "Given this climate/location, how many fungi species do we expect?"
+- **μ_A1(X)**: "Given this climate/location, how many plant species do we expect?"
+- **μ_A2(X)**: "Given this climate/location, how many vertebrate species do we expect?"
+
+The residuals capture "unexpected" richness after accounting for shared environmental drivers, isolating causal biodiversity relationships:
+- **θ₁**: Areas with more plants than environmentally expected have θ₁ more fungi
+- **θ₂**: Areas with more vertebrates than environmentally expected have θ₂ more fungi
+
+### Advantages over GLM
+- **Flexible functional forms**: ML captures non-linear environmental relationships
+- **No model specification**: Avoids assumptions about parametric forms
+- **Robust to confounding**: Better handles complex environmental drivers
+
+### Integration with GLM Results
+- **Primary analysis**: GLM (more interpretable, standard in ecology)
+- **Robustness check**: DML (confirms results with fewer assumptions)
+- **Reporting**: "DML analysis confirmed positive effects of plants (θ₁=X, p<0.001) and vertebrates (θ₂=Y, p<0.001) on fungi richness, supporting the GLM findings"
+
+## Implementation Checklist
+
+### Phase 1: Data Preparation
+- [ ] Load 162M rows with fungi richness data
+- [ ] Apply complete case analysis (drop <0.1% missing)
+- [ ] Generate spatial eigenvectors (MESF with Nystrom approximation)
+- [ ] Standardize climate variables (2SD method)
+- [ ] Create categorical variables for H2 testing (temperate, plant_high)
+
+### Phase 2: GLM Analysis (Primary)
+- [ ] Test H0 vs H1 with Negative Binomial GLM
+- [ ] Test H2 with Method 2 (threshold regression + emmeans contrasts)
+- [ ] Generate variable importance rankings
+- [ ] Create marginal effects tables
+- [ ] Produce interaction visualizations
+- [ ] Validate with DHARMa diagnostics
+
+### Phase 3: DML Analysis (Robustness)
+- [ ] Configure LightGBM with default parameters
+- [ ] Run 5-fold cross-fitting (80 threads per fold)
+- [ ] Train 3 nuisance models (fungi, plants, vertebrates)
+- [ ] Calculate residuals for all 162M rows
+- [ ] Pool residuals and estimate causal effects
+- [ ] Compute asymptotic standard errors
+
+### Phase 4: Results Integration
+- [ ] Compare GLM and DML estimates
+- [ ] Create publication tables (coefficients, effects, contrasts)
+- [ ] Generate main figures (4-panel H2 visualization)
+- [ ] Write results narrative with proper interpretation
+- [ ] Document any divergence between methods
+
 ## Future Extensions
 
 ### Sensitivity Analysis
