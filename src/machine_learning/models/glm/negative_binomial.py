@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, Union, Tuple
 import statsmodels.api as sm
 from statsmodels.genmod.families import NegativeBinomial
+from statsmodels.tools.sm_exceptions import ConvergenceWarning, PerfectSeparationError
 from scipy import stats
 
 from ...base.ml_analyzer import BaseMLAnalyzer
@@ -124,8 +125,20 @@ class NegativeBinomialGLM(BaseMLAnalyzer):
                 family=NegativeBinomial(alpha=self.alpha)
             )
             
-            # Fit the model
-            self.model_result = self.model.fit(maxiter=self.max_iter)
+            # Fit the model with specific exception handling
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings('error', category=ConvergenceWarning)
+                try:
+                    self.model_result = self.model.fit(maxiter=self.max_iter)
+                except ConvergenceWarning as cw:
+                    logger.warning(f"Model convergence warning: {cw}")
+                    logger.warning("Attempting to fit with increased iterations...")
+                    # Try with more iterations
+                    self.model_result = self.model.fit(maxiter=self.max_iter * 2)
+                    if not self.model_result.converged:
+                        logger.error("Model failed to converge even with increased iterations")
+                        raise RuntimeError(f"Negative Binomial GLM failed to converge after {self.max_iter * 2} iterations")
             
             # Extract theta (dispersion parameter)
             self.theta = self.model_result.scale
@@ -139,9 +152,21 @@ class NegativeBinomialGLM(BaseMLAnalyzer):
             self.feature_names = feature_names
             self.is_fitted = True
             
-        except Exception as e:
-            logger.error(f"Failed to fit Negative Binomial GLM: {e}")
+        except PerfectSeparationError as pse:
+            logger.error(f"Perfect separation detected in GLM: {pse}")
+            logger.error("This often indicates issues with categorical variables or multicollinearity")
+            raise ValueError(f"Perfect separation in Negative Binomial GLM: {pse}")
+        except np.linalg.LinAlgError as lae:
+            logger.error(f"Linear algebra error in GLM fitting: {lae}")
+            logger.error("This may indicate singular matrix or numerical instability")
+            raise ValueError(f"Numerical instability in Negative Binomial GLM: {lae}")
+        except ValueError as ve:
+            logger.error(f"Value error in GLM fitting: {ve}")
             raise
+        except Exception as e:
+            # Only catch truly unexpected exceptions
+            logger.error(f"Unexpected error in Negative Binomial GLM: {type(e).__name__}: {e}")
+            raise RuntimeError(f"Unexpected error fitting Negative Binomial GLM: {e}")
         
         return self
     

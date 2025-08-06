@@ -15,6 +15,7 @@ import time
 from ..config_loader import MLRegressionConfig
 from ..hypothesis import HypothesisTester
 from ..models.glm import DHARMaDiagnostics
+from ..utils.security_utils import PathValidator, DataLoader
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +50,23 @@ class RegressionPipeline:
         logger.info("Initialized RegressionPipeline")
         logger.info(f"Configuration loaded from: {config_path or 'default'}")
     
-    def load_data(self, data_source: Union[str, pd.DataFrame]) -> pd.DataFrame:
-        """Load biodiversity data.
+    def load_data(self, data_source: Union[str, pd.DataFrame], 
+                  max_file_size_mb: float = 10000,
+                  validate_security: bool = True) -> pd.DataFrame:
+        """Load biodiversity data with security validation.
         
         Args:
             data_source: Path to data file or DataFrame
+            max_file_size_mb: Maximum allowed file size in MB
+            validate_security: Whether to perform security validation
             
         Returns:
             Loaded DataFrame
+            
+        Raises:
+            ValueError: If data validation fails
+            FileNotFoundError: If file doesn't exist
+            PermissionError: If file is not readable
         """
         logger.info("Loading biodiversity data...")
         
@@ -64,33 +74,59 @@ class RegressionPipeline:
             self.data = data_source
             logger.info(f"Loaded DataFrame with {len(self.data)} samples")
         elif isinstance(data_source, str):
-            # Determine file type and load
-            data_path = Path(data_source)
-            
-            if data_path.suffix == '.parquet':
-                self.data = pd.read_parquet(data_path)
-            elif data_path.suffix == '.csv':
-                self.data = pd.read_csv(data_path)
-            elif data_path.suffix == '.pkl':
-                self.data = pd.read_pickle(data_path)
+            if validate_security:
+                # Use secure data loader with validation
+                required_cols = [
+                    'fungi_richness', 'plants_richness', 'vertebrates_richness',
+                    'bio1', 'bio4', 'bio12', 'bio15', 'elevation',
+                    'longitude', 'latitude'
+                ]
+                
+                loader = DataLoader(
+                    max_file_size_mb=max_file_size_mb,
+                    required_columns=required_cols
+                )
+                
+                try:
+                    self.data = loader.load_data(
+                        data_source,
+                        validate_shape=True
+                    )
+                    logger.info(f"Securely loaded data from {data_source}")
+                except Exception as e:
+                    logger.error(f"Failed to load data: {e}")
+                    raise
             else:
-                raise ValueError(f"Unsupported file format: {data_path.suffix}")
+                # Legacy loading without validation (backwards compatibility)
+                logger.warning("Loading data without security validation")
+                data_path = Path(data_source)
+                
+                if data_path.suffix == '.parquet':
+                    self.data = pd.read_parquet(data_path)
+                elif data_path.suffix == '.csv':
+                    self.data = pd.read_csv(data_path)
+                elif data_path.suffix == '.pkl':
+                    self.data = pd.read_pickle(data_path)
+                else:
+                    raise ValueError(f"Unsupported file format: {data_path.suffix}")
+                
+                logger.info(f"Loaded data from {data_path}")
             
-            logger.info(f"Loaded data from {data_path}")
             logger.info(f"Shape: {self.data.shape}")
         else:
             raise ValueError("data_source must be a DataFrame or file path")
         
-        # Validate required columns
-        required_cols = [
-            'fungi_richness', 'plants_richness', 'vertebrates_richness',
-            'bio1', 'bio4', 'bio12', 'bio15', 'elevation',
-            'longitude', 'latitude'
-        ]
-        
-        missing_cols = [col for col in required_cols if col not in self.data.columns]
-        if missing_cols:
-            raise ValueError(f"Missing required columns: {missing_cols}")
+        # Additional validation for required columns (if not done by DataLoader)
+        if not validate_security:
+            required_cols = [
+                'fungi_richness', 'plants_richness', 'vertebrates_richness',
+                'bio1', 'bio4', 'bio12', 'bio15', 'elevation',
+                'longitude', 'latitude'
+            ]
+            
+            missing_cols = [col for col in required_cols if col not in self.data.columns]
+            if missing_cols:
+                raise ValueError(f"Missing required columns: {missing_cols}")
         
         logger.info("Data validation passed")
         

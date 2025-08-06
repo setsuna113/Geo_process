@@ -302,6 +302,68 @@ class HypothesisTester:
         
         return synthesis
     
+    def create_visualizations(self, output_dir: str = 'outputs/regression_plots') -> Dict[str, str]:
+        """Create all visualizations for the regression analysis.
+        
+        Args:
+            output_dir: Directory to save visualization files
+            
+        Returns:
+            Dictionary with paths to saved figures
+        """
+        import os
+        from ..visualization import create_regression_synthesis_plot
+        
+        os.makedirs(output_dir, exist_ok=True)
+        saved_paths = {}
+        
+        # Method 1 visualization
+        if hasattr(self, 'method1') and 'method1' in self.results:
+            try:
+                path = os.path.join(output_dir, 'method1_interaction.png')
+                self.method1.create_visualization(save_path=path)
+                saved_paths['method1'] = path
+                logger.info(f"Saved Method 1 visualization to {path}")
+            except Exception as e:
+                logger.error(f"Failed to create Method 1 visualization: {e}")
+        
+        # Method 2 visualization (most comprehensive for H2)
+        if hasattr(self, 'method2') and 'method2' in self.results:
+            try:
+                path = os.path.join(output_dir, 'method2_h2_mismatch.png')
+                self.method2.create_visualization(save_path=path)
+                saved_paths['method2'] = path
+                logger.info(f"Saved Method 2 visualization to {path}")
+            except Exception as e:
+                logger.error(f"Failed to create Method 2 visualization: {e}")
+        
+        # Method 3 visualization
+        if hasattr(self, 'method3') and 'method3' in self.results:
+            try:
+                path = os.path.join(output_dir, 'method3_dml_effects.png')
+                self.method3.create_visualization(save_path=path)
+                saved_paths['method3'] = path
+                logger.info(f"Saved Method 3 visualization to {path}")
+            except Exception as e:
+                logger.error(f"Failed to create Method 3 visualization: {e}")
+        
+        # Synthesis visualization comparing all methods
+        try:
+            all_results = {
+                'method1': self.results.get('method1', {}),
+                'method2': self.results.get('method2', {}),
+                'method3': self.results.get('method3', {})
+            }
+            
+            path = os.path.join(output_dir, 'synthesis_comparison.png')
+            fig = create_regression_synthesis_plot(all_results, save_path=path)
+            saved_paths['synthesis'] = path
+            logger.info(f"Saved synthesis visualization to {path}")
+        except Exception as e:
+            logger.error(f"Failed to create synthesis visualization: {e}")
+        
+        return saved_paths
+    
     def _interpret_h2_consensus(self, m1: bool, m2: bool, m3: bool) -> str:
         """Interpret H2 consensus across methods.
         
@@ -484,6 +546,32 @@ class HypothesisTester:
             logger.info(f"Saved visualization to {save_path}")
         
         plt.show()
+    
+    def generate_full_report(self, output_dir: str) -> None:
+        """Generate comprehensive report with all outputs.
+        
+        Args:
+            output_dir: Directory to save report files
+        """
+        import os
+        from ..reporting import RegressionReportGenerator
+        
+        # First create visualizations
+        viz_paths = self.create_visualizations(os.path.join(output_dir, 'visualizations'))
+        
+        # Get all results
+        all_results = {
+            'method1': self.results.get('method1', {}),
+            'method2': self.results.get('method2', {}),
+            'method3': self.results.get('method3', {}),
+            'synthesis': self.synthesize_results()
+        }
+        
+        # Generate comprehensive report
+        report_gen = RegressionReportGenerator(all_results, viz_paths)
+        report_gen.generate_full_report(output_dir)
+        
+        logger.info(f"Full report generated in {output_dir}")
     
     def save_results(self, output_path: str) -> None:
         """Save results to JSON file.

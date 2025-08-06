@@ -71,10 +71,16 @@ class StandardMESF:
         
         # Calculate variance explained (handle empty selection)
         if n_selected > 0 and np.sum(np.abs(eigenvalues)) > 0:
-            cumvar = np.sum(eigenvalues[selected_idx]) / np.sum(np.abs(eigenvalues)) * 100
-            logger.info(f"Selected {n_selected} eigenvectors explaining {cumvar:.1f}% of spatial variance")
+            positive_eigenvalues = eigenvalues[eigenvalues > 0]
+            if len(positive_eigenvalues) > 0:
+                cumvar = np.sum(eigenvalues[selected_idx]) / np.sum(positive_eigenvalues) * 100
+                logger.info(f"StandardMESF: Selected {n_selected} eigenvectors explaining {cumvar:.1f}% of positive spatial variance")
+                logger.info(f"  - Distance threshold: {self.distance_threshold} km")
+                logger.info(f"  - Number of spatial units: {len(coords)}")
+            else:
+                logger.info(f"StandardMESF: Selected {n_selected} eigenvectors (no positive eigenvalues)")
         else:
-            logger.info(f"Selected {n_selected} eigenvectors")
+            logger.info(f"StandardMESF: Selected {n_selected} eigenvectors")
         
         return selected_eigenvectors
     
@@ -163,10 +169,13 @@ class StandardMESF:
         if n_select > 0 and len(cumvar) > 0:
             actual_idx = min(n_select - 1, len(cumvar) - 1)
             variance_explained = cumvar[actual_idx] * 100
-            logger.info(f"Eigenvalue selection: {n_select} eigenvectors explain "
+            logger.info(f"MESF eigenvalue selection: Selected {n_select} eigenvectors explaining "
                        f"{variance_explained:.1f}% of positive spatial variance")
+            logger.info(f"  - Total positive eigenvalues: {len(positive_idx)}")
+            logger.info(f"  - Variance threshold: {self.variance_threshold * 100:.0f}%")
+            logger.info(f"  - Eigenvector range constraint: [{self.min_eigenvectors}, {self.max_eigenvectors}]")
         else:
-            logger.info(f"Selected {n_select} eigenvectors")
+            logger.info(f"MESF: Selected {n_select} eigenvectors (no positive eigenvalues found)")
         
         return selected_idx
 

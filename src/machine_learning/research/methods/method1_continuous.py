@@ -10,7 +10,7 @@ import logging
 from typing import Dict, Any, Optional, Union, Tuple
 
 from ...models.glm import NegativeBinomialGLM, PoissonGLM
-from ...spatial import compute_mesf
+from ...spatial import compute_mesf_optimized as compute_mesf  # Using optimized version
 from ...config_loader import MLRegressionConfig
 
 logger = logging.getLogger(__name__)
@@ -77,6 +77,10 @@ class Method1ContinuousGLM:
             sd_val = data_clean[var].std()
             data_clean[f'{var}_std'] = (data_clean[var] - mean_val) / (2 * sd_val)
             logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
+        
+        # Add quadratic elevation term (from regression_analysis_decisions.md lines 288, 301, 314)
+        data_clean['elevation_std_sq'] = data_clean['elevation_std'] ** 2
+        logger.info("Created quadratic elevation term: elevation_std_sq")
         
         # Handle biotic predictors (lines 235-257)
         transformation = self.preprocessing_config['biotic_predictors']['transformation']
@@ -164,7 +168,7 @@ class Method1ContinuousGLM:
         logger.info("Fitting Model 1: Climate only (null)")
         feature_cols_null = [
             'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std', 
-            'elevation_std'
+            'elevation_std', 'elevation_std_sq'  # Added quadratic term
         ] + me_cols
         
         X_null = data[feature_cols_null]
@@ -299,7 +303,7 @@ class Method1ContinuousGLM:
         
         feature_cols = [
             'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std', 
-            'elevation_std'
+            'elevation_std', 'elevation_std_sq'  # Added quadratic term
         ] + me_cols + biotic_cols + ['plants_bio4_interaction']
         
         X = self.data_processed[feature_cols]
@@ -314,6 +318,52 @@ class Method1ContinuousGLM:
         )
         
         return results
+    
+    def create_visualization(self, save_path: Optional[str] = None) -> Any:
+        """Create visualization for Method 1 interaction results.
+        
+        Args:
+            save_path: Optional path to save the figure
+            
+        Returns:
+            Matplotlib figure
+        """
+        from ...visualization import create_method1_interaction_plots
+        
+        if self.model_interaction is None:
+            raise ValueError("Must fit models first")
+        
+        # Gather model results
+        model_results = {
+            'models': {
+                'null': {
+                    'aic': self.model_null.model_result.aic,
+                    'bic': self.model_null.model_result.bic,
+                    'llf': self.model_null.model_result.llf
+                },
+                'full': {
+                    'aic': self.model_full.model_result.aic,
+                    'bic': self.model_full.model_result.bic,
+                    'llf': self.model_full.model_result.llf
+                },
+                'interaction': {
+                    'aic': self.model_interaction.model_result.aic,
+                    'bic': self.model_interaction.model_result.bic,
+                    'llf': self.model_interaction.model_result.llf
+                }
+            },
+            'interaction_term': self.get_interaction_coefficient()
+        }
+        
+        # Create visualization
+        fig = create_method1_interaction_plots(
+            self.data_processed,
+            model_results,
+            save_path=save_path
+        )
+        
+        logger.info("Created Method 1 visualization")
+        return fig
     
     def summarize_results(self) -> Dict[str, Any]:
         """Summarize Method 1 results.
