@@ -69,7 +69,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -e, --experiment NAME    Analysis experiment name from config.yml"
             echo "  -i, --input PATH         Input parquet file (overrides experiment config)"
             echo "  -m, --method METHOD      Analysis method: som|gwpca|maxp_regions|cpwopt"
-            echo "  --monitor                Run with tmux monitoring"
+            echo "  --monitor                Run with tmux monitoring (4-pane layout with live progress)"
             echo "  -d, --daemon             Run as daemon process"
             echo "  -r, --resume             Resume from checkpoint"
             echo "  -p, --process-name NAME  Process name for daemon mode"
@@ -95,6 +95,17 @@ while [[ $# -gt 0 ]]; do
             echo "  gwpca        - Geographically Weighted Principal Component Analysis"
             echo "  maxp_regions - MaxP regionalization for spatial clustering"
             echo "  cpwopt       - CP-WOPT tensor factorization for sparse biodiversity data"
+            echo ""
+            echo "Monitor mode (--monitor):"
+            echo "  Creates a 4-pane tmux layout:"
+            echo "  - Top-left:     Main analysis pipeline output"
+            echo "  - Top-right:    Live logs (tail -f)"
+            echo "  - Bottom-left:  Process status"
+            echo "  - Bottom-right: Enhanced progress (QE, LR, Radius for SOM)"
+            echo ""
+            echo "  Navigation: Ctrl+B then arrow keys to switch panes"
+            echo "  Detach:     Ctrl+B then D"
+            echo "  Reattach:   tmux attach -t analysis_<session_name>"
             exit 0
             ;;
         *)
@@ -294,15 +305,25 @@ elif [ "$MONITOR_MODE" = true ]; then
     tmux split-window -v -t "$SESSION_NAME:0.0"
     tmux send-keys -t "$SESSION_NAME:0.2" "watch -n 2 'echo \"=== Analysis Pipeline Status ===\"; $PYTHON_CMD $PROJECT_ROOT/scripts/process_manager.py status $PROCESS_NAME 2>/dev/null || echo \"Pipeline starting...\"'" C-m
     
-    # Split for resource monitoring
+    # Split for enhanced monitoring (SOM progress or resource monitoring)
     tmux split-window -v -t "$SESSION_NAME:0.1"
-    tmux send-keys -t "$SESSION_NAME:0.3" "htop || top" C-m
+    # Check if this is a SOM analysis for enhanced monitoring
+    if [[ "$EXPERIMENT_NAME" == *"som"* ]] || [[ "$ANALYSIS_METHOD" == "som" ]]; then
+        tmux send-keys -t "$SESSION_NAME:0.3" "$PYTHON_CMD $PROJECT_ROOT/scripts/monitoring/monitor_som_enhanced.py" C-m
+    else
+        tmux send-keys -t "$SESSION_NAME:0.3" "htop || top" C-m
+    fi
     
     # Set pane titles and adjust layout
     tmux select-pane -t "$SESSION_NAME:0.0" -T "Analysis Pipeline"
     tmux select-pane -t "$SESSION_NAME:0.1" -T "Logs"
     tmux select-pane -t "$SESSION_NAME:0.2" -T "Status"
-    tmux select-pane -t "$SESSION_NAME:0.3" -T "Resources"
+    # Set title based on monitor type
+    if [[ "$EXPERIMENT_NAME" == *"som"* ]] || [[ "$ANALYSIS_METHOD" == "som" ]]; then
+        tmux select-pane -t "$SESSION_NAME:0.3" -T "SOM Progress (QE/LR/Radius)"
+    else
+        tmux select-pane -t "$SESSION_NAME:0.3" -T "Resources"
+    fi
     
     # Focus on main pane
     tmux select-pane -t "$SESSION_NAME:0.0"
