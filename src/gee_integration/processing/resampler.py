@@ -121,22 +121,29 @@ class GEEResampler:
         # This gives us control over aggregation method
         import ee
         
+        # CRITICAL: We must reproject to target scale AFTER reduceResolution
+        # The working pattern from GEE docs is:
+        # 1. Get target projection at desired scale
+        # 2. Apply reduceResolution with low maxPixels and bestEffort
+        # 3. Reproject to target projection
+        
+        # Create target projection at desired scale
+        target_projection = ee.Projection(self.target_crs).atScale(self.target_scale)
+        
         # Apply reduceResolution for aggregation
-        # Key insights from GEE docs:
-        # - Use lower maxPixels (64 or less) to avoid "output too large" errors
-        # - Use bestEffort=true to handle edge cases
-        # - Don't reproject after - let export handle final scale
         aggregated = image.reduceResolution(
             reducer=reducer,
-            maxPixels=64,  # Lower value to avoid "output too large" errors
+            maxPixels=64,  # Low value to avoid "output too large" errors
             bestEffort=True  # Handle edge cases gracefully
         )
         
-        # Don't reproject here - let the export handle the scale
-        # Reprojecting after reduceResolution can cause the "output too large" error
-        # The export will automatically handle the final projection and scale
+        # Reproject to target projection 
+        # This is necessary to properly set the output resolution
+        reprojected = aggregated.reproject(
+            crs=target_projection
+        )
         
-        return aggregated
+        return reprojected
     
     def _resample_standard(self, image: 'ee.Image', method: str) -> 'ee.Image':
         """Standard resampling (bilinear, bicubic)"""
