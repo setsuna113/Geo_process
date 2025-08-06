@@ -112,6 +112,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                     if not isinstance(config, dict):
                         raise ValueError(f"Config must be dict, got {type(config)}")
                     logger.info(f"Loaded SOM config from: {config_path}")
+                    self._validate_config_memory_requirements(config)
                     return config
             except (yaml.YAMLError, IOError, ValueError) as e:
                 logger.warning(f"Failed to load config from {config_path}: {e}")
@@ -142,19 +143,47 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         start_time = time.time()
         logger.info("Starting GeoSOM analysis for biodiversity data")
         
-        # Load data
+        # Load data with flexible coordinate column names and spatial sampling
+        # First check kwargs, then fall back to config
+        logger.info(f"self.config keys: {self.config.keys() if self.config else 'None'}")
+        data_config = self.config.get('data_config', {})
+        logger.info(f"data_config from self.config: {data_config}")
+        coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinate_columns', ['longitude', 'latitude']))
+        feature_cols = kwargs.get('feature_cols', data_config.get('feature_cols', None))
+        sample_size = kwargs.get('sample_size', None)  # Optional random sampling
+        random_seed = kwargs.get('random_seed', None)
+        spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
+        
+        logger.info(f"Data config: spatial_grid_step={spatial_grid_step}, feature_cols={feature_cols}, coord_cols={coord_cols}")
+        
         biodiv_data = self.load_data(
             data_path,
-            coordinate_cols=kwargs.get('coordinate_columns', ['longitude', 'latitude'])
+            coordinate_cols=coord_cols,
+            feature_cols=feature_cols,
+            sample_size=sample_size,
+            random_seed=random_seed,
+            spatial_grid_step=spatial_grid_step
         )
+        
+        # Handle coordinate column renaming if needed (x,y -> longitude,latitude)
+        if coord_cols == ['x', 'y']:
+            logger.info("Renaming coordinates: x -> longitude, y -> latitude")
+            # The data loader should handle this, but we'll ensure it's done
         
         # Validate missing data handling
         missing_stats = validate_missing_data_handling(biodiv_data.features)
         logger.info(f"Data has {missing_stats['overall_missing_proportion']:.1%} missing values")
         
-        # Get column indices
-        observed_cols = kwargs.get('observed_columns', [0, 1])
-        predicted_cols = kwargs.get('predicted_columns', [2, 3])
+        # Get column indices from kwargs first, then data_config, then defaults
+        observed_cols = kwargs.get('observed_columns', data_config.get('observed_columns', [0, 1]))
+        predicted_cols = kwargs.get('predicted_columns', data_config.get('predicted_columns', [2, 3]))
+        
+        # For biodiversity-only analysis with no predicted columns, ensure it's empty
+        if not predicted_cols or predicted_cols == []:
+            predicted_cols = []
+            logger.info(f"No predicted columns for biodiversity-only analysis")
+        
+        logger.info(f"Column indices - observed: {observed_cols}, predicted: {predicted_cols}")
         
         # Preprocess data
         if self.use_advanced_preprocessing:
@@ -182,22 +211,19 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 predicted_cols
             )
         
-        # Determine grid size - check config first
-        logger.info(f"Checking config for grid size. Config type: {type(self.config)}")
-        logger.info(f"Config keys: {list(self.config.keys()) if isinstance(self.config, dict) else 'Not a dict'}")
+        # Determine grid size - first check config file, then kwargs, then auto
+        arch_config = self.config.get('architecture_config', {})
+        config_grid_size = arch_config.get('grid_size', 'auto')
         
-        config_grid_size = self.config.get('architecture_config', {}).get('grid_size', None)
-        logger.info(f"Config grid size from architecture_config: {config_grid_size}")
+        # Use kwargs grid_size if provided, otherwise use config, otherwise auto
+        grid_size_param = kwargs.get('grid_size', config_grid_size)
         
-        if config_grid_size and isinstance(config_grid_size, list) and len(config_grid_size) == 2:
-            grid_size = tuple(config_grid_size)
-            logger.info(f"Using grid size from config: {grid_size[0]}x{grid_size[1]}")
-        else:
-            logger.info(f"Using auto-determine because config_grid_size={config_grid_size}")
-            grid_size = self._determine_grid_size(
-                len(features_processed),
-                kwargs.get('grid_size', 'auto')
-            )
+        logger.info(f"Grid size source - kwargs: {kwargs.get('grid_size')}, config: {config_grid_size}, using: {grid_size_param}")
+        
+        grid_size = self._determine_grid_size(
+            len(features_processed),
+            grid_size_param
+        )
         
         # Create GeoSOM configuration
         # Remove grid_size from kwargs if present to avoid duplicate argument
@@ -209,16 +235,52 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         experiment_name = kwargs.get('experiment_name', f'som_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
         self.progress_tracker = SOMProgressTracker(output_dir, experiment_name)
         
-        # Perform spatial block cross-validation
-        cv_results = self._spatial_cross_validation(
-            features_processed,
-            biodiv_data.coordinates,
-            self._geosom_config,
-            **kwargs
-        )
+        # Check if we should skip CV for exploratory analysis
+        skip_cv = kwargs.get('skip_cv', False)
+        cv_folds = kwargs.get('cv_folds', self.config.get('validation_config', {}).get('cv_folds', 5))
+        
+        # For exploratory analysis, set cv_folds=0 or skip_cv=True to skip cross-validation
+        if cv_folds == 0:
+            skip_cv = True
+            logger.info("CV folds set to 0, skipping cross-validation for exploratory analysis")
+        
+        # Also skip CV if resuming from checkpoint
+        if kwargs.get('resume', False):
+            checkpoint_dir = 'checkpoints/som'
+            latest_checkpoint = os.path.join(checkpoint_dir, 'som_checkpoint_latest.npz')
+            if os.path.exists(latest_checkpoint):
+                skip_cv = True
+                logger.info("Resume requested with existing checkpoint - skipping cross-validation")
+        
+        cv_results = None
+        if not skip_cv:
+            logger.info(f"Performing {cv_folds}-fold spatial block cross-validation")
+            # Perform spatial block cross-validation
+            cv_results = self._spatial_cross_validation(
+                features_processed,
+                biodiv_data.coordinates,
+                self._geosom_config,
+                **kwargs
+            )
+        else:
+            logger.info("Skipping cross-validation for exploratory analysis - training on full dataset")
         
         # Train final model on all data
         self.som = GeoSOMVLRSOM(self._geosom_config)
+        
+        # Check if we should resume from a SOM checkpoint
+        # Look for latest checkpoint in the standard location
+        checkpoint_dir = 'checkpoints/som'
+        latest_checkpoint = os.path.join(checkpoint_dir, 'som_checkpoint_latest.npz')
+        logger.info(f"Resume check: resume={kwargs.get('resume', False)}, checkpoint exists={os.path.exists(latest_checkpoint)}, path={latest_checkpoint}")
+        if kwargs.get('resume', False) and os.path.exists(latest_checkpoint):
+            logger.info(f"Found SOM checkpoint, loading from: {latest_checkpoint}")
+            # Set resume_checkpoint in config so geo_som_core.py will load it
+            self._geosom_config.resume_checkpoint = latest_checkpoint
+            # Recreate SOM with resume config
+            self.som = GeoSOMVLRSOM(self._geosom_config)
+        else:
+            logger.info(f"Not resuming: resume flag={kwargs.get('resume', False)}, checkpoint exists={os.path.exists(latest_checkpoint)}")
         
         # Create a simple progress callback if we have one
         progress_cb = None
@@ -264,22 +326,89 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         return result
     
+    def _validate_config_memory_requirements(self, config: Dict[str, Any]) -> None:
+        """Validate that configured grid size fits in available memory."""
+        import psutil
+        
+        # Extract grid size from config
+        arch_config = config.get('architecture_config', {})
+        grid_size = arch_config.get('grid_size', [10, 10])
+        if not isinstance(grid_size, (list, tuple)) or len(grid_size) != 2:
+            return  # Skip validation for auto-determined sizes
+        
+        # Estimate requirements
+        n_neurons = grid_size[0] * grid_size[1]
+        n_features = 3  # Default for biodiversity
+        
+        # Conservative estimate (assuming 1M samples)
+        estimated_samples = 1000000
+        weights_memory = n_neurons * n_features * 8
+        distance_memory = estimated_samples * n_neurons * 8
+        total_mb = (weights_memory + distance_memory) / (1024 * 1024)
+        
+        available_mb = psutil.virtual_memory().available / (1024 * 1024)
+        
+        if total_mb > available_mb * 0.5:
+            logger.warning(f"Config specifies {grid_size[0]}x{grid_size[1]} grid "
+                         f"which may require up to {total_mb:.1f} MB. "
+                         f"Only {available_mb:.1f} MB available. "
+                         f"Grid size will be adjusted at runtime if needed.")
+    
     def _determine_grid_size(self, n_samples: int, grid_size_param: Any) -> Tuple[int, int]:
-        """Determine appropriate grid size based on data."""
+        """Determine appropriate grid size based on data with memory validation."""
+        import psutil
+        
         # Handle both list and tuple
         if isinstance(grid_size_param, (list, tuple)) and len(grid_size_param) == 2:
-            return tuple(grid_size_param)
+            grid_size = tuple(grid_size_param)
+        else:
+            # Auto-determine based on sample size
+            # Rule of thumb: sqrt(n_samples) neurons, arranged in square grid
+            n_neurons = int(np.sqrt(n_samples))
+            grid_dim = int(np.sqrt(n_neurons))
+            
+            # Ensure reasonable bounds
+            grid_dim = max(5, min(grid_dim, 50))
+            grid_size = (grid_dim, grid_dim)
         
-        # Auto-determine based on sample size
-        # Rule of thumb: sqrt(n_samples) neurons, arranged in square grid
-        n_neurons = int(np.sqrt(n_samples))
-        grid_dim = int(np.sqrt(n_neurons))
+        # Memory validation
+        n_features = 3  # Default for biodiversity data (animal, plant, fungi)
+        n_neurons = grid_size[0] * grid_size[1]
         
-        # Ensure reasonable bounds
-        grid_dim = max(5, min(grid_dim, 50))
+        # Estimate memory requirements (in bytes)
+        # Weights: n_neurons * n_features * 8 bytes (float64)
+        weights_memory = n_neurons * n_features * 8
+        # Distance matrix (temporary): n_samples * n_neurons * 8 bytes
+        distance_memory = n_samples * n_neurons * 8
+        # Additional buffers and overhead: ~2x the weights
+        overhead_memory = weights_memory * 2
         
-        logger.info(f"Auto-determined grid size: {grid_dim}x{grid_dim} for {n_samples} samples")
-        return (grid_dim, grid_dim)
+        total_required = weights_memory + distance_memory + overhead_memory
+        total_required_mb = total_required / (1024 * 1024)
+        
+        # Get available memory
+        available_memory = psutil.virtual_memory().available
+        available_mb = available_memory / (1024 * 1024)
+        
+        # Check if we have enough memory (use 50% of available as safe threshold)
+        safe_available = available_mb * 0.5
+        
+        if total_required_mb > safe_available:
+            # Reduce grid size to fit memory
+            max_neurons = int((safe_available * 1024 * 1024 - overhead_memory) / 
+                            (n_features * 8 + n_samples * 8))
+            max_grid_dim = int(np.sqrt(max_neurons))
+            max_grid_dim = max(5, max_grid_dim)  # Minimum 5x5
+            
+            logger.warning(f"Grid size {grid_size} requires {total_required_mb:.1f} MB, "
+                         f"but only {safe_available:.1f} MB safely available. "
+                         f"Reducing to {max_grid_dim}x{max_grid_dim}")
+            grid_size = (max_grid_dim, max_grid_dim)
+        else:
+            logger.info(f"Grid size {grid_size[0]}x{grid_size[1]} will use "
+                       f"{total_required_mb:.1f} MB of {available_mb:.1f} MB available")
+        
+        return grid_size
     
     def _create_geosom_config(self, grid_size: Tuple[int, int], **kwargs) -> GeoSOMConfig:
         """Create GeoSOM configuration from settings."""
@@ -307,7 +436,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         use_minibatch = minibatch_config.get('enabled', False)
         minibatch_size = minibatch_config.get('size', 1000)
         
-        return GeoSOMConfig(
+        # Get memory and performance config
+        memory_config = default_config.get('memory_config', {})
+        
+        # Create config object and set attributes
+        config = GeoSOMConfig(
             grid_size=grid_size,
             topology=arch_config['topology'],
             spatial_weight=arch_config['spatial_weight'],
@@ -341,6 +474,27 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             use_minibatch=kwargs.get('use_minibatch', use_minibatch),
             minibatch_size=kwargs.get('minibatch_size', minibatch_size)
         )
+        
+        # Add the new config parameters from training_config and memory_config
+        for attr in ['lr_recovery_threshold', 'qe_poor_threshold', 'lr_recovery_target',
+                    'significant_improvement', 'small_improvement', 'small_degradation',
+                    'moderate_degradation', 'small_increase_factor', 'gentle_decrease_factor',
+                    'high_qe_threshold', 'low_qe_threshold']:
+            if attr in training_config:
+                setattr(config, attr, training_config[attr])
+        
+        # Add memory config parameters
+        for attr in ['qe_calc_chunk_size', 'prediction_chunk_size', 'vectorized_threshold']:
+            if attr in memory_config:
+                setattr(config, attr, memory_config[attr])
+        
+        # Add spatial metrics parameters
+        spatial_metrics = default_config.get('spatial_metrics', {})
+        for attr in ['coherence_sample_threshold', 'coherence_sample_size']:
+            if attr in spatial_metrics:
+                setattr(config, attr, spatial_metrics[attr])
+        
+        return config
     
     def _spatial_cross_validation(self, features: np.ndarray, 
                                 coordinates: np.ndarray,
@@ -610,14 +764,14 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         return reports
     
     def _create_result(self, features: np.ndarray, biodiv_data,
-                      cv_results: Dict, final_metrics: Dict,
+                      cv_results: Optional[Dict], final_metrics: Dict,
                       reports: Dict, runtime: float) -> AnalysisResult:
         """Create analysis result object."""
         # Prepare result data
         result_data = {
             'labels': final_metrics['grid_coordinates'],
             'statistics': {
-                'cv_results': cv_results,
+                'cv_results': cv_results if cv_results else {'skipped': True, 'reason': 'exploratory_analysis'},
                 'final_metrics': final_metrics,
                 'preprocessing': reports['preprocessing_info']
             }
@@ -742,3 +896,68 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             issues.append(f"File not found: {data}")
         
         return len(issues) == 0, issues
+    
+    def save_checkpoint_state(self) -> Dict[str, Any]:
+        """Save SOM-specific checkpoint state.
+        
+        Returns:
+            Dictionary containing SOM weights, learning state, and training history
+        """
+        if not hasattr(self, 'som') or self.som is None:
+            return {}
+        
+        # Gather SOM state
+        state = {
+            'weights': self.som.get_weights().tolist() if hasattr(self.som, 'get_weights') else None,
+            'current_lr': getattr(self.som, 'current_lr', None),
+            'current_radius': getattr(self.som, 'current_radius', None),
+            'current_epoch': getattr(self.som, 'current_epoch', 0),
+            'training_history': getattr(self.som, 'training_history', {}),
+            'grid_size': self._geosom_config.grid_size if hasattr(self, '_geosom_config') else None,
+            'spatial_weight': self._geosom_config.spatial_weight if hasattr(self, '_geosom_config') else None,
+        }
+        
+        # Add cross-validation state if in CV
+        if hasattr(self, '_cv_results'):
+            state['cv_fold'] = len(self._cv_results)
+            state['cv_results'] = self._cv_results
+        
+        return state
+    
+    def load_checkpoint_state(self, state: Dict[str, Any]) -> None:
+        """Load SOM-specific checkpoint state.
+        
+        Args:
+            state: Dictionary containing SOM state to restore
+        """
+        if not state:
+            return
+        
+        # Restore SOM if we have weights
+        if 'weights' in state and state['weights'] is not None:
+            import numpy as np
+            
+            # Create SOM if not exists
+            if not hasattr(self, 'som') or self.som is None:
+                # Recreate config from state
+                grid_size = state.get('grid_size', [10, 10])
+                self._geosom_config = self._create_geosom_config(tuple(grid_size))
+                self.som = GeoSOMVLRSOM(self._geosom_config)
+            
+            # Restore weights
+            if hasattr(self.som, 'weights'):
+                self.som.weights = np.array(state['weights'])
+            
+            # Restore learning parameters
+            if 'current_lr' in state:
+                self.som.current_lr = state['current_lr']
+            if 'current_radius' in state:
+                self.som.current_radius = state['current_radius']
+            if 'current_epoch' in state:
+                self.som.current_epoch = state['current_epoch']
+            if 'training_history' in state:
+                self.som.training_history = state['training_history']
+        
+        # Restore CV state
+        if 'cv_results' in state:
+            self._cv_results = state['cv_results']

@@ -68,55 +68,43 @@ class SOMConfig:
     
     def _find_config_file(self) -> Path:
         """
-        Find the SOM configuration file with improved path resolution.
+        Find the SOM configuration file.
         
         Returns:
-            Path to som_config.yml
+            Path to the unified config file
             
         Raises:
             SOMConfigError: If configuration file cannot be found
         """
-        # Strategy 1: Check environment variable
+        # Strategy 1: Explicit path via environment variable
         env_path = os.environ.get('SOM_CONFIG_PATH')
         if env_path and Path(env_path).exists():
             return Path(env_path)
         
-        # Strategy 2: Check relative to this file - prefer optimized config
+        # Strategy 2: Use the unified config
         current_dir = Path(__file__).parent
+        unified_path = current_dir / 'som_config_unified.yml'
         
-        # First check for som_config_optimized.yml
-        optimized_path = current_dir / 'som_config_optimized.yml'
-        if optimized_path.exists():
-            return optimized_path
-            
-        # Fallback to som_config.yml
-        config_path = current_dir / 'som_config.yml'
-        if config_path.exists():
-            return config_path
+        if unified_path.exists():
+            return unified_path
         
-        # Strategy 3: Check project root
-        project_root = current_dir.parent.parent.parent
-        config_path = project_root / 'som_config.yml'
-        if config_path.exists():
-            return config_path
-        
-        # Strategy 4: Check common locations
-        common_paths = [
-            Path.cwd() / 'som_config.yml',
-            Path.cwd() / 'config' / 'som_config.yml',
-            Path.cwd() / 'src' / 'config' / 'som' / 'som_config.yml',
-        ]
-        
-        for path in common_paths:
-            if path.exists():
-                return path
+        # Fallback: try som_config.yml (legacy name)
+        legacy_path = current_dir / 'som_config.yml'
+        if legacy_path.exists():
+            import warnings
+            warnings.warn(
+                "Using legacy config name 'som_config.yml', consider renaming to 'som_config_unified.yml'",
+                UserWarning,
+                stacklevel=2
+            )
+            return legacy_path
         
         raise SOMConfigError(
-            "Could not find som_config_optimized.yml or som_config.yml. Searched in:\n" +
+            f"Could not find SOM configuration. Searched for:\n" +
             f"  - Environment variable SOM_CONFIG_PATH: {env_path}\n" +
-            f"  - Current directory: {current_dir} (som_config_optimized.yml preferred)\n" +
-            f"  - Project root: {project_root}\n" +
-            f"  - Working directory: {Path.cwd()}"
+            f"  - Unified config: {unified_path}\n" +
+            f"  - Legacy config: {legacy_path}\n" +
+            "Provide SOM_CONFIG_PATH or ensure som_config_unified.yml exists"
         )
     
     def _load_config(self):
