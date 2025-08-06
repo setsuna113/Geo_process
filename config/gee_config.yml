@@ -2,7 +2,7 @@
 # This configuration uses real biodiversity data
 
 # Experiment name
-experiment_name: "production_coarse_40x"
+experiment_name: "production_full_with_ecm"
 
 # =============================================================================
 # DATA SOURCES
@@ -16,6 +16,7 @@ biodiversity_datasets:
     description: "IUCN terrestrial animal species richness"
     no_data_value: -3.4e+38
     asset_name: "iucn_terrestrial_richness"
+    resampling: "max"  # Preserve biodiversity hotspots
     
   - name: "plants"
     gcs_path: "data/richness_maps/daru-plants-richness.tif"
@@ -23,13 +24,39 @@ biodiversity_datasets:
     description: "Daru plant species richness"
     no_data_value: -3.4e+38
     asset_name: "daru_plants_richness"
+    resampling: "max"  # Preserve biodiversity hotspots
     
-  - name: "fungi"
+  - name: "am_fungi"
     gcs_path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
-    band_name: "fungi_richness"
+    band_name: "am_fungi_richness"
     description: "AM Fungi species richness"
     no_data_value: -3.4e+38
     asset_name: "am_fungi_richness"
+    resampling: "bilinear"  # For predicted surface
+    
+  - name: "am_fungi_cv"
+    gcs_path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
+    band_name: "am_fungi_coeff_var"
+    description: "AM Fungi coefficient of variation"
+    no_data_value: -3.4e+38
+    asset_name: "am_fungi_coeff_var"
+    resampling: "rms"  # RMS aggregation for coefficient of variation
+    
+  - name: "ecm_fungi"
+    gcs_path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
+    band_name: "ecm_fungi_richness"
+    description: "EcM Fungi species richness"
+    no_data_value: -3.4e+38
+    asset_name: "ecm_fungi_richness"
+    resampling: "bilinear"  # For predicted surface
+    
+  - name: "ecm_fungi_cv"
+    gcs_path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_CoeffVar.tif"
+    band_name: "ecm_fungi_coeff_var"
+    description: "EcM Fungi coefficient of variation"
+    no_data_value: -3.4e+38
+    asset_name: "ecm_fungi_coeff_var"
+    resampling: "rms"  # RMS aggregation for coefficient of variation
 
 # =============================================================================
 # ADDITIONAL DATA LAYERS (from GEE catalog)
@@ -87,12 +114,12 @@ resolution_settings:
 resolutions:
   fine:
     name: "fine"
-    resolution: 0.008983152841195  # Keep original fungi resolution to avoid resampling issues
-    description: "Fine resolution matching fungi data (~1km)"
+    resolution: 0.016666666666667  # 1x - native plant/animal resolution (~1.85km)
+    description: "Fine resolution matching plant/animal data (~1.85km)"
   coarse:
     name: "coarse"
-    resolution: 0.35932  # 40x aggregation (~40km, 1600 pixels per output)
-    description: "Coarse resolution for ML (~40km, 40x40 aggregation)"
+    resolution: 0.08333333333333  # 5x aggregation (~9.25km)
+    description: "Coarse resolution for ML (~9.25km, 5x5 aggregation)"
   # Alternative options:
   # medium_10x:
   #   resolution: 0.08983  # 10x aggregation (~10km, 100 pixels per output)

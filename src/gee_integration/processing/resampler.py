@@ -43,6 +43,7 @@ class GEEResampler:
         Returns:
             Resampled image
         """
+        # Get resampling method from config - use dataset-specific method if available
         method = config.get('resampling', 'bilinear')
         data_type = config.get('data_type', 'continuous')
         band_name = config.get('band_name', 'value')
@@ -101,32 +102,39 @@ class GEEResampler:
                     'min': ee.Reducer.min(),
                     'mean': ee.Reducer.mean(),
                     'mode': ee.Reducer.mode(),
-                    'median': ee.Reducer.median()
+                    'median': ee.Reducer.median(),
+                    'stdDev': ee.Reducer.stdDev(),
+                    'rms': ee.Reducer.stdDev(),  # RMS for coefficient of variation
+                    'sum': ee.Reducer.sum(),
+                    'count': ee.Reducer.count()
                 }
             except ImportError as e:
                 raise ImportError("Earth Engine module not available. "
                                   "Please install with: pip install earthengine-api") from e
         
-        reducer = self.RESAMPLING_METHODS[method]
+        reducer = self.RESAMPLING_METHODS.get(method)
+        if reducer is None:
+            # For bilinear/bicubic, use standard resampling
+            return self._resample_standard(image, method)
         
-        # CRITICAL FIX: Set default projection before reduceResolution
-        # This prevents "Can't transform" errors on coarse resolution exports
+        # APPROACH 1: Aggregate then export without scale
+        # This gives us control over aggregation method
         import ee
-        image = image.setDefaultProjection(
+        
+        # Apply reduceResolution for aggregation
+        aggregated = image.reduceResolution(
+            reducer=reducer,
+            maxPixels=256  # Conservative to avoid memory issues
+        )
+        
+        # Reproject to target resolution
+        # This sets the actual output resolution
+        reprojected = aggregated.reproject(
             crs=self.target_crs,
             scale=self.target_scale
         )
         
-        # Use reduceResolution for proper aggregation
-        # For coarse resolution, we need to handle ~11401 input pixels per output pixel
-        # Use bestEffort to automatically adjust if needed
-        resampled = image.reduceResolution(
-            reducer=reducer,
-            maxPixels=15000,  # Increased to handle coarse resolution
-            bestEffort=True   # Allow GEE to auto-adjust to avoid pixel limit errors
-        )
-        
-        return resampled
+        return reprojected
     
     def _resample_standard(self, image: 'ee.Image', method: str) -> 'ee.Image':
         """Standard resampling (bilinear, bicubic)"""
