@@ -36,12 +36,7 @@ class DatasetConfig:
             self.no_data = self.no_data_value
 
 
-@dataclass
-class ResolutionConfig:
-    """Configuration for output resolution"""
-    name: str
-    resolution: float  # in degrees
-    description: str
+# ResolutionConfig class removed - now using resolution_settings dict format
 
 
 @dataclass
@@ -73,11 +68,11 @@ class GEEConfig:
     service_account_key: Optional[str] = None
     project_id: Optional[str] = None
     
-    # Target resolutions (old format)
-    resolutions: Dict[str, ResolutionConfig] = field(default_factory=dict)
-    
-    # New recursive resolution settings
-    resolution_settings: Optional[Dict] = None
+    # Recursive resolution settings (base + outputs)
+    resolution_settings: Dict = field(default_factory=lambda: {
+        'base_resolution': 0.016666666666667,
+        'outputs': {'1x': True}
+    })
     
     # Input datasets
     biodiversity_datasets: List[DatasetConfig] = field(default_factory=list)
@@ -138,19 +133,11 @@ class GEEConfig:
         # Expand environment variables
         data = cls._expand_env_vars(data)
         
-        # Parse resolutions (check both old and new locations)
-        resolutions = {}
-        res_data_source = data.get('resolutions', {}) or data.get('gee', {}).get('target_resolutions', {})
-        for res_name, res_data in res_data_source.items():
-            # Handle both old and new resolution format
-            if 'scale' in res_data:
-                resolutions[res_name] = ResolutionConfig(
-                    name=res_name,
-                    resolution=res_data['scale'] / 111320.0,  # Convert meters to degrees (approximate)
-                    description=res_data.get('description', f'{res_name} resolution')
-                )
-            else:
-                resolutions[res_name] = ResolutionConfig(**res_data)
+        # Parse resolution settings (new format only)
+        resolution_settings = data.get('resolution_settings', {
+            'base_resolution': 0.016666666666667,
+            'outputs': {'1x': True}
+        })
         
         # Parse biodiversity datasets (check both old and new locations)
         biodiv_datasets = []
@@ -188,8 +175,7 @@ class GEEConfig:
             auth_method=data.get('gee', {}).get('auth', {}).get('method', 'service_account'),
             service_account_key=data.get('gee', {}).get('auth', {}).get('service_account_key'),
             project_id=data.get('gee', {}).get('auth', {}).get('project_id'),
-            resolutions=resolutions,
-            resolution_settings=data.get('resolution_settings'),  # New recursive resolution settings
+            resolution_settings=resolution_settings,
             biodiversity_datasets=biodiv_datasets,
             additional_layers=additional_layers,
             masking=masking,
@@ -251,14 +237,26 @@ class GEEConfig:
             if not Path(dataset.path).exists():
                 issues.append(f"Dataset file not found: {dataset.path}")
         
-        # Check resolutions
-        if not self.resolutions:
-            issues.append("No target resolutions defined")
+        # Check resolution settings
+        if not self.resolution_settings:
+            issues.append("No resolution_settings defined")
+        else:
+            outputs = self.resolution_settings.get('outputs', {})
+            if not outputs:
+                issues.append("No outputs defined in resolution_settings")
+            elif not any(outputs.values()):
+                issues.append("No resolutions enabled for export in resolution_settings")
+            
+            base_res = self.resolution_settings.get('base_resolution')
+            if not base_res or base_res <= 0:
+                issues.append("Invalid or missing base_resolution in resolution_settings")
         
         return issues
     
-    def get_resolution(self, name: str) -> ResolutionConfig:
-        """Get resolution config by name"""
-        if name not in self.resolutions:
-            raise ValueError(f"Resolution '{name}' not found. Available: {list(self.resolutions.keys())}")
-        return self.resolutions[name]
+    def get_resolution_outputs(self) -> Dict[str, bool]:
+        """Get resolution outputs configuration"""
+        return self.resolution_settings.get('outputs', {})
+    
+    def get_base_resolution(self) -> float:
+        """Get base resolution in degrees"""
+        return self.resolution_settings.get('base_resolution', 0.016666666666667)

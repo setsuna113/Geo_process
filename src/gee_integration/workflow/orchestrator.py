@@ -65,26 +65,9 @@ class GEEWorkflowOrchestrator:
     
     def _get_resolution_outputs(self) -> Dict[str, bool]:
         """Get the resolution outputs configuration."""
-        # Check for new resolution_settings format
-        if hasattr(self.config, 'resolution_settings') and self.config.resolution_settings:
-            outputs = self.config.resolution_settings.get('outputs', {})
-            if outputs:
-                self.logger.info(f"Resolution outputs configured: {outputs}")
-                return outputs
-        
-        # Fallback to old format if exists
-        if hasattr(self.config, 'resolutions'):
-            # Convert old format to new format (all enabled)
-            outputs = {}
-            for res_name in self.config.resolutions.keys():
-                if res_name == 'fine':
-                    outputs['1x'] = True
-                elif res_name == 'coarse':
-                    outputs['5x'] = True  # Note: 5x not supported in recursive, will use 4x
-            return outputs
-        
-        # Default: just base resolution
-        return {'1x': True}
+        outputs = self.config.resolution_settings.get('outputs', {})
+        self.logger.info(f"Resolution outputs configured: {outputs}")
+        return outputs
     
     @log_operation("gee_workflow_complete")
     def run(self, resume: bool = True, force_step: Optional[WorkflowStep] = None) -> Dict[str, Path]:
