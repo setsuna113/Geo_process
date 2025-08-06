@@ -60,7 +60,9 @@ class ExportManager:
         if not description:
             description = f'biodiversity_climate_{resolution_name}'
         
-        export_path = f"{self.config.get('export_folder', 'merged_outputs')}/{resolution_name}/merged_data"
+        # Use experiment-specific path if provided, otherwise fall back to config
+        base_folder = export_base_path or self.config.get('export_folder', 'merged_outputs')
+        export_path = f"{base_folder}/{resolution_name}/merged_data"
         
         # Create export task
         if self.config.get('export_destination', 'cloud_storage') == 'cloud_storage':
@@ -105,7 +107,8 @@ class ExportManager:
                           bounds: ee.Geometry,
                           resolution_name: str,
                           resolution_config: Dict,
-                          description: Optional[str] = None) -> str:
+                          description: Optional[str] = None,
+                          export_base_path: Optional[str] = None) -> str:
         """
         Export merged image as GeoTIFF.
         
@@ -122,7 +125,9 @@ class ExportManager:
         if not description:
             description = f'biodiversity_climate_{resolution_name}'
             
-        export_path = f"{self.config.get('export_folder', 'merged_outputs')}/{resolution_name}/merged_data"
+        # Use experiment-specific path if provided, otherwise fall back to config
+        base_folder = export_base_path or self.config.get('export_folder', 'merged_outputs')
+        export_path = f"{base_folder}/{resolution_name}/merged_data"
         
         # Get scale in meters
         scale_meters = resolution_config.get('resolution', 0.016667) * 111320  # degrees to meters at equator
@@ -180,6 +185,10 @@ class ExportManager:
                 )
                 west_path = f"{export_path}_west"
                 
+                # Calculate crsTransform for consistent pixel alignment
+                scale_degrees = scale_meters / 111319.5
+                crs_transform = [scale_degrees, 0, -180, 0, -scale_degrees, 90]
+                
                 task_west = ee.batch.Export.image.toCloudStorage(
                     image=merged_image,
                     description=f"{description}_west_{timestamp}",
@@ -188,6 +197,7 @@ class ExportManager:
                     region=west_bounds,
                     scale=scale_meters,
                     crs='EPSG:4326',
+                    crsTransform=crs_transform,
                     fileFormat='GeoTIFF',
                     formatOptions=self.config.get('file_format_options', {
                         'cloudOptimized': True,
@@ -216,6 +226,7 @@ class ExportManager:
                     region=east_bounds,
                     scale=scale_meters,
                     crs='EPSG:4326',
+                    crsTransform=crs_transform,  # Use same transform as west for alignment
                     fileFormat='GeoTIFF',
                     formatOptions=self.config.get('file_format_options', {
                         'cloudOptimized': True,
@@ -247,6 +258,12 @@ class ExportManager:
         
         # Standard single export (no hemisphere splitting)
         self.logger.info(f"Exporting as single GeoTIFF: {resolution_name}")
+        # Calculate crsTransform to ensure pixel alignment across tiles
+        # This ensures all tiles share the same pixel grid
+        # Format: [xScale, xShearing, xTranslation, yShearing, yScale, yTranslation]
+        scale_degrees = scale_meters / 111319.5  # Approximate conversion at equator
+        crs_transform = [scale_degrees, 0, -180, 0, -scale_degrees, 90]
+        
         task = ee.batch.Export.image.toCloudStorage(
             image=merged_image,
             description=description,
@@ -255,6 +272,7 @@ class ExportManager:
             region=bounds,
             scale=scale_meters,
             crs='EPSG:4326',
+            crsTransform=crs_transform,  # Ensure consistent pixel grid across tiles
             fileFormat='GeoTIFF',
             formatOptions=self.config.get('file_format_options', {
                 'cloudOptimized': True,

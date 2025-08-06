@@ -36,11 +36,22 @@ class GEEWorkflowOrchestrator:
         """
         self.config = GEEConfig.from_yaml(config_path)
         self.experiment_name = experiment_name or f"gee_merge_{int(time.time())}"
+        
+        # CRITICAL: Use experiment-specific export path to avoid conflicts
+        self.export_base_path = self.experiment_name
+        
         # Use experiment-specific state file
         state_file = Path.home() / '.biodiversity' / f'gee_workflow_state_{self.experiment_name}.json'
         self.state = WorkflowState.load_or_create(state_file)
         self.logger = logger
         self.logging_context = LoggingContext(experiment_id=self.experiment_name)
+        
+        # Clear logging for experiment tracking
+        self.logger.info("=" * 60)
+        self.logger.info(f"EXPERIMENT: {self.experiment_name}")
+        self.logger.info(f"Export Path: gs://{self.config.gcs_bucket}/{self.export_base_path}/")
+        self.logger.info(f"State File: {state_file.name}")
+        self.logger.info("=" * 60)
         
         # Initialize components (lazy loading)
         self._authenticator = None
@@ -595,7 +606,8 @@ class GEEWorkflowOrchestrator:
                         bounds=export_region,
                         resolution_name=res_name,
                         resolution_config=self.config.resolutions[res_name].__dict__,
-                        description=f'export_{res_name}_{self.experiment_name}'
+                        description=f'export_{res_name}_{self.experiment_name}',
+                        export_base_path=self.export_base_path
                     )
                 else:
                     # Export as CSV (existing logic)
@@ -622,7 +634,7 @@ class GEEWorkflowOrchestrator:
                     )
                     
                     # Export as CSV
-                    export_path = f"{self.config.export_folder}/{res_name}/merged_data"
+                    export_path = f"{self.export_base_path}/{res_name}/merged_data"
                     task = ee.batch.Export.table.toCloudStorage(
                         collection=sampled,
                         description=f'export_{res_name}_{self.experiment_name}',
@@ -692,12 +704,17 @@ class GEEWorkflowOrchestrator:
                 raise RuntimeError(f"Export tasks timed out after {self.config.export_timeout}s. "
                                  f"Still running: {', '.join(running_tasks)}")
             
-            # Get export paths
+            # Get export paths - MUST use experiment-specific paths
             export_paths = {
-                res: f"gs://{self.config.gcs_bucket}/{self.config.export_folder}/{res}/merged_data"
+                res: f"gs://{self.config.gcs_bucket}/{self.export_base_path}/{res}/merged_data"
                 for res in task_ids.keys()
             }
             self.state.set_metadata('export_paths', export_paths)
+            
+            # Log the paths for clarity
+            self.logger.info("Export paths for this experiment:")
+            for res, path in export_paths.items():
+                self.logger.info(f"  {res}: {path}")
             
             self.state.update_step(WorkflowStep.EXPORT_COMPLETE)
     
@@ -706,9 +723,24 @@ class GEEWorkflowOrchestrator:
         """Step 6: Download and convert to parquet"""
         with self.logging_context.stage("download_and_convert"):
             self.logger.info("\n💾 Step 6/6: Downloading and converting to parquet...")
+            self.logger.info(f"Experiment: {self.experiment_name}")
             
             # Get export paths
             export_paths = self.state.get_metadata('export_paths', {})
+            
+            # CRITICAL VALIDATION: Ensure paths match current experiment
+            if export_paths:
+                for res, path in export_paths.items():
+                    if self.experiment_name not in path:
+                        self.logger.error(f"⚠️ Path mismatch detected!")
+                        self.logger.error(f"  Expected experiment: {self.experiment_name}")
+                        self.logger.error(f"  Found path: {path}")
+                        self.logger.error(f"  This suggests the state file contains data from a different experiment!")
+                        raise ValueError(f"Export paths don't match current experiment '{self.experiment_name}'")
+                
+                self.logger.info("✅ Export paths validated for current experiment")
+                for res, path in export_paths.items():
+                    self.logger.info(f"  {res}: {path}")
             
             if not export_paths:
                 # For testing, create dummy paths
