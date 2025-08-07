@@ -1,22 +1,20 @@
 """GCS Fetcher Module
 
-Downloads files from Google Cloud Storage.
+Downloads exported data from Google Cloud Storage using the centralized GCS client.
 """
 
-import subprocess
 from pathlib import Path
 from typing import List, Dict, Optional
-import os
-import glob
 
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation, retry_with_logging
+from ..utils import GCSClient
 
 logger = get_logger(__name__)
 
 
 class GCSFetcher:
-    """Fetches files from Google Cloud Storage"""
+    """Fetches exported data from GCS"""
     
     def __init__(self, temp_dir: Path):
         """
@@ -28,10 +26,13 @@ class GCSFetcher:
         self.temp_dir = Path(temp_dir)
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logger
+        # Initialize GCS client without default bucket (we get full gs:// paths)
+        self.gcs_client = GCSClient()
     
     @log_operation("download_from_gcs")
     @retry_with_logging(max_attempts=3, delay=5.0)
-    def download_export(self, gcs_path: str, local_dir: Optional[Path] = None, export_format: str = 'CSV') -> List[Path]:
+    def download_export(self, gcs_path: str, local_dir: Optional[Path] = None, 
+                       export_format: str = 'CSV') -> List[Path]:
         """
         Download exported files from GCS.
         
@@ -53,161 +54,84 @@ class GCSFetcher:
             local_dir = Path(local_dir)
             local_dir.mkdir(parents=True, exist_ok=True)
         
-        try:
-            self.logger.info(f"Downloading from {gcs_path}...")
+        self.logger.info(f"Downloading from {gcs_path}...")
+        
+        downloaded_files = []
+        
+        if export_format == 'GeoTIFF':
+            # Check if this is a hemisphere export (look for _west and _east files)
+            base_path = gcs_path.rstrip('/')
             
-            if export_format == 'GeoTIFF':
-                # Check if this is a hemisphere export (look for _west and _east files)
-                base_path = gcs_path.rstrip('/')
+            # Try to download hemisphere files first
+            hemisphere_files = []
+            for suffix in ['_west.tif', '_east.tif']:
+                hemisphere_path = f"{base_path}{suffix}"
+                self.logger.debug(f"Trying hemisphere file: {hemisphere_path}")
                 
-                # Try to download hemisphere files first
-                hemisphere_files = []
-                for suffix in ['_west.tif', '_east.tif']:
-                    try:
-                        cmd = [
-                            'gsutil',
-                            '-m',
-                            'cp',
-                            f"{base_path}{suffix}",
-                            str(local_dir)
-                        ]
-                        result = subprocess.run(
-                            cmd,
-                            capture_output=True,
-                            text=True,
-                            check=False
-                        )
-                        if result.returncode == 0:
-                            hemisphere_file = local_dir / f"{Path(base_path).name}{suffix}"
-                            if hemisphere_file.exists():
-                                hemisphere_files.append(hemisphere_file)
-                                self.logger.info(f"Downloaded hemisphere file: {hemisphere_file.name}")
-                    except subprocess.CalledProcessError as e:
-                        self.logger.warning(f"Failed to download hemisphere file {suffix}: {e}")
-                    except Exception as e:
-                        self.logger.warning(f"Unexpected error downloading hemisphere file {suffix}: {e}")
-                
-                if len(hemisphere_files) == 2:
-                    # We have both hemispheres
-                    downloaded_files = hemisphere_files
-                else:
-                    # Try downloading single GeoTIFF file
-                    cmd = [
-                        'gsutil',
-                        '-m',
-                        'cp',
-                        f"{gcs_path}.tif",
-                        str(local_dir)
-                    ]
-                    result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        check=False  # Don't raise, check manually
-                    )
-                    
-                    if result.returncode == 0:
-                        # Single file downloaded successfully
-                        tif_file = local_dir / f"{Path(gcs_path).name}.tif"
-                        if tif_file.exists():
-                            downloaded_files = [tif_file]
-                            self.logger.info(f"Downloaded single GeoTIFF: {tif_file.name}")
-                        else:
-                            downloaded_files = []
-                    else:
-                        # Try downloading tiled GeoTIFF files (GEE splits large exports)
-                        # Pattern: baseFilename[0-9]*-[0-9]*.tif
-                        self.logger.info("Single file not found, checking for tiled export...")
-                        cmd = [
-                            'gsutil',
-                            '-m',
-                            'cp',
-                            f"{gcs_path}*.tif",  # Match all tiles
-                            str(local_dir)
-                        ]
-                        result = subprocess.run(
-                            cmd,
-                            capture_output=True,
-                            text=True,
-                            check=True
-                        )
-                        
-                        # Find all downloaded tile files
-                        tile_pattern = str(local_dir / f"{Path(gcs_path).name}*.tif")
-                        downloaded_files = sorted(glob.glob(tile_pattern))
-                        downloaded_files = [Path(f) for f in downloaded_files]
-                        
-                        if downloaded_files:
-                            self.logger.info(f"Downloaded {len(downloaded_files)} tile files")
-                            for f in downloaded_files[:3]:  # Show first 3 as examples
-                                self.logger.info(f"  - {f.name}")
-                            if len(downloaded_files) > 3:
-                                self.logger.info(f"  ... and {len(downloaded_files) - 3} more")
-                        else:
-                            raise RuntimeError(f"No GeoTIFF files found at {gcs_path}")
+                files = self.gcs_client.download(hemisphere_path, local_dir)
+                if files:
+                    hemisphere_files.extend(files)
+                    self.logger.info(f"Downloaded hemisphere file: {files[0].name}")
+            
+            if len(hemisphere_files) == 2:
+                # We have both hemispheres
+                downloaded_files = hemisphere_files
             else:
-                # First try to download numbered CSV files (for large exports)
-                cmd = [
-                    'gsutil',
-                    '-m',  # Parallel mode
-                    'cp',
-                    f"{gcs_path}-*.csv",  # GEE adds numbers to CSV exports
-                    str(local_dir)
-                ]
+                # Try single GeoTIFF file
+                single_path = f"{gcs_path}.tif"
+                self.logger.debug(f"Trying single GeoTIFF: {single_path}")
                 
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=False  # Don't raise on error
-                )
-                
-                if result.returncode != 0:
-                    # Try single CSV file (for small exports)
-                    self.logger.debug("No numbered CSV files found, trying single file...")
-                    cmd = [
-                        'gsutil',
-                        '-m',
-                        'cp',
-                        f"{gcs_path}.csv",
-                        str(local_dir)
-                    ]
-                    result = subprocess.run(
-                        cmd,
-                        capture_output=True,
-                        text=True,
-                        check=True
-                    )
-                
-                # Find downloaded CSV files
-                csv_pattern = str(local_dir / f"{Path(gcs_path).name}-*.csv")
-                downloaded_files = glob.glob(csv_pattern)
-                
-                if not downloaded_files:
-                    # Check if it's a single CSV file (for small exports)
-                    single_file = local_dir / f"{Path(gcs_path).name}.csv"
-                    if single_file.exists():
-                        downloaded_files = [single_file]
+                files = self.gcs_client.download(single_path, local_dir)
+                if files:
+                    downloaded_files = files
+                    self.logger.info(f"Downloaded single GeoTIFF: {files[0].name}")
+                else:
+                    # Try tiled GeoTIFF files (GEE splits large exports)
+                    self.logger.info("Single file not found, checking for tiled export...")
+                    files = self.gcs_client.download(gcs_path, local_dir, pattern="*.tif")
+                    
+                    if files:
+                        downloaded_files = files
+                        self.logger.info(f"Downloaded {len(files)} tile files")
+                        for f in files[:3]:  # Show first 3 as examples
+                            self.logger.info(f"  - {f.name}")
+                        if len(files) > 3:
+                            self.logger.info(f"  ... and {len(files) - 3} more")
+                    else:
+                        raise RuntimeError(f"No GeoTIFF files found at {gcs_path}")
+        else:
+            # Handle CSV exports
+            # First try numbered CSV files (for large exports)
+            self.logger.debug("Checking for numbered CSV files...")
+            files = self.gcs_client.download(gcs_path, local_dir, pattern="-*.csv")
             
-            downloaded_paths = [Path(f) for f in downloaded_files]
+            if files:
+                downloaded_files = files
+                self.logger.info(f"Downloaded {len(files)} numbered CSV files")
+            else:
+                # Try single CSV file (for small exports)
+                self.logger.debug("No numbered files found, trying single CSV...")
+                single_path = f"{gcs_path}.csv"
+                files = self.gcs_client.download(single_path, local_dir)
+                
+                if files:
+                    downloaded_files = files
+                    self.logger.info(f"Downloaded single CSV: {files[0].name}")
+                else:
+                    self.logger.warning(f"No CSV files found at {gcs_path}")
+        
+        # Log file sizes
+        if downloaded_files:
+            total_size = sum(f.stat().st_size for f in downloaded_files)
+            self.logger.info(f"✅ Downloaded {len(downloaded_files)} files ({total_size/(1024*1024):.1f} MB)")
             
-            # Log file sizes
-            total_size = sum(f.stat().st_size for f in downloaded_paths)
-            self.logger.info(f"✅ Downloaded {len(downloaded_paths)} files ({total_size/(1024*1024):.1f} MB)")
-            
-            for path in downloaded_paths:
+            for path in downloaded_files:
                 self.logger.debug(f"   {path.name}: {path.stat().st_size/(1024*1024):.1f} MB")
-            
-            return downloaded_paths
-            
-        except subprocess.CalledProcessError as e:
-            self.logger.error(f"Download failed: {e.stderr}")
-            raise
-        except FileNotFoundError:
-            self.logger.error("gsutil not found. Please install Google Cloud SDK")
-            raise
+        
+        return downloaded_files
     
-    def download_multiple_exports(self, export_paths: Dict[str, str], export_format: str = 'CSV') -> Dict[str, List[Path]]:
+    def download_multiple_exports(self, export_paths: Dict[str, str], 
+                                 export_format: str = 'CSV') -> Dict[str, List[Path]]:
         """
         Download multiple export results.
         

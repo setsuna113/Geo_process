@@ -116,43 +116,8 @@ LON_MAX = 180   # export_manager.py, orchestrator.py
 
 ## 🔄 Additional Code Redundancy Patterns
 
-### 1. Resolution Processing (3 implementations)
-- **recursive_resampler.py**: Full recursive implementation
-- **resampler.py**: Alternative resampling logic
-- **Both orchestrators**: Duplicate resolution handling
 
-### 2. Export Management (Multiple approaches)
-- **export_manager.py**: `_export_as_geotiff()` and `_export_as_csv()`
-- **orchestrator.py**: Lines 600-656 - inline export logic
-- **simple_orchestrator.py**: Lines 197-240 - simplified export
 
-### 3. State Management (Redundant usage)
-- **state_manager.py**: WorkflowState class
-- **orchestrator.py**: Complex state tracking
-- **simple_orchestrator.py**: Same state tracking (duplicate)
-
-### 4. Asset Management
-- **batch_manager.py**: BatchUploadManager
-- **asset_uploader.py**: AssetUploader
-- Both handle similar upload logic with different approaches
-
-### 5. Task Monitoring (4 implementations!)
-- **task_monitor.py**: GEETaskMonitor class
-- **export_manager.py**: Lines 315-385 - inline monitoring
-- **orchestrator.py**: Lines 624-679 - inline monitoring
-- **asset_uploader.py**: Lines 240-280 - inline monitoring
-
-### 6. GCS Operations (Scattered)
-- **fetcher.py**: GCS download operations
-- **export_manager.py**: GCS path construction
-- **batch_manager.py**: GCS upload operations
-- All with similar gsutil subprocess calls
-
-### 7. Band Ordering Logic (Multiple definitions)
-- **merger.py**: Band ordering in merge operation
-- **band_config.py**: Band configuration
-- **orchestrator.py**: Lines 740-755 - band name building
-- **converter.py**: Band expectations
 
 ## 📈 Metrics Summary
 
