@@ -45,6 +45,7 @@ MAX_PIXELS_REDUCE = 1024  # For reduceResolution operations
 
 # Tile scale for GEE exports
 TILE_SCALE = 16  # Controls memory usage in exports
+EXPORT_TILE_SIZE = 16  # Tile size for export operations (same as TILE_SCALE)
 
 # Export dimensions limits
 MAX_EXPORT_DIMENSION = 65536  # Maximum dimension for single export
