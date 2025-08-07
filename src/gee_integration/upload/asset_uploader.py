@@ -108,13 +108,12 @@ class AssetUploader:
             self.logger.info(f"Asset already exists, skipping: {asset_name}")
             return True
         
-        # Build earthengine command
-        # Use full path to earthengine CLI in conda environment
-        earthengine_path = '/home/jason/anaconda3/envs/geo/bin/earthengine'
+        # Build earthengine command using centralized auth config
+        from ..config import GEEAuthConfig
+        
         cmd = [
-            earthengine_path,
-            '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
-            '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
+            GEEAuthConfig.get_earthengine_path(),
+            *GEEAuthConfig.get_cli_auth_args(self.config),
             'upload',
             'image',
             '--asset_id=' + full_asset_id,
@@ -169,12 +168,12 @@ class AssetUploader:
     
     def _ensure_asset_folder_exists(self) -> None:
         """Ensure the parent asset folder exists, create if needed"""
+        from ..config import GEEAuthConfig
+        
         # Check if folder already exists
-        earthengine_path = '/home/jason/anaconda3/envs/geo/bin/earthengine'
         cmd_check = [
-            earthengine_path,
-            '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
-            '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
+            GEEAuthConfig.get_earthengine_path(),
+            *GEEAuthConfig.get_cli_auth_args(self.config),
             'asset', 'info', self.asset_prefix
         ]
         
@@ -193,9 +192,8 @@ class AssetUploader:
         # Create the folder
         self.logger.info(f"Creating GEE asset folder: {self.asset_prefix}")
         cmd_create = [
-            earthengine_path,
-            '--service_account_file', self.config.get('service_account_key', '.gee/service-account-key.json'),
-            '--project', self.config.get('project_id', 'triple-carrier-441622-t1'),
+            GEEAuthConfig.get_earthengine_path(),
+            *GEEAuthConfig.get_cli_auth_args(self.config),
             'create', 'folder', self.asset_prefix
         ]
         

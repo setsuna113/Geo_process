@@ -1,6 +1,7 @@
 """GEE Integration Configuration
 
 Handles configuration for the GEE workflow including dual resolution support.
+Centralized configuration for all GEE parameters including authentication.
 """
 
 import os
@@ -12,6 +13,60 @@ from dataclasses import dataclass, field
 from src.infrastructure.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+class GEEAuthConfig:
+    """Centralized authentication configuration for GEE."""
+    
+    # Environment variable names
+    ENV_SERVICE_ACCOUNT_KEY = 'GEE_SERVICE_ACCOUNT_KEY'
+    ENV_PROJECT_ID = 'GEE_PROJECT_ID'
+    ENV_EARTHENGINE_PATH = 'EARTHENGINE_PATH'
+    ENV_ASSET_PREFIX = 'GEE_ASSET_PREFIX'
+    
+    @classmethod
+    def get_service_account_key(cls, default: str = '.gee/service-account-key.json') -> str:
+        """Get service account key path from environment or default."""
+        return os.getenv(cls.ENV_SERVICE_ACCOUNT_KEY, default)
+    
+    @classmethod
+    def get_project_id(cls, default: str = 'triple-carrier-441622-t1') -> str:
+        """Get project ID from environment or default."""
+        return os.getenv(cls.ENV_PROJECT_ID, default)
+    
+    @classmethod
+    def get_earthengine_path(cls) -> str:
+        """Get earthengine CLI path from environment or auto-detect."""
+        if cls.ENV_EARTHENGINE_PATH in os.environ:
+            return os.environ[cls.ENV_EARTHENGINE_PATH]
+        
+        # Try to find in conda environment
+        conda_prefix = os.environ.get('CONDA_PREFIX', '')
+        if conda_prefix:
+            ee_path = Path(conda_prefix) / 'bin' / 'earthengine'
+            if ee_path.exists():
+                return str(ee_path)
+        
+        # Default to 'earthengine' and hope it's in PATH
+        return 'earthengine'
+    
+    @classmethod
+    def get_asset_prefix(cls, default: str = 'projects/earthengine-legacy/assets/users/geebiodiversity') -> str:
+        """Get asset prefix from environment or default."""
+        return os.getenv(cls.ENV_ASSET_PREFIX, default)
+    
+    @classmethod
+    def get_cli_auth_args(cls, config: Optional[Dict] = None) -> list:
+        """Get authentication arguments for CLI commands."""
+        if config:
+            return [
+                '--service_account_file', config.get('service_account_key', cls.get_service_account_key()),
+                '--project', config.get('project_id', cls.get_project_id())
+            ]
+        return [
+            '--service_account_file', cls.get_service_account_key(),
+            '--project', cls.get_project_id()
+        ]
 
 
 @dataclass
