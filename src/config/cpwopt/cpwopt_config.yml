@@ -12,11 +12,11 @@ data_processing:
 
 # Algorithm parameters
 algorithm:
-  rank: 5                     # Reduced - only 4 biodiversity features
+  rank: 10                    # Production: 10 components for 4 features (overparameterized for pattern discovery)
   max_iterations: 1000        # Maximum ALS iterations
   convergence_threshold: 1e-6 # Relative error threshold
-  init_method: 'svd'          # Initialization: 'random', 'svd', 'nndsvd' (svd better for large-scale)
-  optimizer: 'als'            # Optimizer: 'als', 'gradient', 'sgd', 'sgd_momentum'
+  init_method: 'nndsvd'       # Non-negative Double SVD - better for sparse non-negative data
+  optimizer: 'als'            # Optimizer: 'als' is most stable for large-scale
   random_state: 42            # For reproducibility
   learning_rate: 0.01         # Learning rate for SGD methods
   momentum: 0.9               # Momentum parameter for SGD with momentum
@@ -24,8 +24,8 @@ algorithm:
 # Rank selection parameters (when rank='auto')
 rank_selection:
   method: 'elbow'             # Selection method: 'elbow', 'cross_validation', 'core_consistency'
-  min_rank: 2                 # Minimum rank to test
-  max_rank: 5                 # Maximum rank (reduced for 4 features)
+  min_rank: 5                 # Minimum rank to test
+  max_rank: 15                # Maximum rank for production exploration
   n_trials: 3                 # Number of trials per rank for stability
   plot: true                  # Generate diagnostic plot
 
@@ -67,7 +67,7 @@ optimization:
   momentum: 0.9             # Momentum parameter
   gradient_iterations: 10   # Inner gradient steps
   line_search: true         # Use line search
-  regularization: 0.0       # L2 regularization
+  regularization: 1e-4      # Small L2 regularization for stability
 
 # Component interpretation
 interpretation:
@@ -92,8 +92,8 @@ parallel:
 
 # Convergence monitoring
 convergence:
-  patience: 10              # Iterations without improvement
-  min_improvement: 1e-4     # Minimum relative improvement
+  patience: 20              # More patience for large dataset
+  min_improvement: 1e-5     # Tighter improvement threshold
   check_interval: 10        # Check convergence every N iterations
   early_stopping: true      # Enable early stopping
 
@@ -115,7 +115,7 @@ validation:
 # Reporting
 reporting:
   generate_plots: true      # Generate visualization plots
-  plot_components: 8        # Plot all 8 components
+  plot_components: 10       # Plot all 10 components
   plot_format: 'png'        # Plot format: 'png', 'pdf', 'svg'
   plot_dpi: 300            # Plot resolution (higher quality)
   colormap: 'viridis'      # Colormap for visualizations
