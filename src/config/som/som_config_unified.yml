@@ -53,7 +53,7 @@ architecture_config:
 
 # Training parameters (ALL training-related settings here)
 training_config:
-  max_epochs: 1000  # Production: Full training with convergence
+  max_epochs: 200  # Limited to 200 for 3-day completion requirement
   chunk_size: 25000  # Optimized: Smaller chunks for better memory efficiency
   n_workers: 150  # Optimized: 150 workers for high parallelization with memory safety
   use_minibatch: true  # Enable mini-batch processing for memory efficiency
