@@ -10,14 +10,22 @@ logger = logging.getLogger(__name__)
 
 
 class MLRegressionConfig:
-    """Load and validate ML regression configuration."""
+    """Load and validate ML regression configuration.
+    
+    Configuration validation is MANDATORY by default for security.
+    Only disable for testing purposes.
+    """
+    
+    # Class-level flag to enforce validation globally
+    ENFORCE_VALIDATION = True
     
     def __init__(self, config_path: Optional[Path] = None, validate: bool = True):
-        """Initialize configuration loader with optional validation.
+        """Initialize configuration loader with mandatory validation by default.
         
         Args:
             config_path: Path to ml_config.yml. If None, uses default location.
             validate: Whether to validate configuration against schema.
+                     Default is True for security. Set to False only for testing.
         """
         if config_path is None:
             # Try multiple default locations
@@ -39,25 +47,34 @@ class MLRegressionConfig:
         self.config_path = Path(config_path)
         logger.info(f"Loading ML configuration from {self.config_path}")
         
+        # Always use ConfigValidator for loading
+        validator = ConfigValidator()
+        
+        # Override validate parameter if global enforcement is enabled
+        if self.ENFORCE_VALIDATION and not validate:
+            logger.warning("Global validation enforcement is ON. Overriding validate=False.")
+            validate = True
+        
         if validate:
-            # Use ConfigValidator for secure loading and validation
-            validator = ConfigValidator()
+            # Strict validation mode (default)
             try:
                 self.config = validator.validate_yaml_file(self.config_path)
                 logger.info("Configuration loaded and validated successfully")
             except Exception as e:
                 logger.error(f"Configuration validation failed: {e}")
-                # Fall back to unsafe loading with warning
-                logger.warning("Falling back to unsafe YAML loading")
-                with open(self.config_path, 'r') as f:
-                    self.config = yaml.safe_load(f)
-                # Sanitize the config to remove dangerous patterns
-                self.config = validator.sanitize_config(self.config)
+                # No fallback in strict mode - fail fast for security
+                raise ValueError(
+                    f"Configuration validation failed: {e}\n"
+                    "Please fix the configuration file or check the schema."
+                )
         else:
-            # Legacy loading without validation
-            logger.warning("Loading configuration without schema validation")
+            # Relaxed mode for testing only - still sanitize
+            logger.warning("Loading configuration in relaxed mode (testing only)")
             with open(self.config_path, 'r') as f:
                 self.config = yaml.safe_load(f)
+            # Always sanitize even in relaxed mode
+            self.config = validator.sanitize_config(self.config)
+            logger.warning("Configuration loaded without full validation - use only for testing")
         
         # Extract regression analysis config
         self.regression_config = self.config.get('regression_analysis', {})
