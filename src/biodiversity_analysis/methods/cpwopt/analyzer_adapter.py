@@ -152,6 +152,10 @@ class CPWOPTAnalyzer(IAnalyzer):
                 optimal_rank = int(rank_config)
                 logger.info(f"Using fixed rank: {optimal_rank}")
             
+            # Get backend config for GPU usage
+            backend_config = self.config.get('backend', {})
+            use_gpu = backend_config.get('use_gpu', 'auto')
+            
             self.model = CPWOPT(
                 rank=optimal_rank,
                 max_iterations=int(alg_config.get('max_iterations', 1000)),
@@ -159,6 +163,7 @@ class CPWOPTAnalyzer(IAnalyzer):
                 init_method=alg_config.get('init_method', 'random'),
                 optimizer=alg_config.get('optimizer', 'als'),
                 random_state=alg_config.get('random_state', None),
+                use_gpu=use_gpu,  # Pass GPU configuration
                 verbose=True
             )
             
