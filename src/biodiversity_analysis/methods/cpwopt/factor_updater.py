@@ -23,13 +23,18 @@ logger = logging.getLogger(__name__)
 class FactorUpdater:
     """Advanced factor update strategies beyond basic ALS."""
     
-    def __init__(self, method: str = 'als'):
+    def __init__(self, method: str = 'als', backend=None):
         """Initialize factor updater.
         
         Args:
             method: Update method ('als', 'gradient', 'nonnegative', 'sparse')
+            backend: CPWOPTBackend instance for GPU/CPU computation (required)
         """
+        if backend is None:
+            from src.biodiversity_analysis.methods.cpwopt.backend import CPWOPTBackend
+            backend = CPWOPTBackend('auto')
         self.method = method
+        self.backend = backend
         self.update_history = []
         
     def update_factor(self, tensor: np.ndarray, weights: np.ndarray,
@@ -355,7 +360,7 @@ class FactorUpdater:
         residual = (tensor - reconstructed) * weights
         
         # Compute gradient as -2 * MTTKRP(residual)
-        gradient = -2 * compute_mttkrp(residual, factors_temp, mode)
+        gradient = -2 * compute_mttkrp(residual, factors_temp, mode, self.backend)
         
         return gradient
     
@@ -374,7 +379,7 @@ class FactorUpdater:
                                  mode: int) -> np.ndarray:
         """Compute positive part of gradient for multiplicative updates."""
         positive_residual = np.maximum(residual, 0)
-        return compute_mttkrp(positive_residual, factors, mode)
+        return compute_mttkrp(positive_residual, factors, mode, self.backend)
     
     def _compute_negative_gradient(self, factor: np.ndarray,
                                  factors: List[np.ndarray], 
@@ -408,9 +413,9 @@ class FactorUpdater:
 class AdaptiveFactorUpdater(FactorUpdater):
     """Factor updater that adapts strategy based on convergence."""
     
-    def __init__(self, base_method: str = 'als'):
+    def __init__(self, base_method: str = 'als', backend=None):
         """Initialize adaptive updater."""
-        super().__init__(base_method)
+        super().__init__(base_method, backend)
         self.convergence_history = []
         self.method_history = []
         
@@ -470,7 +475,8 @@ class AdaptiveFactorUpdater(FactorUpdater):
 
 
 def create_factor_updater(method: str = 'als', 
-                         adaptive: bool = False) -> FactorUpdater:
+                         adaptive: bool = False,
+                         backend=None) -> FactorUpdater:
     """Factory function to create appropriate factor updater.
     
     Args:
@@ -481,6 +487,6 @@ def create_factor_updater(method: str = 'als',
         FactorUpdater instance
     """
     if adaptive:
-        return AdaptiveFactorUpdater(method)
+        return AdaptiveFactorUpdater(method, backend)
     else:
-        return FactorUpdater(method)
+        return FactorUpdater(method, backend)

@@ -7,7 +7,6 @@ for analyzing sparse biodiversity data patterns.
 from .core import CPWOPT
 from .analyzer_adapter import CPWOPTAnalyzer, create_cpwopt_analyzer
 from .tensor_metrics import CPWOPTMetricsCalculator
-from .minibatch_processor import TensorMiniBatchProcessor
 from .sparse_handler import SparseHandler, AdaptiveSparseStrategy
 from .factor_updater import FactorUpdater, AdaptiveFactorUpdater
 
@@ -16,7 +15,6 @@ __all__ = [
     'CPWOPTAnalyzer',
     'create_cpwopt_analyzer',
     'CPWOPTMetricsCalculator',
-    'TensorMiniBatchProcessor',
     'SparseHandler',
     'AdaptiveSparseStrategy',
     'FactorUpdater',
