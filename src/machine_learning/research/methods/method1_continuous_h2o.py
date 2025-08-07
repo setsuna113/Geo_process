@@ -69,48 +69,34 @@ class Method1ContinuousH2O:
     def load_data(self, parquet_path: str) -> h2o.H2OFrame:
         """Load data directly from parquet to H2O.
         
+        Automatically handles MESF computation if not present.
+        
         Args:
-            parquet_path: Path to parquet file (with or without MESF)
+            parquet_path: Path to parquet file
             
         Returns:
-            H2OFrame with all data
+            H2OFrame with all data including MESF
         """
         logger.info(f"Loading data from {parquet_path}")
         
-        # Check if MESF already computed and included
-        mesf_path = self.mesf_preprocessor.get_mesf_path(parquet_path)
+        # Process parquet to ensure MESF is included
+        # This is a no-op if MESF already exists in the parquet
+        augmented_path = self.mesf_preprocessor.process_and_augment_parquet(
+            parquet_path,
+            self.spatial_config,
+            force_recompute=False
+        )
         
-        if not self.mesf_preprocessor.check_mesf_exists(parquet_path):
-            logger.info("MESF not found, computing...")
-            # Compute MESF separately (uses pandas only for coordinates)
-            mesf_parquet = self.mesf_preprocessor.compute_and_cache_mesf(
-                parquet_path, 
-                self.spatial_config
-            )
-            logger.info(f"MESF computed and cached: {mesf_parquet}")
+        # Now load the augmented parquet directly to H2O
+        # MESF columns are already included!
+        logger.info("Loading augmented data to H2O (includes MESF)...")
+        h2o_data = h2o.import_file(augmented_path, parse_dates=False)
         
-        # Load main data directly to H2O (no pandas!)
-        logger.info("Loading main data to H2O...")
-        h2o_data = h2o.import_file(parquet_path, parse_dates=False)
-        
-        # Load MESF features
-        logger.info("Loading MESF features to H2O...")
-        h2o_mesf = h2o.import_file(str(mesf_path), parse_dates=False)
-        
-        # Join MESF with main data (using row index)
-        if 'row_id' in h2o_mesf.columns:
-            # Join on row_id
-            h2o_data['row_id'] = h2o_data['longitude'].cumsum() * 0 + h2o.H2OFrame.from_python(
-                list(range(h2o_data.nrows))
-            )
-            h2o_data = h2o_data.merge(h2o_mesf, on='row_id', method='left')
-        else:
-            # Simple column bind (assumes same order)
-            me_cols = [col for col in h2o_mesf.columns if col.startswith('ME')]
-            for col in me_cols:
-                h2o_data[col] = h2o_mesf[col]
-        
+        # Verify MESF columns are present
+        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
         logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
+        logger.info(f"Including {len(me_cols)} MESF eigenvectors")
+        
         return h2o_data
     
     def prepare_data_h2o(self, h2o_data: h2o.H2OFrame) -> h2o.H2OFrame:

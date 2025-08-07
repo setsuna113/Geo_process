@@ -59,27 +59,79 @@ class MESFPreprocessor:
             
         return exists
     
-    def compute_and_cache_mesf(self, 
-                               input_parquet: str,
-                               spatial_config: dict,
-                               force_recompute: bool = False) -> str:
+    def check_mesf_in_parquet(self, parquet_path: str) -> bool:
+        """Check if MESF columns already exist in the parquet file.
+        
+        Args:
+            parquet_path: Path to parquet file
+            
+        Returns:
+            True if MESF columns (ME1, ME2, ...) exist
         """
-        Compute MESF features and cache them separately.
+        import pyarrow.parquet as pq
+        
+        # Read just the schema
+        parquet_file = pq.ParquetFile(parquet_path)
+        columns = parquet_file.schema.names
+        
+        # Check for ME columns
+        me_columns = [col for col in columns if col.startswith('ME')]
+        
+        if me_columns:
+            logger.info(f"Found {len(me_columns)} MESF columns in parquet: {me_columns[:5]}...")
+            return True
+        else:
+            logger.info("No MESF columns found in parquet")
+            return False
+    
+    def process_and_augment_parquet(self,
+                                   input_parquet: str,
+                                   spatial_config: dict,
+                                   force_recompute: bool = False) -> str:
+        """
+        Process parquet file and add MESF columns if not present.
+        
+        This is the main entry point that:
+        1. Checks if MESF already exists in parquet
+        2. If not, computes MESF
+        3. Writes MESF back to the original parquet
         
         Args:
             input_parquet: Path to input parquet file
             spatial_config: Spatial configuration for MESF
-            force_recompute: Force recomputation even if cache exists
+            force_recompute: Force recomputation even if MESF exists
             
         Returns:
-            Path to MESF features parquet file
+            Path to augmented parquet file (same as input)
         """
-        mesf_path = self.get_mesf_path(input_parquet)
+        # Check if MESF already in parquet
+        if not force_recompute and self.check_mesf_in_parquet(input_parquet):
+            logger.info(f"MESF already present in {input_parquet}, skipping computation")
+            return input_parquet
         
-        # Check if already exists
-        if mesf_path.exists() and not force_recompute:
-            logger.info(f"Using cached MESF features: {mesf_path}")
-            return str(mesf_path)
+        logger.info(f"Computing MESF and augmenting {input_parquet}")
+        
+        # Compute MESF
+        mesf_features = self._compute_mesf_for_parquet(input_parquet, spatial_config)
+        
+        # Write back to parquet
+        self._augment_parquet_with_mesf(input_parquet, mesf_features)
+        
+        logger.info(f"✅ Successfully augmented {input_parquet} with MESF columns")
+        return input_parquet
+    
+    def _compute_mesf_for_parquet(self,
+                                  input_parquet: str,
+                                  spatial_config: dict) -> np.ndarray:
+        """Compute MESF features for the parquet file.
+        
+        Args:
+            input_parquet: Path to input parquet file
+            spatial_config: Spatial configuration for MESF
+            
+        Returns:
+            MESF features as numpy array
+        """
         
         logger.info("Computing MESF features...")
         
@@ -229,53 +281,67 @@ class MESFPreprocessor:
         
         return full_mesf
     
-    def augment_parquet_with_mesf(self,
-                                  input_parquet: str,
-                                  output_parquet: str,
-                                  mesf_parquet: str) -> str:
+    def _augment_parquet_with_mesf(self,
+                                   input_parquet: str,
+                                   mesf_features: np.ndarray) -> None:
         """
-        Create new parquet file with MESF features included.
+        Augment the original parquet file with MESF columns.
         
+        This creates a temporary file and then replaces the original.
         Memory-efficient chunked processing for large files.
+        
+        Args:
+            input_parquet: Path to input parquet file
+            mesf_features: MESF features array
         """
-        logger.info(f"Augmenting {input_parquet} with MESF features")
+        import tempfile
+        import shutil
         
-        # Load MESF features
-        mesf_df = pd.read_parquet(mesf_parquet)
-        mesf_cols = [col for col in mesf_df.columns if col.startswith('ME')]
+        logger.info(f"Augmenting {input_parquet} with {mesf_features.shape[1]} MESF columns")
         
-        # Read original parquet in chunks and append MESF
-        original = pq.ParquetFile(input_parquet)
+        # Create MESF column names
+        mesf_cols = [f'ME{i+1}' for i in range(mesf_features.shape[1])]
         
-        # Create new schema with MESF columns
-        mesf_fields = [
-            pa.field(col, pa.float32()) 
-            for col in mesf_cols
-        ]
+        # Create temporary output file
+        temp_output = input_parquet + '.tmp'
         
-        # Get original schema
-        original_schema = original.schema_pandas
-        
-        # Write augmented parquet
-        chunk_size = 100000
-        first_chunk = True
-        
-        for batch in original.iter_batches(batch_size=chunk_size):
-            batch_df = batch.to_pandas()
+        try:
+            # Read original parquet in chunks
+            original = pq.ParquetFile(input_parquet)
             
-            # Add MESF features for this batch
-            start_idx = batch_df.index[0]
-            end_idx = batch_df.index[-1] + 1
+            # Create new schema with MESF columns
+            original_schema = original.schema
+            mesf_fields = [pa.field(col, pa.float32()) for col in mesf_cols]
             
-            for col in mesf_cols:
-                batch_df[col] = mesf_df.loc[start_idx:end_idx-1, col].values
+            # Combine schemas
+            new_fields = list(original_schema) + mesf_fields
+            new_schema = pa.schema(new_fields)
             
-            # Write to output
-            if first_chunk:
-                batch_df.to_parquet(output_parquet, compression='snappy')
-                first_chunk = False
-            else:
-                batch_df.to_parquet(output_parquet, compression='snappy', append=True)
-        
-        logger.info(f"Created augmented parquet: {output_parquet}")
-        return output_parquet
+            # Write augmented parquet
+            chunk_size = 100000
+            row_offset = 0
+            
+            with pq.ParquetWriter(temp_output, new_schema, compression='snappy') as writer:
+                for batch in original.iter_batches(batch_size=chunk_size):
+                    batch_df = batch.to_pandas()
+                    
+                    # Add MESF features for this batch
+                    batch_size_actual = len(batch_df)
+                    for i, col in enumerate(mesf_cols):
+                        batch_df[col] = mesf_features[row_offset:row_offset+batch_size_actual, i]
+                    
+                    # Write augmented batch
+                    table = pa.Table.from_pandas(batch_df, schema=new_schema)
+                    writer.write_table(table)
+                    
+                    row_offset += batch_size_actual
+            
+            # Replace original file with augmented version
+            shutil.move(temp_output, input_parquet)
+            logger.info(f"✅ Successfully replaced {input_parquet} with MESF-augmented version")
+            
+        except Exception as e:
+            # Clean up temp file on error
+            if os.path.exists(temp_output):
+                os.remove(temp_output)
+            raise e
