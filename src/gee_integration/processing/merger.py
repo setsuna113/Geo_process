@@ -66,6 +66,10 @@ class GEEMerger:
         # First, combine all biodiversity images
         # IMPORTANT: Unmask biodiversity data to prevent climate from inheriting sparse masks
         # Even though we upload without --nodata_value flag, GEE reads nodata from GeoTIFF metadata
+        
+        # Ensure all biodiversity images are ee.Image objects
+        biodiversity_images = [ee.Image(img) for img in biodiversity_images]
+        
         if len(biodiversity_images) == 1:
             biodiv_combined = biodiversity_images[0].unmask()
         else:

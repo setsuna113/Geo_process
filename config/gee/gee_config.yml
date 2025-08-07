@@ -11,7 +11,7 @@ experiment_name: "production_full_with_ecm"
 # Biodiversity datasets to process
 biodiversity_datasets:
   - name: "animals"
-    gcs_path: "data/richness_maps/iucn-terrestrial-richness.tif"
+    path: "data/richness_maps/iucn-terrestrial-richness.tif"
     band_name: "animal_richness"
     description: "IUCN terrestrial animal species richness"
     no_data_value: -3.4e+38
@@ -19,7 +19,7 @@ biodiversity_datasets:
     resampling: "max"  # Preserve biodiversity hotspots
     
   - name: "plants"
-    gcs_path: "data/richness_maps/daru-plants-richness.tif"
+    path: "data/richness_maps/daru-plants-richness.tif"
     band_name: "plant_richness"
     description: "Daru plant species richness"
     no_data_value: -3.4e+38
@@ -27,7 +27,7 @@ biodiversity_datasets:
     resampling: "max"  # Preserve biodiversity hotspots
     
   - name: "am_fungi"
-    gcs_path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
+    path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
     band_name: "am_fungi_richness"
     description: "AM Fungi species richness"
     no_data_value: -3.4e+38
@@ -35,7 +35,7 @@ biodiversity_datasets:
     resampling: "bilinear"  # For predicted surface
     
   - name: "am_fungi_cv"
-    gcs_path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
+    path: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
     band_name: "am_fungi_coeff_var"
     description: "AM Fungi coefficient of variation"
     no_data_value: -3.4e+38
@@ -43,7 +43,7 @@ biodiversity_datasets:
     resampling: "rms"  # RMS aggregation for coefficient of variation
     
   - name: "ecm_fungi"
-    gcs_path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
+    path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
     band_name: "ecm_fungi_richness"
     description: "EcM Fungi species richness"
     no_data_value: -3.4e+38
@@ -51,7 +51,7 @@ biodiversity_datasets:
     resampling: "bilinear"  # For predicted surface
     
   - name: "ecm_fungi_cv"
-    gcs_path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_CoeffVar.tif"
+    path: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_CoeffVar.tif"
     band_name: "ecm_fungi_coeff_var"
     description: "EcM Fungi coefficient of variation"
     no_data_value: -3.4e+38
@@ -167,6 +167,19 @@ gee:
     method: "service_account"
     service_account_key: ".gee/service-account-key.json"
     project_id: "triple-carrier-441622-t1"
+  
+  upload:
+    bucket: "biodiv-gee-yl998"
+    asset_prefix: "projects/earthengine-legacy/assets/users/geebiodiversity/production"
+    chunk_size_mb: 100
+    parallel_uploads: 4
+  
+  export:
+    destination: "cloud_storage"
+    folder: "merged_outputs"
+    format: "GeoTIFF"
+    timeout: 7200
+    check_interval: 30
 
 # Export settings
 export:

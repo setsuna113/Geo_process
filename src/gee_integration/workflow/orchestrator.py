@@ -225,7 +225,7 @@ class GEEWorkflowOrchestrator:
                     'band_name': ds.band_name,
                     'data_type': ds.data_type,
                     'resampling': ds.resampling,
-                    'no_data': ds.no_data
+                    'no_data': ds.no_data_value
                 }
                 for ds in self.config.biodiversity_datasets
             ]
