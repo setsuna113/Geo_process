@@ -1,7 +1,7 @@
 """Machine learning module for biodiversity analysis."""
 
-# Import models
-from .models import LinearRegressionAnalyzer
+# Import H2O models
+from .models import H2ONegativeBinomialGLM, H2OGBM
 
 # Import feature builders
 from .preprocessing.feature_engineering import (
@@ -21,30 +21,15 @@ from .validation.spatial_cv import (
     EnvironmentalBlockCV
 )
 
-# Try to import LightGBM model if available
-try:
-    from .models import LightGBMAnalyzer
-    __all__ = [
-        'LinearRegressionAnalyzer',
-        'LightGBMAnalyzer',
-        'RichnessFeatureBuilder',
-        'SpatialFeatureBuilder',
-        'EcologicalFeatureBuilder',
-        'CompositeFeatureBuilder',
-        'SpatialKNNImputer',
-        'SpatialBlockCV',
-        'SpatialBufferCV',
-        'EnvironmentalBlockCV'
-    ]
-except ImportError:
-    __all__ = [
-        'LinearRegressionAnalyzer',
-        'RichnessFeatureBuilder',
-        'SpatialFeatureBuilder',
-        'EcologicalFeatureBuilder',
-        'CompositeFeatureBuilder',
-        'SpatialKNNImputer',
-        'SpatialBlockCV',
-        'SpatialBufferCV',
-        'EnvironmentalBlockCV'
-    ]
+__all__ = [
+    'H2ONegativeBinomialGLM',
+    'H2OGBM',
+    'RichnessFeatureBuilder',
+    'SpatialFeatureBuilder',
+    'EcologicalFeatureBuilder',
+    'CompositeFeatureBuilder',
+    'SpatialKNNImputer',
+    'SpatialBlockCV',
+    'SpatialBufferCV',
+    'EnvironmentalBlockCV'
+]
