@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, Union, Tuple
 from ...models.glm import PoissonGLM
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
 from ...spatial import compute_mesf  # Now uses vectorized implementation
+from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
 
 logger = logging.getLogger(__name__)
@@ -42,21 +43,38 @@ class Method1ContinuousGLM:
         
         logger.info("Initialized Method 1: Continuous Interaction GLM")
     
-    def prepare_data(self, data: pd.DataFrame) -> pd.DataFrame:
+    def prepare_data(self, data: Union[pd.DataFrame, str]) -> pd.DataFrame:
         """Prepare data for Method 1 analysis.
         
         Implements preprocessing from regression_analysis_decisions.md lines 199-277.
         
         Args:
-            data: Raw biodiversity data with columns:
-                - fungi_richness, plants_richness, vertebrates_richness
-                - bio1, bio4, bio12, bio15, elevation
-                - longitude, latitude
+            data: Either:
+                - pd.DataFrame: Raw biodiversity data
+                - str: Path to parquet file (will check for MESF)
         
         Returns:
             Processed DataFrame ready for GLM
         """
         logger.info("Preparing data for Method 1 (continuous interaction)")
+        
+        # Handle parquet path input
+        if isinstance(data, str):
+            logger.info(f"Loading from parquet: {data}")
+            
+            # Check if MESF already in parquet
+            mesf_processor = MESFPreprocessor()
+            if not mesf_processor.check_mesf_in_parquet(data):
+                logger.info("MESF not found in parquet, computing...")
+                # Augment parquet with MESF
+                data = mesf_processor.process_and_augment_parquet(
+                    data,
+                    self.spatial_config
+                )
+            
+            # Load augmented parquet
+            data = pd.read_parquet(data)
+            logger.info(f"Loaded {len(data):,} rows from parquet")
         
         # Apply complete case analysis (lines 203-213)
         initial_rows = len(data)
@@ -92,16 +110,23 @@ class Method1ContinuousGLM:
             data_clean['vertebrates_richness_log'] = np.log(data_clean['vertebrates_richness'] + 1)
             logger.info("Created log-transformed biotic predictors")
         
-        # Compute spatial eigenvectors (MESF)
-        logger.info("Computing spatial eigenvectors...")
-        coords = data_clean[['longitude', 'latitude']].values
-        mesf_df = compute_mesf(coords, self.spatial_config)
+        # Handle MESF computation or detection
+        me_cols = [col for col in data_clean.columns if col.startswith('ME')]
         
-        # Add MESF columns to data
-        for col in mesf_df.columns:
-            data_clean[col] = mesf_df[col].values
-        
-        logger.info(f"Added {len(mesf_df.columns)} spatial eigenvectors")
+        if me_cols:
+            # MESF already present (loaded from augmented parquet)
+            logger.info(f"Found {len(me_cols)} MESF eigenvectors in data")
+        else:
+            # Compute spatial eigenvectors (MESF)
+            logger.info("Computing spatial eigenvectors...")
+            coords = data_clean[['longitude', 'latitude']].values
+            mesf_df = compute_mesf(coords, self.spatial_config)
+            
+            # Add MESF columns to data
+            for col in mesf_df.columns:
+                data_clean[col] = mesf_df[col].values
+            
+            logger.info(f"Added {len(mesf_df.columns)} spatial eigenvectors")
         
         self.data_processed = data_clean
         return data_clean
