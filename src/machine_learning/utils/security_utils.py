@@ -51,7 +51,11 @@ class PathValidator:
             FileNotFoundError: If file doesn't exist
             PermissionError: If file is not readable
         """
-        # Convert to Path object
+        # Check for path traversal attempts BEFORE resolving
+        if ".." in str(file_path):
+            raise ValueError("Path traversal detected in file path")
+        
+        # Convert to Path object and resolve
         path = Path(file_path).resolve()
         
         # Check if file exists
@@ -92,10 +96,6 @@ class PathValidator:
                 raise ValueError(
                     f"Path {path} is not in allowed directories"
                 )
-        
-        # Check for path traversal attempts
-        if ".." in str(path):
-            raise ValueError("Path traversal detected in file path")
         
         # Check read permissions
         if not os.access(path, os.R_OK):
