@@ -90,10 +90,10 @@ class GEEMerger:
         self.logger.info("Note: Biodiversity has been unmasked to ensure climate retains full land coverage")
         
         # Merge with climate data
-        # IMPORTANT: Start with climate to preserve its global extent
-        # If we start with biodiversity, the extent is restricted to biodiversity pixels only
+        # IMPORTANT: Order matters for downstream processing
+        # Parquet converter expects biodiversity bands FIRST, then climate
         if merge_strategy == "addBands":
-            merged = climate_image.addBands(biodiv_combined)
+            merged = biodiv_combined.addBands(climate_image)
             
             # Add elevation if requested
             if include_elevation:
@@ -118,8 +118,8 @@ class GEEMerger:
             raise ValueError(f"Unknown merge strategy: {merge_strategy}")
         
         # Add metadata (keep as server-side objects)
-        # Note: bands are now ordered as climate first, then biodiversity
-        total_bands = climate_bands.size().add(biodiv_bands.size())
+        # Note: bands are now ordered as biodiversity first, then climate
+        total_bands = biodiv_bands.size().add(climate_bands.size())
         if include_elevation:
             total_bands = total_bands.add(1)
             
@@ -129,7 +129,7 @@ class GEEMerger:
             'elevation_included': include_elevation,
             'total_bands': total_bands,
             'merge_strategy': merge_strategy,
-            'band_order': 'climate_first'  # Track that climate comes first
+            'band_order': 'biodiversity_first'  # Track that biodiversity comes first
         })
         
         # Apply ocean mask if requested
