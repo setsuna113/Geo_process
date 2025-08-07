@@ -54,10 +54,14 @@ presets:
   # Production - optimized for 51.9M point biodiversity dataset
   production:
     algorithm:
-      rank: 10  # Overparameterized for discovering latent patterns
+      rank: 6  # Based on research: climate (2) + geographic (2) + evolutionary (2) components
       max_iterations: 1000
       convergence_threshold: 1e-6
       init_method: 'nndsvd'  # Best for non-negative sparse data
+    rank_selection:  # If using auto rank
+      method: 'elbow'
+      min_rank: 3  # Minimum meaningful components
+      max_rank: 8  # Conservative upper bound
     sparse:
       force_sparse: true
       sparsity_threshold: 0.5
