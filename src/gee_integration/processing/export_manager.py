@@ -280,16 +280,18 @@ class ExportManager:
                     hemisphere = ['west', 'east'][i]
                     desc = f"{res_name} ({hemisphere})"
                     # Create a mock task object that GEETaskMonitor can use
+                    # Fix: getTaskStatus expects list of IDs
                     task = type('Task', (), {
                         'id': tid,
-                        'status': lambda: ee.data.getTaskStatus(tid)[0]
+                        'status': lambda task_id=tid: ee.data.getTaskStatus([task_id])[0]
                     })()
                     tasks_to_monitor[desc] = task
             else:
                 # Create a mock task object
+                # Fix: getTaskStatus expects string ID, not a list
                 task = type('Task', (), {
                     'id': task_id,
-                    'status': lambda tid=task_id: ee.data.getTaskStatus(tid)[0]
+                    'status': lambda tid=task_id: ee.data.getTaskStatus([tid])[0]
                 })()
                 tasks_to_monitor[res_name] = task
         

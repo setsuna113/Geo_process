@@ -225,11 +225,16 @@ class GEEResampler:
         """
         import ee
         
+        # Ensure we have an ee.Image object
+        image = ee.Image(image)
+        
         # Get current scale
         current_projection = image.projection()
         current_scale = current_projection.nominalScale()
         
         # Target scale is 2x current
+        # Use getInfo() to get the actual scale value for multiplication
+        # Or compute directly from base resolution
         target_scale = current_scale.multiply(2)
         
         # Create target projection with consistent Y-axis orientation
@@ -301,8 +306,15 @@ class GEEResampler:
                     all_results[res_name] = []
                 all_results[res_name].append(processed_image)
         
-        # Log summary
+        # Log summary and ensure all are Images
+        import ee
         for res_name, images_list in all_results.items():
             self.logger.info(f"Resolution {res_name}: {len(images_list)} images ready")
+            # Ensure all are ee.Image objects
+            for i, img in enumerate(images_list):
+                if not isinstance(img, ee.Image):
+                    self.logger.error(f"WARNING: Image {i} in {res_name} is {type(img)}, not ee.Image!")
+                    # Try to convert
+                    all_results[res_name][i] = ee.Image(img)
         
         return all_results
