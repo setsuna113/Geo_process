@@ -854,67 +854,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         return len(issues) == 0, issues
     
-    def save_checkpoint_state(self) -> Dict[str, Any]:
-        """Save SOM-specific checkpoint state.
-        
-        Returns:
-            Dictionary containing SOM weights, learning state, and training history
-        """
-        if not hasattr(self, 'som') or self.som is None:
-            return {}
-        
-        # Gather SOM state
-        state = {
-            'weights': self.som.get_weights().tolist() if hasattr(self.som, 'get_weights') else None,
-            'current_lr': getattr(self.som, 'current_lr', None),
-            'current_radius': getattr(self.som, 'current_radius', None),
-            'current_epoch': getattr(self.som, 'current_epoch', 0),
-            'training_history': getattr(self.som, 'training_history', {}),
-            'grid_size': self._geosom_config.grid_size if hasattr(self, '_geosom_config') else None,
-            'spatial_weight': self._geosom_config.spatial_weight if hasattr(self, '_geosom_config') else None,
-        }
-        
-        # Add cross-validation state if in CV
-        if hasattr(self, '_cv_results'):
-            state['cv_fold'] = len(self._cv_results)
-            state['cv_results'] = self._cv_results
-        
-        return state
+    # NOTE: Removed misleading save_checkpoint_state() method
+    # SOM checkpointing is handled directly in geo_som_core.py
+    # It saves .npz files with SOM-specific data (weights, learning rate, radius)
+    # This data is not useful for other methods (CP-WOPT needs factors, KMeans needs centroids)
     
-    def load_checkpoint_state(self, state: Dict[str, Any]) -> None:
-        """Load SOM-specific checkpoint state.
-        
-        Args:
-            state: Dictionary containing SOM state to restore
-        """
-        if not state:
-            return
-        
-        # Restore SOM if we have weights
-        if 'weights' in state and state['weights'] is not None:
-            import numpy as np
-            
-            # Create SOM if not exists
-            if not hasattr(self, 'som') or self.som is None:
-                # Recreate config from state
-                grid_size = state.get('grid_size', [10, 10])
-                self._geosom_config = self._create_geosom_config(tuple(grid_size))
-                self.som = GeoSOMVLRSOM(self._geosom_config)
-            
-            # Restore weights
-            if hasattr(self.som, 'weights'):
-                self.som.weights = np.array(state['weights'])
-            
-            # Restore learning parameters
-            if 'current_lr' in state:
-                self.som.current_lr = state['current_lr']
-            if 'current_radius' in state:
-                self.som.current_radius = state['current_radius']
-            if 'current_epoch' in state:
-                self.som.current_epoch = state['current_epoch']
-            if 'training_history' in state:
-                self.som.training_history = state['training_history']
-        
-        # Restore CV state
-        if 'cv_results' in state:
-            self._cv_results = state['cv_results']
+    # NOTE: Removed misleading load_checkpoint_state() method
+    # SOM checkpoint loading is handled directly in geo_som_core.py
+    # The .npz checkpoint files are loaded when resume_checkpoint is set in config
+    # This happens automatically when resume=True is passed to analyze()

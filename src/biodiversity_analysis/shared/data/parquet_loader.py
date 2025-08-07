@@ -297,8 +297,9 @@ class ParquetLoader:
             )
         
         # Check coordinate bounds
-        lon_min, lon_max = data.coordinates[:, 0].min(), data.coordinates[:, 0].max()
-        lat_min, lat_max = data.coordinates[:, 1].min(), data.coordinates[:, 1].max()
+        # After reordering, coordinates are in [latitude, longitude] order
+        lat_min, lat_max = data.coordinates[:, 0].min(), data.coordinates[:, 0].max()
+        lon_min, lon_max = data.coordinates[:, 1].min(), data.coordinates[:, 1].max()
         
         if not (-180 <= lon_min <= 180 and -180 <= lon_max <= 180):
             logger.warning(f"Longitude values outside [-180, 180]: [{lon_min}, {lon_max}]")
