@@ -367,53 +367,54 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Use the config we already loaded in __init__, not load it again
         default_config = self.config
         arch_config = default_config['architecture_config']
-        conv_config = arch_config['convergence']
+        training_config = default_config['training_config']  # ALL training params are here now
         
-        # Use iterations from kwargs if provided, otherwise fall back to default
-        max_epochs = kwargs.get('iterations', conv_config['max_epochs'])
+        # Use iterations from kwargs if provided, otherwise from training_config
+        max_epochs = kwargs.get('iterations', training_config['max_epochs'])  # FIXED: Now reads from training_config!
         
         # Import SOM config to get performance settings
         from src.config.som import get_som_config
         som_config = get_som_config()
         
-        # Get performance settings
-        chunk_size = som_config.get_chunk_size()
+        # Get performance settings - prefer training_config values
+        chunk_size = training_config.get('chunk_size', som_config.get_chunk_size())
         qe_sample_size = som_config.get_qe_sample_size()
         use_parallel = som_config.is_parallel_enabled()
-        n_workers = som_config.get_n_workers()
+        n_workers = training_config.get('n_workers', som_config.get_n_workers())
         
         # Get mini-batch settings from training config
-        training_config = default_config.get('training_config', {})
-        minibatch_config = training_config.get('minibatch', {})
-        use_minibatch = minibatch_config.get('enabled', False)
-        minibatch_size = minibatch_config.get('size', 1000)
+        use_minibatch = training_config.get('use_minibatch', True)
+        minibatch_size = training_config.get('minibatch_size', 1000)
         
         # Get memory and performance config
         memory_config = default_config.get('memory_config', {})
         
-        # Create config object and set attributes
+        # Create config object reading from correct sections
         config = GeoSOMConfig(
             grid_size=grid_size,
             topology=arch_config['topology'],
             spatial_weight=arch_config['spatial_weight'],
             geographic_distance=arch_config['geographic_distance'],
-            initial_learning_rate=arch_config['initial_learning_rate'],
-            min_learning_rate=arch_config['min_learning_rate'],
-            max_learning_rate=arch_config['max_learning_rate'],
-            lr_increase_factor=arch_config['lr_increase_factor'],
-            lr_decrease_factor=arch_config['lr_decrease_factor'],
-            high_qe_lr_min=arch_config['high_qe_lr_range'][0],
-            high_qe_lr_max=arch_config['high_qe_lr_range'][1],
-            low_qe_lr_min=arch_config['low_qe_lr_range'][0],
-            low_qe_lr_max=arch_config['low_qe_lr_range'][1],
+            # Learning rate settings now from training_config
+            initial_learning_rate=training_config['initial_learning_rate'],
+            min_learning_rate=training_config['min_learning_rate'],
+            max_learning_rate=training_config['max_learning_rate'],
+            lr_increase_factor=training_config['lr_increase_factor'],
+            lr_decrease_factor=training_config['lr_decrease_factor'],
+            high_qe_lr_min=training_config['high_qe_lr_range'][0],
+            high_qe_lr_max=training_config['high_qe_lr_range'][1],
+            low_qe_lr_min=training_config['low_qe_lr_range'][0],
+            low_qe_lr_max=training_config['low_qe_lr_range'][1],
+            # Neighborhood from architecture (structural)
             neighborhood_function=arch_config['neighborhood_function'],
             initial_radius=arch_config['initial_radius'],
             final_radius=arch_config['final_radius'],
             radius_decay=arch_config['radius_decay'],
-            geographic_coherence_threshold=conv_config['geographic_coherence_threshold'],
-            lr_stability_threshold=conv_config['lr_stability_threshold'],
-            qe_improvement_threshold=conv_config['qe_improvement_threshold'],
-            patience=conv_config['patience'],
+            # Convergence criteria from training_config
+            geographic_coherence_threshold=training_config['geographic_coherence_threshold'],
+            lr_stability_threshold=training_config['lr_stability_threshold'],
+            qe_improvement_threshold=training_config['qe_improvement_threshold'],
+            patience=training_config['patience'],
             max_epochs=max_epochs,
             min_valid_features=default_config['distance_config']['min_valid_features'],
             random_seed=kwargs.get('random_seed', 42),

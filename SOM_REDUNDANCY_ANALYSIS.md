@@ -3,28 +3,35 @@
 ## Overview
 This document catalogs unintentional redundancies that have accumulated in the SOM pipeline over time. These appear to be the result of iterative development, refactoring attempts, and parallel implementations rather than deliberate design choices.
 
-## 1. Configuration Redundancy
+## 1. Configuration Redundancy (RESOLVED)
 
 ### The Critical Issue: Dual `max_epochs` Settings
-**Location:** `/src/config/som/som_config_unified.yml`
+**Original Problem:** `/src/config/som/som_config_unified.yml` had max_epochs in TWO places:
+- `architecture_config.convergence.max_epochs: 15` (WAS BEING USED)
+- `training_config.max_epochs: 100` (WAS IGNORED)
 
-```yaml
-# Line 74 - ACTUALLY USED
-architecture_config:
-  convergence:
-    max_epochs: 15  # This value is being used!
+**Root Cause:** analyzer.py line 373 read from wrong location:
+```python
+# BEFORE (BUG):
+max_epochs = kwargs.get('iterations', conv_config['max_epochs'])  # Read from architecture_config.convergence
 
-# Line 84 - IGNORED  
-training_config:
-  max_epochs: 100  # This value is ignored!
+# AFTER (FIXED):
+max_epochs = kwargs.get('iterations', training_config['max_epochs'])  # Read from training_config
 ```
 
-**Impact:** Production runs use 15 epochs instead of intended 100 epochs.
+### Resolution Implemented
+1. **Moved ALL training params to `training_config`**:
+   - max_epochs, chunk_size, n_workers (training params)
+   - initial_learning_rate, min/max_learning_rate, lr factors (learning params)
+   - patience, qe_improvement_threshold, convergence criteria
+   
+2. **Kept ONLY structural params in `architecture_config`**:
+   - grid_size, topology, spatial_weight (architecture)
+   - neighborhood_function, initial/final_radius (structure)
 
-### Other Config Duplications
-- Learning rate settings appear in multiple sections
-- Convergence criteria split between `convergence` and `early_stopping` sections
-- Memory settings scattered across `memory_config` and `training_config`
+3. **Fixed analyzer.py** to read from correct locations
+
+4. **Deleted redundant `som_config_loader.py`** - using only `som_config.py` now
 
 ## 2. File Redundancy
 
