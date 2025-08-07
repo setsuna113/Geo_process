@@ -54,10 +54,10 @@ architecture_config:
 # Training parameters (ALL training-related settings here)
 training_config:
   max_epochs: 1000  # Production: Full training with convergence
-  chunk_size: 100000  # Optimal chunk size for parallelization
-  n_workers: 120  # Aggressive: Using ~47% of 256 cores for good utilization
+  chunk_size: 25000  # Optimized: Smaller chunks for better memory efficiency
+  n_workers: 150  # Optimized: 150 workers for high parallelization with memory safety
   use_minibatch: true  # Enable mini-batch processing for memory efficiency
-  minibatch_size: 10000  # 10k samples per minibatch - good balance
+  minibatch_size: 5000  # Reduced proportionally to match smaller chunk size
   
   # Learning rate settings (moved from architecture_config)
   initial_learning_rate: 0.4  # Reduced from 0.8 for better stability with sparse data

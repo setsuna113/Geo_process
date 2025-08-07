@@ -362,15 +362,20 @@ class ParallelBatchProcessor:
         
         # Create context manager for proper cleanup
         try:
-            with Parallel(n_jobs=actual_workers, backend=backend, verbose=10, timeout=300) as parallel:
+            # Increased timeout: 60 seconds per chunk is reasonable for large datasets
+            timeout_seconds = max(3600, len(chunk_params) * 60)  # At least 1 hour, or 60s per chunk
+            logger.info(f"Using timeout of {timeout_seconds} seconds for {len(chunk_params)} chunks")
+            with Parallel(n_jobs=actual_workers, backend=backend, verbose=10, timeout=timeout_seconds) as parallel:
                 logger.info("Parallel context created, starting processing...")
                 results = parallel(
                     delayed(process_single_chunk)(*params) for params in chunk_params
                 )
                 logger.info(f"Parallel processing returned {len(results)} results")
         except Exception as e:
-            logger.error(f"Parallel processing failed: {e}")
-            raise
+            import traceback
+            logger.error(f"Parallel processing failed with {type(e).__name__}: {str(e)}")
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            raise RuntimeError(f"Parallel processing failed after {timeout_seconds}s timeout: {str(e)}") from e
         
         # Aggregate results
         numerator = np.zeros_like(weights)
