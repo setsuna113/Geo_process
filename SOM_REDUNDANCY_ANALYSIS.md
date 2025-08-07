@@ -68,10 +68,12 @@ src/config/som/
 | geo_som_core_vectorized.py | 1 | Vectorized distance |
 | partial_metrics.py | 1 | Distance for metrics |
 
-### Training Methods (3 separate implementations)
-1. `geo_som_core.py::train()` - Current implementation
-2. `analyzer_old.py::train()` - Old version
-3. `som_core_old.py::train()` - Another old version
+### Training Methods (RESOLVED)
+**Status:** NO CONFLICT - Clean separation of concerns!
+- `analyzer.py`: Orchestrates analysis, calls `som.train_batch()`
+- `geo_som_core.py`: Contains actual training implementation
+- `analyzer_old.py`: DELETED (old backup)
+- `som_core_old.py`: DELETED (old backup)
 
 ### Preprocessing (Multiple paths)
 1. `preprocessing.py::fit_transform()` - Dedicated preprocessing
@@ -173,17 +175,17 @@ Checkpoint saving/loading appears in:
 3. How to consolidate config without breaking existing runs?
 4. Which distance calculation implementation is most efficient?
 
-## Files to Delete (Confirmed Redundant)
-- `analyzer_old.py`
-- `som_core_old.py`
-- Old monitoring scripts (already deleted)
-- `som/preprocessing.py` (DELETED - using SharedPreprocessor now)
+## Files Deleted (Cleanup Complete)
+- ✅ `analyzer_old.py` (DELETED)
+- ✅ `som_core_old.py` (DELETED)
+- ✅ Old monitoring scripts (DELETED)
+- ✅ `som/preprocessing.py` (DELETED - using SharedPreprocessor now)
+- ✅ `som_config_loader.py` (DELETED - using som_config.py only)
 
-## Files to Investigate Further
-- `analyzer_adapter.py` - Check if still needed
-- `geo_som_core_vectorized.py` - Performance comparison needed
-- `spatial_utils_optimized.py` - Check which is actually used
-- `som_config_loader.py` - Might be redundant with `som_config.py`
+## Files to Keep (Verified Useful)
+- ✅ `analyzer_adapter.py` - Used by analyzer_factory.py for pipeline integration
+- ✅ `spatial_utils_optimized.py` - Imported by spatial_utils.py for large datasets
+- ❓ `geo_som_core_vectorized.py` - Need to decide (alternative implementation)
 
 ## Preprocessing Consolidation (COMPLETED)
 
