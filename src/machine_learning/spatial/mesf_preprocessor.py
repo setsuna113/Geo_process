@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 from sklearn.neighbors import NearestNeighbors
 
-from .mesf import MESF
+from .mesf import StandardMESF as MESF
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ class MESFPreprocessor:
         mesf_computer = MESF(spatial_config)
         
         # Compute eigenvectors
-        eigenvectors = mesf_computer.compute(coords)
+        eigenvectors = mesf_computer.fit_transform(coords)
         
         return eigenvectors
     
@@ -207,7 +207,7 @@ class MESFPreprocessor:
         # Step 2: Compute MESF on grid
         logger.info("Computing MESF on grid centers...")
         mesf_computer = MESF(spatial_config)
-        grid_mesf = mesf_computer.compute(grid_coords)
+        grid_mesf = mesf_computer.fit_transform(grid_coords)
         
         logger.info(f"Computed {grid_mesf.shape[1]} eigenvectors on grid")
         

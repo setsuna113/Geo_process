@@ -1,10 +1,15 @@
-"""Machine learning models for biodiversity analysis."""
+"""Machine learning models for biodiversity analysis.
 
-from .linear_regression import LinearRegressionAnalyzer
+All models use H2O for massive parallelization on 256-core systems.
+"""
 
-# Import LightGBM only if available
-try:
-    from .lightgbm_regressor import LightGBMAnalyzer
-    __all__ = ['LinearRegressionAnalyzer', 'LightGBMAnalyzer']
-except ImportError:
-    __all__ = ['LinearRegressionAnalyzer']
+# H2O GLM models
+from .glm.h2o_negative_binomial import H2ONegativeBinomialGLM
+
+# H2O GBM models
+from .gbm.h2o_gbm import H2OGBM
+
+__all__ = [
+    'H2ONegativeBinomialGLM',
+    'H2OGBM'
+]

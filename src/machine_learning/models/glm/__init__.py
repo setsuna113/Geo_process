@@ -1,12 +1,10 @@
-"""GLM models for regression analysis."""
+"""H2O GLM models for massive parallel regression analysis.
 
-from .negative_binomial import NegativeBinomialGLM
-from .poisson import PoissonGLM
-from .glm_diagnostics import GLMDiagnostics, DHARMaDiagnostics
+Optimized for 256-core CPU systems and 180M+ point datasets.
+"""
+
+from .h2o_negative_binomial import H2ONegativeBinomialGLM
 
 __all__ = [
-    'NegativeBinomialGLM',
-    'PoissonGLM', 
-    'GLMDiagnostics',
-    'DHARMaDiagnostics'
+    'H2ONegativeBinomialGLM'
 ]
