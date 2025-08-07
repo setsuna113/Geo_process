@@ -80,19 +80,6 @@ src/config/som/
 2. `analyzer.py` - Inline preprocessing
 3. Normalization logic duplicated in multiple places
 
-## 4. Parallel Processing Redundancy
-
-Two different parallel processing approaches:
-1. **ParallelBatchProcessor** (`parallel_batch_processor.py`)
-   - Uses joblib
-   - Chunk-based parallelization
-   - Currently active
-
-2. **Vectorized Implementation** (`geo_som_core_vectorized.py`)
-   - NumPy vectorization approach
-   - Alternative implementation
-   - Status unclear
-
 ## 5. Progress Tracking Redundancy
 
 Three separate progress tracking systems:
@@ -108,24 +95,6 @@ Three separate progress tracking systems:
    - Progress callbacks in training loop
    - Used for real-time updates
 
-## 6. Metrics Calculation Redundancy
-
-Quantization Error (QE) calculated in:
-- `geo_som_core.py::calculate_quantization_error()`
-- `partial_metrics.py::calculate_qe()`
-- Inline calculations in various places
-
-Topographic Error (TE) calculated in:
-- `geo_som_core.py::calculate_topographic_error()`
-- `partial_metrics.py`
-- Different implementations with different approaches
-
-## 7. Data Loading Redundancy
-
-Multiple data loading paths:
-- `analyzer.py` loads data
-- `parquet_loader.py` loads data
-- Some scripts have their own loading logic
 
 ## 8. Checkpoint System Redundancy
 
@@ -212,6 +181,22 @@ Checkpoint saving/loading appears in:
 - No redundancy
 - Simple configuration (minmax for SOM, standard for kmeans, etc.)
 - Much cleaner code
+
+## QE/TE Calculation Verification (NO REDUNDANCY ✅)
+
+**Double-checked as requested - Results:**
+
+Quantization Error (QE):
+- ✅ ONLY defined in `geo_som_core.py::calculate_quantization_error()`
+- `analyzer.py` just calls `som.calculate_quantization_error()` (no duplicate)
+
+Topographic Error (TE):
+- ✅ ONLY defined in `geo_som_core.py::calculate_topographic_error()`
+- No duplicate implementations found anywhere
+
+Note: `partial_metrics.py` only contains distance functions (Bray-Curtis, Euclidean), NOT QE/TE calculations.
+
+**Conclusion:** QE and TE are calculated in exactly ONE place each - no redundancy!
 
 ---
 *Generated: 2025-08-07*
