@@ -7,6 +7,7 @@ and the biodiversity analysis pipeline.
 import numpy as np
 import pandas as pd
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import json
