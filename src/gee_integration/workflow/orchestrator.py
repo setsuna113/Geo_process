@@ -480,8 +480,12 @@ class GEEWorkflowOrchestrator:
             processed_images_for_export = {}
             
             # Process each enabled resolution
-            for res_name, should_export in resolution_outputs.items():
-                if not should_export:
+            for res_name, res_config in resolution_outputs.items():
+                # Expect dict format with 'enabled' key
+                if not isinstance(res_config, dict):
+                    raise ValueError(f"Resolution config for {res_name} must be a dict with 'enabled' key")
+                    
+                if not res_config.get('enabled', False):
                     continue
                 self.logger.info(f"\n   Preparing {res_name} for export...")
                 
@@ -597,60 +601,26 @@ class GEEWorkflowOrchestrator:
                     )
                     self.logger.info("   Using non-geodesic rectangle to avoid antimeridian collapse")
                 
-                if self.config.export_format == 'GeoTIFF':
-                    # Calculate resolution config for this level
-                    factor = int(res_name[:-1]) if res_name.endswith('x') else 1
-                    resolution_config = {
-                        'resolution': base_resolution * factor,
-                        'description': f'{factor}x downsampled ({base_resolution * factor:.6f}°)'
-                    }
-                    
-                    # Export as GeoTIFF with fixed region
-                    task_id = self._export_manager._export_as_geotiff(
-                        merged_image=merged_image,
-                        bounds=export_region,
-                        resolution_name=res_name,
-                        resolution_config=resolution_config,
-                        description=f'export_{res_name}_{self.experiment_name}',
-                        export_base_path=self.export_base_path
-                    )
-                else:
-                    # Export as CSV (existing logic)
-                    # Add pixel coordinates as bands
-                    lon = ee.Image.pixelLonLat().select('longitude').rename('x')
-                    lat = ee.Image.pixelLonLat().select('latitude').rename('y')
-                    
-                    # Add coordinates to the merged image
-                    image_with_coords = lon.addBands(lat).addBands(merged_image)
-                    
-                    # Sample the image using detected bounds or global bounds
-                    if data_bounds is not None:
-                        sample_region = ee.FeatureCollection([ee.Feature(data_bounds)])
-                    else:
-                        # Use a global region if bounds detection failed
-                        global_bounds = ee.Geometry.Rectangle([-180, -90, 180, 90])
-                        sample_region = ee.FeatureCollection([ee.Feature(global_bounds)])
-                        
-                    sampled = image_with_coords.sampleRegions(
-                        collection=sample_region,
-                        scale=self.config.resolutions[res_name].resolution * 111320,
-                        projection='EPSG:4326',
-                        tileScale=4
-                    )
-                    
-                    # Export as CSV
-                    export_path = f"{self.export_base_path}/{res_name}/merged_data"
-                    task = ee.batch.Export.table.toCloudStorage(
-                        collection=sampled,
-                        description=f'export_{res_name}_{self.experiment_name}',
-                        bucket=self.config.gcs_bucket,
-                        fileNamePrefix=export_path,
-                        fileFormat='CSV'
-                    )
-                    
-                    # Start the task
-                    task.start()
-                    task_id = task.id
+                # We only support GeoTIFF format - CSV export was removed due to bugs
+                if self.config.export_format != 'GeoTIFF':
+                    raise ValueError(f"Unsupported export format: {self.config.export_format}. Only 'GeoTIFF' is supported.")
+                
+                # Calculate resolution config for this level
+                factor = int(res_name[:-1]) if res_name.endswith('x') else 1
+                resolution_config = {
+                    'resolution': base_resolution * factor,
+                    'description': f'{factor}x downsampled ({base_resolution * factor:.6f}°)'
+                }
+                
+                # Export as GeoTIFF with fixed region
+                task_id = self._export_manager._export_as_geotiff(
+                    merged_image=merged_image,
+                    bounds=export_region,
+                    resolution_name=res_name,
+                    resolution_config=resolution_config,
+                    description=f'export_{res_name}_{self.experiment_name}',
+                    export_base_path=self.export_base_path
+                )
                 
                 self.logger.info(f"   Started export task: {task_id}")
                 task_ids[res_name] = task_id

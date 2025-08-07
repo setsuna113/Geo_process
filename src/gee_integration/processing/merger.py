@@ -234,7 +234,13 @@ class GEEMerger:
         if ocean_mask_config:
             method = ocean_mask_config.get('method', 'original')
             
-            if method == 'original':
+            if method == 'disabled':
+                # Skip ocean mask entirely - use only latitude bounds
+                self.logger.info("Ocean mask disabled - using latitude bounds only")
+                # Set a dummy mask that keeps all land pixels
+                water_mask_img = ee.Image.constant(0)  # All pixels are "land"
+                
+            elif method == 'original':
                 # Use raw MODIS mask (500m) - good for fine resolutions
                 self.logger.info("Using original MODIS mask (500m resolution)")
                 # No modification needed
@@ -273,17 +279,15 @@ class GEEMerger:
                         scale=scale
                     )
         else:
-            # Fallback to old logic for backward compatibility
-            target_scale = scale if scale is not None else getattr(self, '_current_scale', 10000)
-            
-            if target_scale > 5000:  # > 5km resolution
-                self.logger.info(f"Creating coarse ocean mask for {target_scale}m resolution")
+            # No ocean mask config provided - use default behavior
+            if scale and scale > 5000:  # > 5km resolution
+                self.logger.info(f"Using default coarse ocean mask for {scale}m resolution")
                 water_mask_img = water_mask_img.reduceResolution(
                     reducer=ee.Reducer.mode(),
                     maxPixels=1024
                 ).reproject(
                     crs='EPSG:4326',
-                    scale=target_scale
+                    scale=scale
                 )
                 self.logger.info("Using simplified coastlines for coarse resolution")
         
