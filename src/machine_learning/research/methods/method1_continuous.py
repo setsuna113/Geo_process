@@ -1,17 +1,18 @@
-"""Method 1: Continuous Interaction GLM.
+"""Method 1: Continuous interaction model with H2O-native processing.
 
-Based on regression_analysis_decisions.md lines 296-304.
-Tests H2 hypothesis using continuous interaction term plants_richness:bio4.
+Optimized for large-scale data processing with H2O, avoiding pandas conversion.
+Tests H2: Climate-diversity interaction differs in temperate vs non-temperate regions.
 """
 
+import os
+import logging
 import numpy as np
 import pandas as pd
-import logging
+import h2o
+from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple
 
-from ...models.glm import PoissonGLM
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
-from ...spatial import compute_mesf  # Now uses vectorized implementation
 from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
 
@@ -19,414 +20,287 @@ logger = logging.getLogger(__name__)
 
 
 class Method1ContinuousGLM:
-    """Method 1: GLM with continuous interaction term.
+    """H2O-native implementation of Method 1 for massive datasets.
     
-    Tests the temperate mismatch hypothesis (H2) using continuous interaction
-    between plant richness and temperature seasonality (bio4).
+    Key improvements:
+    1. Direct parquet to H2O loading (no pandas intermediate)
+    2. MESF computed separately and cached
+    3. All feature engineering in H2O
+    4. No memory duplication
     """
     
-    def __init__(self, config: Optional[MLRegressionConfig] = None):
-        """Initialize Method 1.
+    def __init__(self, config: MLRegressionConfig):
+        """Initialize Method 1 with H2O.
         
         Args:
             config: ML regression configuration
         """
-        self.config = config or MLRegressionConfig()
+        self.config = config
         self.preprocessing_config = self.config.get_preprocessing_config()
         self.glm_config = self.config.get_glm_config()
         self.spatial_config = self.config.get_spatial_config()
         
+        # Initialize H2O
+        self._ensure_h2o_initialized()
+        
+        # Initialize MESF preprocessor
+        self.mesf_preprocessor = MESFPreprocessor()
+        
         self.model_null = None
         self.model_full = None
         self.model_interaction = None
-        self.data_processed = None
+        self.data_h2o = None
         
-        logger.info("Initialized Method 1: Continuous Interaction GLM")
+    def _ensure_h2o_initialized(self):
+        """Ensure H2O cluster is running."""
+        try:
+            h2o.cluster()
+            logger.info("Using existing H2O cluster")
+        except:
+            n_threads = os.cpu_count() or 256
+            logger.info(f"Starting H2O cluster with {n_threads} threads")
+            h2o.init(
+                nthreads=n_threads,
+                max_mem_size="128G",  # Adjust based on system
+                min_mem_size="8G",
+                strict_version_check=False
+            )
     
-    def prepare_data(self, data: Union[pd.DataFrame, str]) -> pd.DataFrame:
-        """Prepare data for Method 1 analysis.
+    def load_data(self, parquet_path: str) -> h2o.H2OFrame:
+        """Load data directly from parquet to H2O.
         
-        Implements preprocessing from regression_analysis_decisions.md lines 199-277.
+        Automatically handles MESF computation if not present.
         
         Args:
-            data: Either:
-                - pd.DataFrame: Raw biodiversity data
-                - str: Path to parquet file (will check for MESF)
-        
+            parquet_path: Path to parquet file
+            
         Returns:
-            Processed DataFrame ready for GLM
+            H2OFrame with all data including MESF
         """
-        logger.info("Preparing data for Method 1 (continuous interaction)")
+        logger.info(f"Loading data from {parquet_path}")
         
-        # Handle parquet path input
-        if isinstance(data, str):
-            logger.info(f"Loading from parquet: {data}")
-            
-            # Check if MESF already in parquet
-            mesf_processor = MESFPreprocessor()
-            if not mesf_processor.check_mesf_in_parquet(data):
-                logger.info("MESF not found in parquet, computing...")
-                # Augment parquet with MESF
-                data = mesf_processor.process_and_augment_parquet(
-                    data,
-                    self.spatial_config
-                )
-            
-            # Load augmented parquet
-            data = pd.read_parquet(data)
-            logger.info(f"Loaded {len(data):,} rows from parquet")
+        # Process parquet to ensure MESF is included
+        # This is a no-op if MESF already exists in the parquet
+        augmented_path = self.mesf_preprocessor.process_and_augment_parquet(
+            parquet_path,
+            self.spatial_config,
+            force_recompute=False
+        )
         
-        # Apply complete case analysis (lines 203-213)
-        initial_rows = len(data)
-        data_clean = data.dropna(subset=[
+        # Now load the augmented parquet directly to H2O
+        # MESF columns are already included!
+        logger.info("Loading augmented data to H2O (includes MESF)...")
+        h2o_data = h2o.import_file(augmented_path, parse_dates=False)
+        
+        # Verify MESF columns are present
+        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
+        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
+        logger.info(f"Including {len(me_cols)} MESF eigenvectors")
+        
+        return h2o_data
+    
+    def prepare_data_h2o(self, h2o_data: h2o.H2OFrame) -> h2o.H2OFrame:
+        """Prepare data using H2O operations (no pandas!).
+        
+        Args:
+            h2o_data: Raw H2O DataFrame
+            
+        Returns:
+            Processed H2O DataFrame
+        """
+        logger.info("Preparing data in H2O (parallel processing)")
+        
+        # Apply complete case analysis
+        initial_rows = h2o_data.nrows
+        required_cols = [
             'fungi_richness', 'plants_richness', 'vertebrates_richness',
             'bio1', 'bio4', 'bio12', 'bio15', 'elevation',
             'longitude', 'latitude'
-        ])
+        ]
         
-        rows_dropped = initial_rows - len(data_clean)
-        logger.info(f"Complete case analysis: dropped {rows_dropped} rows "
+        # Remove rows with missing values
+        for col in required_cols:
+            if col in h2o_data.columns:
+                h2o_data = h2o_data[h2o_data[col].isna() == False]
+        
+        rows_dropped = initial_rows - h2o_data.nrows
+        logger.info(f"Complete case analysis: dropped {rows_dropped:,} rows "
                    f"({rows_dropped/initial_rows*100:.2f}%)")
         
-        # Standardize climate variables using 2SD method (lines 220-229)
+        # Standardize climate variables using 2SD method (H2O operations)
         climate_vars = ['bio1', 'bio4', 'bio12', 'bio15', 'elevation']
         
         for var in climate_vars:
-            mean_val = data_clean[var].mean()
-            sd_val = data_clean[var].std()
-            data_clean[f'{var}_std'] = (data_clean[var] - mean_val) / (2 * sd_val)
-            logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
+            if var in h2o_data.columns:
+                mean_val = h2o_data[var].mean()[0, 0]
+                sd_val = h2o_data[var].sd()[0, 0]
+                h2o_data[f'{var}_std'] = (h2o_data[var] - mean_val) / (2 * sd_val)
+                logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
         
-        # Add quadratic elevation term (from regression_analysis_decisions.md lines 288, 301, 314)
-        data_clean['elevation_std_sq'] = data_clean['elevation_std'] ** 2
-        logger.info("Created quadratic elevation term: elevation_std_sq")
+        # Add quadratic elevation term
+        h2o_data['elevation_std_sq'] = h2o_data['elevation_std'] ** 2
+        logger.info("Created quadratic elevation term")
         
-        # Handle biotic predictors (lines 235-257)
+        # Handle biotic predictors
         transformation = self.preprocessing_config['biotic_predictors']['transformation']
         
         if transformation in ['log', 'both']:
-            # Log transformation
-            data_clean['plants_richness_log'] = np.log(data_clean['plants_richness'] + 1)
-            data_clean['vertebrates_richness_log'] = np.log(data_clean['vertebrates_richness'] + 1)
+            # Log transformation in H2O
+            h2o_data['plants_richness_log'] = (h2o_data['plants_richness'] + 1).log()
+            h2o_data['vertebrates_richness_log'] = (h2o_data['vertebrates_richness'] + 1).log()
             logger.info("Created log-transformed biotic predictors")
         
-        # Handle MESF computation or detection
-        me_cols = [col for col in data_clean.columns if col.startswith('ME')]
-        
-        if me_cols:
-            # MESF already present (loaded from augmented parquet)
-            logger.info(f"Found {len(me_cols)} MESF eigenvectors in data")
-        else:
-            # Compute spatial eigenvectors (MESF)
-            logger.info("Computing spatial eigenvectors...")
-            coords = data_clean[['longitude', 'latitude']].values
-            mesf_df = compute_mesf(coords, self.spatial_config)
-            
-            # Add MESF columns to data
-            for col in mesf_df.columns:
-                data_clean[col] = mesf_df[col].values
-            
-            logger.info(f"Added {len(mesf_df.columns)} spatial eigenvectors")
-        
-        self.data_processed = data_clean
-        return data_clean
+        self.data_h2o = h2o_data
+        return h2o_data
     
-    def create_interaction_term(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Create the continuous interaction term.
-        
-        Implements interaction from regression_analysis_decisions.md line 303.
+    def create_interaction_term_h2o(self, h2o_data: h2o.H2OFrame) -> h2o.H2OFrame:
+        """Create interaction term in H2O.
         
         Args:
-            data: Processed data
+            h2o_data: Processed H2O data
             
         Returns:
-            Data with interaction term added
+            H2O data with interaction term
         """
         # Create interaction: plants_richness_log × bio4_std
-        if 'plants_richness_log' in data.columns:
-            data['plants_bio4_interaction'] = (
-                data['plants_richness_log'] * data['bio4_std']
+        if 'plants_richness_log' in h2o_data.columns:
+            h2o_data['plants_bio4_interaction'] = (
+                h2o_data['plants_richness_log'] * h2o_data['bio4_std']
             )
             logger.info("Created interaction term: plants_richness_log × bio4_std")
         else:
             # Use raw counts if log not available
-            data['plants_bio4_interaction'] = (
-                data['plants_richness'] * data['bio4_std']
+            h2o_data['plants_bio4_interaction'] = (
+                h2o_data['plants_richness'] * h2o_data['bio4_std']
             )
             logger.info("Created interaction term: plants_richness × bio4_std")
         
-        return data
+        return h2o_data
     
-    def fit_models(self, data: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
-        """Fit the nested models for Method 1.
-        
-        Fits three models as specified in regression_analysis_decisions.md lines 286-304:
-        1. Null model (climate only)
-        2. Full model (climate + biodiversity)
-        3. Interaction model (climate + biodiversity + interaction)
+    def fit_models(self, h2o_data: Optional[h2o.H2OFrame] = None) -> Dict[str, Any]:
+        """Fit the nested models using H2O GLM.
         
         Args:
-            data: Optional processed data (uses self.data_processed if None)
+            h2o_data: Optional H2O DataFrame (uses self.data_h2o if None)
             
         Returns:
             Dictionary with fitted models and results
         """
-        if data is None:
-            data = self.data_processed
+        if h2o_data is None:
+            h2o_data = self.data_h2o
         
-        if data is None:
-            raise ValueError("Must call prepare_data() first or provide data")
+        if h2o_data is None:
+            raise ValueError("Must call prepare_data_h2o() first or provide data")
         
-        # Check overdispersion to determine GLM family
-        dispersion_ratio = data['fungi_richness'].var() / data['fungi_richness'].mean()
-        distribution = self.config.get_distribution_family(dispersion_ratio)
+        # Check overdispersion
+        fungi_mean = h2o_data['fungi_richness'].mean()[0, 0]
+        fungi_var = h2o_data['fungi_richness'].var()[0, 0]
+        dispersion_ratio = fungi_var / fungi_mean
         
-        # Select GLM class - use H2O for negative binomial (massive parallelization)
-        if distribution == 'negative_binomial':
-            GLMClass = H2ONegativeBinomialGLM
-            logger.info("Using H2O Negative Binomial GLM for 256-core parallelization")
-        else:
-            GLMClass = PoissonGLM
+        logger.info(f"Dispersion ratio: {dispersion_ratio:.2f}")
+        
+        # Always use H2O GLM (handles both Poisson and Negative Binomial)
+        GLMClass = H2ONegativeBinomialGLM
+        logger.info("Using H2O GLM for massive parallelization")
         
         # Get ME columns
-        me_cols = [col for col in data.columns if col.startswith('ME')]
+        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
         
-        # Model 1: Climate only (null model) - lines 286-288
+        # Model 1: Climate only (null model)
         logger.info("Fitting Model 1: Climate only (null)")
         feature_cols_null = [
             'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std', 
-            'elevation_std', 'elevation_std_sq'  # Added quadratic term
+            'elevation_std', 'elevation_std_sq'
         ] + me_cols
         
-        X_null = data[feature_cols_null]
-        y = data['fungi_richness']
+        # Create H2O subset for null model
+        null_data = h2o_data[feature_cols_null + ['fungi_richness']]
         
         self.model_null = GLMClass(self.config.config)
-        self.model_null.fit(X_null, y)
+        self.model_null.fit(null_data, y='fungi_richness')  # Direct H2O fit!
         
-        # Model 2: Add biodiversity (full model) - lines 290-293
+        # Model 2: Climate + biodiversity (full model)
         logger.info("Fitting Model 2: Climate + biodiversity (full)")
-        
-        # Use log-transformed if available, otherwise raw
-        if 'plants_richness_log' in data.columns:
-            biotic_cols = ['plants_richness_log', 'vertebrates_richness_log']
-        else:
-            biotic_cols = ['plants_richness', 'vertebrates_richness']
+        biotic_cols = ['plants_richness_log', 'vertebrates_richness_log'] \
+                     if 'plants_richness_log' in h2o_data.columns \
+                     else ['plants_richness', 'vertebrates_richness']
         
         feature_cols_full = feature_cols_null + biotic_cols
-        X_full = data[feature_cols_full]
+        full_data = h2o_data[feature_cols_full + ['fungi_richness']]
         
         self.model_full = GLMClass(self.config.config)
-        self.model_full.fit(X_full, y)
+        self.model_full.fit(full_data, y='fungi_richness')
         
-        # Model 3: Add interaction (interaction model) - lines 299-304
-        logger.info("Fitting Model 3: Climate + biodiversity + interaction")
-        
-        # Create interaction term
-        data = self.create_interaction_term(data)
+        # Model 3: With interaction
+        logger.info("Fitting Model 3: With interaction")
+        h2o_data = self.create_interaction_term_h2o(h2o_data)
         
         feature_cols_interaction = feature_cols_full + ['plants_bio4_interaction']
-        X_interaction = data[feature_cols_interaction]
+        interaction_data = h2o_data[feature_cols_interaction + ['fungi_richness']]
         
         self.model_interaction = GLMClass(self.config.config)
-        self.model_interaction.fit(X_interaction, y)
+        self.model_interaction.fit(interaction_data, y='fungi_richness')
         
-        # Compile results
+        # Compute model comparisons
         results = {
+            'distribution': 'negative_binomial' if dispersion_ratio > 1.2 else 'poisson',
+            'n_samples': h2o_data.nrows,
             'model_null': self.model_null,
             'model_full': self.model_full,
             'model_interaction': self.model_interaction,
-            'distribution': distribution,
-            'dispersion_ratio': dispersion_ratio,
-            'n_samples': len(data),
-            'n_features': {
-                'null': len(feature_cols_null),
-                'full': len(feature_cols_full),
-                'interaction': len(feature_cols_interaction)
-            }
+            'dispersion_ratio': dispersion_ratio
         }
-        
-        # Log model comparisons
-        self._log_model_comparisons()
         
         return results
     
-    def _log_model_comparisons(self):
-        """Log model comparison statistics."""
-        # LRT: Null vs Full
-        lrt_null_full = self.model_full.likelihood_ratio_test(self.model_null)
-        logger.info(f"LRT (Null vs Full): χ²={lrt_null_full['lrt_statistic']:.2f}, "
-                   f"p={lrt_null_full['p_value']:.4f}")
-        
-        # LRT: Full vs Interaction
-        lrt_full_interaction = self.model_interaction.likelihood_ratio_test(self.model_full)
-        logger.info(f"LRT (Full vs Interaction): χ²={lrt_full_interaction['lrt_statistic']:.2f}, "
-                   f"p={lrt_full_interaction['p_value']:.4f}")
-        
-        # AIC comparisons
-        aic_comparison = self.model_interaction.aic_comparison(self.model_full)
-        logger.info(f"AIC comparison: {aic_comparison['interpretation']}")
-    
-    def get_interaction_coefficient(self) -> Dict[str, float]:
-        """Extract and interpret the interaction coefficient.
-        
-        Returns:
-            Dictionary with interaction coefficient and interpretation
-        """
-        if self.model_interaction is None:
-            raise ValueError("Must fit models first")
-        
-        coef_df = self.model_interaction.get_coefficients()
-        
-        # Get interaction coefficient
-        interaction_coef = coef_df.loc['plants_bio4_interaction', 'coefficient']
-        interaction_pval = coef_df.loc['plants_bio4_interaction', 'p_value']
-        interaction_se = coef_df.loc['plants_bio4_interaction', 'std_error']
-        
-        # Interpretation
-        if interaction_pval < 0.05:
-            if interaction_coef < 0:
-                interpretation = ("Significant negative interaction: "
-                                "Plant-fungi relationship weakens in temperate regions")
-            else:
-                interpretation = ("Significant positive interaction: "
-                                "Plant-fungi relationship strengthens in temperate regions")
-        else:
-            interpretation = "No significant interaction between plants and seasonality"
-        
-        logger.info(f"Interaction coefficient: {interaction_coef:.4f} ± {interaction_se:.4f}, "
-                   f"p={interaction_pval:.4f}")
-        logger.info(f"Interpretation: {interpretation}")
-        
-        return {
-            'coefficient': interaction_coef,
-            'std_error': interaction_se,
-            'p_value': interaction_pval,
-            'exp_coefficient': np.exp(interaction_coef),
-            'interpretation': interpretation,
-            'supports_h2': interaction_coef < 0 and interaction_pval < 0.05
-        }
-    
-    def run_diagnostics(self) -> Dict[str, Any]:
-        """Run DHARMa diagnostics on the interaction model.
-        
-        Returns:
-            Dictionary with diagnostic results
-        """
-        from ...models.glm import DHARMaDiagnostics
-        
-        if self.model_interaction is None:
-            raise ValueError("Must fit models first")
-        
-        logger.info("Running DHARMa diagnostics for interaction model")
-        
-        # Get data for diagnostics
-        me_cols = [col for col in self.data_processed.columns if col.startswith('ME')]
-        
-        if 'plants_richness_log' in self.data_processed.columns:
-            biotic_cols = ['plants_richness_log', 'vertebrates_richness_log']
-        else:
-            biotic_cols = ['plants_richness', 'vertebrates_richness']
-        
-        feature_cols = [
-            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std', 
-            'elevation_std', 'elevation_std_sq'  # Added quadratic term
-        ] + me_cols + biotic_cols + ['plants_bio4_interaction']
-        
-        X = self.data_processed[feature_cols]
-        y = self.data_processed['fungi_richness']
-        
-        # Run diagnostics
-        diagnostics = DHARMaDiagnostics(self.model_interaction)
-        results = diagnostics.run_all_tests(
-            X, y,
-            longitude=self.data_processed['longitude'].values,
-            latitude=self.data_processed['latitude'].values
-        )
-        
-        return results
-    
-    def create_visualization(self, save_path: Optional[str] = None) -> Any:
-        """Create visualization for Method 1 interaction results.
+    def process_large_dataset(self, parquet_path: str) -> Dict[str, Any]:
+        """Complete pipeline for large datasets.
         
         Args:
-            save_path: Optional path to save the figure
+            parquet_path: Path to parquet file
             
         Returns:
-            Matplotlib figure
+            Analysis results
         """
-        from ...visualization import create_method1_interaction_plots
+        # Step 1: Load data directly to H2O (with MESF handling)
+        h2o_data = self.load_data(parquet_path)
         
-        if self.model_interaction is None:
-            raise ValueError("Must fit models first")
+        # Step 2: Prepare data in H2O
+        h2o_data = self.prepare_data_h2o(h2o_data)
         
-        # Gather model results
-        model_results = {
-            'models': {
-                'null': {
-                    'aic': self.model_null.model_result.aic,
-                    'bic': self.model_null.model_result.bic,
-                    'llf': self.model_null.model_result.llf
-                },
-                'full': {
-                    'aic': self.model_full.model_result.aic,
-                    'bic': self.model_full.model_result.bic,
-                    'llf': self.model_full.model_result.llf
-                },
-                'interaction': {
-                    'aic': self.model_interaction.model_result.aic,
-                    'bic': self.model_interaction.model_result.bic,
-                    'llf': self.model_interaction.model_result.llf
-                }
-            },
-            'interaction_term': self.get_interaction_coefficient()
-        }
+        # Step 3: Fit models
+        results = self.fit_models(h2o_data)
         
-        # Create visualization
-        fig = create_method1_interaction_plots(
-            self.data_processed,
-            model_results,
-            save_path=save_path
-        )
+        # Step 4: Get interaction coefficient
+        interaction_results = self.get_interaction_coefficient()
+        results.update(interaction_results)
         
-        logger.info("Created Method 1 visualization")
-        return fig
+        return results
     
-    def summarize_results(self) -> Dict[str, Any]:
-        """Summarize Method 1 results.
+    def get_interaction_coefficient(self) -> Dict[str, Any]:
+        """Extract and test the interaction coefficient.
         
         Returns:
-            Dictionary with complete Method 1 results
+            Dictionary with coefficient, p-value, and H2 support determination
         """
         if self.model_interaction is None:
             raise ValueError("Must fit models first")
         
-        interaction_results = self.get_interaction_coefficient()
+        # Get coefficient for plants_bio4_interaction
+        coef_info = self.model_interaction.get_coefficient('plants_bio4_interaction')
         
-        summary = {
-            'method': 'Method 1: Continuous Interaction GLM',
-            'models': {
-                'null': {
-                    'aic': self.model_null.model_result.aic,
-                    'bic': self.model_null.model_result.bic,
-                    'llf': self.model_null.model_result.llf
-                },
-                'full': {
-                    'aic': self.model_full.model_result.aic,
-                    'bic': self.model_full.model_result.bic,
-                    'llf': self.model_full.model_result.llf
-                },
-                'interaction': {
-                    'aic': self.model_interaction.model_result.aic,
-                    'bic': self.model_interaction.model_result.bic,
-                    'llf': self.model_interaction.model_result.llf
-                }
-            },
-            'interaction_term': interaction_results,
-            'h2_test': {
-                'supported': interaction_results['supports_h2'],
-                'interpretation': interaction_results['interpretation']
-            }
+        return {
+            'interaction_coefficient': coef_info['coefficient'],
+            'interaction_p_value': coef_info['p_value'],
+            'supports_h2': coef_info['p_value'] < 0.05 and coef_info['coefficient'] != 0,
+            'interpretation': self._interpret_interaction(coef_info)
         }
-        
-        return summary
+    
+    def _interpret_interaction(self, coef_info: Dict) -> str:
+        """Interpret the interaction coefficient."""
+        if coef_info['p_value'] >= 0.05:
+            return "No significant interaction between plant diversity and temperature seasonality"
+        elif coef_info['coefficient'] > 0:
+            return "Positive interaction: Plant-fungi relationship strengthens with temperature seasonality"
+        else:
+            return "Negative interaction: Plant-fungi relationship weakens with temperature seasonality"

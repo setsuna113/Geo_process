@@ -107,16 +107,16 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         return dispersion_ratio, is_overdispersed
     
     def fit(self, 
-            X: Union[np.ndarray, pd.DataFrame, h2o.H2OFrame],
-            y: Optional[Union[np.ndarray, pd.Series, str]] = None,
+            X: h2o.H2OFrame,
+            y: Optional[str] = None,
             validation_fraction: float = 0.2,
             lambda_search: bool = True,
             **kwargs) -> 'H2ONegativeBinomialGLM':
         """Fit the H2O Negative Binomial GLM using all available cores.
         
         Args:
-            X: Feature matrix (can be H2OFrame with target included)
-            y: Target values (species richness counts) or column name if X is H2OFrame
+            X: H2OFrame with all features and target
+            y: Target column name (default: 'fungi_richness' or last column)
             validation_fraction: Fraction of data for validation
             lambda_search: Whether to perform automatic lambda search
             **kwargs: Additional parameters
@@ -124,61 +124,35 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         Returns:
             Self for method chaining
         """
-        # Handle H2OFrame input (MEMORY EFFICIENT - no conversion!)
-        if isinstance(X, h2o.H2OFrame):
-            logger.info("Using H2OFrame directly - no memory duplication!")
-            h2o_data = X
-            
-            # Determine target column
-            if isinstance(y, str):
-                # y is the column name
-                self.target_col = y
-                feature_names = [col for col in h2o_data.columns if col != y]
-            else:
-                # Assume last column is target (or 'fungi_richness' if exists)
-                if 'fungi_richness' in h2o_data.columns:
-                    self.target_col = 'fungi_richness'
-                else:
-                    self.target_col = h2o_data.columns[-1]
-                feature_names = [col for col in h2o_data.columns if col != self.target_col]
-            
-            # Check overdispersion using H2O operations
-            target_mean = h2o_data[self.target_col].mean()[0]
-            target_var = h2o_data[self.target_col].var()[0]
-            dispersion_ratio = target_var / target_mean
-            is_overdispersed = dispersion_ratio > 1.2
-            
+        # ONLY accept H2OFrame - no pandas conversion!
+        if not isinstance(X, h2o.H2OFrame):
+            raise TypeError(
+                "Only H2OFrame is accepted. For 180M+ points, use H2O directly. "
+                "Convert with: h2o_df = h2o.import_file('data.parquet')"
+            )
+        
+        logger.info("Using H2OFrame directly - no memory duplication!")
+        h2o_data = X
+        
+        # Determine target column
+        if y is not None:
+            self.target_col = y
+        elif 'fungi_richness' in h2o_data.columns:
+            self.target_col = 'fungi_richness'
         else:
-            # Legacy pandas/numpy support (memory inefficient - will convert)
-            logger.warning("Converting pandas/numpy to H2O - consider using H2OFrame directly!")
-            
-            # Convert to DataFrame if needed
-            if isinstance(X, np.ndarray):
-                X_df = pd.DataFrame(X, columns=[f'X{i}' for i in range(X.shape[1])])
-                feature_names = X_df.columns.tolist()
-            else:
-                X_df = X
-                feature_names = X.columns.tolist()
-            
-            if isinstance(y, np.ndarray):
-                y_series = pd.Series(y, name='response')
-            else:
-                y_series = pd.Series(y.values if hasattr(y, 'values') else y, name='response')
-            
-            # Check overdispersion
-            y_array = y_series.values
-            dispersion_ratio, is_overdispersed = self.check_overdispersion(y_array)
-            
-            # Combine X and y for H2O
-            data = pd.concat([X_df, y_series], axis=1)
-            
-            # Convert to H2O Frame
-            logger.info("Converting data to H2O format...")
-            h2o_data = h2o.H2OFrame(data)
-            self.target_col = 'response'
+            self.target_col = h2o_data.columns[-1]
+            logger.warning(f"No target specified, using last column: {self.target_col}")
+        
+        feature_names = [col for col in h2o_data.columns if col != self.target_col]
+        
+        # Check overdispersion using H2O operations
+        target_mean = h2o_data[self.target_col].mean()[0, 0]
+        target_var = h2o_data[self.target_col].var()[0, 0]
+        dispersion_ratio = target_var / target_mean
+        is_overdispersed = dispersion_ratio > 1.2
         
         if not is_overdispersed:
-            logger.warning("Data may not be overdispersed. Consider using Poisson GLM instead.")
+            logger.warning(f"Data may not be overdispersed (ratio={dispersion_ratio:.2f}). Consider Poisson GLM.")
         
         # Split data for validation
         if validation_fraction > 0:
