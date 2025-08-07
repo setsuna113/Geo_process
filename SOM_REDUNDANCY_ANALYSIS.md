@@ -170,12 +170,39 @@ Checkpoint saving/loading appears in:
 - `analyzer_old.py`
 - `som_core_old.py`
 - Old monitoring scripts (already deleted)
+- `som/preprocessing.py` (DELETED - using SharedPreprocessor now)
 
 ## Files to Investigate Further
 - `analyzer_adapter.py` - Check if still needed
 - `geo_som_core_vectorized.py` - Performance comparison needed
 - `spatial_utils_optimized.py` - Check which is actually used
 - `som_config_loader.py` - Might be redundant with `som_config.py`
+
+## Preprocessing Consolidation (COMPLETED)
+
+### What We Did
+1. **Created SharedPreprocessor** in `/src/biodiversity_analysis/preprocessing/pipeline.py`
+   - Simple, method-aware preprocessor
+   - Auto-configures based on method name (som, cpwopt, kmeans)
+   - Replaces all method-specific preprocessing
+
+2. **Removed Bloat**:
+   - Removed imports of "advanced" features (spatial, zero-inflation, diversity)
+   - These were over-engineered and not actually useful:
+     - SpatialFeatureEngineering: Moran's I, spatial lags (we already have coordinates!)
+     - ZeroInflationPreprocessor: CLR, ILR transforms (over-engineering for simple counts)
+     - BiodiversityFeatureEngineering: Shannon/Simpson indices (circular reasoning!)
+
+3. **Updated SOM**:
+   - Removed all preprocessing logic from `analyzer.py`
+   - Now uses `SharedPreprocessor(method_name='som')`
+   - Deleted `som/preprocessing.py` entirely
+
+### Benefits
+- Single preprocessing module for all methods
+- No redundancy
+- Simple configuration (minmax for SOM, standard for kmeans, etc.)
+- Much cleaner code
 
 ---
 *Generated: 2025-08-07*

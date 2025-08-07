@@ -15,10 +15,7 @@ from datetime import datetime
 from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
 from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
-from .preprocessing import BiodiversityPreprocessor
-from ...preprocessing.pipeline import BiodiversityPreprocessingPipeline
-from ...preprocessing.zero_inflation import ZeroInflationPreprocessor
-from ...preprocessing.spatial_features import SpatialFeatureEngineering
+from ...preprocessing import SharedPreprocessor
 from .spatial_utils import SpatialBlockGenerator, GeographicCoherence
 from .partial_metrics import validate_missing_data_handling
 from .progress_tracker import SOMProgressTracker, create_progress_callback
@@ -53,35 +50,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         self.config = config
         self.som = None
         
-        # Check if we should use advanced preprocessing
-        preprocessing_config = self.config.get('preprocessing_config', {})
-        self.use_advanced_preprocessing = preprocessing_config.get('use_advanced', False)
-        logger.info(f"Preprocessing config: {preprocessing_config}")
-        logger.info(f"Use advanced preprocessing: {self.use_advanced_preprocessing}")
-        
-        if self.use_advanced_preprocessing:
-            # Use the new advanced preprocessing pipeline
-            preprocessing_config = self.config.get('preprocessing_config', {})
-            self.preprocessor = BiodiversityPreprocessingPipeline(
-                # Zero-inflation handling
-                structural_zero_threshold=preprocessing_config.get('structural_zero_threshold', 0.95),
-                pseudo_count_method=preprocessing_config.get('pseudo_count_method', 'adaptive'),
-                compositional_transform=preprocessing_config.get('compositional_transform', 'hurdle'),
-                
-                # Spatial features
-                spatial_neighbors=preprocessing_config.get('spatial_neighbors', 8),
-                spatial_scales=preprocessing_config.get('spatial_scales', [5, 10, 25, 50, 100]),
-                n_moran_eigenvectors=preprocessing_config.get('n_moran_eigenvectors', 10),
-                use_pmem=preprocessing_config.get('use_pmem', True),
-                
-                # Feature handling
-                calculate_diversity_indices=False,  # Not for richness clustering
-                standardize=True,
-                standardization_method='robust'
-            )
-        else:
-            # Use the original simple preprocessing
-            self.preprocessor = BiodiversityPreprocessor()
+        # Use shared preprocessor configured for SOM
+        self.preprocessor = SharedPreprocessor(method_name='som')
+        logger.info("Using shared preprocessor for SOM (minmax normalization, zero imputation)")
             
         self.training_result = None
         self._geosom_config = None
@@ -185,31 +156,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         logger.info(f"Column indices - observed: {observed_cols}, predicted: {predicted_cols}")
         
-        # Preprocess data
-        if self.use_advanced_preprocessing:
-            logger.info("Using advanced preprocessing with spatial features and zero-inflation handling")
-            # Advanced preprocessing pipeline expects all features together
-            # No need to separate observed/predicted for advanced preprocessing
-            features_processed, new_feature_names, metadata = self.preprocessor.fit_transform(
-                species_data=biodiv_data.features,
-                coordinates=biodiv_data.coordinates,
-                species_names=biodiv_data.feature_names
-            )
-            logger.info(f"Advanced preprocessing created {len(new_feature_names)} features from {biodiv_data.features.shape[1]} original features")
-            logger.info(f"Preprocessing metadata: {metadata}")
-            
-            # Update feature names for later use
-            biodiv_data.feature_names = new_feature_names
-            
-            # Note: With advanced preprocessing, we don't distinguish between observed/predicted
-            # All features are treated equally in the spatial analysis
-        else:
-            # Simple preprocessing
-            features_processed = self.preprocessor.fit_transform(
-                biodiv_data.features,
-                observed_cols,
-                predicted_cols
-            )
+        # Preprocess data using shared preprocessor
+        logger.info("Preprocessing data with SharedPreprocessor (minmax normalization, zero imputation)")
+        features_processed = self.preprocessor.fit_transform(biodiv_data.features)
+        
+        # Note: We no longer need to track observed/predicted columns separately for preprocessing
+        # The shared preprocessor handles all features uniformly
         
         # Determine grid size - first check config file, then kwargs, then auto
         arch_config = self.config.get('architecture_config', {})
@@ -738,7 +690,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                         feature_names: List[str]) -> Dict[str, Any]:
         """Generate comprehensive reports and visualizations."""
         reports = {
-            'preprocessing_info': self.preprocessor.get_preprocessing_info(),
+            'preprocessing_info': {
+                'method': 'SharedPreprocessor',
+                'normalization': self.preprocessor.normalization_method,
+                'missing_strategy': self.preprocessor.missing_strategy
+            },
             'training_history': self.som.training_history,
             'grid_info': {
                 'size': self._geosom_config.grid_size,
@@ -789,7 +745,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 'grid_size': self._geosom_config.grid_size,
                 'spatial_weight': self._geosom_config.spatial_weight,
                 'distance_metric': 'partial_bray_curtis',
-                'preprocessing': 'log1p+separate_zscore'
+                'preprocessing': f'{self.preprocessor.normalization_method}+{self.preprocessor.missing_strategy}'
             }
         )
         
