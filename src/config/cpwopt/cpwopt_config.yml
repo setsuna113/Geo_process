@@ -7,8 +7,10 @@ algorithm:
   max_iterations: 1000        # Maximum ALS iterations
   convergence_threshold: 1e-6 # Relative error threshold
   init_method: 'svd'          # Initialization: 'random', 'svd', 'nndsvd' (svd better for large-scale)
-  optimizer: 'als'            # Optimizer: 'als', 'gradient', 'nonnegative', 'sparse'
+  optimizer: 'als'            # Optimizer: 'als', 'gradient', 'sgd', 'sgd_momentum'
   random_state: 42            # For reproducibility
+  learning_rate: 0.01         # Learning rate for SGD methods (NEW)
+  momentum: 0.9               # Momentum parameter for SGD with momentum (NEW)
 
 # Rank selection parameters (when rank='auto')
 rank_selection:
@@ -119,6 +121,17 @@ reporting:
   smoothing_sigma: 1.5      # Gaussian smoothing (0 = no smoothing)
   threshold_percentile: 30  # Remove bottom 30% of weak signals
   min_component_weight: 0.05 # Minimum component weight to display
+
+# Backend configuration (NEW)
+backend:
+  use_gpu: 'auto'          # Device selection: 'auto', 'cpu', 'gpu'
+  fallback_to_cpu: true    # Fallback to CPU if GPU unavailable
+
+# Sampling configuration (NEW)
+sampling:
+  enabled: false           # Enable importance sampling (off by default)
+  method: 'leverage'       # Sampling method: 'leverage', 'density', 'uniform'  
+  ratio: 1.0              # Sampling ratio (1.0 = no sampling, 0.1 = 10% sampling)
 
 # Logging
 logging:

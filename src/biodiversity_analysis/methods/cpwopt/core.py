@@ -39,7 +39,10 @@ class CPWOPT:
                  init_method: str = DEFAULT_INIT_METHOD,
                  optimizer: str = DEFAULT_OPTIMIZER,
                  random_state: Optional[int] = None,
-                 verbose: bool = True):
+                 verbose: bool = True,
+                 use_gpu: str = 'auto',
+                 learning_rate: float = 0.01,
+                 momentum: float = 0.9):
         """Initialize CP-WOPT algorithm.
         
         Args:
@@ -47,9 +50,12 @@ class CPWOPT:
             max_iterations: Maximum number of iterations
             convergence_threshold: Relative error threshold for convergence
             init_method: Factor initialization method
-            optimizer: Optimization algorithm ('als' or 'lbfgs')
+            optimizer: Optimization algorithm ('als', 'gradient', 'sgd_momentum')
             random_state: Random seed for reproducibility
             verbose: Whether to log progress
+            use_gpu: Device selection ('auto', 'cpu', 'gpu')
+            learning_rate: Learning rate for SGD methods
+            momentum: Momentum parameter for SGD with momentum
         """
         if rank <= 0:
             raise ValueError(ERROR_INVALID_RANK.format(rank))
@@ -61,6 +67,16 @@ class CPWOPT:
         self.optimizer = optimizer
         self.random_state = random_state
         self.verbose = verbose
+        self.learning_rate = learning_rate
+        self.momentum = momentum
+        
+        # Initialize backend
+        from .backend import CPWOPTBackend
+        self.backend = CPWOPTBackend(use_gpu)
+        
+        # Initialize factor updater
+        from .factor_updater import FactorUpdater
+        self.updater = FactorUpdater()
         
         # State variables
         self.factors_: Optional[CPFactors] = None
@@ -93,9 +109,17 @@ class CPWOPT:
             
         factors = self._initialize_factors(tensor_data)
         
-        # Optimize
+        # Transfer tensor to device if using GPU
+        if self.backend.device == 'gpu':
+            tensor_data = self.backend.transfer_tensor_data(tensor_data)
+        
+        # Optimize based on selected optimizer
         if self.optimizer == 'als':
             factors, metrics = self._fit_als(tensor_data, factors)
+        elif self.optimizer in ['gradient', 'sgd']:
+            factors, metrics = self._fit_sgd(tensor_data, factors)
+        elif self.optimizer == 'sgd_momentum':
+            factors, metrics = self._fit_sgd_momentum(tensor_data, factors)
         else:
             raise NotImplementedError(f"Optimizer '{self.optimizer}' not implemented")
         
@@ -221,6 +245,127 @@ class CPWOPT:
         component_weights = component_weights[sort_idx]
         
         metrics.component_weights = component_weights
+        
+        return factors, metrics
+    
+    def _fit_sgd(self, tensor_data: TensorData, 
+                 initial_factors: CPFactors) -> Tuple[CPFactors, TensorMetrics]:
+        """Fit CP decomposition using stochastic gradient descent.
+        
+        Uses the gradient update from factor_updater.py.
+        
+        Args:
+            tensor_data: Input tensor with weight mask
+            initial_factors: Initial factor matrices
+            
+        Returns:
+            Tuple of (optimized factors, metrics)
+        """
+        if self.verbose:
+            logger.info(f"Starting SGD optimization (lr={self.learning_rate})")
+        
+        factors = initial_factors
+        convergence_history = []
+        
+        for iteration in range(self.max_iterations):
+            # Update each factor using gradient descent
+            for mode in range(len(factors.factors)):
+                factors.factors[mode] = self.updater._update_gradient(
+                    tensor_data.values,
+                    tensor_data.weights,
+                    factors.factors,
+                    mode,
+                    learning_rate=self.learning_rate,
+                    momentum=0.0,  # No momentum for basic SGD
+                    n_iterations=1  # Single gradient step per mode
+                )
+            
+            # Check convergence periodically
+            if iteration % 10 == 0:
+                error = weighted_norm(
+                    tensor_data.values - cp_reconstruct(factors),
+                    tensor_data.weights
+                )
+                convergence_history.append(error)
+                
+                if self.verbose and iteration % 50 == 0:
+                    logger.info(f"Iteration {iteration}: error={error:.6f}")
+                
+                if len(convergence_history) > 1:
+                    if check_convergence(convergence_history, self.convergence_threshold):
+                        if self.verbose:
+                            logger.info(f"Converged at iteration {iteration}")
+                        break
+            
+            # Update iteration count
+            self.n_iterations_ = iteration + 1
+        
+        # Compute final metrics
+        metrics = self._compute_metrics(tensor_data, factors)
+        self.convergence_history_ = convergence_history
+        
+        return factors, metrics
+    
+    def _fit_sgd_momentum(self, tensor_data: TensorData,
+                         initial_factors: CPFactors) -> Tuple[CPFactors, TensorMetrics]:
+        """Fit CP decomposition using SGD with momentum.
+        
+        Uses the existing _update_gradient from factor_updater.py with momentum.
+        
+        Args:
+            tensor_data: Input tensor with weight mask
+            initial_factors: Initial factor matrices
+            
+        Returns:
+            Tuple of (optimized factors, metrics)
+        """
+        if self.verbose:
+            logger.info(f"Starting SGD with momentum (lr={self.learning_rate}, "
+                       f"momentum={self.momentum})")
+        
+        factors = initial_factors
+        convergence_history = []
+        
+        for iteration in range(self.max_iterations):
+            # Update each factor using gradient descent with momentum
+            for mode in range(len(factors.factors)):
+                factors.factors[mode] = self.updater._update_gradient(
+                    tensor_data.values,
+                    tensor_data.weights,
+                    factors.factors,
+                    mode,
+                    learning_rate=self.learning_rate,
+                    momentum=self.momentum,
+                    n_iterations=1  # Single gradient step per mode
+                )
+            
+            # Check convergence periodically
+            if iteration % 10 == 0:
+                error = weighted_norm(
+                    tensor_data.values - cp_reconstruct(factors),
+                    tensor_data.weights
+                )
+                convergence_history.append(error)
+                
+                if self.verbose and iteration % 50 == 0:
+                    logger.info(f"Iteration {iteration}: error={error:.6f}")
+                
+                if len(convergence_history) > 1:
+                    if check_convergence(convergence_history, self.convergence_threshold):
+                        if self.verbose:
+                            logger.info(f"Converged at iteration {iteration}")
+                        break
+            
+            # Callback for progress tracking
+            if self.progress_callback:
+                self.progress_callback(iteration, error)
+            
+            # Update iteration count
+            self.n_iterations_ = iteration + 1
+        
+        # Compute final metrics
+        metrics = self._compute_metrics(tensor_data, factors)
+        self.convergence_history_ = convergence_history
         
         return factors, metrics
     

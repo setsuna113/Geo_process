@@ -30,17 +30,27 @@ class TensorPreprocessor(ITensorPreprocessor):
     def __init__(self, 
                  missing_value: float = np.nan,
                  min_observations_per_cell: int = 1,
-                 aggregation_method: str = 'sum'):
+                 aggregation_method: str = 'sum',
+                 enable_sampling: bool = False,
+                 sampling_ratio: float = 1.0,
+                 sampling_method: str = 'leverage'):
         """Initialize tensor preprocessor.
         
         Args:
             missing_value: Value to use for missing data
             min_observations_per_cell: Minimum observations to consider cell valid
             aggregation_method: How to aggregate multiple observations ('sum', 'mean', 'max')
+            enable_sampling: Whether to enable importance sampling
+            sampling_ratio: Fraction of data to sample (1.0 = no sampling)
+            sampling_method: Sampling method ('leverage', 'uniform', 'density')
         """
         self.missing_value = missing_value
         self.min_observations_per_cell = min_observations_per_cell
         self.aggregation_method = aggregation_method
+        self.enable_sampling = enable_sampling
+        self.sampling_ratio = sampling_ratio
+        self.sampling_method = sampling_method
+        self.leverage_scores = None
         
     def grid_spatial_data(self, coordinates: np.ndarray, values: np.ndarray,
                          lat_bins: int, lon_bins: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -437,3 +447,166 @@ def create_biodiversity_tensor(data_df: pd.DataFrame,
         metadata=metadata,
         is_sparse=is_sparse
     )
+
+
+class TensorPreprocessorWithSampling(TensorPreprocessor):
+    """Extension of TensorPreprocessor with sampling capabilities."""
+    
+    def apply_leverage_sampling(self, tensor_data: TensorData, 
+                               factors: Optional[List[np.ndarray]] = None) -> TensorData:
+        """Apply leverage score sampling to tensor data.
+        
+        Samples entries based on their importance scores, maintaining quality
+        while reducing data size.
+        
+        Args:
+            tensor_data: Input tensor data
+            factors: Optional factor matrices for computing leverage scores
+            
+        Returns:
+            Sampled tensor data
+        """
+        if not self.enable_sampling or self.sampling_ratio >= 1.0:
+            return tensor_data
+        
+        logger.info(f"Applying {self.sampling_method} sampling (ratio: {self.sampling_ratio})")
+        
+        # Compute importance scores based on method
+        if self.sampling_method == 'leverage' and factors is not None:
+            scores = self._compute_leverage_scores(tensor_data, factors)
+        elif self.sampling_method == 'density':
+            scores = self._compute_density_scores(tensor_data)
+        else:  # uniform
+            scores = self._compute_uniform_scores(tensor_data)
+        
+        # Sample based on scores
+        n_samples = int(tensor_data.nnz * self.sampling_ratio) if hasattr(tensor_data, 'nnz') else \
+                   int(np.sum(~np.isnan(tensor_data.values)) * self.sampling_ratio)
+        
+        sampled_indices = self._importance_sample(scores, n_samples)
+        
+        # Create sampled tensor
+        if hasattr(tensor_data, 'indices'):
+            # Sparse format
+            sampled_data = TensorData(
+                values=tensor_data.values[sampled_indices],
+                indices=tensor_data.indices[sampled_indices],
+                shape=tensor_data.shape,
+                weights=tensor_data.weights[sampled_indices] if hasattr(tensor_data, 'weights') else None,
+                sparsity=tensor_data.sparsity if hasattr(tensor_data, 'sparsity') else None
+            )
+        else:
+            # Dense format - create mask
+            mask = np.zeros_like(tensor_data.values, dtype=bool)
+            mask.flat[sampled_indices] = True
+            
+            sampled_values = tensor_data.values.copy()
+            sampled_values[~mask] = self.missing_value
+            
+            sampled_data = TensorData(
+                values=sampled_values,
+                shape=tensor_data.shape,
+                weights=tensor_data.weights if hasattr(tensor_data, 'weights') else None,
+                sparsity=1.0 - (n_samples / tensor_data.values.size)
+            )
+        
+        logger.info(f"Sampled {n_samples} entries from {tensor_data.values.size} total")
+        
+        return sampled_data
+    
+    def _compute_leverage_scores(self, tensor_data: TensorData, 
+                                factors: List[np.ndarray]) -> np.ndarray:
+        """Compute leverage scores for importance sampling.
+        
+        Leverage scores measure the importance of each entry based on
+        the current factor matrices.
+        
+        Args:
+            tensor_data: Tensor data
+            factors: Current factor matrices
+            
+        Returns:
+            Array of leverage scores
+        """
+        # Simplified leverage score computation
+        # Score = sum of squared factor values for each entry
+        
+        if hasattr(tensor_data, 'indices'):
+            # Sparse format
+            indices = tensor_data.indices
+            scores = np.zeros(len(indices))
+            
+            for i in range(len(indices)):
+                idx = indices[i]
+                score = 1.0
+                for mode, factor in enumerate(factors):
+                    if idx[mode] < factor.shape[0]:
+                        score *= np.sum(factor[idx[mode], :] ** 2)
+                scores[i] = score
+        else:
+            # Dense format
+            scores = np.ones_like(tensor_data.values).flatten()
+            # Would need more complex computation for dense
+        
+        # Normalize scores
+        scores = scores / (np.sum(scores) + 1e-10)
+        
+        return scores
+    
+    def _compute_density_scores(self, tensor_data: TensorData) -> np.ndarray:
+        """Compute density-based scores for sampling.
+        
+        Higher scores for regions with more observations.
+        
+        Args:
+            tensor_data: Tensor data
+            
+        Returns:
+            Array of density scores
+        """
+        if hasattr(tensor_data, 'values'):
+            # Score based on magnitude of values
+            scores = np.abs(tensor_data.values)
+            scores = scores / (np.sum(scores) + 1e-10)
+        else:
+            scores = np.ones(tensor_data.nnz) / tensor_data.nnz
+        
+        return scores
+    
+    def _compute_uniform_scores(self, tensor_data: TensorData) -> np.ndarray:
+        """Compute uniform scores for random sampling.
+        
+        Args:
+            tensor_data: Tensor data
+            
+        Returns:
+            Array of uniform scores
+        """
+        n = len(tensor_data.values) if hasattr(tensor_data, 'values') else tensor_data.nnz
+        return np.ones(n) / n
+    
+    def _importance_sample(self, scores: np.ndarray, n_samples: int) -> np.ndarray:
+        """Sample indices based on importance scores.
+        
+        Args:
+            scores: Importance scores (must sum to 1)
+            n_samples: Number of samples to draw
+            
+        Returns:
+            Array of sampled indices
+        """
+        # Sample without replacement based on scores
+        indices = np.arange(len(scores))
+        
+        # Ensure we don't sample more than available
+        n_samples = min(n_samples, len(scores))
+        
+        # Sample based on probabilities
+        sampled = np.random.choice(
+            indices,
+            size=n_samples,
+            replace=False,
+            p=scores
+        )
+        
+        return sampled
