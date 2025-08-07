@@ -12,6 +12,12 @@ from numpy.linalg import norm
 
 logger = logging.getLogger(__name__)
 
+# Import backend if available (for typing)
+try:
+    from ..methods.cpwopt.backend import CPWOPTBackend
+except ImportError:
+    CPWOPTBackend = None
+
 
 def unfold(tensor: np.ndarray, mode: int) -> np.ndarray:
     """Unfold (matricize) a tensor along a specified mode.
@@ -256,30 +262,139 @@ def compute_gram_matrices(factors: List[np.ndarray],
 
 
 def compute_mttkrp(tensor: np.ndarray, factors: List[np.ndarray], 
-                  mode: int) -> np.ndarray:
+                  mode: int, weights: Optional[np.ndarray] = None,
+                  backend: Optional['CPWOPTBackend'] = None) -> np.ndarray:
     """Compute Matricized Tensor Times Khatri-Rao Product (MTTKRP).
     
     Core operation in CP-ALS: X_(n) (C ⊙ B ⊙ A)
+    Now with CPU/GPU flexibility and optimizations!
     
     Args:
         tensor: Input tensor
         factors: List of factor matrices
         mode: Mode for which to compute MTTKRP
+        weights: Optional weight mask
+        backend: Optional compute backend for CPU/GPU execution
         
     Returns:
         MTTKRP result
     """
-    # Get factors for other modes
-    other_factors = [factors[m] for m in range(len(factors)) if m != mode]
+    # Get backend (CPU or GPU)
+    xp = backend.get_array_module() if backend else np
     
-    # Compute Khatri-Rao product of other factors
-    kr = other_factors[0]
-    for factor in other_factors[1:]:
-        kr = khatri_rao(kr, factor)
+    # Transfer to device if using GPU
+    if backend and backend.device == 'gpu':
+        tensor = backend.to_device(tensor)
+        factors = backend.transfer_factors(factors)
+        if weights is not None:
+            weights = backend.to_device(weights)
     
-    # Unfold tensor and multiply
-    unfolded = unfold(tensor, mode)
-    return unfolded @ kr
+    # Optimization for 3D tensors (most common case)
+    if len(tensor.shape) == 3 and backend is not None:
+        result = _mttkrp_3d_optimized(tensor, factors, mode, weights, xp)
+    else:
+        # Original implementation with backend support
+        # Get factors for other modes
+        other_factors = [factors[m] for m in range(len(factors)) if m != mode]
+        
+        # Compute Khatri-Rao product of other factors
+        if backend:
+            kr = _khatri_rao_backend(other_factors[0], other_factors[1], xp)
+            for factor in other_factors[2:]:
+                kr = _khatri_rao_backend(kr, factor, xp)
+        else:
+            kr = other_factors[0]
+            for factor in other_factors[1:]:
+                kr = khatri_rao(kr, factor)
+        
+        # Unfold tensor and multiply
+        if backend:
+            unfolded = _unfold_backend(tensor, mode, xp)
+            result = xp.dot(unfolded, kr)
+        else:
+            unfolded = unfold(tensor, mode)
+            result = unfolded @ kr
+        
+        # Apply weights if provided
+        if weights is not None:
+            if backend:
+                result = result * weights.reshape(result.shape[0], 1)
+            else:
+                result *= weights.reshape(result.shape[0], 1)
+    
+    # Transfer back to CPU if needed
+    if backend and backend.device == 'gpu':
+        result = backend.to_cpu(result)
+    
+    return result
+
+
+def _mttkrp_3d_optimized(tensor, factors, mode, weights, xp):
+    """Optimized MTTKRP for 3D tensors (lat x lon x features).
+    
+    Uses more efficient memory access patterns and einsum where beneficial.
+    """
+    if mode == 0:  # Update latitude factors
+        # Optimized memory access pattern
+        if xp.__name__ == 'cupy':
+            # GPU: Use batched operations with einsum
+            result = xp.einsum('ijk,jl,kl->il', tensor, factors[1], factors[2], 
+                             optimize=True)
+        else:
+            # CPU: Cache-friendly loop ordering
+            result = xp.zeros((tensor.shape[0], factors[0].shape[1]))
+            # Process by feature slices for better cache locality
+            for k in range(tensor.shape[2]):
+                result += xp.dot(tensor[:, :, k], factors[1]) * factors[2][k, :]
+    
+    elif mode == 1:  # Update longitude factors
+        if xp.__name__ == 'cupy':
+            result = xp.einsum('ijk,il,kl->jl', tensor, factors[0], factors[2],
+                             optimize=True)
+        else:
+            result = xp.zeros((tensor.shape[1], factors[1].shape[1]))
+            for k in range(tensor.shape[2]):
+                result += xp.dot(tensor[:, :, k].T, factors[0]) * factors[2][k, :]
+    
+    else:  # mode == 2, Update feature factors
+        if xp.__name__ == 'cupy':
+            result = xp.einsum('ijk,il,jl->kl', tensor, factors[0], factors[1],
+                             optimize=True)
+        else:
+            result = xp.zeros((tensor.shape[2], factors[2].shape[1]))
+            for i in range(tensor.shape[0]):
+                for j in range(tensor.shape[1]):
+                    if xp.any(tensor[i, j, :] != 0):  # Skip zeros
+                        result += xp.outer(tensor[i, j, :], 
+                                         factors[0][i, :] * factors[1][j, :])
+    
+    # Apply weights if provided
+    if weights is not None:
+        result *= weights.reshape(result.shape[0], 1)
+    
+    return result
+
+
+def _khatri_rao_backend(a, b, xp):
+    """Khatri-Rao product with backend support."""
+    if a.shape[1] != b.shape[1]:
+        raise ValueError("Matrices must have same number of columns")
+    
+    c = xp.zeros((a.shape[0] * b.shape[0], a.shape[1]))
+    for j in range(a.shape[1]):
+        c[:, j] = xp.kron(a[:, j], b[:, j])
+    return c
+
+
+def _unfold_backend(tensor, mode, xp):
+    """Unfold tensor with backend support."""
+    n = tensor.shape[mode]
+    perm = list(range(tensor.ndim))
+    perm[mode] = 0
+    perm[0] = mode
+    
+    tensor_perm = xp.transpose(tensor, perm)
+    return tensor_perm.reshape(n, -1)
 
 
 def apply_weight_mask(tensor: np.ndarray, weights: np.ndarray,

@@ -380,13 +380,16 @@ class SparseHandler:
 class AdaptiveSparseStrategy:
     """Adaptively switch between sparse and dense operations."""
     
-    def __init__(self, threshold: float = SPARSITY_THRESHOLD):
+    def __init__(self, threshold: float = SPARSITY_THRESHOLD,
+                 use_csf: bool = True):
         """Initialize adaptive strategy.
         
         Args:
             threshold: Sparsity threshold for switching to sparse
+            use_csf: Whether to use CSF format for ultra-sparse tensors
         """
         self.threshold = threshold
+        self.use_csf = use_csf
         self.sparse_handler = SparseHandler()
         
     def should_use_sparse(self, tensor_data: TensorData) -> bool:
@@ -476,6 +479,90 @@ class AdaptiveSparseStrategy:
                 factors, 
                 mode
             )
+    
+    def select_optimal_format(self, tensor_data: TensorData) -> TensorData:
+        """Select optimal sparse format based on tensor properties.
+        
+        Simplified logic: Use CSF for ultra-sparse (>95%), COO otherwise.
+        
+        Args:
+            tensor_data: Input tensor data
+            
+        Returns:
+            Tensor data with optimal format
+        """
+        sparsity = tensor_data.sparsity if hasattr(tensor_data, 'sparsity') else 0.0
+        
+        # Simple decision: CSF for ultra-sparse tensors
+        if sparsity > 0.95 and self.use_csf:
+            return self._convert_to_csf(tensor_data)
+        
+        # Keep current format
+        return tensor_data
+    
+    def _convert_to_csf(self, tensor_data: TensorData) -> TensorData:
+        """Convert tensor to Compressed Sparse Fiber format.
+        
+        CSF is optimal for MTTKRP operations on ultra-sparse tensors.
+        For 3D tensors, we store as a list of sparse matrices (one per feature).
+        
+        Args:
+            tensor_data: Input tensor data
+            
+        Returns:
+            Tensor data with CSF representation
+        """
+        if not hasattr(tensor_data, 'shape') or len(tensor_data.shape) != 3:
+            # Only optimize 3D tensors for now
+            return tensor_data
+        
+        logger.info(f"Converting to CSF format (sparsity: {tensor_data.sparsity:.2%})")
+        
+        # For 3D tensor (lat x lon x features), store as list of sparse matrices
+        csf_slices = []
+        
+        if hasattr(tensor_data, 'values') and hasattr(tensor_data, 'indices'):
+            # Already in sparse format
+            indices = tensor_data.indices
+            values = tensor_data.values
+            
+            for k in range(tensor_data.shape[2]):
+                # Get k-th frontal slice
+                mask = indices[:, 2] == k
+                if np.any(mask):
+                    slice_data = values[mask]
+                    slice_rows = indices[mask, 0]
+                    slice_cols = indices[mask, 1]
+                    
+                    # Create CSR matrix (good for row operations in MTTKRP)
+                    csf_slice = csr_matrix(
+                        (slice_data, (slice_rows, slice_cols)),
+                        shape=(tensor_data.shape[0], tensor_data.shape[1])
+                    )
+                else:
+                    # Empty slice
+                    csf_slice = csr_matrix(
+                        (tensor_data.shape[0], tensor_data.shape[1])
+                    )
+                
+                csf_slices.append(csf_slice)
+        else:
+            # Dense tensor, convert each slice
+            tensor = tensor_data.tensor if hasattr(tensor_data, 'tensor') else tensor_data.values
+            
+            for k in range(tensor.shape[2]):
+                slice_data = tensor[:, :, k]
+                # Convert to CSR (efficient for row operations)
+                csf_slice = csr_matrix(slice_data)
+                csf_slices.append(csf_slice)
+        
+        # Store CSF representation
+        tensor_data.csf_slices = csf_slices
+        tensor_data.format = 'csf'
+        
+        logger.info(f"CSF conversion complete: {len(csf_slices)} slices")
+        
+        return tensor_data
 
 
 def optimize_for_sparsity(tensor_data: TensorData) -> Union[TensorData, SparseTensorData]:
