@@ -737,30 +737,20 @@ class GEEWorkflowOrchestrator:
                 # Convert to parquet
                 converter = ParquetConverter(self.config.parquet_dir)
                 
-                # Build band names from config
-                band_names = []
-                biodiversity_bands = []
+                # Use centralized band configuration
+                from ..utils.band_config import BandConfig
                 
-                # Add biodiversity bands
-                for dataset in self.config.biodiversity_datasets:
-                    band_names.append(dataset.band_name)
-                    biodiversity_bands.append(dataset.band_name)
-                    
-                # Add climate bands
-                if hasattr(self.config, 'climate_variables'):
-                    band_names.extend(self.config.climate_variables)
-                    
-                # Add elevation if configured
-                if hasattr(self.config, 'include_elevation') and self.config.include_elevation:
-                    band_names.append('elevation')
+                # Create band config from current configuration
+                band_config = BandConfig.from_config(self.config.__dict__)
                 
-                # Pass metadata for converter
-                metadata = {
-                    'band_names': band_names,
-                    'biodiversity_bands': biodiversity_bands,  # For validity checking
+                # Get metadata from centralized config
+                metadata = band_config.to_metadata()
+                metadata.update({
                     'format': self.config.export_format,
                     'chunk_size': getattr(self.config, 'parquet_chunk_size', 100000)
-                }
+                })
+                
+                self.logger.info(f"Using band order: {metadata['band_names']}")
                 
                 # Convert based on format
                 if self.config.export_format == 'GeoTIFF':

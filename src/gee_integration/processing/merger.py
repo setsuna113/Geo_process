@@ -90,9 +90,10 @@ class GEEMerger:
         self.logger.info("Note: Biodiversity has been unmasked to ensure climate retains full land coverage")
         
         # Merge with climate data
-        # IMPORTANT: Order matters for downstream processing
-        # Parquet converter expects biodiversity bands FIRST, then climate
+        # CRITICAL: Band order must match BandConfig.get_ordered_bands()
+        # The order here determines the band indices in the exported GeoTIFF
         if merge_strategy == "addBands":
+            # Order: biodiversity first, then climate (as defined in BandConfig)
             merged = biodiv_combined.addBands(climate_image)
             
             # Add elevation if requested
