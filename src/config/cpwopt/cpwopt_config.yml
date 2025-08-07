@@ -12,7 +12,7 @@ data_processing:
 
 # Algorithm parameters
 algorithm:
-  rank: 'auto'                # Auto-select optimal rank (likely 4-6 based on research)
+  rank: 4                     # 4 biodiversity features → max 4 independent patterns
   max_iterations: 1000        # Maximum ALS iterations
   convergence_threshold: 1e-6 # Relative error threshold
   init_method: 'nndsvd'       # Non-negative Double SVD - better for sparse non-negative data
@@ -24,8 +24,8 @@ algorithm:
 # Rank selection parameters (when rank='auto')
 rank_selection:
   method: 'elbow'             # Selection method: 'elbow', 'cross_validation', 'core_consistency'
-  min_rank: 3                 # Climate + geographic structure + evolutionary (based on research)
-  max_rank: 8                 # Conservative upper bound for 4 biodiversity features
+  min_rank: 2                 # Minimum meaningful components
+  max_rank: 4                 # Cannot exceed number of features (4 biodiversity bands)
   n_trials: 3                 # Number of trials per rank for stability
   plot: true                  # Generate diagnostic plot
 
