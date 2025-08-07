@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
+from ..utils.band_config import BandConfig
 
 logger = get_logger(__name__)
 
@@ -34,6 +35,7 @@ class ParquetConverter:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logger
         self.band_names = None  # Will be set from config or metadata
+        self.band_config = None  # Will be set from metadata
     
     @log_operation("convert_csv_to_parquet")
     def convert_csv_files(self, csv_files: List[Path], 
@@ -255,7 +257,7 @@ class ParquetConverter:
         Args:
             source_files: Path to GeoTIFF or list of CSV paths
             resolution_name: Resolution identifier
-            metadata: Optional metadata including band names
+            metadata: Optional metadata including band names and config
             
         Returns:
             Path to output parquet file
@@ -268,6 +270,27 @@ class ParquetConverter:
         
         if not source_files:
             raise ValueError("No source files provided")
+        
+        # Set band config from metadata if available
+        if metadata:
+            if 'band_names' in metadata:
+                self.band_names = metadata['band_names']
+            # Create BandConfig from metadata
+            if 'biodiversity_count' in metadata:
+                # Extract band lists from metadata
+                biodiv_count = metadata['biodiversity_count']
+                climate_count = metadata.get('climate_count', 0)
+                if self.band_names:
+                    biodiv_bands = self.band_names[:biodiv_count]
+                    climate_bands = self.band_names[biodiv_count:biodiv_count + climate_count]
+                    include_elevation = metadata.get('elevation_included', False)
+                    
+                    self.band_config = BandConfig(
+                        biodiversity_bands=biodiv_bands,
+                        climate_bands=climate_bands,
+                        include_elevation=include_elevation
+                    )
+                    self.logger.info(f"Initialized BandConfig with {biodiv_count} biodiversity and {climate_count} climate bands")
         
         # Check file format
         first_file = source_files[0]
@@ -300,10 +323,6 @@ class ParquetConverter:
                 )
             elif len(source_files) > 1:
                 self.logger.warning("Multiple GeoTIFF files provided, using first one")
-            
-            # Set band names from metadata if available
-            if metadata and 'band_names' in metadata:
-                self.band_names = metadata['band_names']
             
             return self._convert_geotiff_to_parquet(
                 source_files[0], 
@@ -365,8 +384,8 @@ class ParquetConverter:
                             if metadata and 'band_names' in metadata:
                                 self.band_names = metadata['band_names'][:n_bands]
                             else:
-                                self.logger.warning("No band names in metadata, using defaults")
-                                self.band_names = [f'band_{i+1}' for i in range(n_bands)]
+                                raise ValueError("No band names provided in metadata - cannot process GeoTIFF. "
+                                               "Metadata must include 'band_names' list")
                         
                         # Define schema
                         schema_fields = [
@@ -432,14 +451,15 @@ class ParquetConverter:
                         if np.any(valid_mask):
                             filtered_data = {k: v[valid_mask] for k, v in batch_data.items()}
                             
-                            # Convert zeros to NaN for biodiversity bands
-                            climate_bands = ['bio01', 'bio02', 'bio03', 'bio04', 'bio05', 'bio06', 
-                                           'bio07', 'bio08', 'bio09', 'bio10', 'bio11', 'bio12',
-                                           'bio13', 'bio14', 'bio15', 'bio16', 'bio17', 'bio18', 'bio19']
-                            known_non_biodiv = ['x', 'y', 'elevation', 'dem'] + climate_bands
+                            # Convert zeros to NaN for biodiversity bands using BandConfig
+                            if not self.band_config:
+                                raise ValueError("BandConfig not initialized - cannot identify biodiversity bands. "
+                                               "Metadata must include 'biodiversity_count' and 'band_names'")
                             
                             for band_name, band_data in filtered_data.items():
-                                if band_name not in known_non_biodiv and isinstance(band_data, np.ndarray):
+                                # Check if this is a biodiversity band
+                                if band_name in self.band_config.biodiversity_bands and isinstance(band_data, np.ndarray):
+                                    # Convert 0 to NaN for biodiversity bands (0 represents nodata from unmask)
                                     filtered_data[band_name] = np.where(band_data == 0, np.nan, band_data)
                             
                             # Ensure all schema fields are present
@@ -515,13 +535,12 @@ class ParquetConverter:
             
             # Prepare band names
             if not self.band_names:
-                # Get default band names from metadata if available
+                # Get band names from metadata
                 if metadata and 'band_names' in metadata:
                     self.band_names = metadata['band_names'][:n_bands]
                 else:
-                    # Fallback defaults if no metadata provided
-                    self.logger.warning("No band names in metadata, using minimal defaults")
-                    self.band_names = [f'band_{i+1}' for i in range(n_bands)]
+                    raise ValueError("No band names provided in metadata - cannot process GeoTIFF. "
+                                   "Metadata must include 'band_names' list")
             
             # Define schema
             schema_fields = [
@@ -585,17 +604,15 @@ class ParquetConverter:
                     if np.any(valid_mask):
                         filtered_data = {k: v[valid_mask] for k, v in batch_data.items()}
                         
-                        # Convert zeros to NaN for biodiversity bands
+                        # Convert zeros to NaN for biodiversity bands using BandConfig
                         # (0 represents nodata from unmask operation)
-                        # Identify biodiversity bands (exclude climate/elevation bands)
-                        climate_bands = ['bio01', 'bio02', 'bio03', 'bio04', 'bio05', 'bio06', 
-                                       'bio07', 'bio08', 'bio09', 'bio10', 'bio11', 'bio12',
-                                       'bio13', 'bio14', 'bio15', 'bio16', 'bio17', 'bio18', 'bio19']
-                        known_non_biodiv = ['x', 'y', 'elevation', 'dem'] + climate_bands
+                        if not self.band_config:
+                            raise ValueError("BandConfig not initialized - cannot identify biodiversity bands. "
+                                           "Metadata must include 'biodiversity_count' and 'band_names'")
                         
                         for band_name, band_data in filtered_data.items():
-                            # If it's not a known non-biodiversity band, it's biodiversity
-                            if band_name not in known_non_biodiv and isinstance(band_data, np.ndarray):
+                            # Check if this is a biodiversity band
+                            if band_name in self.band_config.biodiversity_bands and isinstance(band_data, np.ndarray):
                                 # Convert 0 to NaN for biodiversity bands
                                 filtered_data[band_name] = np.where(band_data == 0, np.nan, band_data)
                         

@@ -9,15 +9,24 @@ import time
 
 from src.infrastructure.logging import get_logger, LoggingContext
 from src.infrastructure.logging.decorators import log_operation
+from config.gee.constants import (
+    BASE_RESOLUTION_DEGREES,
+    DEGREES_TO_METERS,
+    DEFAULT_LAT_MIN,
+    DEFAULT_LAT_MAX,
+    GLOBAL_LON_MIN,
+    GLOBAL_LON_MAX,
+    GLOBAL_LAT_MIN,
+    GLOBAL_LAT_MAX
+)
 
 from ..config import GEEConfig
 from ..auth import GEEAuthenticator
 from ..upload import BatchUploadManager
 from ..processing import (
-    GEEMerger, GEEAlignmentValidator,
+    GEEMerger, GEEResampler, GEEAlignmentValidator,
     ExportManager, GEETaskMonitor
 )
-from ..processing.recursive_resampler import RecursiveResampler
 from ..download import GCSFetcher, ParquetConverter
 from .state_manager import WorkflowState, WorkflowStep
 
@@ -65,26 +74,9 @@ class GEEWorkflowOrchestrator:
     
     def _get_resolution_outputs(self) -> Dict[str, bool]:
         """Get the resolution outputs configuration."""
-        # Check for new resolution_settings format
-        if hasattr(self.config, 'resolution_settings') and self.config.resolution_settings:
-            outputs = self.config.resolution_settings.get('outputs', {})
-            if outputs:
-                self.logger.info(f"Resolution outputs configured: {outputs}")
-                return outputs
-        
-        # Fallback to old format if exists
-        if hasattr(self.config, 'resolutions'):
-            # Convert old format to new format (all enabled)
-            outputs = {}
-            for res_name in self.config.resolutions.keys():
-                if res_name == 'fine':
-                    outputs['1x'] = True
-                elif res_name == 'coarse':
-                    outputs['5x'] = True  # Note: 5x not supported in recursive, will use 4x
-            return outputs
-        
-        # Default: just base resolution
-        return {'1x': True}
+        outputs = self.config.resolution_settings.get('outputs', {})
+        self.logger.info(f"Resolution outputs configured: {outputs}")
+        return outputs
     
     @log_operation("gee_workflow_complete")
     def run(self, resume: bool = True, force_step: Optional[WorkflowStep] = None) -> Dict[str, Path]:
@@ -155,7 +147,7 @@ class GEEWorkflowOrchestrator:
                 
             return final_outputs
             
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, FileNotFoundError) as e:
             self.logger.error(f"Workflow failed: {e}")
             self.logger.error(f"Current step: {self.state.current_step.value}")
             self.logger.info("Run with resume=True to continue from last successful step")
@@ -233,7 +225,7 @@ class GEEWorkflowOrchestrator:
                     'band_name': ds.band_name,
                     'data_type': ds.data_type,
                     'resampling': ds.resampling,
-                    'no_data': ds.no_data
+                    'no_data': ds.no_data_value
                 }
                 for ds in self.config.biodiversity_datasets
             ]
@@ -375,13 +367,13 @@ class GEEWorkflowOrchestrator:
             
             # Use recursive resampler for multi-resolution processing
             resolution_outputs = self._get_resolution_outputs()
-            base_resolution = self.config.resolution_settings.get('base_resolution', 0.016666666666667)
+            base_resolution = self.config.resolution_settings.get('base_resolution', BASE_RESOLUTION_DEGREES)
             
             self.logger.info(f"\n   Using recursive 2x downsampling with base resolution: {base_resolution}°")
             self.logger.info(f"   Outputs configured: {resolution_outputs}")
             
             # Initialize recursive resampler
-            resampler = RecursiveResampler(
+            resampler = GEEResampler(
                 base_resolution=base_resolution,
                 outputs=resolution_outputs,
                 target_crs='EPSG:4326'
@@ -392,16 +384,8 @@ class GEEWorkflowOrchestrator:
                 biodiv_images, biodiv_configs
             )
             
-            # Process climate if enabled
-            climate_resolution_sets = {}
-            if climate_image is not None:
-                climate_config = {
-                    'name': 'climate',
-                    'band_name': 'climate',
-                    'data_type': 'continuous',
-                    'resampling': 'bilinear'
-                }
-                climate_resolution_sets = resampler.process_dataset(climate_image, climate_config)
+            # Climate doesn't need recursive resampling - it has native pyramids
+            # GEE will automatically use the appropriate pyramid level for the requested scale
             
             # Merge datasets at each resolution
             processed_images = {}
@@ -412,14 +396,21 @@ class GEEWorkflowOrchestrator:
                 # Get biodiversity images for this resolution
                 biodiv_images_at_res = biodiv_resolution_sets[res_name]
                 
-                # Get climate image for this resolution if available
-                climate_at_res = climate_resolution_sets.get(res_name)
+                # Climate uses native pyramids - no manual resampling needed
+                climate_at_res = climate_image
                 
                 # Merge datasets
                 if climate_at_res is not None:
                     # Calculate scale from resolution name
                     factor = int(res_name[:-1]) if res_name.endswith('x') else 1
-                    scale_meters = base_resolution * factor * 111320
+                    scale_meters = base_resolution * factor * DEGREES_TO_METERS
+                    
+                    # Get ocean mask config for this resolution
+                    ocean_mask_config = None
+                    if self.config.masking.enabled and res_name in resolution_outputs:
+                        output_config = resolution_outputs[res_name]
+                        if isinstance(output_config, dict) and 'ocean_mask' in output_config:
+                            ocean_mask_config = output_config['ocean_mask']
                     
                     merged = merger.merge_datasets(
                         biodiv_images_at_res,
@@ -427,7 +418,8 @@ class GEEWorkflowOrchestrator:
                         self.config.merge_strategy,
                         mask_ocean=self.config.masking.enabled,
                         include_elevation=include_elevation,
-                        scale=scale_meters
+                        scale=scale_meters,
+                        ocean_mask_config=ocean_mask_config
                     )
                 else:
                     # Climate disabled - just combine biodiversity
@@ -491,14 +483,18 @@ class GEEWorkflowOrchestrator:
             
             # Get resolution outputs configuration
             resolution_outputs = self._get_resolution_outputs()
-            base_resolution = self.config.resolution_settings.get('base_resolution', 0.016666666666667)
+            base_resolution = self.config.resolution_settings.get('base_resolution', BASE_RESOLUTION_DEGREES)
             
             # Prepare images for selected resolutions
             processed_images_for_export = {}
             
             # Process each enabled resolution
-            for res_name, should_export in resolution_outputs.items():
-                if not should_export:
+            for res_name, res_config in resolution_outputs.items():
+                # Expect dict format with 'enabled' key
+                if not isinstance(res_config, dict):
+                    raise ValueError(f"Resolution config for {res_name} must be a dict with 'enabled' key")
+                    
+                if not res_config.get('enabled', False):
                     continue
                 self.logger.info(f"\n   Preparing {res_name} for export...")
                 
@@ -532,7 +528,7 @@ class GEEWorkflowOrchestrator:
                     include_elevation = True
                 
                 # Use recursive resampler
-                resampler = RecursiveResampler(
+                resampler = GEEResampler(
                     base_resolution=base_resolution,
                     outputs=resolution_outputs,
                     target_crs='EPSG:4326'
@@ -542,23 +538,15 @@ class GEEWorkflowOrchestrator:
                 biodiv_results = resampler.process_collection(biodiv_images, biodiv_configs)
                 biodiv_resampled = biodiv_results.get(res_name, [])
                 
-                # Process climate if enabled
-                climate_resampled = None
-                if climate_image is not None:
-                    climate_config = {
-                        'name': 'climate',
-                        'band_name': 'climate',
-                        'data_type': 'continuous',
-                        'resampling': 'bilinear'
-                    }
-                    climate_results = resampler.process_dataset(climate_image, climate_config)
-                    climate_resampled = climate_results.get(res_name)
+                # Climate doesn't need resampling - use native pyramids
+                # GEE will automatically select the appropriate pyramid level
+                climate_resampled = climate_image
                 
                 # Merge all datasets - handle case where climate might be disabled
                 if climate_resampled is not None:
                     # Calculate scale from resolution name
                     factor = int(res_name[:-1]) if res_name.endswith('x') else 1
-                    scale_meters = base_resolution * factor * 111320
+                    scale_meters = base_resolution * factor * DEGREES_TO_METERS
                     merged = merger.merge_datasets(
                         biodiv_resampled,
                         climate_resampled,
@@ -607,10 +595,10 @@ class GEEWorkflowOrchestrator:
                     
                     # Use latitude bounds from masking config
                     if self.config.masking.enabled:
-                        lat_min = self.config.masking.latitude_bounds.get('min', -60)
-                        lat_max = self.config.masking.latitude_bounds.get('max', 75)
+                        lat_min = self.config.masking.latitude_bounds.get('min', DEFAULT_LAT_MIN)
+                        lat_max = self.config.masking.latitude_bounds.get('max', DEFAULT_LAT_MAX)
                     else:
-                        lat_min, lat_max = -90, 90  # Full global if masking disabled
+                        lat_min, lat_max = GLOBAL_LAT_MIN, GLOBAL_LAT_MAX  # Full global if masking disabled
                     
                     self.logger.info(f"   Using configured region with latitude range: [{lat_min}, {lat_max}]")
                     
@@ -618,121 +606,49 @@ class GEEWorkflowOrchestrator:
                     # This avoids the antimeridian collapse issue
                     # Using BBox with specific coordinates ensures proper global coverage
                     export_region = ee.Geometry.BBox(
-                        -180, lat_min, 180, lat_max
+                        GLOBAL_LON_MIN, lat_min, GLOBAL_LON_MAX, lat_max
                     )
                     self.logger.info("   Using non-geodesic rectangle to avoid antimeridian collapse")
                 
-                if self.config.export_format == 'GeoTIFF':
-                    # Calculate resolution config for this level
-                    factor = int(res_name[:-1]) if res_name.endswith('x') else 1
-                    resolution_config = {
-                        'resolution': base_resolution * factor,
-                        'description': f'{factor}x downsampled ({base_resolution * factor:.6f}°)'
-                    }
-                    
-                    # Export as GeoTIFF with fixed region
-                    task_id = self._export_manager._export_as_geotiff(
-                        merged_image=merged_image,
-                        bounds=export_region,
-                        resolution_name=res_name,
-                        resolution_config=resolution_config,
-                        description=f'export_{res_name}_{self.experiment_name}',
-                        export_base_path=self.export_base_path
-                    )
-                else:
-                    # Export as CSV (existing logic)
-                    # Add pixel coordinates as bands
-                    lon = ee.Image.pixelLonLat().select('longitude').rename('x')
-                    lat = ee.Image.pixelLonLat().select('latitude').rename('y')
-                    
-                    # Add coordinates to the merged image
-                    image_with_coords = lon.addBands(lat).addBands(merged_image)
-                    
-                    # Sample the image using detected bounds or global bounds
-                    if data_bounds is not None:
-                        sample_region = ee.FeatureCollection([ee.Feature(data_bounds)])
-                    else:
-                        # Use a global region if bounds detection failed
-                        global_bounds = ee.Geometry.Rectangle([-180, -90, 180, 90])
-                        sample_region = ee.FeatureCollection([ee.Feature(global_bounds)])
-                        
-                    sampled = image_with_coords.sampleRegions(
-                        collection=sample_region,
-                        scale=self.config.resolutions[res_name].resolution * 111320,
-                        projection='EPSG:4326',
-                        tileScale=4
-                    )
-                    
-                    # Export as CSV
-                    export_path = f"{self.export_base_path}/{res_name}/merged_data"
-                    task = ee.batch.Export.table.toCloudStorage(
-                        collection=sampled,
-                        description=f'export_{res_name}_{self.experiment_name}',
-                        bucket=self.config.gcs_bucket,
-                        fileNamePrefix=export_path,
-                        fileFormat='CSV'
-                    )
-                    
-                    # Start the task
-                    task.start()
-                    task_id = task.id
+                # We only support GeoTIFF format - CSV export was removed due to bugs
+                if self.config.export_format != 'GeoTIFF':
+                    raise ValueError(f"Unsupported export format: {self.config.export_format}. Only 'GeoTIFF' is supported.")
                 
-                self.logger.info(f"   Started export task: {task_id}")
+                # Calculate resolution config for this level
+                factor = int(res_name[:-1]) if res_name.endswith('x') else 1
+                resolution_config = {
+                    'resolution': base_resolution * factor,
+                    'description': f'{factor}x downsampled ({base_resolution * factor:.6f}°)'
+                }
+                
+                # Export using the public API
+                task_id = self._export_manager.export_image(
+                    merged_image=merged_image,
+                    bounds=export_region,
+                    resolution_name=res_name,
+                    resolution_config=resolution_config,
+                    description=f'export_{res_name}_{self.experiment_name}',
+                    export_base_path=self.export_base_path
+                )
+                
                 task_ids[res_name] = task_id
             
             # Save task IDs
             self.state.set_metadata('export_task_ids', task_ids)
             
-            # Monitor export tasks with configurable timeout
-            self.logger.info(f"\n   ⏳ Monitoring export tasks (timeout: {self.config.export_timeout}s)...")
-            all_completed = False
-            start_time = time.time()
-            
-            # Track individual task progress
-            task_progress = {res: {'start_time': start_time, 'state': 'READY'} 
-                           for res in task_ids.keys()}
-            
-            while not all_completed and (time.time() - start_time) < self.config.export_timeout:
-                statuses = {}
-                all_completed = True
-                
-                for res_name, task_id in task_ids.items():
-                    # Get task status directly from Earth Engine
-                    task_info = ee.data.getTaskStatus(task_id)[0]
-                    status = {
-                        'state': task_info.get('state', 'UNKNOWN'),
-                        'error_message': task_info.get('error_message', '')
-                    }
-                    statuses[res_name] = status
-                    
-                    # Update progress tracking
-                    if status['state'] != task_progress[res_name]['state']:
-                        task_progress[res_name]['state'] = status['state']
-                        elapsed = int(time.time() - task_progress[res_name]['start_time'])
-                        self.logger.info(f"   {res_name}: {status['state']} ({elapsed}s)")
-                    
-                    if status['state'] in ['READY', 'RUNNING']:
-                        all_completed = False
-                        # Check individual task timeout (3x global timeout)
-                        if (time.time() - task_progress[res_name]['start_time']) > self.config.export_timeout * 3:
-                            raise RuntimeError(f"Export timeout for {res_name} after {self.config.export_timeout * 3}s")
-                    elif status['state'] == 'FAILED':
-                        raise RuntimeError(f"Export failed for {res_name}: {status.get('error_message', 'Unknown error')}")
-                    elif status['state'] == 'COMPLETED':
-                        if task_progress[res_name]['state'] != 'LOGGED':
-                            elapsed = int(time.time() - task_progress[res_name]['start_time'])
-                            self.logger.info(f"   ✅ {res_name} export completed in {elapsed}s")
-                            task_progress[res_name]['state'] = 'LOGGED'
-                
-                if not all_completed:
-                    time.sleep(self.config.export_check_interval)
-            
-            if not all_completed:
-                # Log which tasks are still running
-                running_tasks = [res for res, info in task_progress.items() 
-                               if info['state'] in ['READY', 'RUNNING']]
-                raise RuntimeError(f"Export tasks timed out after {self.config.export_timeout}s. "
-                                 f"Still running: {', '.join(running_tasks)}")
+            # Monitor export tasks using export manager
+            self.logger.info(f"\n   Monitoring export tasks...")
+            try:
+                final_statuses = self._export_manager.monitor_tasks(
+                    task_ids=task_ids,
+                    timeout=self.config.export_timeout
+                )
+            except RuntimeError as e:
+                # Log which tasks are still running if timeout
+                if "timeout" in str(e).lower():
+                    # Could extract running tasks from exception if needed
+                    pass
+                raise  # Re-raise the original exception
             
             # Get export paths - MUST use experiment-specific paths
             export_paths = {
@@ -792,30 +708,20 @@ class GEEWorkflowOrchestrator:
                 # Convert to parquet
                 converter = ParquetConverter(self.config.parquet_dir)
                 
-                # Build band names from config
-                band_names = []
-                biodiversity_bands = []
+                # Use centralized band configuration
+                from ..utils.band_config import BandConfig
                 
-                # Add biodiversity bands
-                for dataset in self.config.biodiversity_datasets:
-                    band_names.append(dataset.band_name)
-                    biodiversity_bands.append(dataset.band_name)
-                    
-                # Add climate bands
-                if hasattr(self.config, 'climate_variables'):
-                    band_names.extend(self.config.climate_variables)
-                    
-                # Add elevation if configured
-                if hasattr(self.config, 'include_elevation') and self.config.include_elevation:
-                    band_names.append('elevation')
+                # Create band config from current configuration
+                band_config = BandConfig.from_config(self.config.__dict__)
                 
-                # Pass metadata for converter
-                metadata = {
-                    'band_names': band_names,
-                    'biodiversity_bands': biodiversity_bands,  # For validity checking
+                # Get metadata from centralized config
+                metadata = band_config.to_metadata()
+                metadata.update({
                     'format': self.config.export_format,
                     'chunk_size': getattr(self.config, 'parquet_chunk_size', 100000)
-                }
+                })
+                
+                self.logger.info(f"Using band order: {metadata['band_names']}")
                 
                 # Convert based on format
                 if self.config.export_format == 'GeoTIFF':
@@ -850,14 +756,14 @@ class GEEWorkflowOrchestrator:
                             )
                             final_outputs[res_name] = output_path
                 else:
-                    # CSV format - use existing method
-                    final_outputs = converter.convert_all_resolutions(downloads)
+                    # This should never happen since we only support GeoTIFF
+                    raise ValueError(f"Unsupported export format in download: {self.config.export_format}")
                 
                 # Cleanup temp files if requested
                 if self.config.cleanup_temp:
                     self.logger.info("   🧹 Cleaning up temporary files...")
-                    for csv_files in downloads.values():
-                        fetcher.cleanup_temp_files(csv_files)
+                    for temp_files in downloads.values():
+                        fetcher.cleanup_temp_files(temp_files)
             
             # Save final outputs
             self.state.set_metadata('final_outputs', {

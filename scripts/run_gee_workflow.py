@@ -27,7 +27,7 @@ def main():
     parser.add_argument(
         '--config',
         type=str,
-        default='config/gee_config.yml',
+        default='config/gee/gee_config.yml',
         help='Path to GEE configuration file'
     )
     

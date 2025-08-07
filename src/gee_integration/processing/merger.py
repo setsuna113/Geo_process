@@ -6,6 +6,16 @@ Handles merging of biodiversity and climate data in GEE.
 from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
+from config.gee.constants import (
+    COARSE_MASK_THRESHOLD, 
+    MAX_PIXELS_REDUCE,
+    DEFAULT_LAT_MIN,
+    DEFAULT_LAT_MAX,
+    GLOBAL_LON_MIN,
+    GLOBAL_LON_MAX,
+    GLOBAL_LAT_MIN,
+    GLOBAL_LAT_MAX
+)
 
 if TYPE_CHECKING:
     import ee
@@ -28,8 +38,10 @@ class GEEMerger:
                       merge_strategy: str = "addBands",
                       mask_ocean: bool = True,
                       include_elevation: bool = True,
+                      elevation_image: Optional['ee.Image'] = None,
                       additional_layers: Optional[Dict[str, 'ee.Image']] = None,
-                      scale: Optional[float] = None) -> 'ee.Image':
+                      scale: Optional[float] = None,
+                      ocean_mask_config: Optional[Dict] = None) -> 'ee.Image':
         """
         Merge biodiversity and climate datasets.
         
@@ -54,6 +66,10 @@ class GEEMerger:
         # First, combine all biodiversity images
         # IMPORTANT: Unmask biodiversity data to prevent climate from inheriting sparse masks
         # Even though we upload without --nodata_value flag, GEE reads nodata from GeoTIFF metadata
+        
+        # Ensure all biodiversity images are ee.Image objects
+        biodiversity_images = [ee.Image(img) for img in biodiversity_images]
+        
         if len(biodiversity_images) == 1:
             biodiv_combined = biodiversity_images[0].unmask()
         else:
@@ -75,6 +91,11 @@ class GEEMerger:
         biodiv_combined = biodiv_combined.toFloat()
         climate_image = climate_image.toFloat()
         
+        # CRITICAL: DO NOT reproject here - the recursive resampler has already aligned everything!
+        # All bands should already have consistent projections from the resampler
+        # Reprojecting here causes Y-axis flips and projection mismatches
+        self.logger.info("Skipping reprojection - bands already aligned by recursive resampler")
+        
         # Get band info (lazy - don't call getInfo)
         biodiv_bands = biodiv_combined.bandNames()
         climate_bands = climate_image.bandNames()
@@ -83,16 +104,25 @@ class GEEMerger:
         self.logger.info("Note: Biodiversity has been unmasked to ensure climate retains full land coverage")
         
         # Merge with climate data
-        # IMPORTANT: Start with climate to preserve its global extent
-        # If we start with biodiversity, the extent is restricted to biodiversity pixels only
+        # CRITICAL: Band order must match BandConfig.get_ordered_bands()
+        # The order here determines the band indices in the exported GeoTIFF
         if merge_strategy == "addBands":
-            merged = climate_image.addBands(biodiv_combined)
+            # Order: biodiversity first, then climate (as defined in BandConfig)
+            merged = biodiv_combined.addBands(climate_image)
             
             # Add elevation if requested
             if include_elevation:
-                self.logger.info("Adding elevation data")
-                elevation = self.load_elevation().toFloat()
-                merged = merged.addBands(elevation)
+                if elevation_image is not None:
+                    # Use provided pre-processed elevation
+                    self.logger.info("Adding pre-processed elevation data")
+                    merged = merged.addBands(elevation_image)
+                else:
+                    # Load elevation directly - MERIT DEM has native pyramids
+                    # GEE will automatically use the appropriate pyramid level
+                    self.logger.info("Adding MERIT DEM elevation (using native pyramids)")
+                    elevation = self.load_elevation().toFloat()
+                    # No reprojection needed - GEE handles pyramid selection at export
+                    merged = merged.addBands(elevation)
             
             # Add any additional layers
             if additional_layers:
@@ -103,8 +133,8 @@ class GEEMerger:
             raise ValueError(f"Unknown merge strategy: {merge_strategy}")
         
         # Add metadata (keep as server-side objects)
-        # Note: bands are now ordered as climate first, then biodiversity
-        total_bands = climate_bands.size().add(biodiv_bands.size())
+        # Note: bands are now ordered as biodiversity first, then climate
+        total_bands = biodiv_bands.size().add(climate_bands.size())
         if include_elevation:
             total_bands = total_bands.add(1)
             
@@ -114,7 +144,7 @@ class GEEMerger:
             'elevation_included': include_elevation,
             'total_bands': total_bands,
             'merge_strategy': merge_strategy,
-            'band_order': 'climate_first'  # Track that climate comes first
+            'band_order': 'biodiversity_first'  # Track that biodiversity comes first
         })
         
         # Apply ocean mask if requested
@@ -126,8 +156,8 @@ class GEEMerger:
                 mask_config = self.config['masking']
                 if mask_config.get('enabled', True) and 'latitude_bounds' in mask_config:
                     bounds = mask_config['latitude_bounds']
-                    lat_bounds = (bounds.get('min', -60), bounds.get('max', 75))
-            merged = self.apply_land_mask(merged, latitude_bounds=lat_bounds, scale=scale)
+                    lat_bounds = (bounds.get('min', DEFAULT_LAT_MIN), bounds.get('max', DEFAULT_LAT_MAX))
+            merged = self.apply_land_mask(merged, latitude_bounds=lat_bounds, scale=scale, ocean_mask_config=ocean_mask_config)
         
         self.logger.info(f"✅ Created merged image")
         
@@ -191,7 +221,8 @@ class GEEMerger:
     
     def apply_land_mask(self, image: 'ee.Image', 
                        latitude_bounds: Optional[Tuple[float, float]] = None,
-                       scale: Optional[float] = None) -> 'ee.Image':
+                       scale: Optional[float] = None,
+                       ocean_mask_config: Optional[Dict] = None) -> 'ee.Image':
         """
         Apply a land mask to exclude ocean areas and optionally polar regions.
         
@@ -203,6 +234,7 @@ class GEEMerger:
                            - Antarctic Circle: -66.5°S
                            - Tree line: ~70°N, -55°S
                            - Tundra limit: ~75°N, -60°S
+            scale: Optional scale in meters for creating coarse mask
             
         Returns:
             Image with ocean areas (and optionally polar regions) masked out
@@ -213,25 +245,66 @@ class GEEMerger:
         # 0 = land, 1 = water (ocean/lakes), 2 = shallow inland water (rare)
         water_mask_img = ee.Image("MODIS/006/MOD44W/2015_01_01").select('water_mask')
         
-        # For coarse resolutions, use max reducer to avoid misclassifying coastal areas
-        # This ensures any pixel with ANY land is marked as land
-        # Check if we're working at coarse resolution (> 5km)
-        # Use the scale parameter if provided, otherwise default to 10km
-        target_scale = scale if scale is not None else getattr(self, '_current_scale', 10000)
-        
-        # Always use max reducer to ensure any pixel with land is preserved
-        # This is especially important near coastlines and water bodies
-        if target_scale > 500:  # Use for anything coarser than 500m
-            self.logger.info(f"Using max reducer for ocean mask at {target_scale}m resolution")
-            # Resample using min - any land (0) will dominate over water (1)
-            # This preserves land pixels in mixed land/water areas
-            water_mask_img = water_mask_img.reduceResolution(
-                reducer=ee.Reducer.min(),
-                maxPixels=2000
-            ).reproject(
-                crs='EPSG:4326',
-                scale=target_scale
-            )
+        # Handle resolution-specific ocean mask strategies from config
+        if ocean_mask_config:
+            method = ocean_mask_config.get('method', 'original')
+            
+            if method == 'disabled':
+                # Skip ocean mask entirely - use only latitude bounds
+                self.logger.info("Ocean mask disabled - using latitude bounds only")
+                # Set a dummy mask that keeps all land pixels
+                water_mask_img = ee.Image.constant(0)  # All pixels are "land"
+                
+            elif method == 'original':
+                # Use raw MODIS mask (500m) - good for fine resolutions
+                self.logger.info("Using original MODIS mask (500m resolution)")
+                # No modification needed
+                
+            elif method == 'reduceResolution':
+                # Aggregate mask for coarser resolutions
+                reducer_type = ocean_mask_config.get('reducer', 'mean')
+                threshold = ocean_mask_config.get('threshold', 0.5)
+                max_pixels = ocean_mask_config.get('maxPixels', 256)
+                
+                self.logger.info(f"Aggregating ocean mask with {reducer_type} reducer")
+                
+                # Select appropriate reducer
+                if reducer_type == 'mean':
+                    reducer = ee.Reducer.mean()
+                elif reducer_type == 'mode':
+                    reducer = ee.Reducer.mode()
+                else:
+                    reducer = ee.Reducer.mean()
+                
+                # Apply aggregation
+                water_mask_img = water_mask_img.reduceResolution(
+                    reducer=reducer,
+                    maxPixels=max_pixels
+                )
+                
+                # If using mean reducer, apply threshold
+                if reducer_type == 'mean':
+                    water_mask_img = water_mask_img.gt(threshold)
+                    self.logger.info(f"Applied threshold {threshold} for water classification")
+                
+                # Reproject to target scale if provided
+                if scale:
+                    water_mask_img = water_mask_img.reproject(
+                        crs='EPSG:4326',
+                        scale=scale
+                    )
+        else:
+            # No ocean mask config provided - use default behavior
+            if scale and scale > COARSE_MASK_THRESHOLD:  # > 5km resolution
+                self.logger.info(f"Using default coarse ocean mask for {scale}m resolution")
+                water_mask_img = water_mask_img.reduceResolution(
+                    reducer=ee.Reducer.mode(),
+                    maxPixels=MAX_PIXELS_REDUCE
+                ).reproject(
+                    crs='EPSG:4326',
+                    scale=scale
+                )
+                self.logger.info("Using simplified coastlines for coarse resolution")
         
         # Create water mask (water=1, land=0)
         # We want to mask out water, so we check where water_mask equals 1
@@ -361,7 +434,7 @@ class GEEMerger:
             ])
         else:
             # Default to global
-            bounds = ee.Geometry.Rectangle([-180, -90, 180, 90])
+            bounds = ee.Geometry.Rectangle([GLOBAL_LON_MIN, GLOBAL_LAT_MIN, GLOBAL_LON_MAX, GLOBAL_LAT_MAX])
         
         return bounds
     
@@ -416,7 +489,7 @@ class GEEMerger:
             # Find min/max of coordinates where data exists
             bounds_dict = masked_coords.reduceRegion(
                 reducer=ee.Reducer.minMax(),
-                geometry=ee.Geometry.Rectangle([-180, -90, 180, 90]),
+                geometry=ee.Geometry.Rectangle([GLOBAL_LON_MIN, GLOBAL_LAT_MIN, GLOBAL_LON_MAX, GLOBAL_LAT_MAX]),
                 scale=scale,
                 maxPixels=1e9,
                 tileScale=4
@@ -425,8 +498,8 @@ class GEEMerger:
             # Extract bounds
             bounds_info = bounds_dict.getInfo()
             if bounds_info:
-                min_lon = bounds_info.get('longitude_min', -180)
-                max_lon = bounds_info.get('longitude_max', 180)
+                min_lon = bounds_info.get('longitude_min', GLOBAL_LON_MIN)
+                max_lon = bounds_info.get('longitude_max', GLOBAL_LON_MAX)
                 min_lat = bounds_info.get('latitude_min', -90)
                 max_lat = bounds_info.get('latitude_max', 90)
                 

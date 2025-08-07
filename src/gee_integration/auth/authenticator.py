@@ -76,7 +76,7 @@ class GEEAuthenticator:
                 self.logger.error(f"Unknown authentication method: {method}")
                 raise ValueError(f"Unknown authentication method: {method}")
                 
-        except Exception as e:
+        except (ValueError, ImportError) as e:
             self.logger.error(f"Authentication failed: {e}")
             raise RuntimeError(f"Authentication failed: {e}")
     
@@ -119,7 +119,7 @@ class GEEAuthenticator:
                 self._authenticated = False
                 return False
                 
-        except Exception as e:
+        except (KeyError, json.JSONDecodeError, ee.EEException) as e:
             self.logger.error(f"Service account authentication failed: {e}")
             self._authenticated = False
             return False
@@ -143,7 +143,7 @@ class GEEAuthenticator:
                 self._authenticated = False
                 return False
                 
-        except Exception as e:
+        except (ImportError, ee.EEException) as e:
             self.logger.error(f"User authentication failed: {e}")
             self._authenticated = False
             return False
@@ -165,7 +165,7 @@ class GEEAuthenticator:
                 self._authenticated = False
                 return False
                 
-        except Exception as e:
+        except (ImportError, ee.EEException) as e:
             self.logger.error(f"Default authentication failed: {e}")
             self._authenticated = False
             return False

@@ -36,10 +36,14 @@ class GEETaskMonitor:
         Returns:
             Monitor info dict
         """
-        # Create progress tracker
+        # Create progress tracker - create_file_progress requires file_path, processed, total
+        # For now, use a dummy file path for the task
         progress = create_file_progress(
+            file_path=f"gee_task_{task_id}",
+            processed=0,
             total=total_steps,
-            desc=f"GEE: {description}"
+            operation="export",
+            source=f"GEE: {description}"
         )
         
         monitor = {
