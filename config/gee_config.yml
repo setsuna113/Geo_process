@@ -86,9 +86,17 @@ additional_layers:
 
 masking:
   enabled: true
+  
+  # Ocean mask source
+  ocean_mask_source: "MODIS/006/MOD44W/2015_01_01"
+  ocean_mask_band: "water_mask"
+  
+  # Latitude bounds
   latitude_bounds:
     min: -60  # Southern bound (no fungi data beyond)
     max: 75   # Northern bound (minimal fungi data beyond)
+  
+  # Note: Ocean mask strategies are defined per resolution in resolution_settings.outputs
 
 # =============================================================================
 # PROCESSING OPTIONS
@@ -109,13 +117,32 @@ resolution_settings:
   # Base resolution for alignment (all datasets aligned to this first)
   base_resolution: 0.016666666666667  # ~1.85km at equator
   
-  # Which resolutions to export (can disable to save compute/storage)
+  # Which resolutions to export with their ocean mask strategies
   # Each number represents power of 2 downsampling (max 8x recommended)
   outputs:
-    1x: false  # Base resolution (0.0167°, ~1.85km)
-    2x: false  # One 2x downsample (0.0334°, ~3.7km)
-    4x: false  # Two 2x downsamples (0.0668°, ~7.4km)
-    8x: true   # Three 2x downsamples (0.1336°, ~14.8km)
+    1x: 
+      enabled: true   # Base resolution (0.0167°, ~1.85km)
+      ocean_mask:
+        method: "original"  # Use RAW MODIS mask (500m) - no aggregation needed
+        description: "Conservative: MODIS is 3.7x finer than 1x data"
+    2x: 
+      enabled: false  # One 2x downsample (0.0334°, ~3.7km)
+      ocean_mask:
+        method: "reduceResolution"
+        reducer: "mean"
+        threshold: 0.5  # >50% water = masked
+        maxPixels: 64
+    4x: 
+      enabled: true   # Two 2x downsamples (0.0668°, ~7.4km)
+      ocean_mask:
+        method: "disabled"  # Temporarily disabled due to reprojection issues
+        description: "Ocean mask causing reprojection errors - using latitude bounds only"
+    8x: 
+      enabled: false  # Three 2x downsamples (0.1336°, ~14.8km)
+      ocean_mask:
+        method: "reduceResolution"
+        reducer: "mode"  # Most common value (land or water)
+        maxPixels: 1024
 
 # =============================================================================
 # INFRASTRUCTURE

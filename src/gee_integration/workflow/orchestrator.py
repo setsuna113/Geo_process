@@ -375,16 +375,8 @@ class GEEWorkflowOrchestrator:
                 biodiv_images, biodiv_configs
             )
             
-            # Process climate if enabled
-            climate_resolution_sets = {}
-            if climate_image is not None:
-                climate_config = {
-                    'name': 'climate',
-                    'band_name': 'climate',
-                    'data_type': 'continuous',
-                    'resampling': 'bilinear'
-                }
-                climate_resolution_sets = resampler.process_dataset(climate_image, climate_config)
+            # Climate doesn't need recursive resampling - it has native pyramids
+            # GEE will automatically use the appropriate pyramid level for the requested scale
             
             # Merge datasets at each resolution
             processed_images = {}
@@ -395,8 +387,8 @@ class GEEWorkflowOrchestrator:
                 # Get biodiversity images for this resolution
                 biodiv_images_at_res = biodiv_resolution_sets[res_name]
                 
-                # Get climate image for this resolution if available
-                climate_at_res = climate_resolution_sets.get(res_name)
+                # Climate uses native pyramids - no manual resampling needed
+                climate_at_res = climate_image
                 
                 # Merge datasets
                 if climate_at_res is not None:
@@ -404,13 +396,21 @@ class GEEWorkflowOrchestrator:
                     factor = int(res_name[:-1]) if res_name.endswith('x') else 1
                     scale_meters = base_resolution * factor * 111320
                     
+                    # Get ocean mask config for this resolution
+                    ocean_mask_config = None
+                    if self.config.masking.enabled and res_name in resolution_outputs:
+                        output_config = resolution_outputs[res_name]
+                        if isinstance(output_config, dict) and 'ocean_mask' in output_config:
+                            ocean_mask_config = output_config['ocean_mask']
+                    
                     merged = merger.merge_datasets(
                         biodiv_images_at_res,
                         climate_at_res,
                         self.config.merge_strategy,
                         mask_ocean=self.config.masking.enabled,
                         include_elevation=include_elevation,
-                        scale=scale_meters
+                        scale=scale_meters,
+                        ocean_mask_config=ocean_mask_config
                     )
                 else:
                     # Climate disabled - just combine biodiversity
@@ -525,17 +525,9 @@ class GEEWorkflowOrchestrator:
                 biodiv_results = resampler.process_collection(biodiv_images, biodiv_configs)
                 biodiv_resampled = biodiv_results.get(res_name, [])
                 
-                # Process climate if enabled
-                climate_resampled = None
-                if climate_image is not None:
-                    climate_config = {
-                        'name': 'climate',
-                        'band_name': 'climate',
-                        'data_type': 'continuous',
-                        'resampling': 'bilinear'
-                    }
-                    climate_results = resampler.process_dataset(climate_image, climate_config)
-                    climate_resampled = climate_results.get(res_name)
+                # Climate doesn't need resampling - use native pyramids
+                # GEE will automatically select the appropriate pyramid level
+                climate_resampled = climate_image
                 
                 # Merge all datasets - handle case where climate might be disabled
                 if climate_resampled is not None:

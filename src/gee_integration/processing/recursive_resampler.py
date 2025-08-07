@@ -36,9 +36,10 @@ class RecursiveResampler:
         # Parse output configuration
         self.resolutions_to_process = self._parse_outputs(outputs)
         
-    def _parse_outputs(self, outputs: Dict[str, bool]) -> List[Tuple[str, int, bool]]:
+    def _parse_outputs(self, outputs: Dict[str, any]) -> List[Tuple[str, int, bool]]:
         """
         Parse output configuration to determine processing chain.
+        Handles both old format (bool) and new format (dict with 'enabled' key).
         
         Returns:
             List of (name, downsample_factor, export_flag) tuples
@@ -46,10 +47,19 @@ class RecursiveResampler:
         resolutions = []
         
         # Parse each resolution key
-        for key, export in outputs.items():
+        for key, value in outputs.items():
             if key.endswith('x'):
                 try:
                     factor = int(key[:-1])
+                    
+                    # Handle both old (bool) and new (dict) formats
+                    if isinstance(value, bool):
+                        export = value
+                    elif isinstance(value, dict):
+                        export = value.get('enabled', False)
+                    else:
+                        export = False
+                    
                     # Validate factor is power of 2 and reasonable
                     if factor > 0 and (factor & (factor - 1)) == 0 and factor <= 16:
                         resolutions.append((key, factor, export))
@@ -142,7 +152,17 @@ class RecursiveResampler:
         
         # Reproject to base resolution
         # Use projection at scale to ensure proper alignment
-        target_projection = ee.Projection(self.target_crs).atScale(self.base_scale)
+        # CRITICAL: Use consistent Y-axis orientation (positive yScale) for all bands
+        # This prevents projection mismatches during export
+        base_transform = [
+            self.base_scale / 111320,  # xScale (degrees)
+            0,                          # xShearing
+            0,                          # xTranslation  
+            0,                          # yShearing
+            self.base_scale / 111320,  # yScale (POSITIVE for consistent orientation)
+            0                           # yTranslation
+        ]
+        target_projection = ee.Projection(self.target_crs, base_transform)
         
         # Use appropriate resampling for alignment
         resampling_method = config.get('resampling', 'bilinear')
@@ -157,6 +177,10 @@ class RecursiveResampler:
             crs=target_projection,
             scale=self.base_scale
         )
+        
+        # Convert to Float32 to ensure consistent data types across all bands
+        # This prevents "incompatible data types" errors during export
+        aligned = aligned.toFloat()
         
         return aligned
     
@@ -196,8 +220,9 @@ class RecursiveResampler:
         # Target scale is 2x current
         target_scale = current_scale.multiply(2)
         
-        # Create target projection
-        target_projection = current_projection.atScale(target_scale)
+        # Create target projection with consistent Y-axis orientation
+        # Use scale() method which preserves the CRS and orientation
+        target_projection = current_projection.scale(2, 2)
         
         # Apply reduceResolution with conservative settings
         # 2x downsampling means 4 pixels -> 1 pixel, well within limits
@@ -208,9 +233,11 @@ class RecursiveResampler:
         )
         
         # Reproject to target scale
+        # CRITICAL: Must extract and pass the scale from the projection
+        # Otherwise GEE won't actually downsample
         downsampled = downsampled.reproject(
-            crs=target_projection
-            # Don't pass scale - use the projection's native scale
+            crs=target_projection,
+            scale=target_scale  # Pass the target scale explicitly
         )
         
         return downsampled
