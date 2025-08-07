@@ -11,6 +11,7 @@ import yaml
 from dataclasses import dataclass, field
 
 from src.infrastructure.logging import get_logger
+from config.gee.constants import DEFAULT_LAT_MIN, DEFAULT_LAT_MAX
 
 logger = get_logger(__name__)
 
@@ -48,7 +49,7 @@ class AdditionalLayerConfig:
 class MaskingConfig:
     """Configuration for masking options"""
     enabled: bool = True
-    latitude_bounds: Dict[str, float] = field(default_factory=lambda: {"min": -60, "max": 75})
+    latitude_bounds: Dict[str, float] = field(default_factory=lambda: {"min": DEFAULT_LAT_MIN, "max": DEFAULT_LAT_MAX})
 
 
 @dataclass
@@ -157,8 +158,8 @@ class GEEConfig:
         masking = MaskingConfig(
             enabled=mask_config.get('enabled', True),
             latitude_bounds={
-                'min': mask_config.get('latitude_bounds', {}).get('min', -60),
-                'max': mask_config.get('latitude_bounds', {}).get('max', 75)
+                'min': mask_config.get('latitude_bounds', {}).get('min', DEFAULT_LAT_MIN),
+                'max': mask_config.get('latitude_bounds', {}).get('max', DEFAULT_LAT_MAX)
             }
         )
         

@@ -6,7 +6,16 @@ Handles merging of biodiversity and climate data in GEE.
 from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
-from config.gee.constants import COARSE_MASK_THRESHOLD, MAX_REDUCE_PIXELS
+from config.gee.constants import (
+    COARSE_MASK_THRESHOLD, 
+    MAX_PIXELS_REDUCE,
+    DEFAULT_LAT_MIN,
+    DEFAULT_LAT_MAX,
+    GLOBAL_LON_MIN,
+    GLOBAL_LON_MAX,
+    GLOBAL_LAT_MIN,
+    GLOBAL_LAT_MAX
+)
 
 if TYPE_CHECKING:
     import ee
@@ -143,7 +152,7 @@ class GEEMerger:
                 mask_config = self.config['masking']
                 if mask_config.get('enabled', True) and 'latitude_bounds' in mask_config:
                     bounds = mask_config['latitude_bounds']
-                    lat_bounds = (bounds.get('min', -60), bounds.get('max', 75))
+                    lat_bounds = (bounds.get('min', DEFAULT_LAT_MIN), bounds.get('max', DEFAULT_LAT_MAX))
             merged = self.apply_land_mask(merged, latitude_bounds=lat_bounds, scale=scale, ocean_mask_config=ocean_mask_config)
         
         self.logger.info(f"✅ Created merged image")
@@ -286,7 +295,7 @@ class GEEMerger:
                 self.logger.info(f"Using default coarse ocean mask for {scale}m resolution")
                 water_mask_img = water_mask_img.reduceResolution(
                     reducer=ee.Reducer.mode(),
-                    maxPixels=MAX_REDUCE_PIXELS
+                    maxPixels=MAX_PIXELS_REDUCE
                 ).reproject(
                     crs='EPSG:4326',
                     scale=scale
@@ -421,7 +430,7 @@ class GEEMerger:
             ])
         else:
             # Default to global
-            bounds = ee.Geometry.Rectangle([-180, -90, 180, 90])
+            bounds = ee.Geometry.Rectangle([GLOBAL_LON_MIN, GLOBAL_LAT_MIN, GLOBAL_LON_MAX, GLOBAL_LAT_MAX])
         
         return bounds
     
@@ -476,7 +485,7 @@ class GEEMerger:
             # Find min/max of coordinates where data exists
             bounds_dict = masked_coords.reduceRegion(
                 reducer=ee.Reducer.minMax(),
-                geometry=ee.Geometry.Rectangle([-180, -90, 180, 90]),
+                geometry=ee.Geometry.Rectangle([GLOBAL_LON_MIN, GLOBAL_LAT_MIN, GLOBAL_LON_MAX, GLOBAL_LAT_MAX]),
                 scale=scale,
                 maxPixels=1e9,
                 tileScale=4
@@ -485,8 +494,8 @@ class GEEMerger:
             # Extract bounds
             bounds_info = bounds_dict.getInfo()
             if bounds_info:
-                min_lon = bounds_info.get('longitude_min', -180)
-                max_lon = bounds_info.get('longitude_max', 180)
+                min_lon = bounds_info.get('longitude_min', GLOBAL_LON_MIN)
+                max_lon = bounds_info.get('longitude_max', GLOBAL_LON_MAX)
                 min_lat = bounds_info.get('latitude_min', -90)
                 max_lat = bounds_info.get('latitude_max', 90)
                 

@@ -11,7 +11,13 @@ from src.infrastructure.logging import get_logger, LoggingContext
 from src.infrastructure.logging.decorators import log_operation
 from config.gee.constants import (
     BASE_RESOLUTION_DEGREES,
-    DEGREES_TO_METERS
+    DEGREES_TO_METERS,
+    DEFAULT_LAT_MIN,
+    DEFAULT_LAT_MAX,
+    GLOBAL_LON_MIN,
+    GLOBAL_LON_MAX,
+    GLOBAL_LAT_MIN,
+    GLOBAL_LAT_MAX
 )
 
 from ..config import GEEConfig
@@ -589,10 +595,10 @@ class GEEWorkflowOrchestrator:
                     
                     # Use latitude bounds from masking config
                     if self.config.masking.enabled:
-                        lat_min = self.config.masking.latitude_bounds.get('min', -60)
-                        lat_max = self.config.masking.latitude_bounds.get('max', 75)
+                        lat_min = self.config.masking.latitude_bounds.get('min', DEFAULT_LAT_MIN)
+                        lat_max = self.config.masking.latitude_bounds.get('max', DEFAULT_LAT_MAX)
                     else:
-                        lat_min, lat_max = -90, 90  # Full global if masking disabled
+                        lat_min, lat_max = GLOBAL_LAT_MIN, GLOBAL_LAT_MAX  # Full global if masking disabled
                     
                     self.logger.info(f"   Using configured region with latitude range: [{lat_min}, {lat_max}]")
                     
@@ -600,7 +606,7 @@ class GEEWorkflowOrchestrator:
                     # This avoids the antimeridian collapse issue
                     # Using BBox with specific coordinates ensures proper global coverage
                     export_region = ee.Geometry.BBox(
-                        -180, lat_min, 180, lat_max
+                        GLOBAL_LON_MIN, lat_min, GLOBAL_LON_MAX, lat_max
                     )
                     self.logger.info("   Using non-geodesic rectangle to avoid antimeridian collapse")
                 
