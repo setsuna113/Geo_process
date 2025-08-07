@@ -15,11 +15,12 @@ from typing import Dict, Any, Optional, Union, Tuple
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
 from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
+from ...base import BaseRegressionMethod
 
 logger = logging.getLogger(__name__)
 
 
-class Method1ContinuousGLM:
+class Method1ContinuousGLM(BaseRegressionMethod):
     """H2O-native implementation of Method 1 for massive datasets.
     
     Key improvements:
@@ -35,7 +36,7 @@ class Method1ContinuousGLM:
         Args:
             config: ML regression configuration
         """
-        self.config = config
+        super().__init__(config)  # Initialize base class
         self.preprocessing_config = self.config.get_preprocessing_config()
         self.glm_config = self.config.get_glm_config()
         self.spatial_config = self.config.get_spatial_config()
@@ -304,3 +305,40 @@ class Method1ContinuousGLM:
             return "Positive interaction: Plant-fungi relationship strengthens with temperature seasonality"
         else:
             return "Negative interaction: Plant-fungi relationship weakens with temperature seasonality"
+    
+    def test_hypothesis(self, hypothesis: str = 'h2') -> Dict[str, Any]:
+        """Test specific hypothesis.
+        
+        Args:
+            hypothesis: Which hypothesis to test (mainly 'h2' for Method 1)
+            
+        Returns:
+            Hypothesis test results
+        """
+        if hypothesis == 'h2':
+            return self.get_interaction_coefficient()
+        else:
+            return {'error': f'Method 1 primarily tests H2, not {hypothesis}'}
+    
+    def summarize_results(self) -> Dict[str, Any]:
+        """Summarize Method 1 results.
+        
+        Returns:
+            Dictionary with summary
+        """
+        # Get base summary
+        summary = super().summarize_results()
+        summary['method'] = 'Method 1: Continuous GLM with interaction'
+        
+        # Add Method 1 specific information
+        if self.model_interaction:
+            h2_results = self.get_interaction_coefficient()
+            summary['h2_supported'] = h2_results['supports_h2']
+            summary['h2_interpretation'] = h2_results['interpretation']
+            summary['interaction_coefficient'] = h2_results.get('interaction_coefficient')
+            summary['interaction_p_value'] = h2_results.get('interaction_p_value')
+        
+        # Use the proper model for diagnostics
+        self.model = self.model_interaction or self.model_full or self.model_null
+        
+        return summary
