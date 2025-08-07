@@ -25,6 +25,7 @@ from .constants import (
     MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG
 )
 from .minibatch_distance_calculator import MiniBatchDistanceCalculator
+from .partial_metrics import partial_bray_curtis_numba, partial_euclidean_numba
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,7 @@ class GeoSOMVLRSOM:
     def partial_bray_curtis(self, u: np.ndarray, v: np.ndarray) -> float:
         """Bray-Curtis distance for vectors with missing values.
         
+        Uses Numba-optimized implementation for better performance.
         Only compares non-NA pairs, requires minimum valid features.
         
         Args:
@@ -227,20 +229,8 @@ class GeoSOMVLRSOM:
         Returns:
             Distance value or INVALID_DISTANCE (np.nan) if insufficient valid pairs
         """
-        valid = ~(np.isnan(u) | np.isnan(v))
-        
-        if valid.sum() < self.config.min_valid_features:
-            return INVALID_DISTANCE
-        
-        u_valid = u[valid]
-        v_valid = v[valid]
-        
-        # Avoid division by zero
-        denominator = np.sum(u_valid + v_valid)
-        if denominator == 0:
-            return 0.0 if np.allclose(u_valid, v_valid) else 1.0
-        
-        return np.sum(np.abs(u_valid - v_valid)) / denominator
+        # Delegate to Numba-optimized implementation from partial_metrics
+        return partial_bray_curtis_numba(u, v, self.config.min_valid_features)
     
     def haversine_distance(self, coord1: np.ndarray, coord2: np.ndarray) -> float:
         """Calculate haversine distance between geographic coordinates.
