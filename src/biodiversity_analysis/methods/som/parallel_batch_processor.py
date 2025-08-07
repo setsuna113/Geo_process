@@ -352,11 +352,25 @@ class ParallelBatchProcessor:
         # Use threading backend for better cleanup between CV folds
         backend = 'threading' if n_chunks < 20 else 'loky'
         
+        logger.info(f"Starting joblib Parallel with backend={backend}, n_jobs={actual_workers}")
+        logger.info(f"Number of chunk_params: {len(chunk_params)}")
+        
+        # Debug: Log first chunk details
+        if chunk_params:
+            first_chunk = chunk_params[0]
+            logger.info(f"First chunk - idx: {first_chunk[0]}, data shape: {first_chunk[1].shape}")
+        
         # Create context manager for proper cleanup
-        with Parallel(n_jobs=actual_workers, backend=backend, verbose=10) as parallel:
-            results = parallel(
-                delayed(process_single_chunk)(*params) for params in chunk_params
-            )
+        try:
+            with Parallel(n_jobs=actual_workers, backend=backend, verbose=10, timeout=300) as parallel:
+                logger.info("Parallel context created, starting processing...")
+                results = parallel(
+                    delayed(process_single_chunk)(*params) for params in chunk_params
+                )
+                logger.info(f"Parallel processing returned {len(results)} results")
+        except Exception as e:
+            logger.error(f"Parallel processing failed: {e}")
+            raise
         
         # Aggregate results
         numerator = np.zeros_like(weights)
