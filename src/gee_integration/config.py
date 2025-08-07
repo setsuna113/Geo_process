@@ -11,7 +11,7 @@ import yaml
 from dataclasses import dataclass, field
 
 from src.infrastructure.logging import get_logger
-from config.gee.constants import DEFAULT_LAT_MIN, DEFAULT_LAT_MAX
+from config.gee.constants import DEFAULT_LAT_MIN, DEFAULT_LAT_MAX, BASE_RESOLUTION_DEGREES
 
 logger = get_logger(__name__)
 
@@ -65,7 +65,7 @@ class GEEConfig:
     
     # Recursive resolution settings (base + outputs)
     resolution_settings: Dict = field(default_factory=lambda: {
-        'base_resolution': 0.016666666666667,
+        'base_resolution': BASE_RESOLUTION_DEGREES,
         'outputs': {'1x': True}
     })
     
@@ -130,7 +130,7 @@ class GEEConfig:
         
         # Parse resolution settings (new format only)
         resolution_settings = data.get('resolution_settings', {
-            'base_resolution': 0.016666666666667,
+            'base_resolution': BASE_RESOLUTION_DEGREES,
             'outputs': {'1x': True}
         })
         
@@ -253,4 +253,4 @@ class GEEConfig:
     
     def get_base_resolution(self) -> float:
         """Get base resolution in degrees"""
-        return self.resolution_settings.get('base_resolution', 0.016666666666667)
+        return self.resolution_settings.get('base_resolution', BASE_RESOLUTION_DEGREES)
