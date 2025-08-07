@@ -380,6 +380,21 @@ class SOMConfig(IMethodConfig):
                    preset: Optional[str] = None) -> Dict[str, Any]:
         """Load method configuration with environment overrides.
         
+        Configuration Precedence Order (highest to lowest):
+        1. Environment variables (SOM_* pattern)
+        2. Preset-specific values (if preset specified)
+        3. Config file values (from config_name or default)
+        4. Hard-coded defaults in this class
+        
+        Environment Variables:
+        - SOM_CONFIG_PATH: Path to config file (overrides config_name)
+        - SOM_MAX_EPOCHS: Maximum training epochs (int)
+        - SOM_MAX_WORKERS: Number of parallel workers (int)
+        - SOM_CHUNK_SIZE: Samples per chunk (int)
+        - SOM_SPATIAL_GRID_STEP: Spatial sampling step (int)
+        - SOM_GRID_SIZE: Grid dimensions (comma-separated, e.g., "60,60")
+        - SOM_INITIAL_LR: Initial learning rate (float)
+        
         Args:
             config_name: Name of config file (without .yml)
             preset: Preset name to apply
