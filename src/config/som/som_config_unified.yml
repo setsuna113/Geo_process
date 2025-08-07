@@ -11,10 +11,10 @@
 
 # Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 500  # VERY AGGRESSIVE: Every 500th point for quick testing
-  feature_cols: ['animal_richness', 'plant_richness', 'fungi_richness']  # All biodiversity columns
+  spatial_grid_step: 4  # 4x sampling as requested (every 4th point)
+  feature_cols: ['plants_richness', 'terrestrial_richness', 'am_fungi_richness', 'ecm_fungi_richness']  # All 4 biodiversity columns
   coordinate_columns: ['x', 'y']  # Column names for coordinates
-  observed_columns: [0, 1, 2]  # All three biodiversity columns are observed
+  observed_columns: [0, 1, 2, 3]  # All four biodiversity columns are observed
   predicted_columns: []  # No predicted columns (biodiversity-only analysis)
 
 # Distance calculation configuration
@@ -38,7 +38,7 @@ preprocessing_config:
 # Core architecture parameters
 architecture_config:
   type: 'GeoSOM_VLRSOM'
-  grid_size: [10, 10]  # REDUCED FOR TESTING - normally [60, 60] for production
+  grid_size: [50, 50]  # Production quality grid for detailed analysis
   topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
   spatial_weight: 0.2  # 20% spatial, 80% biodiversity
   geographic_distance: 'haversine'
@@ -81,9 +81,9 @@ architecture_config:
 
 # Training parameters
 training_config:
-  max_epochs: 15  # Test: Run to epoch 15 to test checkpoint at 10
+  max_epochs: 100  # Production run to 100 epochs
   chunk_size: 25000  # Smaller chunks for better parallelization
-  n_workers: 10  # Reduced for testing with memory constraints
+  n_workers: 20  # Production run with good parallelization
   use_minibatch: true  # Enable mini-batch processing for memory efficiency
   minibatch_size: 1000  # Process 1000 samples at a time within chunks
   geographic_coherence_weight: 0.3  # Weight for geographic coherence in convergence
