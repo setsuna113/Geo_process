@@ -17,7 +17,7 @@ from src.abstractions.interfaces.analyzer import IAnalyzer
 from src.abstractions.types import AnalysisResult, ModelMetrics
 from src.abstractions.types.tensor_types import TensorData
 from src.biodiversity_analysis.preprocessing import SharedPreprocessor
-from src.biodiversity_analysis.preprocessing.tensor_preprocessing import TensorPreprocessor
+from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
 from src.biodiversity_analysis.shared.data import ParquetLoader
 from src.config.cpwopt import get_cpwopt_config
 from .core import CPWOPT
@@ -62,14 +62,11 @@ class CPWOPTAnalyzer(IAnalyzer):
             handle_missing=True
         )
         
-        # Tensor-specific preprocessing (only for tensor construction, not general preprocessing)
-        # NOTE: Sampling is now handled by ParquetLoader.spatial_grid_step ONLY
-        tensor_config = self.config.get('tensor_construction', {})
-        self.tensor_builder = TensorPreprocessor(  # Use base class, not WithSampling
+        # Use DIRECT tensor preprocessing - no gridding!
+        from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
+        self.tensor_builder = TensorPreprocessor(
             missing_value=0.0,  # CP-WOPT uses 0 for missing
-            min_observations_per_cell=tensor_config.get('min_observations_per_cell', 1),
-            aggregation_method=tensor_config.get('aggregation', 'sum')
-            # REMOVED sampling parameters - handled by ParquetLoader
+            min_observations_per_cell=1  # Each point is unique
         )
         self.metrics_calculator = CPWOPTMetricsCalculator()
         self.sparse_strategy = AdaptiveSparseStrategy(
@@ -104,17 +101,22 @@ class CPWOPTAnalyzer(IAnalyzer):
             logger.info("Applying general preprocessing...")
             X_preprocessed = self.preprocessor.fit_transform(X)
             
-            # Step 2: Convert to tensor format with tensor-specific operations
-            logger.info("Converting data to tensor format...")
+            # Step 2: Convert DIRECTLY to tensor format - NO GRIDDING!
+            logger.info("Converting data directly to tensor format (no gridding)...")
             tensor_config = self.config.get('tensor_construction', {})
+            data_config = self.config.get('data_processing', {})
             
-            # Reconstruct DataFrame for tensor builder (needs column names)
+            # Reconstruct DataFrame for tensor builder
             X_df = pd.DataFrame(X_preprocessed, columns=X.columns)
             
-            self.tensor_data = self.tensor_builder.dataframe_to_tensor(
+            # Get coordinate and feature columns from config
+            coord_cols = data_config.get('coordinate_cols', ['x', 'y'])
+            feature_cols = data_config.get('feature_cols', None)
+            
+            self.tensor_data = self.tensor_builder.parquet_to_tensor(
                 X_df,
-                lat_bins=tensor_config.get('lat_bins', 20),
-                lon_bins=tensor_config.get('lon_bins', 20),
+                coordinate_cols=coord_cols,
+                feature_cols=feature_cols,
                 transform=tensor_config.get('transform', 'log1p')
             )
             

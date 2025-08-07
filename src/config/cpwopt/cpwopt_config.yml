@@ -3,44 +3,44 @@
 
 # Data processing configuration
 data_processing:
-  spatial_grid_step: 10      # ONLY sampling method - takes every Nth spatial point
-  # REMOVED sample_size - redundant with spatial_grid_step
+  data_path: 'data/merged/biodiversity_climate_1x_production.parquet'  # 1.7GB file with 51.9M points
+  spatial_grid_step: 1       # Use ALL points - RTX 4090 can handle it!
   random_seed: 42            # Random seed for reproducibility
-  coordinate_cols: null      # Auto-detect if null
-  feature_cols: null         # Use all numeric columns if null
+  coordinate_cols: ['x', 'y'] # Explicit coordinate columns
+  # Use 4 biodiversity bands (can add climate bands if needed)
+  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
 
 # Algorithm parameters
 algorithm:
-  rank: 'auto'                # Number of components ('auto' for automatic selection or integer)
+  rank: 5                     # Reduced - only 4 biodiversity features
   max_iterations: 1000        # Maximum ALS iterations
   convergence_threshold: 1e-6 # Relative error threshold
   init_method: 'svd'          # Initialization: 'random', 'svd', 'nndsvd' (svd better for large-scale)
   optimizer: 'als'            # Optimizer: 'als', 'gradient', 'sgd', 'sgd_momentum'
   random_state: 42            # For reproducibility
-  learning_rate: 0.01         # Learning rate for SGD methods (NEW)
-  momentum: 0.9               # Momentum parameter for SGD with momentum (NEW)
+  learning_rate: 0.01         # Learning rate for SGD methods
+  momentum: 0.9               # Momentum parameter for SGD with momentum
 
 # Rank selection parameters (when rank='auto')
 rank_selection:
   method: 'elbow'             # Selection method: 'elbow', 'cross_validation', 'core_consistency'
   min_rank: 2                 # Minimum rank to test
-  max_rank: 8                 # Maximum rank (conservative for 4 biodiversity features)
+  max_rank: 5                 # Maximum rank (reduced for 4 features)
   n_trials: 3                 # Number of trials per rank for stability
   plot: true                  # Generate diagnostic plot
 
 # Tensor construction parameters
 tensor_construction:
-  lat_bins: 180              # Number of latitude bins (1-degree resolution)
-  lon_bins: 360              # Number of longitude bins (1-degree resolution)
-  aggregation: 'sum'         # Aggregation method: 'sum', 'mean', 'max'
+  # NO GRIDDING - data is used at native resolution directly from parquet!
+  # Shape determined automatically from unique x,y coordinates in data
   transform: 'log1p'         # Transform: 'none', 'log1p', 'sqrt', 'asinh'
-  min_observations: 1        # Minimum observations per cell
-  fill_value: 0              # Value for empty cells
+  min_observations: 1        # Minimum observations per cell (not used for direct conversion)
+  fill_value: 0              # Value for empty/missing cells
 
 # Weight mask configuration
 weights:
   missing_value_weight: 0.0   # Weight for missing values
-  use_observation_counts: true # Weight by number of observations
+  use_observation_counts: false # No aggregation - each point is unique
   min_weight: 0.0             # Minimum weight threshold
   max_weight: 1.0             # Maximum weight (for normalization)
 
@@ -50,13 +50,13 @@ weights:
 # Sparse tensor handling
 sparse:
   auto_sparse: true          # Automatically use sparse format
-  sparsity_threshold: 0.95   # Use sparse above this sparsity
-  force_sparse: false        # Always use sparse format
+  sparsity_threshold: 0.5    # Use sparse above 50% (data is 69% sparse)
+  force_sparse: true         # Always use sparse - data is 69% sparse
   storage_format: 'hicoo'    # Sparse format: HiCOO only (6.8x faster MTTKRP)
 
 # Factor constraints
 constraints:
-  nonnegative: false         # Non-negative factors
+  nonnegative: true          # Non-negative for species richness data
   orthogonal: false          # Orthogonal factors
   sparsity: 0.0             # L1 sparsity (0-1)
   smoothness: 0.0           # Spatial smoothness regularization
@@ -78,14 +78,14 @@ interpretation:
 
 # Memory management
 memory:
-  max_tensor_gb: 72.0       # Maximum tensor size in memory (50% of 144GB safe allocation)
-  chunk_memory_fraction: 0.7 # Fraction of limit per chunk (conservative due to memory pressure)
+  max_tensor_gb: 20.0        # Conservative for RTX 4090's 24GB VRAM
+  chunk_memory_fraction: 0.9 # Can use more with dedicated GPU memory
   enable_checkpointing: true # Save intermediate results
-  checkpoint_interval: 50    # More frequent checkpoints due to memory pressure
+  checkpoint_interval: 50    # Checkpoint frequency
 
 # Parallel processing
 parallel:
-  n_workers: 157            # Number of workers (70% of 225 free cores as of latest check)
+  n_workers: 32             # Number of workers (match actual system cores)
   backend: 'multiprocessing' # Joblib backend: 'threading', 'multiprocessing' (better for CPU-bound)
   batch_parallelism: true   # Parallelize across batches
   factor_parallelism: false # Parallelize factor updates (disabled to reduce overhead)
@@ -115,7 +115,7 @@ validation:
 # Reporting
 reporting:
   generate_plots: true      # Generate visualization plots
-  plot_components: 10       # Number of components to plot (increased to show more)
+  plot_components: 8        # Plot all 8 components
   plot_format: 'png'        # Plot format: 'png', 'pdf', 'svg'
   plot_dpi: 300            # Plot resolution (higher quality)
   colormap: 'viridis'      # Colormap for visualizations
@@ -125,9 +125,9 @@ reporting:
   threshold_percentile: 30  # Remove bottom 30% of weak signals
   min_component_weight: 0.05 # Minimum component weight to display
 
-# Backend configuration (NEW)
+# Backend configuration
 backend:
-  use_gpu: 'auto'          # Device selection: 'auto', 'cpu', 'gpu'
+  use_gpu: 'gpu'           # Force GPU - we have RTX 4090 with 24GB!
 
 # SAMPLING REMOVED - Use only spatial_grid_step in data_processing
 # Leverage sampling impossible (needs decomposition first - circular dependency)
