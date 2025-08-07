@@ -39,7 +39,7 @@ class RecursiveResampler:
     def _parse_outputs(self, outputs: Dict[str, any]) -> List[Tuple[str, int, bool]]:
         """
         Parse output configuration to determine processing chain.
-        Handles both old format (bool) and new format (dict with 'enabled' key).
+        Expects dict format with 'enabled' key.
         
         Returns:
             List of (name, downsample_factor, export_flag) tuples
@@ -52,13 +52,10 @@ class RecursiveResampler:
                 try:
                     factor = int(key[:-1])
                     
-                    # Handle both old (bool) and new (dict) formats
-                    if isinstance(value, bool):
-                        export = value
-                    elif isinstance(value, dict):
-                        export = value.get('enabled', False)
-                    else:
-                        export = False
+                    # Expect dict format with 'enabled' key
+                    if not isinstance(value, dict):
+                        raise ValueError(f"Resolution config for {key} must be a dict with 'enabled' key, got {type(value)}")
+                    export = value.get('enabled', False)
                     
                     # Validate factor is power of 2 and reasonable
                     if factor > 0 and (factor & (factor - 1)) == 0 and factor <= 16:

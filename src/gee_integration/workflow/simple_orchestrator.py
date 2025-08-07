@@ -2,10 +2,10 @@
 
 import ee
 import time
-import logging
 from typing import Dict, Optional, List
 from pathlib import Path
 
+from src.infrastructure.logging import get_logger
 from ..config import GEEConfig
 from ..auth import GEEAuthenticator
 from ..processing import GEEMerger
@@ -13,17 +13,18 @@ from ..processing.recursive_resampler import RecursiveResampler
 from ..processing.export_manager import ExportManager
 from .state_manager import WorkflowState, WorkflowStep
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SimpleOrchestrator:
     """Simplified workflow orchestrator without complex logging contexts"""
     
-    def __init__(self, config_path: str, experiment_name: str):
-        """Initialize simplified orchestrator"""
+    def __init__(self, config_path: str, experiment_name: str, asset_prefix: Optional[str] = None):
+        """Initialize simplified orchestrator with configurable asset paths"""
         self.config = GEEConfig.from_yaml(config_path)
         self.experiment_name = experiment_name
         self.export_base_path = experiment_name
+        self.asset_prefix = asset_prefix or self.config.asset_prefix
         
         # Setup state management
         state_file = Path.home() / '.biodiversity' / f'gee_workflow_state_{experiment_name}.json'
@@ -102,8 +103,14 @@ class SimpleOrchestrator:
         
         for name, band_name, data_type, resampling in datasets:
             try:
-                asset_id = f'projects/earthengine-legacy/assets/users/geebiodiversity/production/{name}'
+                asset_id = f'{self.asset_prefix}/{name}'
                 image = ee.Image(asset_id)
+                # Test that the asset exists by trying to get minimal info
+                try:
+                    _ = image.bandNames().getInfo()
+                except Exception as e:
+                    raise RuntimeError(f"Asset {asset_id} not found or not accessible: {e}")
+                    
                 image = image.rename([band_name])
                 biodiv_images.append(image)
                 biodiv_configs.append({
