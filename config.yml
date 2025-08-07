@@ -554,6 +554,12 @@ spatial_analysis:
     production_som:
       input_parquet: 'outputs/biodiversity_global.parquet'
       method: 'som'
+    
+    # SOM with 4x sampling on real data
+    biodiv_som_4x:
+      input_parquet: 'provided_via_cli'  # Will use --input flag
+      method: 'som'
+      # Uses 4x sampling from som_config_unified.yml
       # NO method-specific parameters here!
       
     # Batch SOM test
