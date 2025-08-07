@@ -13,11 +13,12 @@ from typing import Dict, Any, Optional, Union
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
 from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
+from ...base import BaseRegressionMethod
 
 logger = logging.getLogger(__name__)
 
 
-class Method2CategoricalGLM:
+class Method2CategoricalGLM(BaseRegressionMethod):
     """H2O-native implementation of Method 2 for massive datasets.
     
     Tests categorical interaction between plant diversity and temperate climate.
@@ -30,7 +31,7 @@ class Method2CategoricalGLM:
         Args:
             config: ML regression configuration
         """
-        self.config = config
+        super().__init__(config)  # Initialize base class
         self.preprocessing_config = self.config.get_preprocessing_config()
         self.glm_config = self.config.get_glm_config()
         self.spatial_config = self.config.get_spatial_config()
@@ -271,3 +272,55 @@ class Method2CategoricalGLM:
         results.update(h2_results)
         
         return results
+    
+    def test_hypothesis(self, hypothesis: str = 'h2') -> Dict[str, Any]:
+        """Test specific hypothesis.
+        
+        Args:
+            hypothesis: Which hypothesis to test ('h2' for Method 2)
+            
+        Returns:
+            Hypothesis test results
+        """
+        if hypothesis == 'h2':
+            return self.test_h2_contrast()
+        else:
+            return {'error': f'Method 2 primarily tests H2, not {hypothesis}'}
+    
+    def compute_emmeans(self) -> Dict[str, Any]:
+        """Compute estimated marginal means.
+        
+        Returns:
+            Dictionary with emmeans results
+        """
+        if self.model is None:
+            return {'error': 'Model not fitted yet'}
+        
+        # This would compute emmeans from the fitted model
+        # For now, return placeholder indicating where emmeans would be computed
+        return {
+            'emmeans': [0, 0, 0, 0],  # Will be computed from model
+            'SE': [1, 1, 1, 1],
+            'groups': ['Low/Non-temp', 'High/Non-temp', 'Low/Temp', 'High/Temp'],
+            'note': 'emmeans computation from H2O model pending implementation'
+        }
+    
+    def summarize_results(self) -> Dict[str, Any]:
+        """Summarize Method 2 results.
+        
+        Returns:
+            Dictionary with summary
+        """
+        # Get base summary
+        summary = super().summarize_results()
+        summary['method'] = 'Method 2: Categorical GLM with emmeans'
+        
+        # Add Method 2 specific information
+        if self.model:
+            h2_results = self.test_h2_contrast()
+            summary['h2_supported'] = h2_results['h2_supported']
+            summary['h2_interpretation'] = h2_results['interpretation']
+            summary['contrast_estimate'] = h2_results.get('contrast_estimate')
+            summary['contrast_p_value'] = h2_results.get('p_value')
+        
+        return summary
