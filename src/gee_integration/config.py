@@ -15,58 +15,6 @@ from src.infrastructure.logging import get_logger
 logger = get_logger(__name__)
 
 
-class GEEAuthConfig:
-    """Centralized authentication configuration for GEE."""
-    
-    # Environment variable names
-    ENV_SERVICE_ACCOUNT_KEY = 'GEE_SERVICE_ACCOUNT_KEY'
-    ENV_PROJECT_ID = 'GEE_PROJECT_ID'
-    ENV_EARTHENGINE_PATH = 'EARTHENGINE_PATH'
-    ENV_ASSET_PREFIX = 'GEE_ASSET_PREFIX'
-    
-    @classmethod
-    def get_service_account_key(cls, default: str = '.gee/service-account-key.json') -> str:
-        """Get service account key path from environment or default."""
-        return os.getenv(cls.ENV_SERVICE_ACCOUNT_KEY, default)
-    
-    @classmethod
-    def get_project_id(cls, default: str = 'triple-carrier-441622-t1') -> str:
-        """Get project ID from environment or default."""
-        return os.getenv(cls.ENV_PROJECT_ID, default)
-    
-    @classmethod
-    def get_earthengine_path(cls) -> str:
-        """Get earthengine CLI path from environment or auto-detect."""
-        if cls.ENV_EARTHENGINE_PATH in os.environ:
-            return os.environ[cls.ENV_EARTHENGINE_PATH]
-        
-        # Try to find in conda environment
-        conda_prefix = os.environ.get('CONDA_PREFIX', '')
-        if conda_prefix:
-            ee_path = Path(conda_prefix) / 'bin' / 'earthengine'
-            if ee_path.exists():
-                return str(ee_path)
-        
-        # Default to 'earthengine' and hope it's in PATH
-        return 'earthengine'
-    
-    @classmethod
-    def get_asset_prefix(cls, default: str = 'projects/earthengine-legacy/assets/users/geebiodiversity') -> str:
-        """Get asset prefix from environment or default."""
-        return os.getenv(cls.ENV_ASSET_PREFIX, default)
-    
-    @classmethod
-    def get_cli_auth_args(cls, config: Optional[Dict] = None) -> list:
-        """Get authentication arguments for CLI commands."""
-        if config:
-            return [
-                '--service_account_file', config.get('service_account_key', cls.get_service_account_key()),
-                '--project', config.get('project_id', cls.get_project_id())
-            ]
-        return [
-            '--service_account_file', cls.get_service_account_key(),
-            '--project', cls.get_project_id()
-        ]
 
 
 @dataclass
@@ -74,21 +22,12 @@ class DatasetConfig:
     """Configuration for a single dataset"""
     name: str
     band_name: str
-    gcs_path: Optional[str] = None  # For new config
-    path: Optional[str] = None  # For old config compatibility
+    path: str  # Path to the dataset file
     description: Optional[str] = None
     no_data_value: Optional[float] = None
-    no_data: Optional[float] = None  # Old field name
     asset_name: Optional[str] = None
     data_type: str = "continuous"  # continuous, count, categorical
     resampling: str = "bilinear"  # bilinear, bicubic, max, min, mean, mode
-    
-    def __post_init__(self):
-        # Handle old vs new field names
-        if self.gcs_path and not self.path:
-            self.path = self.gcs_path
-        if self.no_data_value is not None and self.no_data is None:
-            self.no_data = self.no_data_value
 
 
 # ResolutionConfig class removed - now using resolution_settings dict format
@@ -194,10 +133,9 @@ class GEEConfig:
             'outputs': {'1x': True}
         })
         
-        # Parse biodiversity datasets (check both old and new locations)
+        # Parse biodiversity datasets
         biodiv_datasets = []
-        biodiv_source = data.get('biodiversity_datasets', []) or data.get('gee', {}).get('inputs', {}).get('biodiversity', [])
-        for dataset_data in biodiv_source:
+        for dataset_data in data.get('biodiversity_datasets', []):
             biodiv_datasets.append(DatasetConfig(**dataset_data))
         
         # Parse additional layers (climate, elevation, etc.)
@@ -234,16 +172,16 @@ class GEEConfig:
             biodiversity_datasets=biodiv_datasets,
             additional_layers=additional_layers,
             masking=masking,
-            gcs_bucket=data.get('gcs', {}).get('bucket') or data.get('gee', {}).get('upload', {}).get('bucket'),
-            asset_prefix=data.get('earth_engine', {}).get('asset_prefix') or data.get('gee', {}).get('upload', {}).get('asset_prefix', 'biodiversity'),
-            chunk_size_mb=data.get('gcs', {}).get('chunk_size_mb', 100) or data.get('gee', {}).get('upload', {}).get('chunk_size_mb', 100),
-            parallel_uploads=data.get('gcs', {}).get('parallel_uploads', 4) or data.get('gee', {}).get('upload', {}).get('parallel_uploads', 4),
-            merge_strategy=data.get('processing', {}).get('merge_strategy', 'addBands') or data.get('gee', {}).get('processing', {}).get('merge_strategy', 'addBands'),
-            tile_scale=data.get('processing', {}).get('tileScale', 16) or data.get('gee', {}).get('processing', {}).get('tileScale', 16),
-            max_pixels=data.get('processing', {}).get('maxPixels', 1e13) or data.get('gee', {}).get('processing', {}).get('maxPixels', 1e13),
-            export_destination=data.get('export', {}).get('destination', 'cloud_storage') or data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
-            export_folder=data.get('gcs', {}).get('export_folder') or data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
-            export_format=data.get('export', {}).get('format', 'GeoTIFF') or data.get('gee', {}).get('export', {}).get('format', 'CSV'),
+            gcs_bucket=data.get('gee', {}).get('upload', {}).get('bucket'),
+            asset_prefix=data.get('gee', {}).get('upload', {}).get('asset_prefix', 'biodiversity'),
+            chunk_size_mb=data.get('gee', {}).get('upload', {}).get('chunk_size_mb', 100),
+            parallel_uploads=data.get('gee', {}).get('upload', {}).get('parallel_uploads', 4),
+            merge_strategy=data.get('gee', {}).get('processing', {}).get('merge_strategy', 'addBands'),
+            tile_scale=data.get('gee', {}).get('processing', {}).get('tileScale', 16),
+            max_pixels=data.get('gee', {}).get('processing', {}).get('maxPixels', 1e13),
+            export_destination=data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
+            export_folder=data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
+            export_format=data.get('gee', {}).get('export', {}).get('format', 'CSV'),
             file_format_options=data.get('gee', {}).get('export', {}).get('file_format_options'),
             export_timeout=data.get('gee', {}).get('export', {}).get('timeout', 7200),
             export_check_interval=data.get('gee', {}).get('export', {}).get('check_interval', 30),

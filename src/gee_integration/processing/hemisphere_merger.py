@@ -7,6 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from typing import List, Optional, Dict
 from src.infrastructure.logging import get_logger
+from ..utils.band_config import BandConfig
 
 logger = get_logger(__name__)
 
@@ -115,14 +116,30 @@ def merge_hemispheres_to_parquet(west_file: Path, east_file: Path,
                     if np.any(valid_mask):
                         filtered_data = {k: v[valid_mask] for k, v in batch_data.items()}
                         
-                        # Convert zeros to NaN for biodiversity bands
-                        climate_bands = ['bio01', 'bio02', 'bio03', 'bio04', 'bio05', 'bio06',
-                                       'bio07', 'bio08', 'bio09', 'bio10', 'bio11', 'bio12',
-                                       'bio13', 'bio14', 'bio15', 'bio16', 'bio17', 'bio18', 'bio19']
-                        known_non_biodiv = ['x', 'y', 'elevation', 'dem'] + climate_bands
+                        # Convert zeros to NaN for biodiversity bands using BandConfig
+                        if not metadata or 'biodiversity_count' not in metadata:
+                            raise ValueError("Metadata must include 'biodiversity_count' to identify biodiversity bands")
+                        
+                        # Create BandConfig from metadata
+                        biodiv_count = metadata['biodiversity_count']
+                        climate_count = metadata.get('climate_count', 0)
+                        if not band_names:
+                            raise ValueError("Band names not available - cannot create BandConfig")
+                        
+                        biodiv_bands = band_names[:biodiv_count]
+                        climate_bands = band_names[biodiv_count:biodiv_count + climate_count]
+                        include_elevation = metadata.get('elevation_included', False)
+                        
+                        band_config = BandConfig(
+                            biodiversity_bands=biodiv_bands,
+                            climate_bands=climate_bands,
+                            include_elevation=include_elevation
+                        )
                         
                         for band_name, band_data in filtered_data.items():
-                            if band_name not in known_non_biodiv and isinstance(band_data, np.ndarray):
+                            # Check if this is a biodiversity band
+                            if band_name in band_config.biodiversity_bands and isinstance(band_data, np.ndarray):
+                                # Convert 0 to NaN for biodiversity bands
                                 filtered_data[band_name] = np.where(band_data == 0, np.nan, band_data)
                         
                         # Ensure all schema fields present

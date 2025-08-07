@@ -14,10 +14,9 @@ from ..config import GEEConfig
 from ..auth import GEEAuthenticator
 from ..upload import BatchUploadManager
 from ..processing import (
-    GEEMerger, GEEAlignmentValidator,
+    GEEMerger, GEEResampler, GEEAlignmentValidator,
     ExportManager, GEETaskMonitor
 )
-from ..processing.recursive_resampler import RecursiveResampler
 from ..download import GCSFetcher, ParquetConverter
 from .state_manager import WorkflowState, WorkflowStep
 
@@ -364,7 +363,7 @@ class GEEWorkflowOrchestrator:
             self.logger.info(f"   Outputs configured: {resolution_outputs}")
             
             # Initialize recursive resampler
-            resampler = RecursiveResampler(
+            resampler = GEEResampler(
                 base_resolution=base_resolution,
                 outputs=resolution_outputs,
                 target_crs='EPSG:4326'
@@ -519,7 +518,7 @@ class GEEWorkflowOrchestrator:
                     include_elevation = True
                 
                 # Use recursive resampler
-                resampler = RecursiveResampler(
+                resampler = GEEResampler(
                     base_resolution=base_resolution,
                     outputs=resolution_outputs,
                     target_crs='EPSG:4326'
@@ -612,8 +611,8 @@ class GEEWorkflowOrchestrator:
                     'description': f'{factor}x downsampled ({base_resolution * factor:.6f}°)'
                 }
                 
-                # Export as GeoTIFF with fixed region
-                task_id = self._export_manager._export_as_geotiff(
+                # Export using the public API
+                task_id = self._export_manager.export_image(
                     merged_image=merged_image,
                     bounds=export_region,
                     resolution_name=res_name,
@@ -622,62 +621,24 @@ class GEEWorkflowOrchestrator:
                     export_base_path=self.export_base_path
                 )
                 
-                self.logger.info(f"   Started export task: {task_id}")
                 task_ids[res_name] = task_id
             
             # Save task IDs
             self.state.set_metadata('export_task_ids', task_ids)
             
-            # Monitor export tasks with configurable timeout
-            self.logger.info(f"\n   ⏳ Monitoring export tasks (timeout: {self.config.export_timeout}s)...")
-            all_completed = False
-            start_time = time.time()
-            
-            # Track individual task progress
-            task_progress = {res: {'start_time': start_time, 'state': 'READY'} 
-                           for res in task_ids.keys()}
-            
-            while not all_completed and (time.time() - start_time) < self.config.export_timeout:
-                statuses = {}
-                all_completed = True
-                
-                for res_name, task_id in task_ids.items():
-                    # Get task status directly from Earth Engine
-                    task_info = ee.data.getTaskStatus(task_id)[0]
-                    status = {
-                        'state': task_info.get('state', 'UNKNOWN'),
-                        'error_message': task_info.get('error_message', '')
-                    }
-                    statuses[res_name] = status
-                    
-                    # Update progress tracking
-                    if status['state'] != task_progress[res_name]['state']:
-                        task_progress[res_name]['state'] = status['state']
-                        elapsed = int(time.time() - task_progress[res_name]['start_time'])
-                        self.logger.info(f"   {res_name}: {status['state']} ({elapsed}s)")
-                    
-                    if status['state'] in ['READY', 'RUNNING']:
-                        all_completed = False
-                        # Check individual task timeout (3x global timeout)
-                        if (time.time() - task_progress[res_name]['start_time']) > self.config.export_timeout * 3:
-                            raise RuntimeError(f"Export timeout for {res_name} after {self.config.export_timeout * 3}s")
-                    elif status['state'] == 'FAILED':
-                        raise RuntimeError(f"Export failed for {res_name}: {status.get('error_message', 'Unknown error')}")
-                    elif status['state'] == 'COMPLETED':
-                        if task_progress[res_name]['state'] != 'LOGGED':
-                            elapsed = int(time.time() - task_progress[res_name]['start_time'])
-                            self.logger.info(f"   ✅ {res_name} export completed in {elapsed}s")
-                            task_progress[res_name]['state'] = 'LOGGED'
-                
-                if not all_completed:
-                    time.sleep(self.config.export_check_interval)
-            
-            if not all_completed:
-                # Log which tasks are still running
-                running_tasks = [res for res, info in task_progress.items() 
-                               if info['state'] in ['READY', 'RUNNING']]
-                raise RuntimeError(f"Export tasks timed out after {self.config.export_timeout}s. "
-                                 f"Still running: {', '.join(running_tasks)}")
+            # Monitor export tasks using export manager
+            self.logger.info(f"\n   Monitoring export tasks...")
+            try:
+                final_statuses = self._export_manager.monitor_tasks(
+                    task_ids=task_ids,
+                    timeout=self.config.export_timeout
+                )
+            except RuntimeError as e:
+                # Log which tasks are still running if timeout
+                if "timeout" in str(e).lower():
+                    # Could extract running tasks from exception if needed
+                    pass
+                raise  # Re-raise the original exception
             
             # Get export paths - MUST use experiment-specific paths
             export_paths = {
