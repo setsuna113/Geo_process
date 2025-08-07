@@ -37,7 +37,7 @@ class SparseHandler:
         logger.info("SparseHandler initialized with HiCOO-only format")
     
     def to_sparse(self, tensor_data: TensorData) -> HiCOOTensor:
-        """Convert tensor to sparse format (always HiCOO).
+        """Convert tensor to sparse format (always HiCOO) with error handling.
         
         No format selection - everything becomes HiCOO.
         
@@ -46,8 +46,49 @@ class SparseHandler:
             
         Returns:
             HiCOO tensor (the only format we use)
+            
+        Raises:
+            ValueError: If tensor_data is invalid or corrupted
+            MemoryError: If conversion would exceed memory limits
+            RuntimeError: If CUDA allocation fails (GPU mode)
         """
-        return convert_to_hicoo(tensor_data)
+        try:
+            # Validate input
+            if tensor_data is None:
+                raise ValueError("tensor_data cannot be None")
+            
+            if not hasattr(tensor_data, 'tensor'):
+                raise ValueError("tensor_data must have 'tensor' attribute")
+            
+            # Check for NaN/Inf values
+            if np.any(np.isnan(tensor_data.tensor)):
+                logger.warning("NaN values detected in tensor, replacing with 0")
+                tensor_data.tensor = np.nan_to_num(tensor_data.tensor, nan=0.0)
+            
+            if np.any(np.isinf(tensor_data.tensor)):
+                logger.warning("Inf values detected in tensor, clipping")
+                tensor_data.tensor = np.clip(tensor_data.tensor, -1e10, 1e10)
+            
+            # Attempt conversion
+            return convert_to_hicoo(tensor_data)
+            
+        except MemoryError as e:
+            logger.error(f"Memory error during sparse conversion: {e}")
+            # Try to free memory and retry once
+            import gc
+            gc.collect()
+            
+            try:
+                logger.info("Retrying conversion after garbage collection")
+                return convert_to_hicoo(tensor_data)
+            except Exception:
+                raise MemoryError(f"Failed to convert tensor to HiCOO format: {e}")
+                
+        except Exception as e:
+            if "CUDA" in str(e) or "cupy" in str(e).lower():
+                raise RuntimeError(f"CUDA allocation failed during sparse conversion: {e}")
+            else:
+                raise ValueError(f"Failed to convert tensor to sparse format: {e}")
     
     def to_dense(self, sparse_data: HiCOOTensor) -> TensorData:
         """Convert HiCOO tensor back to dense format.

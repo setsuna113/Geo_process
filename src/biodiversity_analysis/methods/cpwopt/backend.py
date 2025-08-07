@@ -154,24 +154,83 @@ class CPWOPTBackend:
         return self.xp.einsum(subscripts, *operands)
     
     def get_memory_info(self) -> dict:
-        """Get memory information for the device.
+        """Get memory information for the device with safety checks.
         
         Returns:
             Dictionary with memory statistics
         """
-        info = {'device': self.device}
+        info = {
+            'device': self.device,
+            'available': True,
+            'error': None
+        }
         
         if self.device == 'gpu':
             try:
                 import cupy as cp
+                
+                # Memory pool info
                 mempool = cp.get_default_memory_pool()
                 info['used_bytes'] = mempool.used_bytes()
                 info['total_bytes'] = mempool.total_bytes()
                 
+                # Device memory info  
                 device = cp.cuda.Device()
-                info['free_memory'] = device.mem_info[0]
-                info['total_memory'] = device.mem_info[1]
-            except Exception as e:
+                mem_info = device.mem_info
+                info['free_memory'] = mem_info[0]
+                info['total_memory'] = mem_info[1]
+                info['usage_percent'] = (1 - mem_info[0] / mem_info[1]) * 100
+                
+                # Check for memory pressure
+                if info['usage_percent'] > 90:
+                    logger.warning(f"High GPU memory usage: {info['usage_percent']:.1f}%")
+                    info['memory_pressure'] = 'high'
+                elif info['usage_percent'] > 75:
+                    info['memory_pressure'] = 'medium'
+                else:
+                    info['memory_pressure'] = 'low'
+                    
+            except ImportError as e:
+                info['available'] = False
+                info['error'] = f"CuPy not available: {e}"
                 logger.warning(f"Could not get GPU memory info: {e}")
+            except Exception as e:
+                info['available'] = False
+                info['error'] = str(e)
+                logger.error(f"Error getting GPU memory info: {e}")
+        else:
+            # CPU memory info
+            import psutil
+            vm = psutil.virtual_memory()
+            info['free_memory'] = vm.available
+            info['total_memory'] = vm.total
+            info['usage_percent'] = vm.percent
+            info['memory_pressure'] = 'high' if vm.percent > 90 else 'medium' if vm.percent > 75 else 'low'
         
         return info
+    
+    def check_memory_available(self, required_bytes: int) -> bool:
+        """Check if sufficient memory is available.
+        
+        Args:
+            required_bytes: Number of bytes needed
+            
+        Returns:
+            True if memory available, False otherwise
+        """
+        info = self.get_memory_info()
+        
+        if not info.get('available', True):
+            return False
+            
+        free_memory = info.get('free_memory', 0)
+        
+        # Leave 10% buffer
+        available = free_memory * 0.9
+        
+        if required_bytes > available:
+            logger.warning(f"Insufficient memory: need {required_bytes/1e9:.2f}GB, "
+                         f"have {available/1e9:.2f}GB available")
+            return False
+            
+        return True
