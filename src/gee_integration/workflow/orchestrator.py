@@ -756,14 +756,14 @@ class GEEWorkflowOrchestrator:
                             )
                             final_outputs[res_name] = output_path
                 else:
-                    # CSV format - use existing method
-                    final_outputs = converter.convert_all_resolutions(downloads)
+                    # This should never happen since we only support GeoTIFF
+                    raise ValueError(f"Unsupported export format in download: {self.config.export_format}")
                 
                 # Cleanup temp files if requested
                 if self.config.cleanup_temp:
                     self.logger.info("   🧹 Cleaning up temporary files...")
-                    for csv_files in downloads.values():
-                        fetcher.cleanup_temp_files(csv_files)
+                    for temp_files in downloads.values():
+                        fetcher.cleanup_temp_files(temp_files)
             
             # Save final outputs
             self.state.set_metadata('final_outputs', {
