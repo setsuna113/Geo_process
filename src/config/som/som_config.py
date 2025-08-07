@@ -7,9 +7,10 @@ It implements a singleton pattern to ensure consistent configuration across the 
 import yaml
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import threading
 from dataclasses import dataclass, field
+from src.abstractions.interfaces.method_config import IMethodConfig
 
 
 @dataclass
@@ -34,7 +35,7 @@ class SOMConfigError(Exception):
     pass
 
 
-class SOMConfig:
+class SOMConfig(IMethodConfig):
     """
     SOM Configuration manager with singleton pattern.
     
@@ -373,6 +374,138 @@ class SOMConfig:
     def __repr__(self) -> str:
         """String representation of configuration."""
         return f"SOMConfig(path={self._config_path}, loaded={self._config is not None})"
+    
+    # IMethodConfig interface implementation
+    def load_config(self, config_name: Optional[str] = None,
+                   preset: Optional[str] = None) -> Dict[str, Any]:
+        """Load method configuration with environment overrides.
+        
+        Configuration Precedence Order (highest to lowest):
+        1. Environment variables (SOM_* pattern)
+        2. Preset-specific values (if preset specified)
+        3. Config file values (from config_name or default)
+        4. Hard-coded defaults in this class
+        
+        Environment Variables:
+        - SOM_CONFIG_PATH: Path to config file (overrides config_name)
+        - SOM_MAX_EPOCHS: Maximum training epochs (int)
+        - SOM_MAX_WORKERS: Number of parallel workers (int)
+        - SOM_CHUNK_SIZE: Samples per chunk (int)
+        - SOM_SPATIAL_GRID_STEP: Spatial sampling step (int)
+        - SOM_GRID_SIZE: Grid dimensions (comma-separated, e.g., "60,60")
+        - SOM_INITIAL_LR: Initial learning rate (float)
+        
+        Args:
+            config_name: Name of config file (without .yml)
+            preset: Preset name to apply
+            
+        Returns:
+            Configuration dictionary with all settings
+        """
+        if config_name:
+            # Allow loading a specific config file
+            old_path = os.environ.get('SOM_CONFIG_PATH', '')
+            try:
+                os.environ['SOM_CONFIG_PATH'] = f"{config_name}.yml"
+                self.reload()
+            finally:
+                if old_path:
+                    os.environ['SOM_CONFIG_PATH'] = old_path
+                elif 'SOM_CONFIG_PATH' in os.environ:
+                    del os.environ['SOM_CONFIG_PATH']
+        
+        # Apply environment variable overrides
+        config = self._config.copy() if self._config else {}
+        
+        # Check for SOM-specific environment variables
+        env_overrides = {
+            'SOM_MAX_EPOCHS': ('training_config', 'max_epochs', int),
+            'SOM_MAX_WORKERS': ('training_config', 'n_workers', int),
+            'SOM_CHUNK_SIZE': ('training_config', 'chunk_size', int),
+            'SOM_SPATIAL_GRID_STEP': ('data_config', 'spatial_grid_step', int),
+            'SOM_GRID_SIZE': ('architecture_config', 'grid_size', lambda x: [int(v) for v in x.split(',')]),
+            'SOM_INITIAL_LR': ('training_config', 'initial_learning_rate', float),
+        }
+        
+        for env_var, (section, key, converter) in env_overrides.items():
+            if env_var in os.environ:
+                try:
+                    value = converter(os.environ[env_var])
+                    if section not in config:
+                        config[section] = {}
+                    config[section][key] = value
+                except (ValueError, TypeError) as e:
+                    import logging
+                    logging.warning(f"Failed to parse {env_var}: {e}")
+        
+        return config
+    
+    def get_env_var_names(self) -> List[str]:
+        """Return list of supported environment variables.
+        
+        Returns:
+            List of environment variable names
+        """
+        return [
+            'SOM_CONFIG_PATH',
+            'SOM_MAX_EPOCHS',
+            'SOM_MAX_WORKERS',
+            'SOM_CHUNK_SIZE',
+            'SOM_SPATIAL_GRID_STEP',
+            'SOM_GRID_SIZE',
+            'SOM_INITIAL_LR',
+            'SOM_MIN_LR',
+            'SOM_CONFIG_MODE',
+        ]
+    
+    def get_env_var_descriptions(self) -> Dict[str, str]:
+        """Return descriptions of environment variables.
+        
+        Returns:
+            Dictionary mapping env var names to descriptions
+        """
+        return {
+            'SOM_CONFIG_PATH': 'Path to SOM configuration YAML file',
+            'SOM_MAX_EPOCHS': 'Maximum training epochs (int)',
+            'SOM_MAX_WORKERS': 'Number of parallel workers (int)',
+            'SOM_CHUNK_SIZE': 'Chunk size for batch processing (int)',
+            'SOM_SPATIAL_GRID_STEP': 'Spatial grid sampling step (int, e.g., 100 = every 100th point)',
+            'SOM_GRID_SIZE': 'SOM grid dimensions (comma-separated, e.g., "3,3")',
+            'SOM_INITIAL_LR': 'Initial learning rate (float)',
+            'SOM_MIN_LR': 'Minimum learning rate floor (float)',
+            'SOM_CONFIG_MODE': 'Configuration mode: "test" or "production"',
+        }
+    
+    def validate_config(self, config: Dict[str, Any]) -> None:
+        """Validate configuration values.
+        
+        Args:
+            config: Configuration dictionary to validate
+            
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        # This is already implemented in _validate_config
+        # Just wrap it for the interface
+        old_config = self._config
+        try:
+            self._config = config
+            self._validate_config()
+        except SOMConfigError as e:
+            raise ValueError(str(e))
+        finally:
+            self._config = old_config
+    
+    def get_default_config(self) -> Dict[str, Any]:
+        """Get default configuration without any overrides.
+        
+        Returns:
+            Default configuration dictionary
+        """
+        # Load config without environment variables
+        if self._config is None:
+            self._load_config()
+        return self._config.copy() if self._config else {}
 
 
 # Create singleton instance accessor

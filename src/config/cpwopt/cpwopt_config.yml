@@ -1,6 +1,14 @@
 # CP-WOPT (Tensor Factorization) Configuration
 # For sparse biodiversity tensor decomposition
 
+# Data processing configuration
+data_processing:
+  spatial_grid_step: 10      # Take every Nth point spatially (1=all, 10=every 10th)
+  sample_size: null          # Random sample size (null for no random sampling)
+  random_seed: 42            # Random seed for reproducibility
+  coordinate_cols: null      # Auto-detect if null
+  feature_cols: null         # Use all numeric columns if null
+
 # Algorithm parameters
 algorithm:
   rank: 'auto'                # Number of components ('auto' for automatic selection or integer)

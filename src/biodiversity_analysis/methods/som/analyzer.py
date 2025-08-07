@@ -15,10 +15,7 @@ from datetime import datetime
 from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
 from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
-from .preprocessing import BiodiversityPreprocessor
-from ...preprocessing.pipeline import BiodiversityPreprocessingPipeline
-from ...preprocessing.zero_inflation import ZeroInflationPreprocessor
-from ...preprocessing.spatial_features import SpatialFeatureEngineering
+from ...preprocessing import SharedPreprocessor
 from .spatial_utils import SpatialBlockGenerator, GeographicCoherence
 from .partial_metrics import validate_missing_data_handling
 from .progress_tracker import SOMProgressTracker, create_progress_callback
@@ -53,35 +50,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         self.config = config
         self.som = None
         
-        # Check if we should use advanced preprocessing
-        preprocessing_config = self.config.get('preprocessing_config', {})
-        self.use_advanced_preprocessing = preprocessing_config.get('use_advanced', False)
-        logger.info(f"Preprocessing config: {preprocessing_config}")
-        logger.info(f"Use advanced preprocessing: {self.use_advanced_preprocessing}")
-        
-        if self.use_advanced_preprocessing:
-            # Use the new advanced preprocessing pipeline
-            preprocessing_config = self.config.get('preprocessing_config', {})
-            self.preprocessor = BiodiversityPreprocessingPipeline(
-                # Zero-inflation handling
-                structural_zero_threshold=preprocessing_config.get('structural_zero_threshold', 0.95),
-                pseudo_count_method=preprocessing_config.get('pseudo_count_method', 'adaptive'),
-                compositional_transform=preprocessing_config.get('compositional_transform', 'hurdle'),
-                
-                # Spatial features
-                spatial_neighbors=preprocessing_config.get('spatial_neighbors', 8),
-                spatial_scales=preprocessing_config.get('spatial_scales', [5, 10, 25, 50, 100]),
-                n_moran_eigenvectors=preprocessing_config.get('n_moran_eigenvectors', 10),
-                use_pmem=preprocessing_config.get('use_pmem', True),
-                
-                # Feature handling
-                calculate_diversity_indices=False,  # Not for richness clustering
-                standardize=True,
-                standardization_method='robust'
-            )
-        else:
-            # Use the original simple preprocessing
-            self.preprocessor = BiodiversityPreprocessor()
+        # Use shared preprocessor configured for SOM
+        self.preprocessor = SharedPreprocessor(method_name='som')
+        logger.info("Using shared preprocessor for SOM (minmax normalization, zero imputation)")
             
         self.training_result = None
         self._geosom_config = None
@@ -185,31 +156,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         logger.info(f"Column indices - observed: {observed_cols}, predicted: {predicted_cols}")
         
-        # Preprocess data
-        if self.use_advanced_preprocessing:
-            logger.info("Using advanced preprocessing with spatial features and zero-inflation handling")
-            # Advanced preprocessing pipeline expects all features together
-            # No need to separate observed/predicted for advanced preprocessing
-            features_processed, new_feature_names, metadata = self.preprocessor.fit_transform(
-                species_data=biodiv_data.features,
-                coordinates=biodiv_data.coordinates,
-                species_names=biodiv_data.feature_names
-            )
-            logger.info(f"Advanced preprocessing created {len(new_feature_names)} features from {biodiv_data.features.shape[1]} original features")
-            logger.info(f"Preprocessing metadata: {metadata}")
-            
-            # Update feature names for later use
-            biodiv_data.feature_names = new_feature_names
-            
-            # Note: With advanced preprocessing, we don't distinguish between observed/predicted
-            # All features are treated equally in the spatial analysis
-        else:
-            # Simple preprocessing
-            features_processed = self.preprocessor.fit_transform(
-                biodiv_data.features,
-                observed_cols,
-                predicted_cols
-            )
+        # Preprocess data using shared preprocessor
+        logger.info("Preprocessing data with SharedPreprocessor (minmax normalization, zero imputation)")
+        features_processed = self.preprocessor.fit_transform(biodiv_data.features)
+        
+        # Note: We no longer need to track observed/predicted columns separately for preprocessing
+        # The shared preprocessor handles all features uniformly
         
         # Determine grid size - first check config file, then kwargs, then auto
         arch_config = self.config.get('architecture_config', {})
@@ -338,7 +290,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Estimate requirements
         n_neurons = grid_size[0] * grid_size[1]
-        n_features = 3  # Default for biodiversity
+        
+        # Get feature count from config
+        data_config = config.get('data_config', {})
+        feature_cols = data_config.get('feature_cols', ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness'])
+        n_features = len(feature_cols)
         
         # Conservative estimate (assuming 1M samples)
         estimated_samples = 1000000
@@ -372,7 +328,10 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             grid_size = (grid_dim, grid_dim)
         
         # Memory validation
-        n_features = 3  # Default for biodiversity data (animal, plant, fungi)
+        # Get feature count from config
+        data_config = self.config.get('data_config', {})
+        feature_cols = data_config.get('feature_cols', ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness'])
+        n_features = len(feature_cols)
         n_neurons = grid_size[0] * grid_size[1]
         
         # Estimate memory requirements (in bytes)
@@ -415,53 +374,54 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Use the config we already loaded in __init__, not load it again
         default_config = self.config
         arch_config = default_config['architecture_config']
-        conv_config = arch_config['convergence']
+        training_config = default_config['training_config']  # ALL training params are here now
         
-        # Use iterations from kwargs if provided, otherwise fall back to default
-        max_epochs = kwargs.get('iterations', conv_config['max_epochs'])
+        # Use iterations from kwargs if provided, otherwise from training_config
+        max_epochs = kwargs.get('iterations', training_config['max_epochs'])  # FIXED: Now reads from training_config!
         
         # Import SOM config to get performance settings
         from src.config.som import get_som_config
         som_config = get_som_config()
         
-        # Get performance settings
-        chunk_size = som_config.get_chunk_size()
+        # Get performance settings - prefer training_config values
+        chunk_size = training_config.get('chunk_size', som_config.get_chunk_size())
         qe_sample_size = som_config.get_qe_sample_size()
         use_parallel = som_config.is_parallel_enabled()
-        n_workers = som_config.get_n_workers()
+        n_workers = training_config.get('n_workers', som_config.get_n_workers())
         
         # Get mini-batch settings from training config
-        training_config = default_config.get('training_config', {})
-        minibatch_config = training_config.get('minibatch', {})
-        use_minibatch = minibatch_config.get('enabled', False)
-        minibatch_size = minibatch_config.get('size', 1000)
+        use_minibatch = training_config.get('use_minibatch', True)
+        minibatch_size = training_config.get('minibatch_size', 1000)
         
         # Get memory and performance config
         memory_config = default_config.get('memory_config', {})
         
-        # Create config object and set attributes
+        # Create config object reading from correct sections
         config = GeoSOMConfig(
             grid_size=grid_size,
             topology=arch_config['topology'],
             spatial_weight=arch_config['spatial_weight'],
             geographic_distance=arch_config['geographic_distance'],
-            initial_learning_rate=arch_config['initial_learning_rate'],
-            min_learning_rate=arch_config['min_learning_rate'],
-            max_learning_rate=arch_config['max_learning_rate'],
-            lr_increase_factor=arch_config['lr_increase_factor'],
-            lr_decrease_factor=arch_config['lr_decrease_factor'],
-            high_qe_lr_min=arch_config['high_qe_lr_range'][0],
-            high_qe_lr_max=arch_config['high_qe_lr_range'][1],
-            low_qe_lr_min=arch_config['low_qe_lr_range'][0],
-            low_qe_lr_max=arch_config['low_qe_lr_range'][1],
+            # Learning rate settings now from training_config
+            initial_learning_rate=training_config['initial_learning_rate'],
+            min_learning_rate=training_config['min_learning_rate'],
+            max_learning_rate=training_config['max_learning_rate'],
+            lr_increase_factor=training_config['lr_increase_factor'],
+            lr_decrease_factor=training_config['lr_decrease_factor'],
+            high_qe_lr_min=training_config['high_qe_lr_range'][0],
+            high_qe_lr_max=training_config['high_qe_lr_range'][1],
+            low_qe_lr_min=training_config['low_qe_lr_range'][0],
+            low_qe_lr_max=training_config['low_qe_lr_range'][1],
+            # Neighborhood from architecture (structural)
             neighborhood_function=arch_config['neighborhood_function'],
             initial_radius=arch_config['initial_radius'],
             final_radius=arch_config['final_radius'],
             radius_decay=arch_config['radius_decay'],
-            geographic_coherence_threshold=conv_config['geographic_coherence_threshold'],
-            lr_stability_threshold=conv_config['lr_stability_threshold'],
-            qe_improvement_threshold=conv_config['qe_improvement_threshold'],
-            patience=conv_config['patience'],
+            # Convergence criteria from training_config
+            geographic_coherence_threshold=training_config['geographic_coherence_threshold'],
+            lr_stability_threshold=training_config['lr_stability_threshold'],
+            qe_improvement_threshold=training_config['qe_improvement_threshold'],
+            patience=training_config['patience'],
             max_epochs=max_epochs,
             min_valid_features=default_config['distance_config']['min_valid_features'],
             random_seed=kwargs.get('random_seed', 42),
@@ -738,7 +698,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                         feature_names: List[str]) -> Dict[str, Any]:
         """Generate comprehensive reports and visualizations."""
         reports = {
-            'preprocessing_info': self.preprocessor.get_preprocessing_info(),
+            'preprocessing_info': {
+                'method': 'SharedPreprocessor',
+                'normalization': self.preprocessor.normalization_method,
+                'missing_strategy': self.preprocessor.missing_strategy
+            },
             'training_history': self.som.training_history,
             'grid_info': {
                 'size': self._geosom_config.grid_size,
@@ -789,7 +753,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 'grid_size': self._geosom_config.grid_size,
                 'spatial_weight': self._geosom_config.spatial_weight,
                 'distance_metric': 'partial_bray_curtis',
-                'preprocessing': 'log1p+separate_zscore'
+                'preprocessing': f'{self.preprocessor.normalization_method}+{self.preprocessor.missing_strategy}'
             }
         )
         
@@ -897,67 +861,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         return len(issues) == 0, issues
     
-    def save_checkpoint_state(self) -> Dict[str, Any]:
-        """Save SOM-specific checkpoint state.
-        
-        Returns:
-            Dictionary containing SOM weights, learning state, and training history
-        """
-        if not hasattr(self, 'som') or self.som is None:
-            return {}
-        
-        # Gather SOM state
-        state = {
-            'weights': self.som.get_weights().tolist() if hasattr(self.som, 'get_weights') else None,
-            'current_lr': getattr(self.som, 'current_lr', None),
-            'current_radius': getattr(self.som, 'current_radius', None),
-            'current_epoch': getattr(self.som, 'current_epoch', 0),
-            'training_history': getattr(self.som, 'training_history', {}),
-            'grid_size': self._geosom_config.grid_size if hasattr(self, '_geosom_config') else None,
-            'spatial_weight': self._geosom_config.spatial_weight if hasattr(self, '_geosom_config') else None,
-        }
-        
-        # Add cross-validation state if in CV
-        if hasattr(self, '_cv_results'):
-            state['cv_fold'] = len(self._cv_results)
-            state['cv_results'] = self._cv_results
-        
-        return state
+    # NOTE: Removed misleading save_checkpoint_state() method
+    # SOM checkpointing is handled directly in geo_som_core.py
+    # It saves .npz files with SOM-specific data (weights, learning rate, radius)
+    # This data is not useful for other methods (CP-WOPT needs factors, KMeans needs centroids)
     
-    def load_checkpoint_state(self, state: Dict[str, Any]) -> None:
-        """Load SOM-specific checkpoint state.
-        
-        Args:
-            state: Dictionary containing SOM state to restore
-        """
-        if not state:
-            return
-        
-        # Restore SOM if we have weights
-        if 'weights' in state and state['weights'] is not None:
-            import numpy as np
-            
-            # Create SOM if not exists
-            if not hasattr(self, 'som') or self.som is None:
-                # Recreate config from state
-                grid_size = state.get('grid_size', [10, 10])
-                self._geosom_config = self._create_geosom_config(tuple(grid_size))
-                self.som = GeoSOMVLRSOM(self._geosom_config)
-            
-            # Restore weights
-            if hasattr(self.som, 'weights'):
-                self.som.weights = np.array(state['weights'])
-            
-            # Restore learning parameters
-            if 'current_lr' in state:
-                self.som.current_lr = state['current_lr']
-            if 'current_radius' in state:
-                self.som.current_radius = state['current_radius']
-            if 'current_epoch' in state:
-                self.som.current_epoch = state['current_epoch']
-            if 'training_history' in state:
-                self.som.training_history = state['training_history']
-        
-        # Restore CV state
-        if 'cv_results' in state:
-            self._cv_results = state['cv_results']
+    # NOTE: Removed misleading load_checkpoint_state() method
+    # SOM checkpoint loading is handled directly in geo_som_core.py
+    # The .npz checkpoint files are loaded when resume_checkpoint is set in config
+    # This happens automatically when resume=True is passed to analyze()
