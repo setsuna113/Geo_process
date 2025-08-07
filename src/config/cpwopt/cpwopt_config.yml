@@ -3,8 +3,8 @@
 
 # Data processing configuration
 data_processing:
-  spatial_grid_step: 10      # Take every Nth point spatially (1=all, 10=every 10th)
-  sample_size: null          # Random sample size (null for no random sampling)
+  spatial_grid_step: 10      # ONLY sampling method - takes every Nth spatial point
+  # REMOVED sample_size - redundant with spatial_grid_step
   random_seed: 42            # Random seed for reproducibility
   coordinate_cols: null      # Auto-detect if null
   feature_cols: null         # Use all numeric columns if null
@@ -44,20 +44,15 @@ weights:
   min_weight: 0.0             # Minimum weight threshold
   max_weight: 1.0             # Maximum weight (for normalization)
 
-# Mini-batch processing
-minibatch:
-  enabled: true               # Use mini-batch processing
-  batch_size: 38000          # Samples per batch (based on available memory calculation)
-  shuffle: false             # Shuffle batches
-  drop_last: false           # Drop incomplete last batch
-  memory_threshold: 0.7      # Memory usage threshold for auto-adjustment (conservative)
+# MiniBatch removed - HiCOO handles memory-efficient block processing internally
+# HiCOO processes tensor in 128x128x128 spatial blocks for optimal cache locality
 
 # Sparse tensor handling
 sparse:
   auto_sparse: true          # Automatically use sparse format
   sparsity_threshold: 0.95   # Use sparse above this sparsity
   force_sparse: false        # Always use sparse format
-  storage_format: 'coo'      # Sparse format: 'coo', 'csr', 'dok'
+  storage_format: 'hicoo'    # Sparse format: HiCOO only (6.8x faster MTTKRP)
 
 # Factor constraints
 constraints:
@@ -133,13 +128,10 @@ reporting:
 # Backend configuration (NEW)
 backend:
   use_gpu: 'auto'          # Device selection: 'auto', 'cpu', 'gpu'
-  fallback_to_cpu: true    # Fallback to CPU if GPU unavailable
 
-# Sampling configuration (NEW)
-sampling:
-  enabled: false           # Enable importance sampling (off by default)
-  method: 'leverage'       # Sampling method: 'leverage', 'density', 'uniform'  
-  ratio: 1.0              # Sampling ratio (1.0 = no sampling, 0.1 = 10% sampling)
+# SAMPLING REMOVED - Use only spatial_grid_step in data_processing
+# Leverage sampling impossible (needs decomposition first - circular dependency)
+# Density/uniform sampling redundant with spatial_grid_step
 
 # Logging
 logging:

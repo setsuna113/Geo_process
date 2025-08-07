@@ -7,12 +7,10 @@ optimization, specifically designed for sparse biodiversity data.
 import numpy as np
 import logging
 from typing import List, Optional, Dict, Any, Tuple, Callable
-from dataclasses import dataclass
 import time
 
 from src.abstractions.types.tensor_types import (
-    TensorData, CPFactors, TensorMetrics, TensorDecompositionResult,
-    TensorOptimizer, FactorInitMethod
+    TensorData, CPFactors, TensorMetrics
 )
 from src.biodiversity_analysis.shared.tensor_utils import (
     initialize_factors, compute_mttkrp, cp_reconstruct,
@@ -76,7 +74,7 @@ class CPWOPT:
         
         # Initialize factor updater
         from .factor_updater import FactorUpdater
-        self.updater = FactorUpdater()
+        self.updater = FactorUpdater(method=optimizer, backend=self.backend)
         
         # State variables
         self.factors_: Optional[CPFactors] = None
@@ -168,11 +166,17 @@ class CPWOPT:
         
         This is the core optimization loop for CP-WOPT.
         """
-        tensor = tensor_data.tensor
-        weights = tensor_data.weights
+        # Transfer tensor data to device (GPU/CPU)
+        tensor = self.backend.to_device(tensor_data.tensor)
+        weights = self.backend.to_device(tensor_data.weights)
         
         # Replace NaN with 0 for computation
-        tensor_clean = np.nan_to_num(tensor, nan=0.0)
+        xp = self.backend.get_array_module()
+        tensor_clean = xp.nan_to_num(tensor, nan=0.0)
+        
+        # Transfer factors to device
+        for mode in range(len(factors.factors)):
+            factors.factors[mode] = self.backend.to_device(factors.factors[mode])
         
         # Track convergence
         errors = []
@@ -184,17 +188,28 @@ class CPWOPT:
             # Update each mode
             for mode in range(tensor.ndim):
                 # Update factor for this mode
-                factors.factors[mode] = self._update_factor_als(
-                    tensor_clean, weights, factors.factors, mode
+                # Transfer to CPU for complex ALS update, then back to device
+                tensor_cpu = self.backend.to_cpu(tensor_clean)
+                weights_cpu = self.backend.to_cpu(weights)
+                factors_cpu = [self.backend.to_cpu(f) for f in factors.factors]
+                
+                updated_factor = self._update_factor_als(
+                    tensor_cpu, weights_cpu, factors_cpu, mode
                 )
+                
+                factors.factors[mode] = self.backend.to_device(updated_factor)
             
-            # Calculate reconstruction error
-            reconstructed = cp_reconstruct(factors.factors)
-            residual = (tensor_clean - reconstructed) * weights
-            error = weighted_norm(residual, weights)
+            # Calculate reconstruction error (transfer to CPU for these operations)
+            factors_cpu = [self.backend.to_cpu(f) for f in factors.factors]
+            tensor_cpu = self.backend.to_cpu(tensor_clean)
+            weights_cpu = self.backend.to_cpu(weights)
+            
+            reconstructed = cp_reconstruct(factors_cpu)
+            residual = (tensor_cpu - reconstructed) * weights_cpu
+            error = weighted_norm(residual, weights_cpu)
             
             # Calculate relative error and fit
-            tensor_norm = weighted_norm(tensor_clean, weights)
+            tensor_norm = weighted_norm(tensor_cpu, weights_cpu)
             rel_error = error / (tensor_norm + EPSILON)
             fit = 1.0 - rel_error
             
@@ -229,6 +244,10 @@ class CPWOPT:
             fit=fit,
             convergence_history=errors
         )
+        
+        # Transfer factors back to CPU for final processing
+        for mode in range(len(factors.factors)):
+            factors.factors[mode] = self.backend.to_cpu(factors.factors[mode])
         
         # Calculate component weights (norm of each component)
         component_weights = np.zeros(self.rank)
@@ -369,8 +388,8 @@ class CPWOPT:
         
         return factors, metrics
     
-    def _update_factor_als(self, tensor: np.ndarray, weights: np.ndarray,
-                          factors: List[np.ndarray], mode: int) -> np.ndarray:
+    def _update_factor_als(self, tensor, weights,
+                          factors: List, mode: int):
         """Update one factor matrix using weighted ALS.
         
         This solves: A = X_(n) (C ⊙ B)^T [(C^T C) * (B^T B)]^{-1}
@@ -429,7 +448,7 @@ class CPWOPT:
         # Vectorized update for all rows at once
         # Find rows with non-zero weights
         valid_rows = np.sum(weights_unfold, axis=1) > 0
-        n_valid = np.sum(valid_rows)
+        n_valid = int(np.sum(valid_rows))
         
         if n_valid == 0:
             # No valid data, return random initialization

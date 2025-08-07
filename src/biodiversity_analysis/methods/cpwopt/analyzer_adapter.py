@@ -13,18 +13,17 @@ from typing import Dict, Any, Optional, List, Tuple
 import json
 import time
 
-from src.abstractions.interfaces.analyzer import IAnalyzer, AnalysisResult as IAnalysisResult
+from src.abstractions.interfaces.analyzer import IAnalyzer
 from src.abstractions.types import AnalysisResult, ModelMetrics
-from src.abstractions.types.tensor_types import TensorData, TensorDecompositionResult
+from src.abstractions.types.tensor_types import TensorData
+from src.biodiversity_analysis.preprocessing import SharedPreprocessor
 from src.biodiversity_analysis.preprocessing.tensor_preprocessing import TensorPreprocessor
 from src.biodiversity_analysis.shared.data import ParquetLoader
 from src.config.cpwopt import get_cpwopt_config
 from .core import CPWOPT
 from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
-from .minibatch_processor import create_minibatch_processor
 from .sparse_handler import AdaptiveSparseStrategy
 from .factor_updater import create_factor_updater
-from .rank_selector import auto_select_rank, CPWOPTRankSelector
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +54,22 @@ class CPWOPTAnalyzer(IAnalyzer):
         
         # Initialize components
         self.model = None
-        # TensorPreprocessor takes specific parameters, not a config dict
+        
+        # Use SharedPreprocessor for consistency across methods
+        self.preprocessor = SharedPreprocessor(
+            method_name='cpwopt',  # Auto-configures for CP-WOPT
+            normalize=True,
+            handle_missing=True
+        )
+        
+        # Tensor-specific preprocessing (only for tensor construction, not general preprocessing)
+        # NOTE: Sampling is now handled by ParquetLoader.spatial_grid_step ONLY
         tensor_config = self.config.get('tensor_construction', {})
-        self.preprocessor = TensorPreprocessor(
-            missing_value=tensor_config.get('missing_value', np.nan),
+        self.tensor_builder = TensorPreprocessor(  # Use base class, not WithSampling
+            missing_value=0.0,  # CP-WOPT uses 0 for missing
             min_observations_per_cell=tensor_config.get('min_observations_per_cell', 1),
             aggregation_method=tensor_config.get('aggregation', 'sum')
+            # REMOVED sampling parameters - handled by ParquetLoader
         )
         self.metrics_calculator = CPWOPTMetricsCalculator()
         self.sparse_strategy = AdaptiveSparseStrategy(
@@ -91,12 +100,19 @@ class CPWOPTAnalyzer(IAnalyzer):
             if not self._validate_input(X):
                 raise ValueError("Input validation failed")
             
-            # Convert to tensor format
+            # Step 1: Apply general preprocessing (normalization, missing values)
+            logger.info("Applying general preprocessing...")
+            X_preprocessed = self.preprocessor.fit_transform(X)
+            
+            # Step 2: Convert to tensor format with tensor-specific operations
             logger.info("Converting data to tensor format...")
-            # Get tensor construction parameters from config
             tensor_config = self.config.get('tensor_construction', {})
-            self.tensor_data = self.preprocessor.dataframe_to_tensor(
-                X,
+            
+            # Reconstruct DataFrame for tensor builder (needs column names)
+            X_df = pd.DataFrame(X_preprocessed, columns=X.columns)
+            
+            self.tensor_data = self.tensor_builder.dataframe_to_tensor(
+                X_df,
                 lat_bins=tensor_config.get('lat_bins', 20),
                 lon_bins=tensor_config.get('lon_bins', 20),
                 transform=tensor_config.get('transform', 'log1p')
@@ -144,9 +160,7 @@ class CPWOPTAnalyzer(IAnalyzer):
                 verbose=True
             )
             
-            # Set up mini-batch processor if needed
-            if self.config.get('minibatch', {}).get('enabled', True):
-                self._setup_minibatch_processing()
+            # MiniBatch removed - HiCOO handles block processing internally
             
             # Set up advanced factor updates if needed
             if alg_config.get('optimizer') != 'als':
@@ -441,26 +455,6 @@ class CPWOPTAnalyzer(IAnalyzer):
             return False
         
         return True
-    
-    def _setup_minibatch_processing(self):
-        """Configure mini-batch processing."""
-        mb_config = self.config.get('minibatch', {})
-        
-        # Create mini-batch processor
-        processor = create_minibatch_processor(
-            self.tensor_data,
-            self.model.rank,
-            auto_adjust=True
-        )
-        
-        # Update processor config
-        processor.config.batch_size = mb_config.get('batch_size', 10000)
-        processor.config.shuffle = mb_config.get('shuffle', False)
-        processor.config.drop_last = mb_config.get('drop_last', False)
-        
-        # Attach to model (would need modification in core.py)
-        logger.info(f"Configured mini-batch processing with batch size: "
-                   f"{processor.config.batch_size}")
     
     def _setup_advanced_optimization(self):
         """Configure advanced optimization methods."""
