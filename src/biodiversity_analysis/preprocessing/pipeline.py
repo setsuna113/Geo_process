@@ -1,7 +1,7 @@
-"""Complete preprocessing pipeline for biodiversity clustering.
+"""Shared preprocessing module for all biodiversity analysis methods.
 
-Combines all preprocessing steps into a unified pipeline following
-the recommendations from KMEANS_UPGRADE_RECOMMENDATIONS.md.
+Simple, unified preprocessing that avoids redundancy and works for SOM, 
+CP-WOPT, K-means, and other methods.
 """
 
 import numpy as np
@@ -11,13 +11,188 @@ import logging
 from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
 from sklearn.impute import SimpleImputer
 
-from .spatial_features import SpatialFeatureEngineering
-from .zero_inflation import ZeroInflationPreprocessor
-from .diversity_features import BiodiversityFeatureEngineering
-
 logger = logging.getLogger(__name__)
 
 
+class SharedPreprocessor:
+    """Simple shared preprocessor for all analysis methods.
+    
+    This replaces method-specific preprocessing to avoid redundancy.
+    Each method can customize via method_name parameter.
+    """
+    
+    def __init__(self, 
+                 method_name: str = None,
+                 normalize: bool = True,
+                 normalization_method: str = 'auto',
+                 handle_missing: bool = True,
+                 missing_strategy: str = 'zero',
+                 remove_constant_features: bool = False,
+                 variance_threshold: float = 1e-10):
+        """Initialize shared preprocessor.
+        
+        Args:
+            method_name: Name of analysis method ('som', 'cpwopt', 'kmeans', etc.)
+            normalize: Whether to normalize/standardize data
+            normalization_method: 'auto' (method-specific), 'minmax', 'standard', 'robust', or 'none'
+            handle_missing: Whether to handle missing values
+            missing_strategy: 'zero', 'mean', 'median', or 'keep'
+            remove_constant_features: Whether to remove constant features
+            variance_threshold: Minimum variance to keep features
+        """
+        self.method_name = method_name
+        self.normalize = normalize
+        self.normalization_method = normalization_method
+        self.handle_missing = handle_missing
+        self.missing_strategy = missing_strategy
+        self.remove_constant_features = remove_constant_features
+        self.variance_threshold = variance_threshold
+        self.scaler = None
+        self._fitted = False
+        
+        # Auto-configure based on method
+        if normalization_method == 'auto':
+            self._auto_configure()
+    
+    def _auto_configure(self):
+        """Auto-configure preprocessing based on analysis method."""
+        if self.method_name == 'som':
+            # SOM prefers minmax normalization
+            self.normalization_method = 'minmax'
+            self.missing_strategy = 'zero'  # SOM handles sparse data well
+        elif self.method_name == 'cpwopt':
+            # CP-WOPT needs non-negative values
+            self.normalization_method = 'minmax'
+            self.missing_strategy = 'zero'
+        elif self.method_name == 'kmeans':
+            # K-means prefers standardization
+            self.normalization_method = 'standard'
+            self.missing_strategy = 'mean'
+        else:
+            # Default settings
+            self.normalization_method = 'robust'
+            self.missing_strategy = 'zero'
+    
+    def fit(self, data: Union[np.ndarray, pd.DataFrame]) -> 'SharedPreprocessor':
+        """Fit the preprocessor on training data.
+        
+        Args:
+            data: Input data (samples x features)
+            
+        Returns:
+            Self for method chaining
+        """
+        # Convert to numpy if needed
+        if isinstance(data, pd.DataFrame):
+            data = data.values
+        
+        # Handle missing values first
+        if self.handle_missing and self.missing_strategy != 'keep':
+            data = self._handle_missing_values(data)
+        
+        # Fit scaler if needed
+        if self.normalize and self.normalization_method != 'none':
+            if self.normalization_method == 'minmax':
+                self.scaler = MinMaxScaler()
+            elif self.normalization_method == 'standard':
+                self.scaler = StandardScaler()
+            elif self.normalization_method == 'robust':
+                self.scaler = RobustScaler()
+            else:
+                raise ValueError(f"Unknown normalization method: {self.normalization_method}")
+            
+            # Fit scaler
+            self.scaler.fit(data)
+            logger.info(f"Fitted {self.normalization_method} scaler")
+        
+        self._fitted = True
+        return self
+    
+    def transform(self, data: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+        """Transform data using fitted preprocessing.
+        
+        Args:
+            data: Input data (samples x features)
+            
+        Returns:
+            Preprocessed data as numpy array
+        """
+        # Convert to numpy if needed
+        if isinstance(data, pd.DataFrame):
+            column_names = data.columns.tolist()
+            data = data.values
+        else:
+            column_names = None
+        
+        # Handle missing values
+        if self.handle_missing and self.missing_strategy != 'keep':
+            data = self._handle_missing_values(data)
+        
+        # Remove constant features if requested
+        if self.remove_constant_features:
+            data = self._remove_constant_features(data)
+        
+        # Apply normalization
+        if self.normalize and self.normalization_method != 'none':
+            if not self._fitted:
+                raise ValueError("Preprocessor must be fitted before transform")
+            data = self.scaler.transform(data)
+            logger.debug(f"Applied {self.normalization_method} normalization")
+        
+        return data
+    
+    def fit_transform(self, data: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
+        """Fit and transform in one step.
+        
+        Args:
+            data: Input data (samples x features)
+            
+        Returns:
+            Preprocessed data as numpy array
+        """
+        self.fit(data)
+        return self.transform(data)
+    
+    def _handle_missing_values(self, data: np.ndarray) -> np.ndarray:
+        """Handle missing values according to strategy."""
+        if self.missing_strategy == 'zero':
+            # For biodiversity data, 0 is meaningful (no species)
+            return np.nan_to_num(data, nan=0.0)
+        elif self.missing_strategy == 'mean':
+            # Simple mean imputation
+            col_means = np.nanmean(data, axis=0)
+            for i in range(data.shape[1]):
+                data[np.isnan(data[:, i]), i] = col_means[i]
+            return data
+        elif self.missing_strategy == 'median':
+            # Simple median imputation
+            col_medians = np.nanmedian(data, axis=0)
+            for i in range(data.shape[1]):
+                data[np.isnan(data[:, i]), i] = col_medians[i]
+            return data
+        elif self.missing_strategy == 'keep':
+            # Keep NaN values as is
+            return data
+        else:
+            raise ValueError(f"Unknown missing value strategy: {self.missing_strategy}")
+    
+    def _remove_constant_features(self, data: np.ndarray) -> np.ndarray:
+        """Remove features with constant or near-constant values."""
+        # Calculate variance
+        variances = np.var(data, axis=0)
+        
+        # Keep features with variance above threshold
+        mask = variances > self.variance_threshold
+        
+        n_removed = (~mask).sum()
+        if n_removed > 0:
+            logger.info(f"Removed {n_removed} constant features")
+            data = data[:, mask]
+        
+        return data
+
+
+# Keep the complex pipeline for backward compatibility but deprecate it
 class BiodiversityPreprocessingPipeline:
     """Complete preprocessing pipeline for biodiversity data."""
     

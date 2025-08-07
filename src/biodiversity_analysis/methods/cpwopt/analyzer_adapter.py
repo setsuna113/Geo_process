@@ -16,6 +16,7 @@ from src.abstractions.interfaces.analyzer import IAnalyzer, AnalysisResult as IA
 from src.abstractions.types import AnalysisResult, ModelMetrics
 from src.abstractions.types.tensor_types import TensorData, TensorDecompositionResult
 from src.biodiversity_analysis.preprocessing.tensor_preprocessing import TensorPreprocessor
+from src.biodiversity_analysis.shared.data import ParquetLoader
 from src.config.cpwopt import get_cpwopt_config
 from .core import CPWOPT
 from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
@@ -47,6 +48,9 @@ class CPWOPTAnalyzer(IAnalyzer):
         self.config = config_loader.load_config()
         
         self.experiment_name = "cpwopt_analysis"
+        
+        # Initialize data loader
+        self.data_loader = ParquetLoader()
         
         # Initialize components
         self.model = None
@@ -236,7 +240,28 @@ class CPWOPTAnalyzer(IAnalyzer):
         # Handle file path input
         if isinstance(data, (str, Path)):
             logger.info(f"Loading data from file: {data}")
-            data = pd.read_parquet(data)
+            # Get data loading configuration
+            data_config = self.config.get('data_processing', {})
+            spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
+            sample_size = kwargs.get('sample_size', data_config.get('sample_size', None))
+            random_seed = kwargs.get('random_seed', data_config.get('random_seed', None))
+            
+            # Use ParquetLoader for efficient loading with spatial sampling
+            biodiv_data = self.data_loader.load(
+                data_path=str(data),
+                spatial_grid_step=spatial_grid_step,
+                sample_size=sample_size,
+                random_seed=random_seed,
+                validate=True
+            )
+            
+            # Convert BiodiversityData to DataFrame for tensor preprocessing
+            # Combine coordinates and features
+            coords_df = pd.DataFrame(biodiv_data.coordinates, columns=['latitude', 'longitude'])
+            features_df = pd.DataFrame(biodiv_data.features, columns=biodiv_data.feature_names)
+            data = pd.concat([coords_df, features_df], axis=1)
+            
+            logger.info(f"Loaded {len(data):,} samples after spatial sampling (step={spatial_grid_step})")
         
         # Fit the model
         self.fit(data)
