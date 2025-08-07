@@ -22,31 +22,21 @@ class TensorPreprocessor:
     def __init__(self, 
                  missing_value: float = np.nan,
                  min_observations_per_cell: int = 1,
-                 aggregation_method: str = 'mean',
-                 enable_sampling: bool = False,
-                 sampling_ratio: float = 1.0,
-                 sampling_method: str = 'uniform'):
+                 aggregation_method: str = 'mean'):
         """Initialize tensor preprocessor.
+        
+        NOTE: Sampling is now handled exclusively by ParquetLoader:
+        - Use spatial_grid_step for spatial grid sampling (every Nth point)
+        - Use sample_size for random sampling (N random points)
         
         Args:
             missing_value: Value to use for missing data
             min_observations_per_cell: Minimum observations required per grid cell
             aggregation_method: How to aggregate multiple observations ('mean', 'sum', 'max')
-            enable_sampling: DEPRECATED - use ParquetLoader sampling instead
-            sampling_ratio: DEPRECATED - use ParquetLoader sampling instead
-            sampling_method: DEPRECATED - use ParquetLoader sampling instead
         """
         self.missing_value = missing_value
         self.min_observations_per_cell = min_observations_per_cell
         self.aggregation_method = aggregation_method
-        
-        # Deprecated sampling parameters - kept for compatibility
-        if enable_sampling:
-            logger.warning("TensorPreprocessor sampling is deprecated. Use ParquetLoader.spatial_grid_step or sample_size instead.")
-        self.enable_sampling = enable_sampling
-        self.sampling_ratio = sampling_ratio
-        self.sampling_method = sampling_method
-        self.leverage_scores = None
         
     def grid_spatial_data(self, coordinates: np.ndarray, values: np.ndarray,
                          lat_bins: int, lon_bins: int) -> Tuple[np.ndarray, np.ndarray]:
