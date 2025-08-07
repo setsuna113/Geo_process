@@ -290,7 +290,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Estimate requirements
         n_neurons = grid_size[0] * grid_size[1]
-        n_features = 3  # Default for biodiversity
+        
+        # Get feature count from config
+        data_config = config.get('data_config', {})
+        feature_cols = data_config.get('feature_cols', ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness'])
+        n_features = len(feature_cols)
         
         # Conservative estimate (assuming 1M samples)
         estimated_samples = 1000000
@@ -324,7 +328,10 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             grid_size = (grid_dim, grid_dim)
         
         # Memory validation
-        n_features = 3  # Default for biodiversity data (animal, plant, fungi)
+        # Get feature count from config
+        data_config = self.config.get('data_config', {})
+        feature_cols = data_config.get('feature_cols', ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness'])
+        n_features = len(feature_cols)
         n_neurons = grid_size[0] * grid_size[1]
         
         # Estimate memory requirements (in bytes)
