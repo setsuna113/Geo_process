@@ -147,7 +147,7 @@ class GEEWorkflowOrchestrator:
                 
             return final_outputs
             
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, FileNotFoundError) as e:
             self.logger.error(f"Workflow failed: {e}")
             self.logger.error(f"Current step: {self.state.current_step.value}")
             self.logger.info("Run with resume=True to continue from last successful step")

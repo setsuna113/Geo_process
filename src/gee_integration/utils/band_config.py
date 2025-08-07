@@ -61,9 +61,19 @@ class BandConfig:
             'bio01', 'bio04', 'bio12', 'bio15'
         ])
         
-        include_elevation = False
-        if 'elevation' in config.get('additional_layers', {}):
-            include_elevation = config['additional_layers']['elevation'].get('enabled', False)
+        # Require explicit elevation configuration - no fallback
+        additional_layers = config.get('additional_layers')
+        if additional_layers is None:
+            raise ValueError("Config missing 'additional_layers' - cannot determine elevation settings")
+        
+        if 'elevation' not in additional_layers:
+            raise ValueError("Config missing 'additional_layers.elevation' - must explicitly configure elevation")
+            
+        elevation_config = additional_layers['elevation']
+        if not isinstance(elevation_config, dict) or 'enabled' not in elevation_config:
+            raise ValueError("Invalid elevation config - must be dict with 'enabled' key")
+            
+        include_elevation = elevation_config['enabled']
         
         return cls(
             biodiversity_bands=biodiv_bands,
