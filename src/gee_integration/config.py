@@ -1,6 +1,7 @@
 """GEE Integration Configuration
 
 Handles configuration for the GEE workflow including dual resolution support.
+Centralized configuration for all GEE parameters including authentication.
 """
 
 import os
@@ -10,8 +11,11 @@ import yaml
 from dataclasses import dataclass, field
 
 from src.infrastructure.logging import get_logger
+from config.gee.constants import DEFAULT_LAT_MIN, DEFAULT_LAT_MAX, BASE_RESOLUTION_DEGREES
 
 logger = get_logger(__name__)
+
+
 
 
 @dataclass
@@ -19,29 +23,15 @@ class DatasetConfig:
     """Configuration for a single dataset"""
     name: str
     band_name: str
-    gcs_path: Optional[str] = None  # For new config
-    path: Optional[str] = None  # For old config compatibility
+    path: str  # Path to the dataset file
     description: Optional[str] = None
     no_data_value: Optional[float] = None
-    no_data: Optional[float] = None  # Old field name
     asset_name: Optional[str] = None
     data_type: str = "continuous"  # continuous, count, categorical
     resampling: str = "bilinear"  # bilinear, bicubic, max, min, mean, mode
-    
-    def __post_init__(self):
-        # Handle old vs new field names
-        if self.gcs_path and not self.path:
-            self.path = self.gcs_path
-        if self.no_data_value is not None and self.no_data is None:
-            self.no_data = self.no_data_value
 
 
-@dataclass
-class ResolutionConfig:
-    """Configuration for output resolution"""
-    name: str
-    resolution: float  # in degrees
-    description: str
+# ResolutionConfig class removed - now using resolution_settings dict format
 
 
 @dataclass
@@ -59,7 +49,7 @@ class AdditionalLayerConfig:
 class MaskingConfig:
     """Configuration for masking options"""
     enabled: bool = True
-    latitude_bounds: Dict[str, float] = field(default_factory=lambda: {"min": -60, "max": 75})
+    latitude_bounds: Dict[str, float] = field(default_factory=lambda: {"min": DEFAULT_LAT_MIN, "max": DEFAULT_LAT_MAX})
 
 
 @dataclass
@@ -73,11 +63,11 @@ class GEEConfig:
     service_account_key: Optional[str] = None
     project_id: Optional[str] = None
     
-    # Target resolutions (old format)
-    resolutions: Dict[str, ResolutionConfig] = field(default_factory=dict)
-    
-    # New recursive resolution settings
-    resolution_settings: Optional[Dict] = None
+    # Recursive resolution settings (base + outputs)
+    resolution_settings: Dict = field(default_factory=lambda: {
+        'base_resolution': BASE_RESOLUTION_DEGREES,
+        'outputs': {'1x': True}
+    })
     
     # Input datasets
     biodiversity_datasets: List[DatasetConfig] = field(default_factory=list)
@@ -138,24 +128,15 @@ class GEEConfig:
         # Expand environment variables
         data = cls._expand_env_vars(data)
         
-        # Parse resolutions (check both old and new locations)
-        resolutions = {}
-        res_data_source = data.get('resolutions', {}) or data.get('gee', {}).get('target_resolutions', {})
-        for res_name, res_data in res_data_source.items():
-            # Handle both old and new resolution format
-            if 'scale' in res_data:
-                resolutions[res_name] = ResolutionConfig(
-                    name=res_name,
-                    resolution=res_data['scale'] / 111320.0,  # Convert meters to degrees (approximate)
-                    description=res_data.get('description', f'{res_name} resolution')
-                )
-            else:
-                resolutions[res_name] = ResolutionConfig(**res_data)
+        # Parse resolution settings (new format only)
+        resolution_settings = data.get('resolution_settings', {
+            'base_resolution': BASE_RESOLUTION_DEGREES,
+            'outputs': {'1x': True}
+        })
         
-        # Parse biodiversity datasets (check both old and new locations)
+        # Parse biodiversity datasets
         biodiv_datasets = []
-        biodiv_source = data.get('biodiversity_datasets', []) or data.get('gee', {}).get('inputs', {}).get('biodiversity', [])
-        for dataset_data in biodiv_source:
+        for dataset_data in data.get('biodiversity_datasets', []):
             biodiv_datasets.append(DatasetConfig(**dataset_data))
         
         # Parse additional layers (climate, elevation, etc.)
@@ -177,8 +158,8 @@ class GEEConfig:
         masking = MaskingConfig(
             enabled=mask_config.get('enabled', True),
             latitude_bounds={
-                'min': mask_config.get('latitude_bounds', {}).get('min', -60),
-                'max': mask_config.get('latitude_bounds', {}).get('max', 75)
+                'min': mask_config.get('latitude_bounds', {}).get('min', DEFAULT_LAT_MIN),
+                'max': mask_config.get('latitude_bounds', {}).get('max', DEFAULT_LAT_MAX)
             }
         )
         
@@ -188,21 +169,20 @@ class GEEConfig:
             auth_method=data.get('gee', {}).get('auth', {}).get('method', 'service_account'),
             service_account_key=data.get('gee', {}).get('auth', {}).get('service_account_key'),
             project_id=data.get('gee', {}).get('auth', {}).get('project_id'),
-            resolutions=resolutions,
-            resolution_settings=data.get('resolution_settings'),  # New recursive resolution settings
+            resolution_settings=resolution_settings,
             biodiversity_datasets=biodiv_datasets,
             additional_layers=additional_layers,
             masking=masking,
-            gcs_bucket=data.get('gcs', {}).get('bucket') or data.get('gee', {}).get('upload', {}).get('bucket'),
-            asset_prefix=data.get('earth_engine', {}).get('asset_prefix') or data.get('gee', {}).get('upload', {}).get('asset_prefix', 'biodiversity'),
-            chunk_size_mb=data.get('gcs', {}).get('chunk_size_mb', 100) or data.get('gee', {}).get('upload', {}).get('chunk_size_mb', 100),
-            parallel_uploads=data.get('gcs', {}).get('parallel_uploads', 4) or data.get('gee', {}).get('upload', {}).get('parallel_uploads', 4),
-            merge_strategy=data.get('processing', {}).get('merge_strategy', 'addBands') or data.get('gee', {}).get('processing', {}).get('merge_strategy', 'addBands'),
-            tile_scale=data.get('processing', {}).get('tileScale', 16) or data.get('gee', {}).get('processing', {}).get('tileScale', 16),
-            max_pixels=data.get('processing', {}).get('maxPixels', 1e13) or data.get('gee', {}).get('processing', {}).get('maxPixels', 1e13),
-            export_destination=data.get('export', {}).get('destination', 'cloud_storage') or data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
-            export_folder=data.get('gcs', {}).get('export_folder') or data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
-            export_format=data.get('export', {}).get('format', 'GeoTIFF') or data.get('gee', {}).get('export', {}).get('format', 'CSV'),
+            gcs_bucket=data.get('gee', {}).get('upload', {}).get('bucket'),
+            asset_prefix=data.get('gee', {}).get('upload', {}).get('asset_prefix', 'biodiversity'),
+            chunk_size_mb=data.get('gee', {}).get('upload', {}).get('chunk_size_mb', 100),
+            parallel_uploads=data.get('gee', {}).get('upload', {}).get('parallel_uploads', 4),
+            merge_strategy=data.get('gee', {}).get('processing', {}).get('merge_strategy', 'addBands'),
+            tile_scale=data.get('gee', {}).get('processing', {}).get('tileScale', 16),
+            max_pixels=data.get('gee', {}).get('processing', {}).get('maxPixels', 1e13),
+            export_destination=data.get('gee', {}).get('export', {}).get('destination', 'cloud_storage'),
+            export_folder=data.get('gee', {}).get('export', {}).get('folder', 'merged_outputs'),
+            export_format=data.get('gee', {}).get('export', {}).get('format', 'CSV'),
             file_format_options=data.get('gee', {}).get('export', {}).get('file_format_options'),
             export_timeout=data.get('gee', {}).get('export', {}).get('timeout', 7200),
             export_check_interval=data.get('gee', {}).get('export', {}).get('check_interval', 30),
@@ -251,14 +231,26 @@ class GEEConfig:
             if not Path(dataset.path).exists():
                 issues.append(f"Dataset file not found: {dataset.path}")
         
-        # Check resolutions
-        if not self.resolutions:
-            issues.append("No target resolutions defined")
+        # Check resolution settings
+        if not self.resolution_settings:
+            issues.append("No resolution_settings defined")
+        else:
+            outputs = self.resolution_settings.get('outputs', {})
+            if not outputs:
+                issues.append("No outputs defined in resolution_settings")
+            elif not any(outputs.values()):
+                issues.append("No resolutions enabled for export in resolution_settings")
+            
+            base_res = self.resolution_settings.get('base_resolution')
+            if not base_res or base_res <= 0:
+                issues.append("Invalid or missing base_resolution in resolution_settings")
         
         return issues
     
-    def get_resolution(self, name: str) -> ResolutionConfig:
-        """Get resolution config by name"""
-        if name not in self.resolutions:
-            raise ValueError(f"Resolution '{name}' not found. Available: {list(self.resolutions.keys())}")
-        return self.resolutions[name]
+    def get_resolution_outputs(self) -> Dict[str, bool]:
+        """Get resolution outputs configuration"""
+        return self.resolution_settings.get('outputs', {})
+    
+    def get_base_resolution(self) -> float:
+        """Get base resolution in degrees"""
+        return self.resolution_settings.get('base_resolution', BASE_RESOLUTION_DEGREES)
