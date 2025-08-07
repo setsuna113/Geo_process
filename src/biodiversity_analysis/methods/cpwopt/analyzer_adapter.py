@@ -31,12 +31,13 @@ logger = logging.getLogger(__name__)
 class CPWOPTAnalyzer(IAnalyzer):
     """CP-WOPT analyzer implementation following IAnalyzer interface."""
     
-    def __init__(self, pipeline_config: Any, db: Any):
+    def __init__(self, pipeline_config: Any, db: Any, preset: Optional[str] = None):
         """Initialize CP-WOPT analyzer.
         
         Args:
             pipeline_config: Main pipeline configuration object
             db: Database manager instance
+            preset: Optional preset name ('production', 'fast', 'quality', etc.)
         """
         # Store pipeline config and db
         self.pipeline_config = pipeline_config
@@ -45,7 +46,7 @@ class CPWOPTAnalyzer(IAnalyzer):
         # Load method-specific configuration through registry
         from src.config.method_registry import MethodConfigRegistry
         config_loader = MethodConfigRegistry.get_loader('cpwopt')
-        self.config = config_loader.load_config()
+        self.config = config_loader.load_config(preset=preset)
         
         self.experiment_name = "cpwopt_analysis"
         
