@@ -6,6 +6,13 @@ Instead of large aggregation factors that fail in GEE, we chain multiple 2x down
 
 from typing import Dict, Optional, List, Tuple, TYPE_CHECKING
 from src.infrastructure.logging import get_logger
+from config.gee.constants import (
+    BASE_RESOLUTION_DEGREES,
+    DEGREES_TO_METERS,
+    DOWNSAMPLE_FACTOR,
+    MAX_RESOLUTION_FACTOR,
+    MAX_PIXELS
+)
 
 if TYPE_CHECKING:
     import ee
@@ -31,7 +38,7 @@ class GEEResampler:
         self.logger = logger
         
         # Convert base resolution to meters (approximate at equator)
-        self.base_scale = base_resolution * 111320
+        self.base_scale = base_resolution * DEGREES_TO_METERS
         
         # Parse output configuration
         self.resolutions_to_process = self._parse_outputs(outputs)
@@ -152,11 +159,11 @@ class GEEResampler:
         # CRITICAL: Use consistent Y-axis orientation (positive yScale) for all bands
         # This prevents projection mismatches during export
         base_transform = [
-            self.base_scale / 111320,  # xScale (degrees)
+            self.base_scale / DEGREES_TO_METERS,  # xScale (degrees)
             0,                          # xShearing
             0,                          # xTranslation  
             0,                          # yShearing
-            self.base_scale / 111320,  # yScale (POSITIVE for consistent orientation)
+            self.base_scale / DEGREES_TO_METERS,  # yScale (POSITIVE for consistent orientation)
             0                           # yTranslation
         ]
         target_projection = ee.Projection(self.target_crs, base_transform)

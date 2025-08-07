@@ -9,6 +9,10 @@ import time
 
 from src.infrastructure.logging import get_logger, LoggingContext
 from src.infrastructure.logging.decorators import log_operation
+from config.gee.constants import (
+    BASE_RESOLUTION_DEGREES,
+    DEGREES_TO_METERS
+)
 
 from ..config import GEEConfig
 from ..auth import GEEAuthenticator
@@ -357,7 +361,7 @@ class GEEWorkflowOrchestrator:
             
             # Use recursive resampler for multi-resolution processing
             resolution_outputs = self._get_resolution_outputs()
-            base_resolution = self.config.resolution_settings.get('base_resolution', 0.016666666666667)
+            base_resolution = self.config.resolution_settings.get('base_resolution', BASE_RESOLUTION_DEGREES)
             
             self.logger.info(f"\n   Using recursive 2x downsampling with base resolution: {base_resolution}°")
             self.logger.info(f"   Outputs configured: {resolution_outputs}")
@@ -393,7 +397,7 @@ class GEEWorkflowOrchestrator:
                 if climate_at_res is not None:
                     # Calculate scale from resolution name
                     factor = int(res_name[:-1]) if res_name.endswith('x') else 1
-                    scale_meters = base_resolution * factor * 111320
+                    scale_meters = base_resolution * factor * DEGREES_TO_METERS
                     
                     # Get ocean mask config for this resolution
                     ocean_mask_config = None
@@ -473,7 +477,7 @@ class GEEWorkflowOrchestrator:
             
             # Get resolution outputs configuration
             resolution_outputs = self._get_resolution_outputs()
-            base_resolution = self.config.resolution_settings.get('base_resolution', 0.016666666666667)
+            base_resolution = self.config.resolution_settings.get('base_resolution', BASE_RESOLUTION_DEGREES)
             
             # Prepare images for selected resolutions
             processed_images_for_export = {}
@@ -536,7 +540,7 @@ class GEEWorkflowOrchestrator:
                 if climate_resampled is not None:
                     # Calculate scale from resolution name
                     factor = int(res_name[:-1]) if res_name.endswith('x') else 1
-                    scale_meters = base_resolution * factor * 111320
+                    scale_meters = base_resolution * factor * DEGREES_TO_METERS
                     merged = merger.merge_datasets(
                         biodiv_resampled,
                         climate_resampled,
