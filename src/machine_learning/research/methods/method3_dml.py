@@ -12,6 +12,11 @@ from typing import Dict, Any, Optional, Union, Tuple, List
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 import lightgbm as lgb
+try:
+    from ...models.gbm import h2o_gbm  # H2O GBM for better parallelization
+    H2O_AVAILABLE = True
+except ImportError:
+    H2O_AVAILABLE = False
 from scipy import stats
 
 from ...config_loader import MLRegressionConfig
@@ -168,8 +173,9 @@ class Method3DML:
     def _fit_nuisance_functions(self, 
                                X_train: pd.DataFrame,
                                D_train: pd.Series,
-                               Y_train: pd.Series) -> Tuple[Any, Any]:
-        """Fit nuisance functions using LightGBM.
+                               Y_train: pd.Series,
+                               use_h2o: bool = None) -> Tuple[Any, Any]:
+        """Fit nuisance functions using LightGBM or H2O GBM.
         
         Implements nuisance estimation from regression_analysis_decisions.md lines 797-816.
         
