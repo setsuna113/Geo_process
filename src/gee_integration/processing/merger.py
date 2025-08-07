@@ -6,6 +6,7 @@ Handles merging of biodiversity and climate data in GEE.
 from typing import List, Dict, Optional, Tuple, TYPE_CHECKING
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
+from config.gee.constants import COARSE_MASK_THRESHOLD, MAX_REDUCE_PIXELS
 
 if TYPE_CHECKING:
     import ee
@@ -281,11 +282,11 @@ class GEEMerger:
                     )
         else:
             # No ocean mask config provided - use default behavior
-            if scale and scale > 5000:  # > 5km resolution
+            if scale and scale > COARSE_MASK_THRESHOLD:  # > 5km resolution
                 self.logger.info(f"Using default coarse ocean mask for {scale}m resolution")
                 water_mask_img = water_mask_img.reduceResolution(
                     reducer=ee.Reducer.mode(),
-                    maxPixels=1024
+                    maxPixels=MAX_REDUCE_PIXELS
                 ).reproject(
                     crs='EPSG:4326',
                     scale=scale

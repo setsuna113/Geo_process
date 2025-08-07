@@ -11,6 +11,12 @@ import time
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
 from .task_monitor import GEETaskMonitor
+from config.gee.constants import (
+    DEGREES_TO_METERS,
+    MAX_PIXELS,
+    NODATA_ZERO,
+    EXPORT_TILE_SIZE
+)
 
 logger = get_logger(__name__)
 
@@ -61,7 +67,7 @@ class ExportManager:
         export_path = f"{base_folder}/{resolution_name}/merged_data"
         
         # Get scale in meters
-        scale_meters = resolution_config.get('resolution', 0.016667) * 111320  # degrees to meters at equator
+        scale_meters = resolution_config.get('resolution', 0.016667) * DEGREES_TO_METERS  # degrees to meters at equator
         
         # Check if hemisphere splitting is needed/enabled
         hemisphere_config = self.config.get('hemisphere_split', {})
@@ -109,7 +115,7 @@ class ExportManager:
         timestamp = int(time.time())
         
         # Calculate crsTransform for consistent pixel alignment
-        scale_degrees = scale_meters / 111319.5
+        scale_degrees = scale_meters / DEGREES_TO_METERS
         crs_transform = [scale_degrees, 0, -180, 0, -scale_degrees, 90]
         
         # Western hemisphere (-180 to 0)
@@ -174,7 +180,7 @@ class ExportManager:
             Task ID string
         """
         # Calculate crsTransform for consistent pixel alignment
-        scale_degrees = scale_meters / 111319.5
+        scale_degrees = scale_meters / DEGREES_TO_METERS
         crs_transform = [scale_degrees, 0, -180, 0, -scale_degrees, 90]
         
         task = self._create_export_task(
@@ -224,9 +230,9 @@ class ExportManager:
             'fileFormat': 'GeoTIFF',
             'formatOptions': self.config.get('file_format_options', {
                 'cloudOptimized': True,
-                'noData': 0  # Use 0 to match original biodiversity data NoData value
+                'noData': NODATA_ZERO  # Use 0 to match original biodiversity data NoData value
             }),
-            'maxPixels': self.config.get('export_max_pixels', 1e13)
+            'maxPixels': self.config.get('export_max_pixels', MAX_PIXELS)
         }
         
         return ee.batch.Export.image.toCloudStorage(**export_params)
