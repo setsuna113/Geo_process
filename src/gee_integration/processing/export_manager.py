@@ -15,7 +15,12 @@ from config.gee.constants import (
     DEGREES_TO_METERS,
     MAX_PIXELS,
     NODATA_ZERO,
-    EXPORT_TILE_SIZE
+    EXPORT_TILE_SIZE,
+    DEFAULT_LAT_MIN,
+    DEFAULT_LAT_MAX,
+    GLOBAL_LON_MIN,
+    GLOBAL_LON_MAX,
+    GLOBAL_LAT_MAX
 )
 
 logger = get_logger(__name__)
@@ -102,10 +107,10 @@ class ExportManager:
         # Get latitude bounds from masking config if available
         if hasattr(self.config, 'masking') and hasattr(self.config.masking, 'enabled') and self.config.masking.enabled:
             if hasattr(self.config.masking, 'latitude_bounds'):
-                min_lat = self.config.masking.latitude_bounds.get('min', -60)
-                max_lat = self.config.masking.latitude_bounds.get('max', 75)
+                min_lat = self.config.masking.latitude_bounds.get('min', DEFAULT_LAT_MIN)
+                max_lat = self.config.masking.latitude_bounds.get('max', DEFAULT_LAT_MAX)
             else:
-                min_lat, max_lat = -60, 75
+                min_lat, max_lat = DEFAULT_LAT_MIN, DEFAULT_LAT_MAX
         else:
             min_lat, max_lat = -90, 90
         
@@ -116,9 +121,9 @@ class ExportManager:
         
         # Calculate crsTransform for consistent pixel alignment
         scale_degrees = scale_meters / DEGREES_TO_METERS
-        crs_transform = [scale_degrees, 0, -180, 0, -scale_degrees, 90]
+        crs_transform = [scale_degrees, 0, GLOBAL_LON_MIN, 0, -scale_degrees, GLOBAL_LAT_MAX]
         
-        # Western hemisphere (-180 to 0)
+        # Western hemisphere (GLOBAL_LON_MIN to 0)
         west_bounds = ee.Geometry.Polygon(
             [[[-179.999, min_lat], [-179.999, max_lat], [0, max_lat], [0, min_lat], [-179.999, min_lat]]],
             None, False  # geodesic=False is crucial for global exports
@@ -136,7 +141,7 @@ class ExportManager:
         task_ids.append(task_west.id)
         self.logger.info(f"   Started western hemisphere: {task_west.id}")
         
-        # Eastern hemisphere (0 to 180)
+        # Eastern hemisphere (0 to GLOBAL_LON_MAX)
         east_bounds = ee.Geometry.Polygon(
             [[[0, min_lat], [0, max_lat], [179.999, max_lat], [179.999, min_lat], [0, min_lat]]],
             None, False
@@ -181,7 +186,7 @@ class ExportManager:
         """
         # Calculate crsTransform for consistent pixel alignment
         scale_degrees = scale_meters / DEGREES_TO_METERS
-        crs_transform = [scale_degrees, 0, -180, 0, -scale_degrees, 90]
+        crs_transform = [scale_degrees, 0, GLOBAL_LON_MIN, 0, -scale_degrees, GLOBAL_LAT_MAX]
         
         task = self._create_export_task(
             image=merged_image,
