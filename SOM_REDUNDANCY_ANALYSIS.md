@@ -178,6 +178,7 @@ Checkpoint saving/loading appears in:
 ## Files Deleted (Cleanup Complete)
 - ✅ `analyzer_old.py` (DELETED)
 - ✅ `som_core_old.py` (DELETED)
+- ✅ `geo_som_core_vectorized.py` (DELETED - alternative implementation, already integrated useful parts)
 - ✅ Old monitoring scripts (DELETED)
 - ✅ `som/preprocessing.py` (DELETED - using SharedPreprocessor now)
 - ✅ `som_config_loader.py` (DELETED - using som_config.py only)
@@ -185,7 +186,6 @@ Checkpoint saving/loading appears in:
 ## Files to Keep (Verified Useful)
 - ✅ `analyzer_adapter.py` - Used by analyzer_factory.py for pipeline integration
 - ✅ `spatial_utils_optimized.py` - Imported by spatial_utils.py for large datasets
-- ❓ `geo_som_core_vectorized.py` - Need to decide (alternative implementation)
 
 ## Preprocessing Consolidation (COMPLETED)
 
