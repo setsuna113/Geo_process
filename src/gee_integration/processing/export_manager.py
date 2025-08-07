@@ -10,6 +10,7 @@ import time
 
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
+from .task_monitor import GEETaskMonitor
 
 logger = get_logger(__name__)
 
@@ -27,6 +28,7 @@ class ExportManager:
         self.config = config
         self.logger = logger
         self.active_tasks = {}
+        self.task_monitor = GEETaskMonitor()
     
     def export_image(self,
                     merged_image: ee.Image,
@@ -234,7 +236,7 @@ class ExportManager:
                      task_ids: Union[Dict[str, Union[str, List[str]]], List[str]],
                      timeout: Optional[int] = None) -> Dict[str, Dict]:
         """
-        Monitor export tasks until completion.
+        Monitor export tasks until completion using centralized GEETaskMonitor.
         
         Args:
             task_ids: Either a dict mapping resolution names to task IDs,
@@ -258,83 +260,57 @@ class ExportManager:
         
         self.logger.info(f"⏳ Monitoring {len(task_dict)} export tasks (timeout: {timeout}s)...")
         
-        start_time = time.time()
-        task_progress = {}
-        
-        # Initialize progress tracking
+        # Create task objects for monitoring
+        tasks_to_monitor = {}
         for res_name, task_id in task_dict.items():
             if isinstance(task_id, list):
-                # Hemisphere split - track both
+                # Hemisphere split - monitor both
                 for i, tid in enumerate(task_id):
                     hemisphere = ['west', 'east'][i]
-                    task_progress[tid] = {
-                        'resolution': res_name,
-                        'hemisphere': hemisphere,
-                        'start_time': start_time,
-                        'state': 'READY'
-                    }
+                    desc = f"{res_name} ({hemisphere})"
+                    # Create a mock task object that GEETaskMonitor can use
+                    task = type('Task', (), {
+                        'id': tid,
+                        'status': lambda: ee.data.getTaskStatus(tid)[0]
+                    })()
+                    tasks_to_monitor[desc] = task
             else:
-                task_progress[task_id] = {
-                    'resolution': res_name,
-                    'start_time': start_time,
-                    'state': 'READY'
+                # Create a mock task object
+                task = type('Task', (), {
+                    'id': task_id,
+                    'status': lambda tid=task_id: ee.data.getTaskStatus(tid)[0]
+                })()
+                tasks_to_monitor[res_name] = task
+        
+        # Use GEETaskMonitor's batch monitoring
+        start_time = time.time()
+        try:
+            final_statuses = self.task_monitor.batch_monitor(
+                tasks_to_monitor,
+                check_interval=check_interval
+            )
+            
+            # Check for failures
+            for desc, status in final_statuses.items():
+                if status.get('state') == 'FAILED':
+                    error_msg = status.get('error_message', 'Unknown error')
+                    raise RuntimeError(f"Export failed for {desc}: {error_msg}")
+            
+            # Convert to expected format
+            result = {}
+            for desc, task in tasks_to_monitor.items():
+                status = final_statuses.get(desc, {})
+                result[task.id] = {
+                    'state': status.get('state', 'UNKNOWN'),
+                    'duration': int(time.time() - start_time),
+                    'resolution': desc.split(' (')[0] if ' (' in desc else desc,
+                    'hemisphere': desc.split('(')[1].rstrip(')') if '(' in desc else None
                 }
-        
-        all_completed = False
-        while not all_completed and (time.time() - start_time) < timeout:
-            all_completed = True
             
-            for task_id, progress_info in task_progress.items():
-                if progress_info['state'] in ['COMPLETED', 'FAILED', 'CANCELLED']:
-                    continue
-                
-                # Get task status
-                task_info = ee.data.getTaskStatus(task_id)[0]
-                current_state = task_info.get('state', 'UNKNOWN')
-                
-                # Update state if changed
-                if current_state != progress_info['state']:
-                    progress_info['state'] = current_state
-                    elapsed = int(time.time() - progress_info['start_time'])
-                    
-                    hemisphere_str = f" ({progress_info.get('hemisphere', '')})" if 'hemisphere' in progress_info else ""
-                    res_str = progress_info.get('resolution', '')
-                    
-                    if current_state == 'COMPLETED':
-                        self.logger.info(f"   ✅ {res_str}{hemisphere_str} completed in {elapsed}s")
-                    elif current_state == 'FAILED':
-                        error_msg = task_info.get('error_message', 'Unknown error')
-                        self.logger.error(f"   ❌ {res_str}{hemisphere_str} failed: {error_msg}")
-                        raise RuntimeError(f"Export failed for {res_str}{hemisphere_str}: {error_msg}")
-                    else:
-                        self.logger.info(f"   {res_str}{hemisphere_str}: {current_state} ({elapsed}s)")
-                
-                if current_state in ['READY', 'RUNNING']:
-                    all_completed = False
-                    
-                    # Check individual task timeout (3x global timeout for large exports)
-                    individual_timeout = timeout * 3
-                    if (time.time() - progress_info['start_time']) > individual_timeout:
-                        raise RuntimeError(f"Export timeout for {task_id} after {individual_timeout}s")
+            return result
             
-            if not all_completed:
-                time.sleep(check_interval)
-        
-        if not all_completed:
+        except TimeoutError:
             raise RuntimeError(f"Export monitoring timeout after {timeout}s")
-        
-        # Return final statuses
-        final_statuses = {
-            task_id: {
-                'state': info['state'],
-                'duration': int(time.time() - info['start_time']),
-                'resolution': info.get('resolution'),
-                'hemisphere': info.get('hemisphere')
-            }
-            for task_id, info in task_progress.items()
-        }
-        
-        return final_statuses
     
     def get_export_paths(self, task_ids: Dict[str, Union[str, List[str]]]) -> Dict[str, str]:
         """

@@ -8,6 +8,7 @@ import ee
 from src.infrastructure.logging import get_logger
 from src.infrastructure.logging.decorators import log_operation
 from ..utils import GCSClient
+from ..processing.task_monitor import GEETaskMonitor
 
 logger = get_logger(__name__)
 
@@ -30,6 +31,7 @@ class AssetUploader:
         self.config = config or {}
         self._ee_initialized = False
         self.gcs_client = GCSClient(bucket=gcs_bucket)
+        self.task_monitor = GEETaskMonitor()
         
     def _ensure_ee_initialized(self):
         """Ensure Earth Engine is initialized"""
@@ -223,7 +225,7 @@ class AssetUploader:
     
     def wait_for_task(self, task_id: str, timeout: int = 3600) -> bool:
         """
-        Wait for GEE task to complete.
+        Wait for GEE task to complete using centralized GEETaskMonitor.
         
         Args:
             task_id: GEE task ID or operation name
@@ -234,48 +236,37 @@ class AssetUploader:
         """
         self._ensure_ee_initialized()
         
-        start_time = time.time()
-        check_interval = 30  # seconds
+        # Create a mock task object for GEETaskMonitor
+        task = type('Task', (), {
+            'id': task_id,
+            'status': lambda: self._get_task_status(task_id)
+        })()
         
-        while time.time() - start_time < timeout:
-            try:
-                # Get task status using Python API
-                tasks = ee.data.getTaskList()
-                
-                # Find our task
-                task_info = None
-                for task in tasks:
-                    if task.get('id') == task_id or task.get('name', '').endswith(task_id):
-                        task_info = task
-                        break
-                
-                if not task_info:
-                    # Task might have completed and been removed from list
-                    self.logger.debug(f"Task {task_id} not found in task list, may be complete")
-                    return True
-                
-                state = task_info.get('state', 'UNKNOWN')
-                
-                if state == 'COMPLETED' or state == 'SUCCEEDED':
-                    self.logger.info(f"✅ Task {task_id} completed")
-                    return True
-                elif state == 'FAILED' or state == 'CANCELLED':
-                    error_msg = task_info.get('error_message', 'No error message')
-                    self.logger.error(f"❌ Task {task_id} failed: {error_msg}")
-                    return False
-                elif state in ['RUNNING', 'PENDING', 'READY']:
-                    elapsed = int(time.time() - start_time)
-                    self.logger.debug(f"Task {task_id} {state} ({elapsed}s)")
-                else:
-                    self.logger.warning(f"Unknown task state: {state}")
-                
-            except Exception as e:
-                self.logger.error(f"Error checking task status: {e}")
-            
-            time.sleep(check_interval)
+        # Use GEETaskMonitor with callback
+        final_status = self.task_monitor.monitor_with_callback(
+            task,
+            description=f"Asset upload {task_id}",
+            check_interval=30
+        )
         
-        self.logger.error(f"Task {task_id} timed out after {timeout}s")
-        return False
+        state = final_status.get('state', 'UNKNOWN')
+        if state in ['COMPLETED', 'SUCCEEDED']:
+            return True
+        else:
+            return False
+    
+    def _get_task_status(self, task_id: str) -> Dict:
+        """Helper to get task status in expected format."""
+        try:
+            tasks = ee.data.getTaskList()
+            for task in tasks:
+                if task.get('id') == task_id or task.get('name', '').endswith(task_id):
+                    return task
+            # Task not found - assume completed
+            return {'state': 'COMPLETED'}
+        except Exception as e:
+            self.logger.error(f"Error getting task status: {e}")
+            return {'state': 'UNKNOWN', 'error_message': str(e)}
     
     def cancel_task(self, task_id: str) -> bool:
         """
