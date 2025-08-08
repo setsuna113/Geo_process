@@ -11,17 +11,17 @@
 
 # Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 2  # Sample every 2nd point for memory efficiency
-  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']  # 4 biodiversity richness columns
-  coordinate_columns: ['x', 'y']  # Column names for coordinates
-  observed_columns: [0, 1, 2, 3]  # All four biodiversity columns are observed
+  spatial_grid_step: 100  # Aggressive sampling for testing - every 100th point
+  feature_cols: ['animal_richness', 'plant_richness', 'fungi_richness']  # 3 biodiversity richness columns
+  coordinate_columns: ['x', 'y']  # Column names for coordinates  
+  observed_columns: [0, 1, 2]  # All three biodiversity columns are observed
   predicted_columns: []  # No predicted columns (biodiversity-only analysis)
 
 # Distance calculation configuration
 distance_config:
   input_space: 'bray_curtis'
   missing_data_handling: 'pairwise'
-  min_valid_features: 2
+  min_valid_features: 2  # Requires at least 2 out of 3 biodiversity features
   map_space: 'euclidean'
 
 # Data preprocessing
@@ -53,18 +53,28 @@ architecture_config:
 
 # Training parameters (ALL training-related settings here)
 training_config:
-  max_epochs: 500  # Extended for complete convergence
-  chunk_size: 25000  # Optimized: Smaller chunks for better memory efficiency
+  max_epochs: 15  # Quick test with aggressive sampling
   n_workers: 80  # Conservative setting for stressed system (full swap, high load)
-  use_minibatch: true  # Enable mini-batch processing for memory efficiency
-  minibatch_size: 5000  # Reduced proportionally to match smaller chunk size
+  
+  # REAL Mini-batch Training (stochastic weight updates) - ALWAYS ENABLED
+  minibatch_training:
+    batch_size: 1000                    # True mini-batch size for stochastic updates
+    update_frequency: 5                 # Update weights every N mini-batches
+    shuffle_batches: true               # Shuffle mini-batches each epoch
+    accumulation_strategy: "weighted"   # "weighted" or "simple"
+  
+  # Memory Optimization (memory chunking only)
+  memory_optimization:
+    enabled: true
+    chunk_size: 25000                   # Memory processing chunk size
+    distance_calc_batch_size: 5000      # Distance calculation memory chunking
   
   # Learning rate settings (moved from architecture_config)
   initial_learning_rate: 0.4  # Reduced from 0.8 for better stability with sparse data
   min_learning_rate: 0.1  # Floor at 0.1 (was 0.05)
   max_learning_rate: 1.0
   
-  # VLRSOM Parameters - Variable Learning Rate Self-Organizing Map
+  # VLRSOM Parameters - Variable Learning Rate Self-Organizing Map  
   # Based on paper "A faster dynamic convergency approach for self-organizing maps"
   # Formula: μ'(t+1) = αμ(t) + γJ²(t)
   vlrsom_alpha: 0.95  # Decay factor (0 < α < 1) - paper suggests 0.9-0.99
@@ -73,12 +83,19 @@ training_config:
   vlrsom_max_lr: 0.8   # Maximum LR bound (from paper Equation 21)
   vlrsom_error_sample_size: 10000  # Samples for J²(t) calculation (efficiency vs accuracy)
   
+  # VLRSOM adaptation factors
+  lr_increase_factor: 1.1   # Multiply LR by this when QE improves
+  lr_decrease_factor: 0.95  # Multiply LR by this when QE worsens  
+  high_qe_lr_range: [0.01, 0.8]  # LR range for high QE values
+  low_qe_lr_range: [0.01, 0.8]   # LR range for low QE values
+  
   # Convergence criteria
   patience: 50  # Epochs without improvement
   geographic_coherence_threshold: 0.6  # Ensure meaningful geographic organization
   geographic_coherence_weight: 0.3  # Weight for geographic coherence in convergence
   early_convergence_epochs: 200  # Consider converged after 200 epochs
   qe_improvement_threshold: 0.001  # < 0.1% improvement
+  lr_stability_threshold: 0.001  # Learning rate stability threshold for convergence
   
   # Topographic error based radius adjustment (training behavior)
   te_radius_adjustment: true  # Enable TE-based radius adjustment
