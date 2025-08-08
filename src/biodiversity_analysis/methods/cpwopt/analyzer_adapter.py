@@ -15,7 +15,7 @@ import time
 
 from src.abstractions.interfaces.analyzer import IAnalyzer
 from src.abstractions.types import AnalysisResult, ModelMetrics
-from src.abstractions.types.tensor_types import TensorData
+from src.abstractions.types.tensor_types import TensorData, TensorDecompositionResult
 from src.biodiversity_analysis.preprocessing import SharedPreprocessor
 from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
 from src.biodiversity_analysis.shared.data import ParquetLoader
@@ -24,6 +24,7 @@ from .core import CPWOPT
 from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
 from .sparse_handler import AdaptiveSparseStrategy
 from .factor_updater import create_factor_updater
+from .rank_selection import auto_select_rank
 
 logger = logging.getLogger(__name__)
 
@@ -98,21 +99,34 @@ class CPWOPTAnalyzer(IAnalyzer):
             if not self._validate_input(X):
                 raise ValueError("Input validation failed")
             
-            # Step 1: Apply general preprocessing (normalization, missing values)
-            logger.info("Applying general preprocessing...")
-            X_preprocessed = self.preprocessor.fit_transform(X)
+            # Step 1: Extract coordinates before preprocessing
+            data_config = self.config.get('data_processing', {})
+            coord_cols = data_config.get('coordinate_cols', ['x', 'y'])
+            
+            # Check which coordinate columns are present
+            if 'x' in X.columns and 'y' in X.columns:
+                coord_cols = ['x', 'y']
+            elif 'longitude' in X.columns and 'latitude' in X.columns:
+                coord_cols = ['longitude', 'latitude']
+            
+            # Save coordinates separately
+            coords_df = X[coord_cols].copy()
+            
+            # Apply preprocessing only to feature columns
+            feature_cols = [col for col in X.columns if col not in coord_cols]
+            logger.info(f"Applying preprocessing to {len(feature_cols)} feature columns...")
+            X_features = X[feature_cols]
+            X_features_preprocessed = self.preprocessor.fit_transform(X_features)
             
             # Step 2: Convert DIRECTLY to tensor format - NO GRIDDING!
             logger.info("Converting data directly to tensor format (no gridding)...")
             tensor_config = self.config.get('tensor_construction', {})
-            data_config = self.config.get('data_processing', {})
             
-            # Reconstruct DataFrame for tensor builder
-            X_df = pd.DataFrame(X_preprocessed, columns=X.columns)
-            
-            # Get coordinate and feature columns from config
-            coord_cols = data_config.get('coordinate_cols', ['x', 'y'])
-            feature_cols = data_config.get('feature_cols', None)
+            # Reconstruct full DataFrame with coordinates and preprocessed features
+            X_df = pd.concat([
+                coords_df,
+                pd.DataFrame(X_features_preprocessed, columns=feature_cols, index=X.index)
+            ], axis=1)
             
             self.tensor_data = self.tensor_builder.parquet_to_tensor(
                 X_df,
@@ -139,6 +153,10 @@ class CPWOPTAnalyzer(IAnalyzer):
                 logger.info("Performing automatic rank selection...")
                 rank_selection_config = self.config.get('rank_selection', {})
                 
+                # Get backend config for GPU usage
+                backend_config = self.config.get('backend', {})
+                use_gpu = backend_config.get('use_gpu', 'auto')
+                
                 # Select rank
                 optimal_rank = auto_select_rank(
                     self.tensor_data,
@@ -146,16 +164,16 @@ class CPWOPTAnalyzer(IAnalyzer):
                     min_rank=rank_selection_config.get('min_rank', 2),
                     max_rank=rank_selection_config.get('max_rank', 15),
                     plot=rank_selection_config.get('plot', True),
-                    output_dir=self.output_dir if hasattr(self, 'output_dir') else None
+                    output_dir=self.output_dir if hasattr(self, 'output_dir') else None,
+                    use_gpu=use_gpu  # Pass backend config to rank selection
                 )
                 logger.info(f"Automatically selected rank: {optimal_rank}")
             else:
                 optimal_rank = int(rank_config)
                 logger.info(f"Using fixed rank: {optimal_rank}")
-            
-            # Get backend config for GPU usage
-            backend_config = self.config.get('backend', {})
-            use_gpu = backend_config.get('use_gpu', 'auto')
+                # Get backend config for non-auto case too
+                backend_config = self.config.get('backend', {})
+                use_gpu = backend_config.get('use_gpu', 'auto')
             
             self.model = CPWOPT(
                 rank=optimal_rank,
@@ -268,6 +286,7 @@ class CPWOPTAnalyzer(IAnalyzer):
             spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
             sample_size = kwargs.get('sample_size', data_config.get('sample_size', None))
             random_seed = kwargs.get('random_seed', data_config.get('random_seed', None))
+            feature_cols = data_config.get('feature_cols', None)  # Get feature columns from config
             
             # Use ParquetLoader for efficient loading with spatial sampling
             biodiv_data = self.data_loader.load(
@@ -275,6 +294,7 @@ class CPWOPTAnalyzer(IAnalyzer):
                 spatial_grid_step=spatial_grid_step,
                 sample_size=sample_size,
                 random_seed=random_seed,
+                feature_cols=feature_cols,  # Pass feature columns to loader
                 validate=True
             )
             
