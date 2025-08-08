@@ -1,8 +1,11 @@
-"""Mini-batch distance calculator for memory-efficient SOM training.
+"""Memory-optimized distance calculator for SOM training.
 
-This module implements mini-batching within chunks to reduce memory usage
-during distance calculations. Instead of creating massive 3D arrays, it
-processes data in smaller mini-batches.
+This module implements memory chunking to reduce memory usage during distance 
+calculations. It processes data in memory-efficient chunks to avoid creating 
+massive 3D arrays.
+
+NOTE: This is NOT real mini-batch training - it's pure memory optimization.
+Real mini-batch training with stochastic updates is handled by minibatch_trainer.py.
 
 Error Handling Convention:
     All invalid distances (insufficient features, division by zero, etc.) 
@@ -21,7 +24,12 @@ INVALID_DISTANCE = np.inf
 
 
 class MiniBatchDistanceCalculator:
-    """Handles distance calculations using mini-batches to reduce memory usage."""
+    """Handles distance calculations using memory chunking (NOT real mini-batch training).
+    
+    This class provides memory optimization by processing distance calculations
+    in smaller chunks to avoid OOM errors. It does NOT implement stochastic 
+    mini-batch training - that's handled by MiniBatchTrainer.
+    """
     
     def __init__(self, mini_batch_size: int = 1000):
         """Initialize the calculator.
