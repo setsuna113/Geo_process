@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List, Tuple, Callable
 import logging
 from datetime import datetime
 
-from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
+from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
 from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
 from ...preprocessing import SharedPreprocessor

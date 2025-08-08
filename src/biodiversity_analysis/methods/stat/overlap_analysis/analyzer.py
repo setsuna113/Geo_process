@@ -7,8 +7,6 @@ multiple biodiversity datasets with different data types (observed vs predicted)
 """
 
 import numpy as np
-import rasterio
-from rasterio.warp import reproject, Resampling
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import matplotlib.colors as mcolors
@@ -18,6 +16,9 @@ from typing import Dict, List, Tuple, Optional
 import warnings
 
 warnings.filterwarnings('ignore')
+
+# Import unified data utilities
+from src.biodiversity_analysis.data_utils import load_align_and_sample, DataFlattener
 
 
 class OverlapAnalyzer:
@@ -32,14 +33,16 @@ class OverlapAnalyzer:
         self.datasets = {}
         self.aligned_data = {}
         
-    def load_and_align_datasets(self, dataset_paths: Dict[str, str]) -> Dict[str, np.ndarray]:
+    def load_and_align_datasets(self, dataset_paths: Dict[str, str], sample_factor: int = 5) -> Dict[str, np.ndarray]:
         """
-        Load multiple datasets and align them to common grid.
+        Load multiple datasets and align them to common grid using unified utilities.
         
         Parameters
         ----------
         dataset_paths : Dict[str, str]
             Dictionary mapping dataset names to file paths
+        sample_factor : int
+            Spatial sampling factor for large datasets
             
         Returns
         -------
@@ -49,77 +52,19 @@ class OverlapAnalyzer:
         print("Loading and aligning datasets...")
         print("-" * 40)
         
-        # First, load all datasets and find common extent
-        bounds_list = []
-        resolutions = []
-        shapes = []
+        # Use unified data loading and sampling
+        aligned_data = load_align_and_sample(dataset_paths, sample_factor, sampling_method='regular')
         
-        for name, path in dataset_paths.items():
-            with rasterio.open(path) as src:
-                bounds_list.append(src.bounds)
-                resolutions.append((src.transform[0], abs(src.transform[4])))
-                shapes.append(src.shape)
-                print(f"  {name}: {src.shape}, resolution: {src.transform[0]:.6f}")
+        print(f"Loaded and aligned {len(aligned_data)} datasets")
+        if aligned_data:
+            sample_shape = list(aligned_data.values())[0].shape
+            print(f"Common grid size: {sample_shape[0]} x {sample_shape[1]} (sampled {sample_factor}x)")
         
-        # Use the coarsest resolution (maximum pixel size)
-        target_res = max(resolutions, key=lambda x: x[0])
-        print(f"\nTarget resolution: {target_res[0]:.6f} degrees")
+        # Store for later use in class
+        self.aligned_data = aligned_data
         
-        # Find common extent (intersection of all bounds)
-        common_bounds = {
-            'left': max(b.left for b in bounds_list),
-            'right': min(b.right for b in bounds_list),
-            'bottom': max(b.bottom for b in bounds_list),
-            'top': min(b.top for b in bounds_list)
-        }
-        
-        print(f"Common extent: {common_bounds}")
-        
-        # Calculate common shape
-        width = int((common_bounds['right'] - common_bounds['left']) / target_res[0])
-        height = int((common_bounds['top'] - common_bounds['bottom']) / target_res[1])
-        
-        print(f"Common grid size: {height} x {width}")
-        
-        # Load and align each dataset
-        for name, path in dataset_paths.items():
-            with rasterio.open(path) as src:
-                # Read data
-                data = src.read(1).astype(np.float32)
-                
-                # Handle nodata
-                if src.nodata is not None:
-                    data[data == src.nodata] = np.nan
-                
-                # If resolution matches, just crop
-                if abs(src.transform[0] - target_res[0]) < 1e-6:
-                    # Calculate crop indices
-                    col_off = int((common_bounds['left'] - src.bounds.left) / src.transform[0])
-                    row_off = int((src.bounds.top - common_bounds['top']) / abs(src.transform[4]))
-                    
-                    # Crop to common extent
-                    aligned = data[row_off:row_off+height, col_off:col_off+width]
-                else:
-                    # Need to resample
-                    print(f"  Resampling {name}...")
-                    # This is simplified - in production you'd use rasterio's reproject
-                    from scipy import ndimage
-                    zoom_factors = (
-                        height / data.shape[0],
-                        width / data.shape[1]
-                    )
-                    aligned = ndimage.zoom(data, zoom_factors, order=1)
-                
-                self.aligned_data[name] = aligned
-                self.datasets[name] = {
-                    'data': aligned,
-                    'original_path': path,
-                    'shape': aligned.shape,
-                    'bounds': common_bounds
-                }
-        
-        print(f"\n✓ Aligned {len(self.datasets)} datasets to common grid")
-        return self.aligned_data
+        print(f"\n✓ Aligned {len(aligned_data)} datasets to common grid")
+        return aligned_data
     
     def calculate_overlap_statistics(self) -> Dict:
         """

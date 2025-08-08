@@ -8,10 +8,12 @@ import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import matplotlib.patches as mpatches
 from pathlib import Path
-import rasterio
 from typing import Dict, Tuple, Optional
 import warnings
 warnings.filterwarnings('ignore')
+
+# Import unified data utilities
+from src.biodiversity_analysis.data_utils import load_align_and_sample, DataValidator
 
 class TrustMapVisualizer:
     """Create trust maps showing data agreement and conflict areas"""
@@ -22,48 +24,18 @@ class TrustMapVisualizer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
     def load_and_align_data(self, datasets: Dict[str, str], sample_factor: int = 10) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-        """Load and align all datasets to common dimensions (with spatial sampling for large files)"""
-        aligned_data = {}
-        min_height, min_width = float('inf'), float('inf')
-        
+        """Load and align all datasets to common dimensions using unified utilities"""
         print(f"Loading datasets with {sample_factor}x spatial sampling...")
         
-        # First pass: find minimum dimensions
-        for name, path in datasets.items():
-            with rasterio.open(path) as src:
-                min_height = min(min_height, src.height)
-                min_width = min(min_width, src.width)
+        # Use unified data loading and sampling
+        aligned_data = load_align_and_sample(datasets, sample_factor, sampling_method='regular')
         
-        print(f"Original dimensions: {min_height} x {min_width}")
+        # Create combined valid mask using unified validator
+        masked_data, valid_mask = DataValidator.apply_multi_dataset_mask(aligned_data, min_value=0.0)
         
-        # Apply spatial sampling
-        sample_height = max(500, min_height // sample_factor)
-        sample_width = max(500, min_width // sample_factor)
-        
-        print(f"Sampled dimensions: {sample_height} x {sample_width} (factor: {sample_factor}x)")
-        
-        # Second pass: load and sample data
-        for name, path in datasets.items():
-            with rasterio.open(path) as src:
-                data = src.read(1).astype(np.float32)
-                
-                # Crop to common dimensions first
-                data = data[:min_height, :min_width]
-                
-                # Apply spatial sampling (every nth pixel)
-                step_h = max(1, min_height // sample_height)
-                step_w = max(1, min_width // sample_width)
-                
-                sampled_data = data[::step_h, ::step_w]
-                aligned_data[name] = sampled_data
-                
-                print(f"  {name}: {data.shape} -> {sampled_data.shape}")
-        
-        # Create combined valid mask
-        valid_mask = None
-        for data in aligned_data.values():
-            mask = ~np.isnan(data) & (data > 0)
-            valid_mask = mask if valid_mask is None else valid_mask & mask
+        print(f"Loaded {len(aligned_data)} datasets")
+        sample_shape = list(aligned_data.values())[0].shape
+        print(f"Sampled dimensions: {sample_shape[0]} x {sample_shape[1]} (factor: {sample_factor}x)")
         
         return aligned_data, valid_mask
     
@@ -594,7 +566,7 @@ def main():
     """Main function to create trust maps."""
     datasets = {
         'plants': '/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif',
-        'terrestrial': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif',
+        'animals': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif',
         'am_fungi': '/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif',
         'ecm_fungi': '/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif'
     }

@@ -71,15 +71,15 @@ class StatisticalDataPaths:
                 ],
                 description="Plant species richness"
             ),
-            'terrestrial': DatasetPaths(
-                primary_path=os.getenv('BIODIV_TERRESTRIAL_FILE',
+            'animals': DatasetPaths(
+                primary_path=os.getenv('BIODIV_ANIMALS_FILE',
                     f'{self.base_scratch_dir}/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif'),
                 fallback_paths=[
                     f'{self.base_scratch_dir}/terrestrial-richness.tif',
                     f'{self.base_project_dir}/data/terrestrial-richness.tif',
                     '/maps/mwd24/richness/iucn-terrestrial-richness.tif'
                 ],
-                description="Terrestrial vertebrate species richness"
+                description="Animal (terrestrial vertebrate) species richness"
             ),
             'am_fungi': DatasetPaths(
                 primary_path=os.getenv('BIODIV_AM_FUNGI_FILE',
@@ -182,7 +182,7 @@ class StatisticalDataPaths:
         lines.append("\nEnvironment Variables:")
         env_vars = [
             'BIODIV_SCRATCH_DIR', 'BIODIV_PROJECT_DIR', 'BIODIV_OUTPUT_DIR',
-            'BIODIV_CLIMATE_FILE', 'BIODIV_PLANTS_FILE', 'BIODIV_TERRESTRIAL_FILE',
+            'BIODIV_CLIMATE_FILE', 'BIODIV_PLANTS_FILE', 'BIODIV_ANIMALS_FILE',
             'BIODIV_AM_FUNGI_FILE', 'BIODIV_ECM_FUNGI_FILE'
         ]
         for var in env_vars:

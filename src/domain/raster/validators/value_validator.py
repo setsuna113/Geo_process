@@ -18,7 +18,7 @@ class ValueValidator:
         self.expected_ranges = {
             'plants': (0, 20000),      # Max ~15000 in tropics
             'vertebrates': (0, 2000),   # Max ~1500 in tropics
-            'terrestrial': (0, 5000),   # Combined terrestrial
+            'animals': (0, 5000),      # Combined terrestrial animals (formerly terrestrial)
             'marine': (0, 3000)         # Marine species
         }
     
@@ -64,7 +64,7 @@ class ValueValidator:
         elif 'vertebrate' in name_lower or 'iucn' in name_lower:
             return 'vertebrates'
         elif 'terrestrial' in name_lower:
-            return 'terrestrial'
+            return 'animals'
         elif 'marine' in name_lower:
             return 'marine'
         else:

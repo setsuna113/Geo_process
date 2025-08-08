@@ -13,11 +13,13 @@ from scipy import stats
 from scipy.spatial.distance import pdist, squareform
 from sklearn.preprocessing import StandardScaler
 from sklearn.cross_decomposition import CCA
-import rasterio
 from pathlib import Path
 from typing import Dict, Tuple, List
 import warnings
 warnings.filterwarnings('ignore')
+
+# Import unified data utilities
+from src.biodiversity_analysis.data_utils import prepare_for_correlation_analysis
 
 
 class CorrelationExplorer:
@@ -28,43 +30,21 @@ class CorrelationExplorer:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-    def load_and_prepare_data(self, datasets: Dict[str, str]) -> Tuple[pd.DataFrame, Dict]:
-        """Load datasets and prepare for correlation analysis"""
+    def load_and_prepare_data(self, datasets: Dict[str, str], sample_factor: int = 1) -> Tuple[pd.DataFrame, Dict]:
+        """Load datasets and prepare for correlation analysis using unified utilities"""
         print("Loading and preparing data...")
         
-        # Load all datasets
-        data_arrays = {}
-        min_height, min_width = float('inf'), float('inf')
+        # Use unified data preparation function
+        flattened_data, metadata = prepare_for_correlation_analysis(
+            datasets, sample_factor=sample_factor, min_value=0.0
+        )
         
-        # Find minimum dimensions
-        for name, path in datasets.items():
-            with rasterio.open(path) as src:
-                min_height = min(min_height, src.height)
-                min_width = min(min_width, src.width)
-        
-        # Load and align data
-        for name, path in datasets.items():
-            with rasterio.open(path) as src:
-                data = src.read(1).astype(np.float32)
-                # Crop to common dimensions
-                data = data[:min_height, :min_width]
-                data_arrays[name] = data.flatten()
-        
-        # Create DataFrame with valid data only
-        df = pd.DataFrame(data_arrays)
-        
-        # Remove rows where any dataset has NaN or zero
-        df_clean = df.dropna()
-        df_clean = df_clean[(df_clean > 0).all(axis=1)]
+        # Convert to DataFrame
+        df_clean = pd.DataFrame(flattened_data)
         
         print(f"Data shape: {df_clean.shape}")
         print(f"Samples with valid data: {len(df_clean):,}")
-        
-        metadata = {
-            'original_shape': (min_height, min_width),
-            'n_valid_samples': len(df_clean),
-            'coverage_percent': (len(df_clean) / len(df)) * 100
-        }
+        print(f"Coverage: {metadata['coverage_percent']:.1f}%")
         
         return df_clean, metadata
     
@@ -300,11 +280,11 @@ RECOMMENDATION FOR 4 DATASETS:
         print("\n4. PARTIAL CORRELATIONS (Controlling for confounders)")
         print("-" * 40)
         
-        # Example: Plants~AM_fungi controlling for terrestrial
-        if all(col in df.columns for col in ['plants', 'am_fungi', 'terrestrial']):
-            partial_r = self._partial_correlation(df, 'plants', 'am_fungi', 'terrestrial')
+        # Example: Plants~AM_fungi controlling for animals
+        if all(col in df.columns for col in ['plants', 'am_fungi', 'animals']):
+            partial_r = self._partial_correlation(df, 'plants', 'am_fungi', 'animals')
             results['partial_example'] = partial_r
-            print(f"  Plants ~ AM_fungi | terrestrial: r = {partial_r:.3f}")
+            print(f"  Plants ~ AM_fungi | animals: r = {partial_r:.3f}")
             
             # Compare with simple correlation
             simple_r = pearson_matrix.loc['plants', 'am_fungi']
@@ -541,7 +521,7 @@ def main():
     # Define datasets
     datasets = {
         'plants': "/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif",
-        'terrestrial': "/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif",
+        'animals': "/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif",
         'am_fungi': "/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif",
         'ecm_fungi': "/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif"
     }
