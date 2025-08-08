@@ -198,20 +198,20 @@ class CPWOPT:
         # CRITICAL FIX: Convert to HiCOO ONCE before the loop!
         # This was being done inside _update_factor_als_device on EVERY iteration
         from .sparse_handler import SparseHandler
-        handler = SparseHandler(self.sparse_config)
+        handler = SparseHandler()  # No config needed - HiCOO only
         
         # Create TensorData for HiCOO conversion (done ONCE)
-        coord_list = [np.arange(s) for s in tensor.shape]
+        # Use empty coordinates for temporary tensor (validation allows this)
         feature_names = [f"feature_{i}" for i in range(tensor.shape[2])]
         tensor_data_hicoo = TensorData(
             tensor=tensor_clean,
             weights=weights,
-            coordinates=coord_list,
+            coordinates=[],  # Empty is allowed for grid-based tensors
             feature_names=feature_names,
             metadata={'temporary': True, 'original_shape': tensor.shape},
             is_sparse=True
         )
-        hicoo_tensor = handler.to_hicoo(tensor_data_hicoo)
+        hicoo_tensor = handler.to_sparse(tensor_data_hicoo)  # Converts to HiCOO
         
         # Transfer factors to device ONCE
         for mode in range(len(factors.factors)):
@@ -456,7 +456,8 @@ class CPWOPT:
         # The tensor is already in HiCOO format
         
         # Directly use the pre-converted HiCOO tensor for MTTKRP
-        mttkrp_result = handler.hicoo_mttkrp(
+        # The handler wraps HiCOOHandler, so use its hicoo instance
+        mttkrp_result = handler.hicoo.hicoo_mttkrp(
             hicoo_tensor, factors, mode, self.backend
         )
         

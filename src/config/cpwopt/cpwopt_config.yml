@@ -4,7 +4,7 @@
 # Data processing configuration
 data_processing:
   data_path: 'data/merged/biodiversity_climate_1x_production.parquet'  # 1.7GB file with 51.9M points
-  spatial_grid_step: 10       # PRODUCTION: Sample every 10th point (5.19M points)
+  spatial_grid_step: 4        # TEST: Sample every 4th point (~3.2M points)
   random_seed: 42            # Random seed for reproducibility
   coordinate_cols: ['x', 'y'] # Explicit coordinate columns
   # Use ONLY 4 biodiversity bands as input features
