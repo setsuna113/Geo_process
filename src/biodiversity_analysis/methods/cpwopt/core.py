@@ -174,6 +174,24 @@ class CPWOPT:
         weights = self.backend.to_device(tensor_data.weights)
         tensor_clean = xp.nan_to_num(tensor, nan=0.0)
         
+        # CRITICAL FIX: Convert to HiCOO ONCE before the loop!
+        # This was being done inside _update_factor_als_device on EVERY iteration
+        from .sparse_handler import SparseHandler
+        handler = SparseHandler(self.sparse_config)
+        
+        # Create TensorData for HiCOO conversion (done ONCE)
+        coord_list = [np.arange(s) for s in tensor.shape]
+        feature_names = [f"feature_{i}" for i in range(tensor.shape[2])]
+        tensor_data_hicoo = TensorData(
+            tensor=tensor_clean,
+            weights=weights,
+            coordinates=coord_list,
+            feature_names=feature_names,
+            metadata={'temporary': True, 'original_shape': tensor.shape},
+            is_sparse=True
+        )
+        hicoo_tensor = handler.to_hicoo(tensor_data_hicoo)
+        
         # Transfer factors to device ONCE
         for mode in range(len(factors.factors)):
             factors.factors[mode] = self.backend.to_device(factors.factors[mode])
@@ -190,9 +208,9 @@ class CPWOPT:
             
             # Update each mode (on device)
             for mode in range(tensor.ndim):
-                # Perform ALS update directly on device
+                # Perform ALS update directly on device with pre-converted HiCOO
                 updated_factor = self._update_factor_als_device(
-                    tensor_clean, weights, factors.factors, mode, xp
+                    hicoo_tensor, handler, factors.factors, mode, xp
                 )
                 factors.factors[mode] = updated_factor
             
@@ -382,13 +400,16 @@ class CPWOPT:
         
         return factors, metrics
     
-    def _update_factor_als_device(self, tensor, weights, factors: List, 
+    def _update_factor_als_device(self, hicoo_tensor, handler, factors: List, 
                                   mode: int, xp):
-        """Update factor on device using HiCOO MTTKRP.
+        """Update factor on device using pre-converted HiCOO MTTKRP.
+        
+        PERFORMANCE FIX: HiCOO tensor is now pre-converted ONCE before the loop
+        instead of being converted on EVERY iteration!
         
         Args:
-            tensor: Tensor on device
-            weights: Weights on device
+            hicoo_tensor: Pre-converted HiCOO tensor (converted ONCE)
+            handler: SparseHandler instance for operations
             factors: Factor matrices on device
             mode: Mode to update
             xp: Array module (numpy or cupy)
@@ -396,32 +417,10 @@ class CPWOPT:
         Returns:
             Updated factor matrix on device
         """
-        # Use HiCOO handler for efficient MTTKRP
-        from .hicoo_handler import HiCOOHandler
-        handler = HiCOOHandler()
+        # CRITICAL FIX: No more HiCOO conversion here!
+        # The tensor is already in HiCOO format
         
-        # Create temporary TensorData for HiCOO conversion
-        # Generate coordinate list for TensorData (required)
-        coord_list = []
-        for i in range(tensor.shape[0]):
-            for j in range(tensor.shape[1]):
-                coord_list.append((i, j))  # Use indices as coordinates
-        
-        # Create feature names
-        feature_names = [f"feature_{i}" for i in range(tensor.shape[2])]
-        
-        tensor_data = TensorData(
-            tensor=tensor,
-            weights=weights,
-            coordinates=coord_list,
-            feature_names=feature_names,
-            metadata={'temporary': True, 'original_shape': tensor.shape},
-            is_sparse=True
-        )
-        
-        # Convert to HiCOO and compute MTTKRP
-        hicoo_tensor = handler.to_hicoo(tensor_data)
-        # Use the hicoo_mttkrp method - pass backend object, not xp
+        # Directly use the pre-converted HiCOO tensor for MTTKRP
         mttkrp_result = handler.hicoo_mttkrp(
             hicoo_tensor, factors, mode, self.backend
         )
