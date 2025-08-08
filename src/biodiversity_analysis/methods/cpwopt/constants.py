@@ -31,6 +31,8 @@ CHUNK_MEMORY_FRACTION = 0.8  # Use 80% of limit per chunk
 # Numerical stability
 EPSILON = 1e-10
 MIN_COMPONENT_NORM = 1e-8
+REGULARIZATION_LAMBDA = 1e-9
+NAN_REPLACEMENT_VALUE = 0.0
 
 # Validation
 MIN_VALID_FEATURES = 1
@@ -53,11 +55,18 @@ FIGURE_DPI = 150
 FIGURE_SIZE = (10, 8)
 COLORMAP = 'viridis'
 
+# HiCOO Sparse Format Configuration
+HICOO_BLOCK_SIZE = 128
+HICOO_MEMORY_FACTOR = 0.9
+
 # Error messages
 ERROR_INVALID_RANK = "Rank must be positive integer, got {}"
 ERROR_INVALID_SHAPE = "Invalid tensor shape: {}"
 ERROR_CONVERGENCE_FAILED = "Failed to converge after {} iterations"
 ERROR_MEMORY_LIMIT = "Tensor size {:.1f}GB exceeds memory limit {:.1f}GB"
+ERROR_CUDA_OOM = "CUDA out of memory. Try reducing rank or using smaller batches"
+ERROR_CUDA_DEVICE = "CUDA device error: {}"
+ERROR_NO_MODEL = "Model has not been fitted yet. Call fit() first"
 
 # Warning messages  
 WARNING_HIGH_SPARSITY = "Very high sparsity ({:.1%}) detected, results may be unstable"
