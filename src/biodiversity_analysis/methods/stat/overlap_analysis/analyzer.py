@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 import warnings
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='scipy')
 
 # Import unified data utilities
 from src.biodiversity_analysis.data_utils import load_align_and_sample, DataFlattener

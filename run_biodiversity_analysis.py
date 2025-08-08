@@ -29,8 +29,8 @@ from pathlib import Path
 def main():
     """Main entry point - delegates to statistical analysis runner"""
     
-    # Path to the statistical analysis runner
-    stat_runner = Path(__file__).parent / "src/biodiversity_analysis/methods/stat/runner.py"
+    # Path to the unified biodiversity analysis runner
+    stat_runner = Path(__file__).parent / "scripts/run_biodiversity_analysis.py"
     
     if not stat_runner.exists():
         print(f"❌ Error: Statistical analysis runner not found at {stat_runner}")

@@ -24,6 +24,9 @@ from src.biodiversity_analysis.methods.stat.coverage_analysis.analyzer import Co
 from src.biodiversity_analysis.methods.stat.latitudinal_analysis.analyzer import LatitudinalAnalyzer
 from src.biodiversity_analysis.methods.stat.global_maps.analyzer import GlobalMapAnalyzer
 
+# Import configuration
+from src.config.stat.paths_config import StatisticalDataPaths
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -206,16 +209,6 @@ class BiodiversityAnalysisRunner:
         )
 
 
-def create_sample_datasets() -> Dict[str, str]:
-    """Create sample dataset configuration for testing."""
-    # These are example paths - replace with actual data paths
-    return {
-        'plants': 'data/daru-plants-richness.tif',
-        'animals': 'data/iucn-animals-richness.tif',
-        'fungi_gbif': 'data/gbif-fungi-richness.tif',
-        'fungi_predicted': 'data/predicted-fungi-richness.tif'
-    }
-
 
 def main():
     """Main entry point for biodiversity analysis."""
@@ -296,9 +289,22 @@ def main():
                 sys.exit(1)
     
     else:
-        # Use sample datasets
-        logger.warning("No datasets specified, using sample configuration")
-        datasets = create_sample_datasets()
+        # Use StatisticalDataPaths configuration
+        logger.info("No datasets specified, using StatisticalDataPaths configuration")
+        paths_config = StatisticalDataPaths()
+        datasets = {}
+        
+        # Get all available datasets from configuration
+        for name, dataset_config in paths_config.datasets.items():
+            path = dataset_config.get_valid_path()
+            if path is not None:
+                datasets[name] = str(path)
+            else:
+                logger.warning(f"No valid path found for {name}")
+        
+        if not datasets:
+            logger.error("No valid datasets found in StatisticalDataPaths configuration. Check file paths.")
+            sys.exit(1)
     
     # Validate dataset paths
     valid_datasets = {}
