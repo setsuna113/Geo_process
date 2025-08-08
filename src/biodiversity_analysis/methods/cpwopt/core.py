@@ -157,13 +157,36 @@ class CPWOPT:
             logger.warning(WARNING_RANK_TOO_HIGH.format(self.rank, tensor_data.shape))
     
     def _initialize_factors(self, tensor_data: TensorData) -> CPFactors:
-        """Initialize factor matrices."""
+        """Initialize factor matrices with validation.
+        
+        Args:
+            tensor_data: Input tensor data
+            
+        Returns:
+            Initialized CPFactors with validated dimensions
+            
+        Raises:
+            ValueError: If factor dimensions don't match tensor shape
+        """
         factors = initialize_factors(
             tensor_data.shape,
             self.rank,
             method=self.init_method,
             random_state=self.random_state
         )
+        
+        # Validate factor dimensions match tensor shape
+        for i, (factor, dim) in enumerate(zip(factors, tensor_data.shape)):
+            if factor.shape[0] != dim:
+                raise ValueError(
+                    f"Factor {i} dimension mismatch: "
+                    f"got {factor.shape[0]}, expected {dim}"
+                )
+            if factor.shape[1] != self.rank:
+                raise ValueError(
+                    f"Factor {i} rank mismatch: "
+                    f"got {factor.shape[1]}, expected {self.rank}"
+                )
         
         mode_names = ['latitude', 'longitude', 'features']
         
@@ -252,19 +275,12 @@ class CPWOPT:
             if self.verbose and iteration % PROGRESS_INTERVAL == 0:
                 logger.info(f"Iteration {iteration}: fit={fit:.4f}, error={error:.4e}")
                 
-                # Monitor GPU memory if available
-                if self.backend.device == 'gpu':
-                    try:
-                        import cupy
-                        mempool = cupy.get_default_memory_pool()
-                        used_gb = mempool.used_bytes() / 1e9
-                        total_gb = mempool.total_bytes() / 1e9
-                        if total_gb > 0:
-                            usage_pct = (used_gb / total_gb) * 100
-                            if usage_pct > 90:
-                                logger.warning(f"High GPU memory usage: {usage_pct:.1f}%")
-                    except Exception:
-                        pass  # Silently ignore if memory monitoring fails
+                # Monitor GPU memory less frequently (every 50 iterations)
+                # to avoid overhead in the hot path
+                if self.backend.device == 'gpu' and iteration % 50 == 0:
+                    mem_info = self.backend.get_memory_info()
+                    if mem_info.get('memory_pressure') == 'high':
+                        logger.warning(f"High GPU memory usage: {mem_info.get('usage_percent', 0):.1f}%")
                 
             # Progress callback
             if self.progress_callback:
@@ -292,9 +308,9 @@ class CPWOPT:
             convergence_history=errors
         )
         
-        # Transfer factors back to CPU for final processing
-        for mode in range(len(factors.factors)):
-            factors.factors[mode] = self.backend.to_cpu(factors.factors[mode])
+        # PERFORMANCE: Batch transfer factors back to CPU
+        # Transfer all factors at once to minimize overhead
+        factors.factors = [self.backend.to_cpu(f) for f in factors.factors]
         
         # Calculate component weights (norm of each component)
         component_weights = np.zeros(self.rank)
@@ -503,17 +519,28 @@ class CPWOPT:
             factor_norm_sq = factor_norm_sq * xp.diag(gram)
         factor_norm_sq = xp.sum(factor_norm_sq)
         
-        # Compute <X, [[factors]]> using MTTKRP
+        # Compute <X, [[factors]]> using MTTKRP for all modes
         # This is more efficient than reconstructing full tensor
         inner_product = 0
         for mode in range(len(factors)):
             mttkrp = xp.zeros_like(factors[mode])
-            # Simplified MTTKRP for inner product computation
-            if mode == 0:
+            
+            # Compute MTTKRP for each mode
+            if len(factors) == 3:  # 3D tensor case
                 for r in range(factors[0].shape[1]):
-                    slice_prod = xp.outer(factors[1][:, r], factors[2][:, r])
-                    mttkrp[:, r] = xp.einsum('ijk,jk->i', tensor * weights, slice_prod)
-            # Add other modes...
+                    if mode == 0:
+                        slice_prod = xp.outer(factors[1][:, r], factors[2][:, r])
+                        mttkrp[:, r] = xp.einsum('ijk,jk->i', tensor * weights, slice_prod)
+                    elif mode == 1:
+                        slice_prod = xp.outer(factors[0][:, r], factors[2][:, r])
+                        mttkrp[:, r] = xp.einsum('ijk,ik->j', tensor * weights, slice_prod)
+                    else:  # mode == 2
+                        slice_prod = xp.outer(factors[0][:, r], factors[1][:, r])
+                        mttkrp[:, r] = xp.einsum('ijk,ij->k', tensor * weights, slice_prod)
+            else:
+                # General n-dimensional case
+                raise NotImplementedError("Error computation for n-D tensors not yet implemented")
+            
             inner_product += xp.sum(factors[mode] * mttkrp)
         
         # Compute error: ||X||^2 - 2<X, [[factors]]> + ||[[factors]]||^2

@@ -73,22 +73,22 @@ class SparseHandler:
             return convert_to_hicoo(tensor_data)
             
         except MemoryError as e:
-            logger.error(f"Memory error during sparse conversion: {e}")
+            logger.error(f"Memory error during HiCOO conversion: {e}")
             # Try to free memory and retry once
             import gc
             gc.collect()
             
             try:
-                logger.info("Retrying conversion after garbage collection")
+                logger.info("Retrying HiCOO conversion after garbage collection")
                 return convert_to_hicoo(tensor_data)
             except Exception:
                 raise MemoryError(f"Failed to convert tensor to HiCOO format: {e}")
                 
         except Exception as e:
             if "CUDA" in str(e) or "cupy" in str(e).lower():
-                raise RuntimeError(f"CUDA allocation failed during sparse conversion: {e}")
+                raise RuntimeError(f"CUDA allocation failed during HiCOO conversion: {e}")
             else:
-                raise ValueError(f"Failed to convert tensor to sparse format: {e}")
+                raise ValueError(f"Failed to convert tensor to HiCOO format: {e}")
     
     def to_dense(self, sparse_data: HiCOOTensor) -> TensorData:
         """Convert HiCOO tensor back to dense format.

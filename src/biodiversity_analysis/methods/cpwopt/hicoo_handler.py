@@ -18,9 +18,10 @@ from src.abstractions.types.tensor_types import TensorData
 
 logger = logging.getLogger(__name__)
 
-# HiCOO configuration
+# HiCOO configuration constants
 HICOO_BLOCK_SIZE = 128  # Optimal block size from research
 HICOO_MIN_BLOCKS = 4    # Minimum blocks to use HiCOO
+MAX_TENSOR_MEMORY_GB = 100  # Maximum memory for tensor operations
 
 
 @dataclass
@@ -63,7 +64,12 @@ class HiCOOTensor:
     
     @property
     def memory_bytes(self) -> int:
-        """Memory usage in bytes."""
+        """Memory usage in bytes.
+        
+        Properly documents expected shape of block_values:
+        Each block in block_values is a dense ndarray with shape 
+        (block_size, block_size, ...) up to the tensor dimensions.
+        """
         # Block indices + block values
         index_bytes = self.block_indices.nbytes
         value_bytes = sum(block.nbytes for block in self.block_values)
@@ -87,6 +93,28 @@ class HiCOOHandler:
         logger.info(f"Initialized HiCOO handler with block_size={block_size}")
         logger.info("HiCOO is the ONLY format - no COO/CSF/dense fallback")
     
+    def _validate_tensor_data(self, tensor_data: TensorData) -> None:
+        """Validate tensor data before conversion.
+        
+        Args:
+            tensor_data: Input tensor data to validate
+            
+        Raises:
+            ValueError: If validation fails
+        """
+        if not hasattr(tensor_data, 'tensor') or tensor_data.tensor is None:
+            raise ValueError("TensorData must have non-None tensor")
+        
+        if not hasattr(tensor_data, 'shape') or len(tensor_data.shape) == 0:
+            raise ValueError("TensorData must have valid shape")
+            
+        # Validate dimensions
+        for i, dim in enumerate(tensor_data.shape):
+            if dim <= 0:
+                raise ValueError(f"Invalid dimension {i}: {dim} (must be positive)")
+            if dim > 1e9:  # Sanity check
+                raise ValueError(f"Dimension {i} too large: {dim} (max 1e9)")
+    
     def to_hicoo(self, tensor_data: TensorData) -> HiCOOTensor:
         """Convert ANY tensor to HiCOO format with validation.
         
@@ -104,25 +132,17 @@ class HiCOOHandler:
             MemoryError: If tensor too large for available memory
         """
         # Input validation
-        if not hasattr(tensor_data, 'tensor') or tensor_data.tensor is None:
-            raise ValueError("TensorData must have non-None tensor")
-        
-        if not hasattr(tensor_data, 'shape') or len(tensor_data.shape) == 0:
-            raise ValueError("TensorData must have valid shape")
-            
-        # Validate dimensions
-        for i, dim in enumerate(tensor_data.shape):
-            if dim <= 0:
-                raise ValueError(f"Invalid dimension {i}: {dim} (must be positive)")
-            if dim > 1e9:  # Sanity check
-                raise ValueError(f"Dimension {i} too large: {dim} (max 1e9)")
+        self._validate_tensor_data(tensor_data)
         
         # Check memory requirements
         estimated_blocks = np.prod(tensor_data.shape) // (self.block_size ** len(tensor_data.shape))
         estimated_memory = estimated_blocks * (self.block_size ** len(tensor_data.shape)) * 8
         
-        if estimated_memory > 100e9:  # 100GB limit
-            raise MemoryError(f"Tensor too large: {estimated_memory/1e9:.1f}GB required")
+        if estimated_memory > MAX_TENSOR_MEMORY_GB * 1e9:
+            raise MemoryError(
+                f"Tensor too large: {estimated_memory/1e9:.1f}GB required, "
+                f"max allowed: {MAX_TENSOR_MEMORY_GB}GB"
+            )
         
         tensor = tensor_data.tensor
         weights = tensor_data.weights if hasattr(tensor_data, 'weights') else np.ones_like(tensor)
@@ -143,27 +163,41 @@ class HiCOOHandler:
         block_values = []
         nnz = 0
         
-        # Iterate through all possible blocks
-        for block_idx in np.ndindex(*blocks_per_dim):
-            # Calculate block boundaries
-            block_start = [idx * self.block_size for idx in block_idx]
-            block_end = [
-                min(start + self.block_size, dim_size)
-                for start, dim_size in zip(block_start, shape)
-            ]
+        # PERFORMANCE: Vectorized block iteration instead of np.ndindex
+        # Generate all block indices at once using meshgrid
+        block_ranges = [np.arange(n) for n in blocks_per_dim]
+        if len(block_ranges) == 3:  # 3D tensor case (most common)
+            block_i, block_j, block_k = np.meshgrid(*block_ranges, indexing='ij')
+            all_block_indices = np.stack([block_i.ravel(), block_j.ravel(), block_k.ravel()], axis=-1)
+        else:
+            # General n-dimensional case
+            grids = np.meshgrid(*block_ranges, indexing='ij')
+            all_block_indices = np.stack([g.ravel() for g in grids], axis=-1)
+        
+        # Process blocks in batches for better memory locality
+        batch_size = min(1000, len(all_block_indices))
+        
+        for batch_start in range(0, len(all_block_indices), batch_size):
+            batch_end = min(batch_start + batch_size, len(all_block_indices))
+            batch_indices = all_block_indices[batch_start:batch_end]
             
-            # Extract block using slicing
-            slices = tuple(slice(start, end) for start, end in zip(block_start, block_end))
-            block_data = tensor[slices]
-            block_weights = weights[slices]
-            
-            # Check if block has any non-zero values
-            masked_block = block_data * block_weights
-            if np.any(masked_block != 0):
-                # Store non-empty block
-                block_indices.append(block_idx)
-                block_values.append(masked_block)
-                nnz += np.count_nonzero(masked_block)
+            for block_idx in batch_indices:
+                # Calculate block boundaries
+                block_start = block_idx * self.block_size
+                block_end = np.minimum(block_start + self.block_size, shape)
+                
+                # Extract block using slicing
+                slices = tuple(slice(start, end) for start, end in zip(block_start, block_end))
+                block_data = tensor[slices]
+                block_weights = weights[slices]
+                
+                # Check if block has any non-zero values
+                masked_block = block_data * block_weights
+                if np.any(masked_block != 0):
+                    # Store non-empty block
+                    block_indices.append(tuple(block_idx))
+                    block_values.append(masked_block)
+                    nnz += np.count_nonzero(masked_block)
         
         # Convert to arrays
         block_indices = np.array(block_indices, dtype=np.int32)
