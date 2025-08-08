@@ -49,7 +49,7 @@ class EnhancedCoverageAnalyzer:
         # Load climate data with sampling for large files
         try:
             # First, get schema to see available columns
-            parquet_file = pd.read_parquet(self.climate_parquet_path, nrows=1)
+            parquet_file = pd.read_parquet(self.climate_parquet_path).head(1)
             print(f"Available columns: {list(parquet_file.columns)}")
             
             # Load coordinates (using correct column names)
@@ -122,7 +122,7 @@ class EnhancedCoverageAnalyzer:
         # Mapping between dataset names and column names in parquet
         column_mapping = {
             'plants': 'plant_richness',
-            'terrestrial': 'animal_richness',  # Animals in parquet = terrestrial vertebrates
+            'animals': 'animal_richness',  # Animals in parquet = terrestrial vertebrates
             'am_fungi': 'am_fungi_richness',
             'ecm_fungi': 'ecm_fungi_richness'
         }
@@ -521,68 +521,93 @@ IMPLICATIONS:
         return report_text
 
 
+class CoverageAnalyzer(EnhancedCoverageAnalyzer):
+    """Wrapper class to match unified analyzer interface."""
+    
+    def __init__(self, output_dir: str = "outputs/biodiversity_analysis/coverage"):
+        """Initialize coverage analyzer with standard interface."""
+        super().__init__(output_dir=output_dir)
+    
+    def analyze_coverage(self, datasets: Dict[str, str], sample_factor: int = 1, **kwargs) -> None:
+        """
+        Standard interface for coverage analysis to match unified runner.
+        
+        Args:
+            datasets: Dictionary of {name: file_path}
+            sample_factor: Spatial sampling factor (not used by this analyzer)
+            **kwargs: Additional parameters
+        """
+        print("Running enhanced coverage analysis...")
+        
+        # Check which files exist
+        existing = {}
+        for name, path in datasets.items():
+            if Path(path).exists():
+                existing[name] = path
+            else:
+                print(f"Warning: Dataset not found: {name} -> {path}")
+        
+        if not existing:
+            print("No datasets found for coverage analysis!")
+            return
+        
+        # Run the enhanced analysis workflow
+        print("\nGetting TRUE land coverage from climate parquet...")
+        true_coverage = self.analyze_coverage_from_climate_parquet()
+        
+        print("\nAnalyzing raster coverage (includes ocean pixels)...")
+        raster_coverage = self.analyze_coverage_with_ocean_mask(existing)
+        
+        print("\nCreating coverage visualizations...")
+        self.create_enhanced_coverage_visualization(existing)
+        
+        print("\nGenerating comprehensive coverage report...")
+        self.generate_enhanced_report(existing)
+        
+        # Summary comparison
+        self._print_coverage_summary(true_coverage, raster_coverage)
+        
+        print(f"\nCoverage analysis outputs saved to: {self.output_dir}")
+    
+    def _print_coverage_summary(self, true_coverage: Dict, raster_coverage: Dict) -> None:
+        """Print summary comparison of coverage methods."""
+        print("\n" + "="*60)
+        print("COVERAGE COMPARISON SUMMARY")
+        print("="*60)
+        print(f"{'Dataset':<15} {'Raster Global':<15} {'TRUE Land Coverage':<20}")
+        print("-"*60)
+        
+        for name in true_coverage.keys():
+            raster_pct = raster_coverage.get(name, {}).get('global_coverage_percent', 'N/A')
+            true_pct = true_coverage[name]['true_land_coverage']
+            
+            if isinstance(raster_pct, (int, float)):
+                print(f"{name:<15} {raster_pct:<15.1f}% {true_pct:<20.1f}%")
+            else:
+                print(f"{name:<15} {'N/A':<15} {true_pct:<20.1f}%")
+        
+        print("\n" + "="*60)
+        print("KEY INSIGHTS:")
+        print("="*60)
+        print("• TRUE land coverage from climate data (ocean already removed)")
+        print("• Raster 'global' coverage is misleading because it includes ocean")
+        print("• The climate parquet provides the ACTUAL land-only coverage")
+
+
 def run_enhanced_coverage_analysis():
     """Run the enhanced coverage analysis with ocean masking"""
     
     # Define datasets
     datasets = {
         'plants': "/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif",
-        'terrestrial': "/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif",
+        'animals': "/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif",
         'am_fungi': "/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif",
         'ecm_fungi': "/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif"
     }
     
-    # Check which files exist
-    existing = {}
-    for name, path in datasets.items():
-        if Path(path).exists():
-            existing[name] = path
-            print(f"Found: {name}")
-        else:
-            print(f"Not found: {name}")
-    
-    if not existing:
-        print("No datasets found!")
-        return
-    
-    # Run enhanced analysis
-    analyzer = EnhancedCoverageAnalyzer()
-    
-    # FIRST: Get TRUE land coverage from climate parquet
-    true_coverage = analyzer.analyze_coverage_from_climate_parquet()
-    
-    # SECOND: Show raster coverage for comparison
-    print("\n" + "="*60)
-    print("RASTER COVERAGE (includes ocean pixels)")
-    print("="*60)
-    raster_coverage = analyzer.analyze_coverage_with_ocean_mask(existing)
-    
-    # THIRD: Summary comparison
-    print("\n" + "="*60)
-    print("COVERAGE COMPARISON SUMMARY")
-    print("="*60)
-    print("\n" + "-"*60)
-    print(f"{'Dataset':<15} {'Raster Global':<15} {'TRUE Land Coverage':<20}")
-    print("-"*60)
-    
-    for name in true_coverage.keys():
-        raster_pct = raster_coverage.get(name, {}).get('global_coverage_percent', 'N/A')
-        true_pct = true_coverage[name]['true_land_coverage']
-        
-        if isinstance(raster_pct, float):
-            print(f"{name:<15} {raster_pct:<15.1f}% {true_pct:<20.1f}%")
-        else:
-            print(f"{name:<15} {'N/A':<15} {true_pct:<20.1f}%")
-    
-    print("\n" + "="*60)
-    print("KEY INSIGHTS:")
-    print("="*60)
-    print("1. TRUE land coverage from climate data (ocean already removed):")
-    print("   - Plants: 99.9% of land points have data")
-    print("   - Terrestrial vertebrates: 97.9% of land points")
-    print("   - Fungi: 85.3% of land points")
-    print("\n2. Raster 'global' coverage is misleading because it includes ocean")
-    print("\n3. The climate parquet provides the ACTUAL land-only coverage")
+    # Use the wrapper class
+    analyzer = CoverageAnalyzer()
+    analyzer.analyze_coverage(datasets)
 
 
 if __name__ == "__main__":

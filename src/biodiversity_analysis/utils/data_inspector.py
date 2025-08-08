@@ -62,7 +62,7 @@ class BiodiversityDataInspector:
     
     KNOWN_DATASETS = {
         'plants': {'type': 'observed_counts', 'description': 'Plant species richness from observations'},
-        'terrestrial': {'type': 'observed_counts', 'description': 'Terrestrial vertebrate richness from observations'},
+        'animals': {'type': 'observed_counts', 'description': 'Animal (terrestrial vertebrate) richness from observations'},
         'am_fungi': {'type': 'sdm_prediction', 'description': 'AM fungi richness from SDM predictions'},
         'ecm_fungi': {'type': 'sdm_prediction', 'description': 'EcM fungi richness from SDM predictions'}
     }

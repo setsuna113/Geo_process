@@ -286,9 +286,9 @@ Key Findings:
         findings = []
         
         # Check plant-vertebrate correlation
-        if 'plants' in names and 'terrestrial' in names:
+        if 'plants' in names and 'animals' in names:
             idx1 = names.index('plants')
-            idx2 = names.index('terrestrial')
+            idx2 = names.index('animals')
             corr = spearman_matrix[idx1, idx2]
             findings.append(f'✓ Plants~Vertebrates: {corr:.2f} (expected)')
         

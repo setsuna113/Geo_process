@@ -1,29 +1,41 @@
 """
-Global Biodiversity Map Visualizer
-Creates individual global maps for each biodiversity dataset with optional log transformation.
+Global Biodiversity Map Analyzer
+================================
+
+Creates global visualization maps for biodiversity datasets using unified utilities.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import rasterio
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
+try:
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    HAS_CARTOPY = True
+except ImportError:
+    HAS_CARTOPY = False
+    print("Warning: cartopy not available, using basic matplotlib plots")
+
 from pathlib import Path
 from typing import Dict, Optional, Tuple
-import seaborn as sns
 from matplotlib.colors import LogNorm, Normalize
 import warnings
 warnings.filterwarnings('ignore')
 
-class GlobalBiodiversityMapper:
+# Import unified data utilities
+from src.biodiversity_analysis.data_utils import RasterDataLoader
+
+
+class GlobalMapAnalyzer:
     def __init__(self, output_dir: str = "outputs/biodiversity_analysis/global_maps"):
+        """Initialize global map analyzer."""
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         # Color schemes for each dataset
         self.color_schemes = {
             'plants': 'Greens',
-            'terrestrial': 'Blues', 
+            'animals': 'Blues', 
             'am_fungi': 'Oranges',
             'ecm_fungi': 'Purples'
         }
@@ -31,47 +43,69 @@ class GlobalBiodiversityMapper:
         # Dataset display names
         self.display_names = {
             'plants': 'Plant Species Richness',
-            'terrestrial': 'Terrestrial Vertebrate Richness',
+            'animals': 'Animal Species Richness',
             'am_fungi': 'AM Fungi Species Richness',
             'ecm_fungi': 'EcM Fungi Species Richness'
         }
     
+    def create_global_maps(self, datasets: Dict[str, str], sample_factor: int = 1, **kwargs) -> None:
+        """
+        Standard interface for global map creation to match unified runner.
+        
+        Args:
+            datasets: Dictionary of {name: file_path}
+            sample_factor: Spatial sampling factor (for consistency with other analyzers)
+            **kwargs: Additional parameters
+        """
+        print("🗺️ Starting global biodiversity map creation...")
+        
+        # Check which files exist
+        existing = {}
+        for name, path in datasets.items():
+            if Path(path).exists():
+                existing[name] = path
+            else:
+                print(f"Warning: Dataset not found: {name} -> {path}")
+        
+        if not existing:
+            print("No datasets found for global map creation!")
+            return
+        
+        # Generate all maps
+        self.generate_all_maps(existing)
+        
+        print(f"\n✅ Global maps saved to: {self.output_dir}")
+    
     def load_raster_data(self, raster_path: str) -> Tuple[np.ndarray, Dict]:
-        """Load raster data and metadata."""
+        """Load raster data and metadata using unified utilities."""
         print(f"Loading: {raster_path}")
         
-        with rasterio.open(raster_path) as src:
-            data = src.read(1)
-            
-            # Get geographic bounds
-            bounds = src.bounds
-            transform = src.transform
-            crs = src.crs
-            width = src.width
-            height = src.height
-            
-            # Calculate coordinate arrays more efficiently
-            # Get corner coordinates and create 1D arrays
-            west, south, east, north = bounds
-            
-            # Create 1D coordinate arrays
-            x_coords = np.linspace(west, east, width)
-            y_coords = np.linspace(north, south, height)  # North to south
-            
-            # Create 2D coordinate meshgrids
-            lon, lat = np.meshgrid(x_coords, y_coords)
-            
-            metadata = {
-                'bounds': bounds,
-                'transform': transform,
-                'crs': crs,
-                'width': width,
-                'height': height,
-                'lon': lon,
-                'lat': lat
-            }
-            
-            return data, metadata
+        # Use unified data loader
+        data = RasterDataLoader.load_single_raster(raster_path, dtype=np.float32)
+        raster_info = RasterDataLoader.get_raster_info(raster_path)
+        
+        # Get geographic bounds
+        bounds = raster_info['bounds']
+        west, south, east, north = bounds
+        width = raster_info['width']
+        height = raster_info['height']
+        
+        # Create coordinate arrays
+        x_coords = np.linspace(west, east, width)
+        y_coords = np.linspace(north, south, height)  # North to south
+        lon, lat = np.meshgrid(x_coords, y_coords)
+        
+        metadata = {
+            'bounds': bounds,
+            'transform': raster_info['transform'],
+            'crs': raster_info['crs'],
+            'width': width,
+            'height': height,
+            'lon': lon,
+            'lat': lat
+        }
+        
+        return data, metadata
     
     def create_individual_map(self, dataset_name: str, raster_path: str) -> None:
         """Create individual global map for one dataset (raw values only)."""
@@ -103,7 +137,10 @@ class GlobalBiodiversityMapper:
         
         # Create figure with single plot
         fig = plt.figure(figsize=(16, 10))
-        ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
+        if HAS_CARTOPY:
+            ax = plt.subplot(1, 1, 1, projection=ccrs.PlateCarree())
+        else:
+            ax = plt.subplot(1, 1, 1)
         
         # Plot raw data only
         self._plot_map(ax, data, metadata, dataset_name, stats=stats)
@@ -121,14 +158,26 @@ class GlobalBiodiversityMapper:
     def _plot_map(self, ax, data, metadata, dataset_name: str, stats: Dict = None):
         """Plot map on given axis (raw data only)."""
         
-        # Add geographic features
-        ax.add_feature(cfeature.COASTLINE, alpha=0.8, linewidth=0.5)
-        ax.add_feature(cfeature.BORDERS, alpha=0.5, linewidth=0.3)
-        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
-        ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.1)
-        
-        # Set global extent
-        ax.set_global()
+        if HAS_CARTOPY:
+            # Add geographic features
+            ax.add_feature(cfeature.COASTLINE, alpha=0.8, linewidth=0.5)
+            ax.add_feature(cfeature.BORDERS, alpha=0.5, linewidth=0.3)
+            ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+            ax.add_feature(cfeature.LAND, color='lightgray', alpha=0.1)
+            
+            # Set global extent
+            ax.set_global()
+            
+            # Add gridlines
+            ax.gridlines(draw_labels=True, alpha=0.3)
+            
+            # Set transform for pcolormesh
+            transform = ccrs.PlateCarree()
+        else:
+            # Basic matplotlib plot without cartopy
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
+            transform = None
         
         # Use raw data with percentile-based normalization to handle extreme outliers
         # Use 95th percentile for better visualization of the majority of data
@@ -139,11 +188,17 @@ class GlobalBiodiversityMapper:
         lon = metadata['lon']
         lat = metadata['lat']
         
-        im = ax.pcolormesh(lon, lat, data, 
-                          transform=ccrs.PlateCarree(),
-                          cmap=self.color_schemes[dataset_name],
-                          norm=norm,
-                          shading='nearest')
+        if HAS_CARTOPY:
+            im = ax.pcolormesh(lon, lat, data, 
+                              transform=transform,
+                              cmap=self.color_schemes[dataset_name],
+                              norm=norm,
+                              shading='nearest')
+        else:
+            # Basic matplotlib imshow for when cartopy is not available
+            extent = [np.min(lon), np.max(lon), np.min(lat), np.max(lat)]
+            im = ax.imshow(data, cmap=self.color_schemes[dataset_name], 
+                          norm=norm, extent=extent, aspect='auto', origin='upper')
         
         # Add colorbar
         cbar = plt.colorbar(im, ax=ax, orientation='horizontal', 
@@ -160,15 +215,15 @@ class GlobalBiodiversityMapper:
             ax.text(0.02, 0.98, text, transform=ax.transAxes, 
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8),
                    verticalalignment='top', fontsize=9)
-        
-        # Add gridlines
-        ax.gridlines(draw_labels=True, alpha=0.3)
     
     def create_comparison_grid(self, datasets: Dict[str, str]) -> None:
         """Create a 2x2 grid comparing all datasets (raw scale only)."""
         
-        fig, axes = plt.subplots(2, 2, figsize=(20, 12), 
-                                subplot_kw={'projection': ccrs.PlateCarree()})
+        if HAS_CARTOPY:
+            fig, axes = plt.subplots(2, 2, figsize=(20, 12), 
+                                    subplot_kw={'projection': ccrs.PlateCarree()})
+        else:
+            fig, axes = plt.subplots(2, 2, figsize=(20, 12))
         fig.suptitle('Global Biodiversity Richness Patterns - Raw Data', fontsize=18, fontweight='bold')
         
         axes_flat = axes.flatten()
@@ -201,18 +256,28 @@ class GlobalBiodiversityMapper:
                 # Use 95th percentile for better visualization
                 vmax = stats['p95']
                 
-                # Add geographic features
-                ax.add_feature(cfeature.COASTLINE, alpha=0.8, linewidth=0.5)
-                ax.add_feature(cfeature.BORDERS, alpha=0.5, linewidth=0.3)
-                ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
-                ax.set_global()
-                
-                # Plot raw data
-                im = ax.pcolormesh(metadata['lon'], metadata['lat'], data,
-                                  transform=ccrs.PlateCarree(),
-                                  cmap=self.color_schemes[dataset_name],
-                                  norm=Normalize(vmin=0, vmax=vmax),
-                                  shading='nearest')
+                if HAS_CARTOPY:
+                    # Add geographic features
+                    ax.add_feature(cfeature.COASTLINE, alpha=0.8, linewidth=0.5)
+                    ax.add_feature(cfeature.BORDERS, alpha=0.5, linewidth=0.3)
+                    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
+                    ax.set_global()
+                    
+                    # Plot raw data
+                    im = ax.pcolormesh(metadata['lon'], metadata['lat'], data,
+                                      transform=ccrs.PlateCarree(),
+                                      cmap=self.color_schemes[dataset_name],
+                                      norm=Normalize(vmin=0, vmax=vmax),
+                                      shading='nearest')
+                else:
+                    # Basic matplotlib plot
+                    extent = [np.min(metadata['lon']), np.max(metadata['lon']), 
+                             np.min(metadata['lat']), np.max(metadata['lat'])]
+                    im = ax.imshow(data, cmap=self.color_schemes[dataset_name], 
+                                  norm=Normalize(vmin=0, vmax=vmax), 
+                                  extent=extent, aspect='auto', origin='upper')
+                    ax.set_xlabel('Longitude')
+                    ax.set_ylabel('Latitude')
                 
                 # Add colorbar
                 cbar = plt.colorbar(im, ax=ax, orientation='horizontal', 
@@ -267,13 +332,13 @@ def main():
     # Define datasets
     datasets = {
         'plants': '/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif',
-        'terrestrial': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif', 
+        'animals': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif', 
         'am_fungi': '/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif',
         'ecm_fungi': '/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif'
     }
     
-    mapper = GlobalBiodiversityMapper()
-    mapper.generate_all_maps(datasets)
+    analyzer = GlobalMapAnalyzer()
+    analyzer.create_global_maps(datasets)
 
 if __name__ == "__main__":
     main()
