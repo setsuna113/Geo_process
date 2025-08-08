@@ -419,7 +419,7 @@ class BiomeReporter:
         feat_factor = factors[2]
         
         # Select three features for RGB channels
-        # Map our actual features: plants (R), animals (G), fungi (B)
+        # Preferably: plants (R), animals (G), fungi (B)
         feature_indices = {
             'plants': None,
             'animals': None,
@@ -429,7 +429,7 @@ class BiomeReporter:
         for i, name in enumerate(feature_names):
             if 'plant' in name.lower():
                 feature_indices['plants'] = i
-            elif 'animal' in name.lower():
+            elif 'terrestrial' in name.lower() or 'animal' in name.lower():
                 feature_indices['animals'] = i
             elif 'fungi' in name.lower() or 'fung' in name.lower():
                 # Use AM fungi as primary fungi for RGB (more widespread)

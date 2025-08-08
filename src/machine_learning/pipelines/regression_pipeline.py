@@ -14,7 +14,7 @@ import time
 
 from ..config_loader import MLRegressionConfig
 from ..hypothesis import HypothesisTester
-from ..models.glm import DHARMaDiagnostics
+from ..diagnostics import DHARMaDiagnostics
 from ..utils.security_utils import PathValidator, DataLoader
 
 logger = logging.getLogger(__name__)
