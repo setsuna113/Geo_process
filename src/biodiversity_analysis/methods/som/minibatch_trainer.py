@@ -20,14 +20,20 @@ from abc import ABC, abstractmethod
 
 logger = logging.getLogger(__name__)
 
+# Constants
+DEFAULT_MINIBATCH_SIZE = 1000
+DEFAULT_UPDATE_FREQUENCY = 5
+NEGLIGIBLE_INFLUENCE_THRESHOLD = 1e-10
+QE_IMPROVEMENT_EPSILON = 1e-6
+
 
 @dataclass
 class MiniBatchConfig:
     """Configuration for real mini-batch training."""
-    batch_size: int = 1000                    # True mini-batch size
-    update_frequency: int = 5                 # Update weights every N mini-batches
-    shuffle_batches: bool = True              # Shuffle mini-batches each epoch
-    accumulation_strategy: str = "weighted"   # "weighted" or "simple"
+    batch_size: int = DEFAULT_MINIBATCH_SIZE                    # True mini-batch size
+    update_frequency: int = DEFAULT_UPDATE_FREQUENCY            # Update weights every N mini-batches
+    shuffle_batches: bool = True                                # Shuffle mini-batches each epoch
+    accumulation_strategy: str = "weighted"                     # "weighted" or "simple"
 
 
 class BatchGenerator:
@@ -50,7 +56,23 @@ class BatchGenerator:
         Yields:
             Tuple of (batch_data, batch_coordinates, batch_start_idx)
         """
+        # Input validation
+        if not isinstance(data, np.ndarray):
+            raise TypeError(f"Data must be numpy array, got {type(data)}")
+        if data.ndim != 2:
+            raise ValueError(f"Data must be 2D array, got shape {data.shape}")
+        if coordinates is not None:
+            if not isinstance(coordinates, np.ndarray):
+                raise TypeError(f"Coordinates must be numpy array, got {type(coordinates)}")
+            if coordinates.ndim != 2 or coordinates.shape[1] != 2:
+                raise ValueError(f"Coordinates must be 2D array with 2 columns, got shape {coordinates.shape}")
+            if coordinates.shape[0] != data.shape[0]:
+                raise ValueError(f"Coordinates length {coordinates.shape[0]} must match data length {data.shape[0]}")
+        
         n_samples = len(data)
+        if n_samples == 0:
+            return
+            
         shuffle = shuffle if shuffle is not None else self.config.shuffle_batches
         
         # Generate indices
@@ -211,6 +233,7 @@ class MiniBatchTrainer:
         mini_batch_qe_values = []
         total_samples_processed = 0
         total_updates_applied = 0
+        batch_idx = -1  # Initialize to handle empty data case
         
         # Process mini-batches
         for batch_idx, (batch_data, batch_coords, _) in enumerate(
@@ -255,7 +278,7 @@ class MiniBatchTrainer:
             'mini_batch_qe_values': mini_batch_qe_values,
             'samples_processed': total_samples_processed,
             'neurons_updated': total_updates_applied,
-            'n_mini_batches': batch_idx + 1 if 'batch_idx' in locals() else 0,
+            'n_mini_batches': batch_idx + 1,
             'mean_mini_batch_qe': np.mean(mini_batch_qe_values) if mini_batch_qe_values else np.inf
         }
     
@@ -282,7 +305,7 @@ class MiniBatchTrainer:
             
             # Accumulate updates for neurons with non-zero influence
             for neuron_idx, influence in enumerate(influences):
-                if influence > 1e-10:  # Skip negligible influences
+                if influence > NEGLIGIBLE_INFLUENCE_THRESHOLD:  # Skip negligible influences
                     accumulator.accumulate_update(
                         neuron_idx, sample, influence, learning_rate
                     )
@@ -353,9 +376,16 @@ class MiniBatchVLRSOM:
         
         # Update stats with learning rate info
         stats['learning_rate'] = new_lr
-        stats['qe_improvement'] = (
-            (self.qe_history[-2] - self.qe_history[-1]) / self.qe_history[-2] 
-            if len(self.qe_history) >= 2 else 0.0
-        )
+        
+        # Calculate QE improvement with safe division
+        if len(self.qe_history) >= 2:
+            previous_qe = self.qe_history[-2]
+            current_qe = self.qe_history[-1]
+            if abs(previous_qe) > QE_IMPROVEMENT_EPSILON:
+                stats['qe_improvement'] = (previous_qe - current_qe) / previous_qe
+            else:
+                stats['qe_improvement'] = 0.0
+        else:
+            stats['qe_improvement'] = 0.0
         
         return stats, new_lr

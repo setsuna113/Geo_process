@@ -49,10 +49,6 @@ class GeoSOMConfig:
     spatial_weight: float = 0.3  # k=0.3 (30% spatial, 70% features)
     geographic_distance: str = "haversine"
     
-    # DEPRECATED: Legacy fake mini-batch (memory optimization only)
-    use_minibatch: bool = False  # Deprecated
-    minibatch_size: int = 1000   # Deprecated - use memory_optimization.distance_calc_batch_size
-    
     # Real Mini-batch Training Configuration
     minibatch_training: Optional[Dict[str, Any]] = None
     
@@ -542,7 +538,7 @@ class GeoSOMVLRSOM:
     
     def train_batch(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None,
                    progress_callback: Optional[Callable] = None, **kwargs) -> SOMTrainingResult:
-        """Train using batch mode with geographic awareness.
+        """Train using mini-batch mode with geographic awareness.
         
         Args:
             data: Training data (n_samples, n_features)
@@ -552,36 +548,70 @@ class GeoSOMVLRSOM:
         Returns:
             Training result with history and final state
         """
-        # Validate coordinates shape if provided
+        self._validate_training_inputs(data, coordinates)
+        
+        if self.weights is None:
+            self.initialize_weights(data, coordinates)
+        
+        # Initialize training state
+        training_state = self._initialize_training_state(data, coordinates)
+        
+        # Main training loop
+        for epoch in range(training_state['start_epoch'], self.config.max_epochs):
+            epoch_result = self._train_single_epoch(
+                epoch, data, coordinates, training_state, progress_callback
+            )
+            
+            # Update training state
+            training_state['best_qe'] = epoch_result['best_qe']
+            training_state['patience_counter'] = epoch_result['patience_counter']
+            
+            # Check for convergence
+            if epoch_result.get('converged', False):
+                training_state['converged'] = True
+                training_state['convergence_epoch'] = epoch
+                break
+        
+        return self._create_training_result(training_state, len(data))
+    
+    def _validate_training_inputs(self, data: np.ndarray, coordinates: Optional[np.ndarray]) -> None:
+        """Validate training inputs."""
         if coordinates is not None:
             if coordinates.shape[0] != data.shape[0]:
                 raise ValueError(f"Coordinates samples ({coordinates.shape[0]}) must match data samples ({data.shape[0]})")
             if coordinates.shape[1] != 2:
                 raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
-        
-        if self.weights is None:
-            self.initialize_weights(data, coordinates)
-        
-        converged = False
-        best_qe = np.inf
-        patience_counter = 0
-        start_epoch = 0
+    
+    def _initialize_training_state(self, data: np.ndarray, coordinates: Optional[np.ndarray]) -> Dict[str, Any]:
+        """Initialize training state including resume from checkpoint."""
+        state = {
+            'converged': False,
+            'best_qe': np.inf,
+            'patience_counter': 0,
+            'start_epoch': 0,
+            'convergence_epoch': None
+        }
         
         # Check for resume from checkpoint
         resume_checkpoint = getattr(self.config, 'resume_checkpoint', None)
         if resume_checkpoint and os.path.exists(resume_checkpoint):
             logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
             checkpoint_data = self.load_checkpoint(resume_checkpoint)
-            # Resume from NEXT epoch after checkpoint
-            start_epoch = checkpoint_data['epoch'] + 1
-            best_qe = checkpoint_data['best_qe']
-            patience_counter = checkpoint_data['patience_counter']
-            logger.info(f"Resuming training from epoch {start_epoch+1} (checkpoint was at epoch {checkpoint_data['epoch']+1})")
-            # Training history already restored in load_checkpoint
+            state['start_epoch'] = checkpoint_data['epoch'] + 1
+            state['best_qe'] = checkpoint_data['best_qe']
+            state['patience_counter'] = checkpoint_data['patience_counter']
+            logger.info(f"Resuming training from epoch {state['start_epoch']+1}")
+        else:
+            # Calculate initial QE
+            initial_qe = self._calculate_initial_qe(data, coordinates)
+            self.training_history['quantization_errors'].append(initial_qe)
+            state['best_qe'] = initial_qe
         
-        # Calculate initial QE on a sample for large datasets
+        return state
+    
+    def _calculate_initial_qe(self, data: np.ndarray, coordinates: Optional[np.ndarray]) -> float:
+        """Calculate initial quantization error."""
         if len(data) > 10000:
-            # Sample 10k points for initial QE calculation
             sample_idx = np.random.choice(len(data), size=10000, replace=False)
             sample_data = data[sample_idx]
             sample_coords = coordinates[sample_idx] if coordinates is not None else None
@@ -589,194 +619,189 @@ class GeoSOMVLRSOM:
             logger.info(f"Initial QE calculated on 10k sample: {initial_qe:.6f}")
         else:
             initial_qe = self.calculate_quantization_error(data, coordinates)
+        return initial_qe
+    
+    def _train_single_epoch(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray],
+                          training_state: Dict[str, Any], progress_callback: Optional[Callable]) -> Dict[str, Any]:
+        """Train a single epoch."""
+        logger.info(f"Starting epoch {epoch+1}/{self.config.max_epochs}")
         
-        # Only calculate initial QE if not resuming
-        if start_epoch == 0:
-            self.training_history['quantization_errors'].append(initial_qe)
-            best_qe = initial_qe
+        # Update radius
+        self._update_radius(epoch)
         
-        for epoch in range(start_epoch, self.config.max_epochs):
-            logger.info(f"Starting epoch {epoch+1}/{self.config.max_epochs}")
-            
-            # Decay radius
-            self._update_radius(epoch)
-            logger.debug(f"Updated radius to {self.current_radius:.2f}")
-            
-            # Real mini-batch training (replaces all legacy batch training)
-            logger.info(f"Starting mini-batch training for epoch {epoch+1}")
-            # Create neighborhood function compatible with mini-batch trainer
-            def neighborhood_func(bmu_idx, radius, n_neurons):
-                self.current_radius = radius  # Update radius for the calculation
-                return self._calculate_neighborhood(bmu_idx)
-            
-            training_stats, new_lr = self.minibatch_vlrsom.train_epoch_with_vlrsom(
-                data=data, coordinates=coordinates, weights=self.weights, 
-                neuron_coords=self.neuron_coords, learning_rate=self.current_lr, 
-                radius=self.current_radius, neighborhood_func=neighborhood_func
-            )
-            self.current_lr = new_lr
-            
-            # Use mini-batch QE (no separate QE calculation needed)
-            qe = training_stats.get('mean_mini_batch_qe', np.inf)
-            logger.info(f"Completed mini-batch training for epoch {epoch+1}: "
-                       f"QE={qe:.6f}, LR={self.current_lr:.4f}, "
-                       f"Mini-batches={training_stats.get('n_mini_batches', 0)}, "
-                       f"Neurons updated={training_stats.get('neurons_updated', 0)}")
-            
-            self.training_history['quantization_errors'].append(qe)
-            
-            # Log progress every 10 epochs or on significant events
-            if epoch % 10 == 0 or epoch < 5:
-                logger.info(f"Epoch {epoch+1}/{self.config.max_epochs}: QE={qe:.6f}, "
-                           f"LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
-            
-            # VLRSOM adaptation is handled by mini-batch trainer (no separate call needed)
-            
-            # Update best QE
-            if qe < best_qe:
-                improvement = (best_qe - qe) / best_qe if best_qe != np.inf else 1.0
-                if improvement < self.config.qe_improvement_threshold:
-                    patience_counter += 1
-                else:
-                    patience_counter = 0
-                best_qe = qe
-            else:
+        # Execute mini-batch training
+        qe = self._execute_minibatch_training(epoch, data, coordinates)
+        
+        # Update training history
+        self.training_history['quantization_errors'].append(qe)
+        self.training_history['learning_rates'].append(self.current_lr)
+        self.training_history['radii'].append(self.current_radius)
+        
+        # Update convergence tracking
+        best_qe, patience_counter = self._update_convergence_tracking(qe, training_state)
+        
+        # Periodic calculations and checkpoints
+        converged = self._handle_periodic_calculations(epoch, data, coordinates, best_qe, patience_counter)
+        
+        # Progress callback
+        if progress_callback:
+            self._handle_progress_callback(progress_callback, epoch, qe)
+        
+        return {
+            'best_qe': best_qe,
+            'patience_counter': patience_counter,
+            'converged': converged
+        }
+    
+    def _execute_minibatch_training(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray]) -> float:
+        """Execute mini-batch training for one epoch."""
+        logger.info(f"Starting mini-batch training for epoch {epoch+1}")
+        
+        def neighborhood_func(bmu_idx, radius, n_neurons):
+            self.current_radius = radius
+            return self._calculate_neighborhood(bmu_idx)
+        
+        training_stats, new_lr = self.minibatch_vlrsom.train_epoch_with_vlrsom(
+            data=data, coordinates=coordinates, weights=self.weights, 
+            neuron_coords=self.neuron_coords, learning_rate=self.current_lr, 
+            radius=self.current_radius, neighborhood_func=neighborhood_func
+        )
+        self.current_lr = new_lr
+        
+        qe = training_stats.get('mean_mini_batch_qe', np.inf)
+        logger.info(f"Completed mini-batch training for epoch {epoch+1}: "
+                   f"QE={qe:.6f}, LR={self.current_lr:.4f}")
+        
+        return qe
+    
+    def _update_convergence_tracking(self, qe: float, training_state: Dict[str, Any]) -> Tuple[float, int]:
+        """Update best QE and patience counter."""
+        best_qe = training_state['best_qe']
+        patience_counter = training_state['patience_counter']
+        
+        if qe < best_qe:
+            improvement = (best_qe - qe) / best_qe if best_qe != np.inf else 1.0
+            if improvement < self.config.qe_improvement_threshold:
                 patience_counter += 1
-            
-            # Track learning rate and radius
-            self.training_history['learning_rates'].append(self.current_lr)
-            self.training_history['radii'].append(self.current_radius)
-            
-            # Calculate topographic error every N epochs
-            te_freq = getattr(self.config.progress_tracking, 'te_calculation_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
-            if epoch % te_freq == 0 and epoch > 0:
-                logger.info(f"Calculating topographic error for epoch {epoch+1}")
-                te = self.calculate_topographic_error(data, coordinates, sample_size=10000)
-                logger.info(f"Topographic error: {te:.4f}")
-                self.training_history['topographic_errors'].append(te)
-                
-                # Adjust radius based on TE if enabled
-                te_radius_adjustment = getattr(self.config, 'te_radius_adjustment', True)
-                if te_radius_adjustment:
-                    # Get scheduled radius for next epoch
-                    next_epoch_radius = self._get_scheduled_radius(epoch + 1)
-                    
-                    # Adjust based on TE thresholds
-                    te_high_threshold = getattr(self.config, 'te_high_threshold', 0.15)
-                    te_low_threshold = getattr(self.config, 'te_low_threshold', 0.05)
-                    
-                    if te > te_high_threshold:
-                        # High TE: slow down radius decay
-                        radius_modifier = getattr(self.config, 'te_high_radius_modifier', 1.1)
-                        adjusted_radius = next_epoch_radius * radius_modifier
-                        logger.info(f"High TE ({te:.3f} > {te_high_threshold}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
-                    elif te < te_low_threshold:
-                        # Low TE: can decay faster
-                        radius_modifier = getattr(self.config, 'te_low_radius_modifier', 0.95)
-                        adjusted_radius = next_epoch_radius * radius_modifier
-                        logger.info(f"Low TE ({te:.3f} < {te_low_threshold}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
-                    else:
-                        # Normal TE: use scheduled radius
-                        adjusted_radius = next_epoch_radius
-                    
-                    # Apply bounds
-                    adjusted_radius = np.clip(adjusted_radius, self.config.final_radius, self.config.initial_radius)
-                    
-                    # Store adjustment for next update
-                    self._radius_adjustment = adjusted_radius / next_epoch_radius
-                else:
-                    self._radius_adjustment = 1.0
-            
-            # Calculate geographic coherence
-            # Calculate geographic coherence every N epochs
-            geo_freq = getattr(self.config.progress_tracking, 'geographic_coherence_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
-            if coordinates is not None and epoch % geo_freq == 0 and epoch > 0:
-                logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
-                # Sample for large datasets to avoid O(n²) computation
-                coherence_sample_threshold = getattr(self.config, 'coherence_sample_threshold', 10000)
-                coherence_sample_size = getattr(self.config, 'coherence_sample_size', 5000)
-                if len(data) > coherence_sample_threshold:
-                    sample_size = coherence_sample_size
-                    indices = np.random.choice(len(data), sample_size, replace=False)
-                    geo_coherence = self._calculate_geographic_coherence(
-                        data[indices], coordinates[indices]
-                    )
-                    logger.info(f"Geographic coherence (sampled): {geo_coherence:.4f}")
-                else:
-                    geo_coherence = self._calculate_geographic_coherence(data, coordinates)
-                    logger.info(f"Geographic coherence: {geo_coherence:.4f}")
-                self.training_history['geographic_coherence'].append(geo_coherence)
-                
-                # Save checkpoint if enabled
-                # Access nested config properly
-                progress_config = getattr(self.config, 'progress_tracking', {})
-                if isinstance(progress_config, dict):
-                    checkpoint_frequency = progress_config.get('checkpoint_frequency', 10)
-                    checkpoint_dir = progress_config.get('checkpoint_dir', 'checkpoints/som')
-                else:
-                    checkpoint_frequency = getattr(progress_config, 'checkpoint_frequency', 10)
-                    checkpoint_dir = getattr(progress_config, 'checkpoint_dir', 'checkpoints/som')
-                
-                logger.info(f"Checkpoint check: frequency={checkpoint_frequency}, epoch={epoch}, "
-                           f"should_save={(epoch) % checkpoint_frequency == 0}")
-                if checkpoint_frequency > 0 and epoch % checkpoint_frequency == 0:
-                    self.save_checkpoint(checkpoint_dir, epoch, best_qe, patience_counter)
-                
-                # Check convergence
-                if self._check_convergence(geo_coherence, patience_counter):
-                    converged = True
-                    logger.info(f"Converged at epoch {epoch}")
-                    break
-            
-            # Progress callback with detailed info
-            if progress_callback:
-                logger.debug(f"Calling progress callback for epoch {epoch+1}")
-                progress_info = {
-                    'epoch': epoch + 1,
-                    'max_epochs': self.config.max_epochs,
-                    'progress': (epoch + 1) / self.config.max_epochs,
-                    'qe': qe,  # Use the calculated qe from line 375
-                    'learning_rate': self.current_lr,
-                    'radius': self.current_radius
-                }
-                # Support both simple and detailed callbacks
-                try:
-                    progress_callback(progress_info)
-                    logger.debug(f"Progress callback completed for epoch {epoch+1}")
-                except TypeError:
-                    # Fallback to simple progress
-                    logger.debug(f"Using fallback progress callback for epoch {epoch+1}")
-                    progress_callback((epoch + 1) / self.config.max_epochs)
-                except Exception as e:
-                    logger.error(f"Error in progress callback: {e}")
-                    raise
-            
-            # Checkpoint saving is now handled by the unified checkpoint system
-            # The analyzer's save_checkpoint_state() method will be called externally
-            # checkpoint_freq = getattr(self.config, 'checkpoint_frequency', 10)
-            # if (epoch + 1) % checkpoint_freq == 0:
-            #     checkpoint_dir = kwargs.get('checkpoint_dir', 
-            #         f'outputs/analysis_results/som/{kwargs.get("experiment_name", "biodiv_fine_som_grid10")}/checkpoints')
-            #     # Use standardized save_checkpoint method with all required parameters
-            #     self.save_checkpoint(
-            #         checkpoint_dir=checkpoint_dir,
-            #         epoch=epoch + 1,
-            #         best_qe=best_qe,
-            #         patience_counter=patience_counter
-            #     )
-            
-            logger.info(f"Completed epoch {epoch+1}/{self.config.max_epochs}")
+            else:
+                patience_counter = 0
+            best_qe = qe
+        else:
+            patience_counter += 1
         
-        # Create result
+        return best_qe, patience_counter
+    
+    def _handle_periodic_calculations(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray],
+                                    best_qe: float, patience_counter: int) -> bool:
+        """Handle topographic error, geographic coherence, and checkpoints."""
+        # Topographic error calculation
+        te_freq = getattr(self.config.progress_tracking, 'te_calculation_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
+        if epoch % te_freq == 0 and epoch > 0:
+            self._calculate_and_adjust_topographic_error(epoch, data, coordinates)
+        
+        # Geographic coherence and convergence check
+        geo_freq = getattr(self.config.progress_tracking, 'geographic_coherence_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
+        if coordinates is not None and epoch % geo_freq == 0 and epoch > 0:
+            return self._handle_geographic_coherence_and_checkpoints(epoch, data, coordinates, best_qe, patience_counter)
+        
+        return False
+    
+    def _calculate_and_adjust_topographic_error(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray]) -> None:
+        """Calculate topographic error and adjust radius if needed."""
+        logger.info(f"Calculating topographic error for epoch {epoch+1}")
+        te = self.calculate_topographic_error(data, coordinates, sample_size=10000)
+        logger.info(f"Topographic error: {te:.4f}")
+        self.training_history['topographic_errors'].append(te)
+        
+        if getattr(self.config, 'te_radius_adjustment', True):
+            self._adjust_radius_based_on_te(te, epoch)
+    
+    def _adjust_radius_based_on_te(self, te: float, epoch: int) -> None:
+        """Adjust radius based on topographic error."""
+        next_epoch_radius = self._get_scheduled_radius(epoch + 1)
+        te_high_threshold = getattr(self.config, 'te_high_threshold', 0.15)
+        te_low_threshold = getattr(self.config, 'te_low_threshold', 0.05)
+        
+        if te > te_high_threshold:
+            radius_modifier = getattr(self.config, 'te_high_radius_modifier', 1.1)
+            adjusted_radius = next_epoch_radius * radius_modifier
+            logger.info(f"High TE ({te:.3f}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
+        elif te < te_low_threshold:
+            radius_modifier = getattr(self.config, 'te_low_radius_modifier', 0.95)
+            adjusted_radius = next_epoch_radius * radius_modifier
+            logger.info(f"Low TE ({te:.3f}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
+        else:
+            adjusted_radius = next_epoch_radius
+        
+        # Apply bounds and store adjustment
+        adjusted_radius = np.clip(adjusted_radius, self.config.final_radius, self.config.initial_radius)
+        self._radius_adjustment = adjusted_radius / next_epoch_radius
+    
+    def _handle_geographic_coherence_and_checkpoints(self, epoch: int, data: np.ndarray, coordinates: np.ndarray,
+                                                   best_qe: float, patience_counter: int) -> bool:
+        """Handle geographic coherence calculation, checkpoints, and convergence check."""
+        logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
+        
+        # Calculate geographic coherence with sampling for large datasets
+        coherence_sample_threshold = getattr(self.config, 'coherence_sample_threshold', 10000)
+        coherence_sample_size = getattr(self.config, 'coherence_sample_size', 5000)
+        
+        if len(data) > coherence_sample_threshold:
+            indices = np.random.choice(len(data), coherence_sample_size, replace=False)
+            geo_coherence = self._calculate_geographic_coherence(data[indices], coordinates[indices])
+            logger.info(f"Geographic coherence (sampled): {geo_coherence:.4f}")
+        else:
+            geo_coherence = self._calculate_geographic_coherence(data, coordinates)
+            logger.info(f"Geographic coherence: {geo_coherence:.4f}")
+        
+        self.training_history['geographic_coherence'].append(geo_coherence)
+        
+        # Handle checkpoint saving
+        self._handle_checkpoint_saving(epoch, best_qe, patience_counter)
+        
+        # Check convergence
+        if self._check_convergence(geo_coherence, patience_counter):
+            logger.info(f"Converged at epoch {epoch}")
+            return True
+        
+        return False
+    
+    def _handle_checkpoint_saving(self, epoch: int, best_qe: float, patience_counter: int) -> None:
+        """Handle checkpoint saving."""
+        progress_config = getattr(self.config, 'progress_tracking', {})
+        if isinstance(progress_config, dict):
+            checkpoint_frequency = progress_config.get('checkpoint_frequency', 10)
+            checkpoint_dir = progress_config.get('checkpoint_dir', 'checkpoints/som')
+        else:
+            checkpoint_frequency = getattr(progress_config, 'checkpoint_frequency', 10)
+            checkpoint_dir = getattr(progress_config, 'checkpoint_dir', 'checkpoints/som')
+        
+        if checkpoint_frequency > 0 and epoch % checkpoint_frequency == 0:
+            self.save_checkpoint(checkpoint_dir, epoch, best_qe, patience_counter)
+    
+    def _handle_progress_callback(self, progress_callback: Callable, epoch: int, qe: float) -> None:
+        """Handle progress callback without fallbacks."""
+        progress_info = {
+            'epoch': epoch + 1,
+            'max_epochs': self.config.max_epochs,
+            'progress': (epoch + 1) / self.config.max_epochs,
+            'qe': qe,
+            'learning_rate': self.current_lr,
+            'radius': self.current_radius
+        }
+        progress_callback(progress_info)
+    
+    def _create_training_result(self, training_state: Dict[str, Any], n_samples: int) -> SOMTrainingResult:
+        """Create the final training result."""
         return SOMTrainingResult(
             weights=self.weights.reshape(self.grid_rows, self.grid_cols, self.input_dim),
             quantization_errors=self.training_history['quantization_errors'],
-            topographic_errors=[],  # Not used in this implementation
-            training_time=0.0,  # Would need timing
-            convergence_epoch=epoch if converged else None,
+            topographic_errors=[],
+            training_time=0.0,
+            convergence_epoch=training_state.get('convergence_epoch'),
             final_learning_rate=self.current_lr,
             final_neighborhood_radius=self.current_radius,
-            n_samples_trained=len(data)
+            n_samples_trained=n_samples
         )
     
     # Note: Checkpoint saving is handled by the standardized save_checkpoint method at line 1376
@@ -1320,8 +1345,8 @@ class GeoSOMVLRSOM:
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
-        # Load checkpoint
-        checkpoint = np.load(checkpoint_path, allow_pickle=True)
+        # Load checkpoint safely without pickle
+        checkpoint = np.load(checkpoint_path, allow_pickle=False)
         
         # Extract data
         checkpoint_data = {
