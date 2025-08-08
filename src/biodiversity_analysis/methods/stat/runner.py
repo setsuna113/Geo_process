@@ -11,6 +11,7 @@ Usage:
     python runner.py --clean                  # Clean all output files
     python runner.py --clean --analysis coverage        # Clean specific analysis outputs
     python runner.py --list                   # List available analyses
+    python runner.py --validate               # Validate configuration and paths
 """
 
 import os
@@ -20,9 +21,20 @@ import shutil
 from pathlib import Path
 from typing import List, Dict, Optional
 
-# Add parent directories to path for imports
-project_root = Path(__file__).parent.parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
+# Import robust import helpers
+try:
+    from ...utils.import_helpers import safe_import, safe_import_class
+except ImportError:
+    # Fallback for development environment
+    project_root = Path(__file__).parent.parent.parent.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    from src.biodiversity_analysis.utils.import_helpers import safe_import, safe_import_class
+
+# Import centralized configuration using robust imports
+config_module = safe_import('src.config.stat')
+StatisticalDataPaths = config_module.StatisticalDataPaths
+StatisticalAnalysisConfig = config_module.StatisticalAnalysisConfig
 
 # Import analysis modules dynamically to avoid import errors
 
@@ -31,7 +43,11 @@ class BiodiversityAnalysisRunner:
     """Unified runner for biodiversity statistical analyses"""
     
     def __init__(self):
-        self.base_output_dir = Path("outputs/biodiversity_analysis")
+        # Initialize configuration
+        self.data_paths = StatisticalDataPaths()
+        self.analysis_config = StatisticalAnalysisConfig()
+        self.base_output_dir = self.data_paths.output_base_dir
+        
         self.available_analyses = {
             'coverage': {
                 'name': 'Coverage Analysis',
@@ -85,6 +101,34 @@ class BiodiversityAnalysisRunner:
             print(f"  {key:15} - {info['name']}")
             print(f"{'':17} {info['description']}")
             print()
+    
+    def validate_configuration(self):
+        """Validate all paths and configuration"""
+        print("🔧 Validating Configuration...")
+        print("=" * 50)
+        
+        # Validate paths
+        validation_results = self.data_paths.validate_all_paths()
+        
+        valid_count = sum(1 for valid in validation_results.values() if valid)
+        total_count = len(validation_results)
+        
+        print(f"Path Validation: {valid_count}/{total_count} valid")
+        
+        for name, is_valid in validation_results.items():
+            status = "✅" if is_valid else "❌"
+            print(f"  {name:15} {status}")
+        
+        print(f"\n{self.data_paths.get_summary()}")
+        print(f"\n{self.analysis_config.get_summary()}")
+        
+        if valid_count < total_count:
+            print("\n⚠️  Some paths are invalid. Set environment variables to override defaults.")
+            print("Example:")
+            print("  export BIODIV_SCRATCH_DIR=/your/data/directory")
+            print("  export BIODIV_CLIMATE_FILE=/your/climate/file.parquet")
+        
+        return valid_count == total_count
     
     def clean_outputs(self, analyses: Optional[List[str]] = None):
         """Clean output files for specified analyses (or all if None)"""
@@ -154,89 +198,128 @@ class BiodiversityAnalysisRunner:
     
     def _run_coverage_analysis(self):
         """Run coverage analysis"""
-        try:
-            from src.biodiversity_analysis.methods.stat.coverage_analysis.analyzer import EnhancedCoverageAnalyzer
-        except ImportError:
-            # Try alternative class name
-            from src.biodiversity_analysis.methods.stat.coverage_analysis.analyzer import CoverageAnalyzerEnhanced as EnhancedCoverageAnalyzer
+        # Use robust import for coverage analyzer
+        EnhancedCoverageAnalyzer = safe_import_class(
+            'src.biodiversity_analysis.methods.stat.coverage_analysis.analyzer',
+            'EnhancedCoverageAnalyzer',
+            alternative_names=['CoverageAnalyzerEnhanced']
+        )
         
-        climate_file = '/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet'
+        # Get climate data path from configuration
+        climate_path = self.data_paths.get_climate_data_path()
+        if not climate_path:
+            raise FileNotFoundError("No valid climate data file found. Check configuration.")
         
-        analyzer = EnhancedCoverageAnalyzer(climate_file)
+        # Get analysis configuration
+        config = self.analysis_config.get_analysis_config('coverage')
+        
+        analyzer = EnhancedCoverageAnalyzer(str(climate_path))
         analyzer.run_complete_analysis()
     
     def _run_trust_maps_analysis(self):
         """Run trust maps analysis"""
-        from src.biodiversity_analysis.methods.stat.trust_maps.analyzer import TrustMapVisualizer
+        TrustMapVisualizer = safe_import_class(
+            'src.biodiversity_analysis.methods.stat.trust_maps.analyzer',
+            'TrustMapVisualizer'
+        )
         
-        datasets = {
-            'plants': '/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif',
-            'terrestrial': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif',
-            'am_fungi': '/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif', 
-            'ecm_fungi': '/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif'
-        }
+        # Get dataset paths from configuration
+        dataset_paths = self.data_paths.get_dataset_paths()
+        if not dataset_paths:
+            raise FileNotFoundError("No valid dataset files found. Check configuration.")
+        
+        # Convert Path objects to strings for compatibility
+        datasets = {name: str(path) for name, path in dataset_paths.items()}
+        
+        # Get analysis configuration
+        config = self.analysis_config.get_analysis_config('trust_maps')
         
         visualizer = TrustMapVisualizer(output_dir=self.base_output_dir / 'trust_maps')
         visualizer.create_trust_maps(datasets)
     
     def _run_latitudinal_analysis(self):
         """Run latitudinal analysis"""
-        from src.biodiversity_analysis.methods.stat.latitudinal_analysis.analyzer import main as run_analysis
-        run_analysis()
+        latitudinal_module = safe_import('src.biodiversity_analysis.methods.stat.latitudinal_analysis.analyzer')
+        latitudinal_module.main()
     
     def _run_global_maps_analysis(self):
         """Run global maps analysis"""
-        from src.biodiversity_analysis.methods.stat.global_maps.analyzer import GlobalMapVisualizer
+        GlobalMapVisualizer = safe_import_class(
+            'src.biodiversity_analysis.methods.stat.global_maps.analyzer',
+            'GlobalMapVisualizer'
+        )
         
-        datasets = {
-            'plants': '/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif',
-            'terrestrial': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif',
-            'am_fungi': '/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif',
-            'ecm_fungi': '/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif'
-        }
+        # Get dataset paths from configuration
+        dataset_paths = self.data_paths.get_dataset_paths()
+        if not dataset_paths:
+            raise FileNotFoundError("No valid dataset files found. Check configuration.")
+        
+        # Get analysis configuration
+        config = self.analysis_config.get_analysis_config('global_maps')
         
         visualizer = GlobalMapVisualizer(output_dir=self.base_output_dir / 'global_maps')
-        for name, path in datasets.items():
-            visualizer.create_global_map(path, name)
+        for name, path in dataset_paths.items():
+            visualizer.create_global_map(str(path), name)
     
     def _run_correlation_analysis(self):
         """Run correlation analysis"""
-        from src.biodiversity_analysis.methods.stat.correlation_analysis.analyzer import CorrelationExplorer
+        CorrelationExplorer = safe_import_class(
+            'src.biodiversity_analysis.methods.stat.correlation_analysis.analyzer',
+            'CorrelationExplorer'
+        )
         
-        datasets = {
-            'plants': '/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif',
-            'terrestrial': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif',
-            'am_fungi': '/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif',
-            'ecm_fungi': '/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif'
-        }
+        # Get dataset paths from configuration
+        dataset_paths = self.data_paths.get_dataset_paths()
+        if not dataset_paths:
+            raise FileNotFoundError("No valid dataset files found. Check configuration.")
+        
+        # Convert Path objects to strings for compatibility
+        datasets = {name: str(path) for name, path in dataset_paths.items()}
+        
+        # Get analysis configuration
+        config = self.analysis_config.get_analysis_config('correlation')
         
         explorer = CorrelationExplorer(datasets, output_dir=self.base_output_dir / 'correlation')
         explorer.run_comprehensive_analysis()
     
     def _run_artifact_analysis(self):
         """Run artifact detection analysis"""
-        from src.biodiversity_analysis.methods.stat.artifact_detection.analyzer import ArtifactDetector
+        ArtifactDetector = safe_import_class(
+            'src.biodiversity_analysis.methods.stat.artifact_detection.analyzer',
+            'ArtifactDetector'
+        )
         
-        datasets = {
-            'plants': '/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif',
-            'terrestrial': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif',
-            'am_fungi': '/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif',
-            'ecm_fungi': '/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif'
-        }
+        # Get dataset paths from configuration
+        dataset_paths = self.data_paths.get_dataset_paths()
+        if not dataset_paths:
+            raise FileNotFoundError("No valid dataset files found. Check configuration.")
+        
+        # Convert Path objects to strings for compatibility
+        datasets = {name: str(path) for name, path in dataset_paths.items()}
+        
+        # Get analysis configuration
+        config = self.analysis_config.get_analysis_config('artifacts')
         
         detector = ArtifactDetector(datasets, output_dir=self.base_output_dir / 'artifacts')
         detector.run_comprehensive_detection()
     
     def _run_overlap_analysis(self):
         """Run overlap analysis"""
-        from src.biodiversity_analysis.methods.stat.overlap_analysis.analyzer import OverlapAnalyzer
+        OverlapAnalyzer = safe_import_class(
+            'src.biodiversity_analysis.methods.stat.overlap_analysis.analyzer',
+            'OverlapAnalyzer'
+        )
         
-        datasets = {
-            'plants': '/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif',
-            'terrestrial': '/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif',
-            'am_fungi': '/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif',
-            'ecm_fungi': '/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif'
-        }
+        # Get dataset paths from configuration
+        dataset_paths = self.data_paths.get_dataset_paths()
+        if not dataset_paths:
+            raise FileNotFoundError("No valid dataset files found. Check configuration.")
+        
+        # Convert Path objects to strings for compatibility
+        datasets = {name: str(path) for name, path in dataset_paths.items()}
+        
+        # Get analysis configuration
+        config = self.analysis_config.get_analysis_config('overlap')
         
         analyzer = OverlapAnalyzer(datasets, output_dir=self.base_output_dir / 'overlap')
         analyzer.run_comprehensive_overlap_analysis()
@@ -254,6 +337,14 @@ Examples:
   python runner.py --clean                     # Clean all outputs
   python runner.py --clean --analysis coverage # Clean coverage outputs only
   python runner.py --list                      # List available analyses
+  python runner.py --validate                  # Validate configuration and paths
+
+Environment Variables:
+  BIODIV_SCRATCH_DIR       Base directory for biodiversity data
+  BIODIV_CLIMATE_FILE      Climate data file path
+  BIODIV_PLANTS_FILE       Plants richness dataset path
+  BIODIV_MAX_WORKERS       Maximum parallel workers (default: auto)
+  BIODIV_MAX_MEMORY_GB     Maximum memory usage in GB (default: 32)
         """
     )
     
@@ -275,6 +366,12 @@ Examples:
         help='List available analyses and exit'
     )
     
+    parser.add_argument(
+        '--validate', '--config',
+        action='store_true',
+        help='Validate configuration and paths, then exit'
+    )
+    
     args = parser.parse_args()
     
     runner = BiodiversityAnalysisRunner()
@@ -283,6 +380,11 @@ Examples:
     if args.list:
         runner.list_analyses()
         return
+    
+    # Validate configuration if requested
+    if args.validate:
+        is_valid = runner.validate_configuration()
+        sys.exit(0 if is_valid else 1)
     
     # Parse analysis selection
     if args.analysis:
