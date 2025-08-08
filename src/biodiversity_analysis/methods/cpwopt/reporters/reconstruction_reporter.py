@@ -52,6 +52,14 @@ class ReconstructionReporter:
         Returns:
             Dictionary mapping plot names to file paths
         """
+        # Convert CuPy arrays to NumPy if needed (early conversion)
+        if hasattr(original_tensor, 'get'):
+            original_tensor = original_tensor.get()
+        if hasattr(reconstructed_tensor, 'get'):
+            reconstructed_tensor = reconstructed_tensor.get()
+        if hasattr(weights, 'get'):
+            weights = weights.get()
+            
         plots = {}
         
         # Plot convergence history
@@ -146,6 +154,14 @@ class ReconstructionReporter:
         Returns:
             Path to saved plot
         """
+        # Convert CuPy arrays to NumPy if needed
+        if hasattr(original, 'get'):
+            original = original.get()
+        if hasattr(reconstructed, 'get'):
+            reconstructed = reconstructed.get()
+        if hasattr(weights, 'get'):
+            weights = weights.get()
+        
         # Default to middle slices if not specified
         if slice_indices is None:
             slice_indices = {
@@ -223,6 +239,14 @@ class ReconstructionReporter:
         Returns:
             Path to saved plot
         """
+        # Convert CuPy arrays to NumPy if needed
+        if hasattr(original, 'get'):
+            original = original.get()
+        if hasattr(reconstructed, 'get'):
+            reconstructed = reconstructed.get()
+        if hasattr(weights, 'get'):
+            weights = weights.get()
+        
         # Calculate residuals
         residuals = (original - reconstructed) * weights
         
@@ -283,6 +307,14 @@ class ReconstructionReporter:
         Returns:
             Path to saved plot
         """
+        # Convert CuPy arrays to NumPy if needed
+        if hasattr(original, 'get'):
+            original = original.get()
+        if hasattr(reconstructed, 'get'):
+            reconstructed = reconstructed.get()
+        if hasattr(weights, 'get'):
+            weights = weights.get()
+        
         # Calculate errors
         valid_mask = weights > 0
         errors = np.abs(original - reconstructed)[valid_mask]
@@ -370,6 +402,14 @@ class ReconstructionReporter:
         Returns:
             Path to saved plot
         """
+        # Convert CuPy arrays to NumPy if needed
+        if hasattr(original, 'get'):
+            original = original.get()
+        if hasattr(reconstructed, 'get'):
+            reconstructed = reconstructed.get()
+        if hasattr(weights, 'get'):
+            weights = weights.get()
+        
         # Calculate local density (simplified - count neighbors within each slice)
         densities = []
         fits = []

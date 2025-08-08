@@ -7,23 +7,24 @@ and the biodiversity analysis pipeline.
 import numpy as np
 import pandas as pd
 import logging
+import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import json
 import time
 
-from src.abstractions.interfaces.analyzer import IAnalyzer, AnalysisResult as IAnalysisResult
+from src.abstractions.interfaces.analyzer import IAnalyzer
 from src.abstractions.types import AnalysisResult, ModelMetrics
 from src.abstractions.types.tensor_types import TensorData, TensorDecompositionResult
-from src.biodiversity_analysis.preprocessing.tensor_preprocessing import TensorPreprocessor
+from src.biodiversity_analysis.preprocessing import SharedPreprocessor
+from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
 from src.biodiversity_analysis.shared.data import ParquetLoader
 from src.config.cpwopt import get_cpwopt_config
 from .core import CPWOPT
 from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
-from .minibatch_processor import create_minibatch_processor
 from .sparse_handler import AdaptiveSparseStrategy
 from .factor_updater import create_factor_updater
-from .rank_selector import auto_select_rank, CPWOPTRankSelector
+from .rank_selection import auto_select_rank
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +32,13 @@ logger = logging.getLogger(__name__)
 class CPWOPTAnalyzer(IAnalyzer):
     """CP-WOPT analyzer implementation following IAnalyzer interface."""
     
-    def __init__(self, pipeline_config: Any, db: Any):
+    def __init__(self, pipeline_config: Any, db: Any, preset: Optional[str] = None):
         """Initialize CP-WOPT analyzer.
         
         Args:
             pipeline_config: Main pipeline configuration object
             db: Database manager instance
+            preset: Optional preset name ('production', 'fast', 'quality', etc.)
         """
         # Store pipeline config and db
         self.pipeline_config = pipeline_config
@@ -45,7 +47,7 @@ class CPWOPTAnalyzer(IAnalyzer):
         # Load method-specific configuration through registry
         from src.config.method_registry import MethodConfigRegistry
         config_loader = MethodConfigRegistry.get_loader('cpwopt')
-        self.config = config_loader.load_config()
+        self.config = config_loader.load_config(preset=preset)
         
         self.experiment_name = "cpwopt_analysis"
         
@@ -54,12 +56,19 @@ class CPWOPTAnalyzer(IAnalyzer):
         
         # Initialize components
         self.model = None
-        # TensorPreprocessor takes specific parameters, not a config dict
-        tensor_config = self.config.get('tensor_construction', {})
-        self.preprocessor = TensorPreprocessor(
-            missing_value=tensor_config.get('missing_value', np.nan),
-            min_observations_per_cell=tensor_config.get('min_observations_per_cell', 1),
-            aggregation_method=tensor_config.get('aggregation', 'sum')
+        
+        # Use SharedPreprocessor for consistency across methods
+        self.preprocessor = SharedPreprocessor(
+            method_name='cpwopt',  # Auto-configures for CP-WOPT
+            normalize=True,
+            handle_missing=True
+        )
+        
+        # Use DIRECT tensor preprocessing - no gridding!
+        from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
+        self.tensor_builder = TensorPreprocessor(
+            missing_value=0.0,  # CP-WOPT uses 0 for missing
+            min_observations_per_cell=1  # Each point is unique
         )
         self.metrics_calculator = CPWOPTMetricsCalculator()
         self.sparse_strategy = AdaptiveSparseStrategy(
@@ -90,14 +99,39 @@ class CPWOPTAnalyzer(IAnalyzer):
             if not self._validate_input(X):
                 raise ValueError("Input validation failed")
             
-            # Convert to tensor format
-            logger.info("Converting data to tensor format...")
-            # Get tensor construction parameters from config
+            # Step 1: Extract coordinates before preprocessing
+            data_config = self.config.get('data_processing', {})
+            coord_cols = data_config.get('coordinate_cols', ['x', 'y'])
+            
+            # Check which coordinate columns are present
+            if 'x' in X.columns and 'y' in X.columns:
+                coord_cols = ['x', 'y']
+            elif 'longitude' in X.columns and 'latitude' in X.columns:
+                coord_cols = ['longitude', 'latitude']
+            
+            # Save coordinates separately
+            coords_df = X[coord_cols].copy()
+            
+            # Apply preprocessing only to feature columns
+            feature_cols = [col for col in X.columns if col not in coord_cols]
+            logger.info(f"Applying preprocessing to {len(feature_cols)} feature columns...")
+            X_features = X[feature_cols]
+            X_features_preprocessed = self.preprocessor.fit_transform(X_features)
+            
+            # Step 2: Convert DIRECTLY to tensor format - NO GRIDDING!
+            logger.info("Converting data directly to tensor format (no gridding)...")
             tensor_config = self.config.get('tensor_construction', {})
-            self.tensor_data = self.preprocessor.dataframe_to_tensor(
-                X,
-                lat_bins=tensor_config.get('lat_bins', 20),
-                lon_bins=tensor_config.get('lon_bins', 20),
+            
+            # Reconstruct full DataFrame with coordinates and preprocessed features
+            X_df = pd.concat([
+                coords_df,
+                pd.DataFrame(X_features_preprocessed, columns=feature_cols, index=X.index)
+            ], axis=1)
+            
+            self.tensor_data = self.tensor_builder.parquet_to_tensor(
+                X_df,
+                coordinate_cols=coord_cols,
+                feature_cols=feature_cols,
                 transform=tensor_config.get('transform', 'log1p')
             )
             
@@ -119,6 +153,10 @@ class CPWOPTAnalyzer(IAnalyzer):
                 logger.info("Performing automatic rank selection...")
                 rank_selection_config = self.config.get('rank_selection', {})
                 
+                # Get backend config for GPU usage
+                backend_config = self.config.get('backend', {})
+                use_gpu = backend_config.get('use_gpu', 'auto')
+                
                 # Select rank
                 optimal_rank = auto_select_rank(
                     self.tensor_data,
@@ -126,12 +164,16 @@ class CPWOPTAnalyzer(IAnalyzer):
                     min_rank=rank_selection_config.get('min_rank', 2),
                     max_rank=rank_selection_config.get('max_rank', 15),
                     plot=rank_selection_config.get('plot', True),
-                    output_dir=self.output_dir if hasattr(self, 'output_dir') else None
+                    output_dir=self.output_dir if hasattr(self, 'output_dir') else None,
+                    use_gpu=use_gpu  # Pass backend config to rank selection
                 )
                 logger.info(f"Automatically selected rank: {optimal_rank}")
             else:
                 optimal_rank = int(rank_config)
                 logger.info(f"Using fixed rank: {optimal_rank}")
+                # Get backend config for non-auto case too
+                backend_config = self.config.get('backend', {})
+                use_gpu = backend_config.get('use_gpu', 'auto')
             
             self.model = CPWOPT(
                 rank=optimal_rank,
@@ -140,12 +182,11 @@ class CPWOPTAnalyzer(IAnalyzer):
                 init_method=alg_config.get('init_method', 'random'),
                 optimizer=alg_config.get('optimizer', 'als'),
                 random_state=alg_config.get('random_state', None),
+                use_gpu=use_gpu,  # Pass GPU configuration
                 verbose=True
             )
             
-            # Set up mini-batch processor if needed
-            if self.config.get('minibatch', {}).get('enabled', True):
-                self._setup_minibatch_processing()
+            # MiniBatch removed - HiCOO handles block processing internally
             
             # Set up advanced factor updates if needed
             if alg_config.get('optimizer') != 'als':
@@ -245,6 +286,7 @@ class CPWOPTAnalyzer(IAnalyzer):
             spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
             sample_size = kwargs.get('sample_size', data_config.get('sample_size', None))
             random_seed = kwargs.get('random_seed', data_config.get('random_seed', None))
+            feature_cols = data_config.get('feature_cols', None)  # Get feature columns from config
             
             # Use ParquetLoader for efficient loading with spatial sampling
             biodiv_data = self.data_loader.load(
@@ -252,6 +294,7 @@ class CPWOPTAnalyzer(IAnalyzer):
                 spatial_grid_step=spatial_grid_step,
                 sample_size=sample_size,
                 random_seed=random_seed,
+                feature_cols=feature_cols,  # Pass feature columns to loader
                 validate=True
             )
             
@@ -440,26 +483,6 @@ class CPWOPTAnalyzer(IAnalyzer):
             return False
         
         return True
-    
-    def _setup_minibatch_processing(self):
-        """Configure mini-batch processing."""
-        mb_config = self.config.get('minibatch', {})
-        
-        # Create mini-batch processor
-        processor = create_minibatch_processor(
-            self.tensor_data,
-            self.model.rank,
-            auto_adjust=True
-        )
-        
-        # Update processor config
-        processor.config.batch_size = mb_config.get('batch_size', 10000)
-        processor.config.shuffle = mb_config.get('shuffle', False)
-        processor.config.drop_last = mb_config.get('drop_last', False)
-        
-        # Attach to model (would need modification in core.py)
-        logger.info(f"Configured mini-batch processing with batch size: "
-                   f"{processor.config.batch_size}")
     
     def _setup_advanced_optimization(self):
         """Configure advanced optimization methods."""

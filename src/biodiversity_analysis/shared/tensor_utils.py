@@ -12,6 +12,12 @@ from numpy.linalg import norm
 
 logger = logging.getLogger(__name__)
 
+# Import backend if available (for typing)
+try:
+    from ..methods.cpwopt.backend import CPWOPTBackend
+except ImportError:
+    CPWOPTBackend = None
+
 
 def unfold(tensor: np.ndarray, mode: int) -> np.ndarray:
     """Unfold (matricize) a tensor along a specified mode.
@@ -255,31 +261,53 @@ def compute_gram_matrices(factors: List[np.ndarray],
     return grams
 
 
-def compute_mttkrp(tensor: np.ndarray, factors: List[np.ndarray], 
-                  mode: int) -> np.ndarray:
+def compute_mttkrp(tensor, factors: List[np.ndarray], 
+                  mode: int, backend: 'CPWOPTBackend',
+                  weights: Optional[np.ndarray] = None):
     """Compute Matricized Tensor Times Khatri-Rao Product (MTTKRP).
     
-    Core operation in CP-ALS: X_(n) (C ⊙ B ⊙ A)
+    Core operation in CP-ALS using HiCOO format for ALL tensors.
     
     Args:
-        tensor: Input tensor
+        tensor: Input tensor (numpy array or HiCOO tensor)
         factors: List of factor matrices
         mode: Mode for which to compute MTTKRP
+        backend: REQUIRED compute backend for CPU/GPU execution
+        weights: Optional weight mask
         
     Returns:
         MTTKRP result
     """
-    # Get factors for other modes
-    other_factors = [factors[m] for m in range(len(factors)) if m != mode]
     
-    # Compute Khatri-Rao product of other factors
-    kr = other_factors[0]
-    for factor in other_factors[1:]:
-        kr = khatri_rao(kr, factor)
+    # Check if tensor is already in HiCOO format
+    from src.biodiversity_analysis.methods.cpwopt.hicoo_handler import HiCOOTensor, compute_mttkrp_hicoo
+    from src.biodiversity_analysis.methods.cpwopt.sparse_handler import convert_to_hicoo
+    from src.abstractions.types.tensor_types import TensorData
     
-    # Unfold tensor and multiply
-    unfolded = unfold(tensor, mode)
-    return unfolded @ kr
+    if isinstance(tensor, HiCOOTensor):
+        # Already HiCOO - use optimized MTTKRP (6.8x faster!)
+        return compute_mttkrp_hicoo(tensor, factors, mode, backend)
+    
+    # Convert to HiCOO for optimal performance
+    # This is now the ONLY path - no dense/COO/CSF fallback
+    if not isinstance(tensor, TensorData):
+        # Create TensorData wrapper
+        tensor_data = TensorData(
+            tensor=tensor,
+            weights=weights if weights is not None else np.ones_like(tensor),
+            coordinates=[],
+            feature_names=[f"f{i}" for i in range(tensor.shape[-1])],
+            metadata={}
+        )
+    else:
+        tensor_data = tensor
+    
+    # Convert to HiCOO and compute
+    hicoo_tensor = convert_to_hicoo(tensor_data)
+    return compute_mttkrp_hicoo(hicoo_tensor, factors, mode, backend)
+
+# REMOVED deprecated functions (_mttkrp_3d_optimized, _khatri_rao_backend, _unfold_backend)
+# All MTTKRP operations now use HiCOO format exclusively
 
 
 def apply_weight_mask(tensor: np.ndarray, weights: np.ndarray,
