@@ -38,6 +38,10 @@ class TwoStageClusterer:
     reducing data to cluster centroids via k-means.
     """
     
+    # Constants for cluster filtering
+    MIN_CLUSTER_SIZE = 2  # Minimum samples per cluster
+    MIN_CLUSTER_FRACTION = 1 / 10000  # Minimum fraction of total samples (0.01%)
+    
     def __init__(self, 
                  n_pre_clusters: int = 750,
                  linkage_method: str = 'ward',
@@ -140,7 +144,8 @@ class TwoStageClusterer:
         
         # Filter out tiny clusters if any (can cause issues)
         cluster_sizes = np.bincount(self.kmeans.labels_)
-        valid_clusters = cluster_sizes >= max(2, self.n_samples_ // 10000)  # At least 2 samples or 0.01%
+        min_size = max(self.MIN_CLUSTER_SIZE, int(self.n_samples_ * self.MIN_CLUSTER_FRACTION))
+        valid_clusters = cluster_sizes >= min_size
         
         # Create mapping for filtered clusters
         self._cluster_mapping = None
@@ -249,20 +254,30 @@ class TwoStageClusterer:
         max_k = min(20, max(9, len(centroids) // 20))  # Allow up to 20 clusters
         k_range = range(4, max_k)
         scores = []
+        max_retries = 3  # Prevent infinite loops
         
         for k in k_range:
-            labels = fcluster(self.linkage_matrix, k, criterion='maxclust')
-            # Verify we got expected clusters (handle scipy bug)
-            actual_k = len(np.unique(labels))
-            if actual_k < k:
-                logger.debug(f"fcluster returned {actual_k} clusters instead of {k}")
-                continue  # Skip this k value
-            score = silhouette_score(centroids, labels)
-            scores.append(score)
+            retry_count = 0
+            while retry_count < max_retries:
+                labels = fcluster(self.linkage_matrix, k, criterion='maxclust')
+                # Verify we got expected clusters (handle scipy bug)
+                actual_k = len(np.unique(labels))
+                if actual_k < k:
+                    logger.debug(f"fcluster returned {actual_k} clusters instead of {k} (attempt {retry_count + 1}/{max_retries})")
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        logger.warning(f"Skipping k={k} after {max_retries} attempts")
+                        break
+                else:
+                    score = silhouette_score(centroids, labels)
+                    scores.append(score)
+                    break
             
         if not scores:
-            logger.warning("Could not determine optimal k, using default=4")
-            return 4
+            raise ValueError(
+                "Could not determine optimal k: no valid clustering found. "
+                "This may indicate data issues or too restrictive parameters."
+            )
             
         optimal_k = k_range[np.argmax(scores)]
         return optimal_k

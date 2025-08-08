@@ -3,13 +3,13 @@ pipeline:
   stages:
     - name: data_loader
       params:
-        data_path: "/home/yl998/dev/geo/outputs/biodiversity_data.parquet"
+        data_path: "data/merged/biodiversity_climate_1x_production.parquet"  # Relative path
         
     - name: analyzer
       params:
         method: kmeans_hierarchical
         # Two-stage clustering parameters
-        n_pre_clusters: 200  # Reduced for testing
+        n_pre_clusters: 750  # Consistent with hierarchical_config.py default  # Reduced for testing
         use_variance_preservation: false  # Faster without auto-k
         variance_threshold: 0.95
         variance_k_range: [100, 2000]

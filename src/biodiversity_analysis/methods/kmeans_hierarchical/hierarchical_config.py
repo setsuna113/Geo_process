@@ -12,6 +12,11 @@ class KMeansHierarchicalConfig:
     """Configuration for two-stage k-means → hierarchical clustering.
     
     Standalone configuration for hierarchical clustering parameters.
+    
+    Note: Configuration precedence (highest to lowest):
+    1. Runtime parameters passed to analyze()
+    2. YAML configuration file (kmeans_hierarchical_config.yml)
+    3. Default values in this dataclass
     """
     
     # K-means pre-clustering parameters

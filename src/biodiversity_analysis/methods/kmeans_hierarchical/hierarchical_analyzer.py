@@ -90,7 +90,13 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
             config
         )
         
-        # Map labels back to full dataset
+        # Map labels back to full dataset with memory monitoring
+        # Check memory requirements
+        memory_required_mb = (original_n_samples * 4) / (1024 * 1024)  # int32 array
+        if memory_required_mb > 1000:  # Warn if > 1GB
+            logger.warning(f"Allocating {memory_required_mb:.1f}MB for final labels array. "
+                         f"Consider increasing spatial sampling for very large datasets.")
+        
         final_labels = np.full(original_n_samples, -1, dtype=int)
         final_labels[self._complete_mask] = labels_complete
         
@@ -263,7 +269,10 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
                     self.clusterer.linkage_matrix,
                     self.clusterer.final_k
                 )
-            
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.error(f"Failed to generate dendrogram: {e}")
+        
+        try:
             if config.generate_geographic_maps:
                 viz['geographic_clusters'] = self.visualizer.plot_geographic_clusters(
                     biodiv_data.coordinates,
@@ -275,7 +284,10 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
                     biodiv_data.coordinates,
                     labels
                 )
-            
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.error(f"Failed to generate geographic maps: {e}")
+        
+        try:
             if config.generate_3d_visualization:
                 viz['3d_clusters'] = self.visualizer.plot_3d_clusters(
                     features[:, :3],
@@ -283,31 +295,37 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
                     feature_names=biodiv_data.feature_names[:3],
                     sample_size=config.n_samples_for_viz
                 )
-            
+        except (ValueError, TypeError, IndexError) as e:
+            logger.error(f"Failed to generate 3D visualization: {e}")
+        
+        try:
             if config.generate_validation_plots:
                 viz['validation_metrics'] = self.visualizer.plot_validation_metrics(
                     metrics,
                     getattr(self.clusterer, 'variance_preserved_', None)
                 )
-            
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.error(f"Failed to generate validation plots: {e}")
+        
+        try:
             # Reuse existing visualizations
             viz['cluster_profiles'] = self.visualizer.plot_cluster_profiles(
                 features,
                 labels,
                 biodiv_data.feature_names
             )
-            
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.error(f"Failed to generate cluster profiles: {e}")
+        
+        try:
             viz['parallel_coordinates'] = self.visualizer.plot_parallel_coordinates(
                 features,
                 labels,
                 biodiv_data.feature_names,
                 sample_size=min(10000, len(features))
             )
-            
-        except Exception as e:
-            logger.error(f"Visualization failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.error(f"Failed to generate parallel coordinates: {e}")
         
         return viz
     
