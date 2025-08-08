@@ -9,7 +9,8 @@ import rasterio
 from pathlib import Path
 from typing import Dict, List
 import warnings
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
 
 # Import unified data utilities
 from src.biodiversity_analysis.data_utils import load_align_and_sample

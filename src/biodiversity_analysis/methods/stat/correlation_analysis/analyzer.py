@@ -16,7 +16,12 @@ from sklearn.cross_decomposition import CCA
 from pathlib import Path
 from typing import Dict, Tuple, List
 import warnings
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
+warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='sklearn')
+
+# Import configuration
+from src.config.stat.paths_config import StatisticalDataPaths
 
 # Import unified data utilities
 from src.biodiversity_analysis.data_utils import prepare_for_correlation_analysis
@@ -518,19 +523,29 @@ NEGATIVE CORRELATIONS:
 
 def main():
     """Run comprehensive correlation analysis"""
-    # Define datasets
-    datasets = {
-        'plants': "/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif",
-        'animals': "/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif",
-        'am_fungi': "/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif",
-        'ecm_fungi': "/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif"
-    }
+    # Use StatisticalDataPaths for dataset configuration
+    paths_config = StatisticalDataPaths()
+    datasets = {}
+    
+    # Get all available datasets from configuration
+    for name, dataset_config in paths_config.datasets.items():
+        path = dataset_config.get_valid_path()
+        if path is not None:
+            datasets[name] = str(path)
+        else:
+            print(f"Warning: No valid path found for {name}")
+    
+    if not datasets:
+        print("Error: No valid datasets found. Check configuration and file paths.")
+        return
     
     # Check which files exist
     existing = {}
     for name, path in datasets.items():
         if Path(path).exists():
             existing[name] = path
+        else:
+            print(f"Warning: Dataset not found: {name} -> {path}")
     
     if len(existing) < 2:
         print("Need at least 2 datasets for correlation analysis")
