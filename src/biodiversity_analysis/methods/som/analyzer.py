@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List, Tuple, Callable
 import logging
 from datetime import datetime
 
-from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
+from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
 from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
 from ...preprocessing import SharedPreprocessor
@@ -352,7 +352,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Check if we have enough memory (use 50% of available as safe threshold)
         safe_available = available_mb * 0.5
         
-        if total_required_mb > safe_available:
+        # Allow forcing grid size via environment variable
+        import os
+        force_grid = os.environ.get('SOM_FORCE_GRID_SIZE', '').lower() in ['1', 'true', 'yes']
+        
+        if total_required_mb > safe_available and not force_grid:
             # Reduce grid size to fit memory
             max_neurons = int((safe_available * 1024 * 1024 - overhead_memory) / 
                             (n_features * 8 + n_samples * 8))
@@ -363,6 +367,10 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                          f"but only {safe_available:.1f} MB safely available. "
                          f"Reducing to {max_grid_dim}x{max_grid_dim}")
             grid_size = (max_grid_dim, max_grid_dim)
+        elif force_grid and total_required_mb > safe_available:
+            logger.warning(f"FORCING grid size {grid_size[0]}x{grid_size[1]} despite memory constraints "
+                         f"({total_required_mb:.1f} MB required, {safe_available:.1f} MB safe threshold). "
+                         f"SOM_FORCE_GRID_SIZE is set.")
         else:
             logger.info(f"Grid size {grid_size[0]}x{grid_size[1]} will use "
                        f"{total_required_mb:.1f} MB of {available_mb:.1f} MB available")

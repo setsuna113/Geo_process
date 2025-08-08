@@ -117,3 +117,95 @@ class Method3DML:
     def compute_causal_effect(self, hypothesis: str = 'h1') -> Dict[str, Any]:
         """Compute causal effect for hypothesis."""
         return self.h2o_impl.cross_fit_dml(hypothesis)
+    
+    def test_all_hypotheses(self) -> Dict[str, Any]:
+        """Test all hypotheses (H0, H1, H2).
+        
+        Returns:
+            Dictionary with results for all hypotheses
+        """
+        results = {}
+        for hyp in ['h0', 'h1', 'h2']:
+            try:
+                result = self.h2o_impl.test_hypothesis(hyp)
+                results[hyp] = {
+                    'causal_effect': result.get('causal_effect', 0),
+                    'standard_error': result.get('standard_error', 0),
+                    'p_value': result.get('p_value', 1),
+                    'significant': result.get('p_value', 1) < 0.05,
+                    'interpretation': self._interpret_hypothesis(hyp, result)
+                }
+            except Exception as e:
+                logger.warning(f"Failed to test {hyp}: {e}")
+                results[hyp] = {
+                    'causal_effect': None,
+                    'p_value': None,
+                    'error': str(e)
+                }
+        return results
+    
+    def _interpret_hypothesis(self, hyp: str, result: Dict[str, Any]) -> str:
+        """Interpret hypothesis test results."""
+        if result.get('p_value') is None:
+            return f"Could not test {hyp}"
+        
+        p_val = result['p_value']
+        effect = result.get('causal_effect', 0)
+        
+        if hyp == 'h0':
+            if p_val >= 0.05:
+                return "Fungi richness is independent of plant/vertebrate richness (H0 supported)"
+            else:
+                return "Fungi richness depends on plant/vertebrate richness (H0 rejected)"
+        elif hyp == 'h1':
+            if p_val < 0.05 and effect > 0:
+                return "Positive causal effect: biodiversity begets biodiversity (H1 supported)"
+            else:
+                return "No positive causal effect detected (H1 not supported)"
+        elif hyp == 'h2':
+            if p_val < 0.05 and effect < 0:
+                return "Temperate mismatch detected: negative interaction (H2 supported)"
+            else:
+                return "No temperate mismatch detected (H2 not supported)"
+        return "Unknown hypothesis"
+    
+    def run_robustness_checks(self) -> Dict[str, Any]:
+        """Run robustness checks using weighted bootstrap.
+        
+        Returns:
+            Robustness test results
+        """
+        try:
+            # Test robustness for main hypothesis (H1)
+            return self.h2o_impl.test_robustness('h1')
+        except Exception as e:
+            logger.error(f"Robustness checks failed: {e}")
+            return {'error': str(e)}
+    
+    def summarize_results(self) -> Dict[str, Any]:
+        """Summarize Method 3 DML results.
+        
+        Returns:
+            Dictionary with summary
+        """
+        summary = {
+            'method': 'Method 3: Double Machine Learning (DML)',
+            'implementation': 'H2O backend with weighted bootstrap',
+            'n_folds': self.n_folds
+        }
+        
+        # Add hypothesis test results if available
+        if hasattr(self.h2o_impl, 'causal_effects') and self.h2o_impl.causal_effects:
+            summary['causal_effects'] = self.h2o_impl.causal_effects
+        
+        return summary
+    
+    def create_visualization(self, save_path: Optional[str] = None):
+        """Create DML visualization.
+        
+        Args:
+            save_path: Path to save visualization
+        """
+        logger.info(f"DML visualization would be saved to {save_path}")
+        # Placeholder for DML-specific visualizations
+        pass
