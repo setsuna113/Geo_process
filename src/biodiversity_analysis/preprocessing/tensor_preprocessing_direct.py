@@ -137,30 +137,48 @@ class TensorPreprocessor:
         logger.info(f"Sparse tensor created: shape={shape}, nnz={nnz:,}, sparsity={sparsity:.1%}")
         logger.info("NO GRIDDING performed - using data at native resolution!")
         
-        # Create a minimal dense representation for compatibility
-        # Note: We'll primarily use the indices/values for sparse operations
-        # This is just a placeholder for the tensor field
-        tensor_placeholder = np.zeros((1, 1, 1), dtype=np.float32)  # Minimal placeholder
+        # Create dense tensor - always create full tensor for consistency
+        tensor = np.zeros(shape, dtype=np.float32)
+        weights = np.zeros(shape, dtype=np.float32)  # Start with zeros for weights
         
-        # Weights are all 1 for observed values
-        weights = np.ones(shape, dtype=np.float32) if nnz < 1e6 else None  # Only create if small
+        # Fill in the observed values
+        for idx, val in zip(indices, data_values):
+            i, j, k = idx
+            tensor[i, j, k] = val
+            weights[i, j, k] = 1.0  # Mark as observed
         
-        # Return TensorData
+        # Store sparse representation in metadata for efficiency
+        sparse_data = {
+            'indices': indices,
+            'values': data_values,
+            'shape': shape,
+            'nnz': nnz,
+            'sparsity': sparsity
+        }
+        
+        # Create full coordinate list - TensorData expects this
+        coord_list = []
+        for i, y in enumerate(y_unique):
+            for j, x in enumerate(x_unique):
+                coord_list.append((y, x))  # (lat, lon) format
+        
+        # Return TensorData with proper structure
         return TensorData(
-            tensor=tensor_placeholder,  # Placeholder - actual data is in indices/values
-            indices=indices,
-            values=data_values,
+            tensor=tensor,
             weights=weights,
-            shape=shape,
-            ndim=3,
-            sparsity=sparsity,
-            coordinates={'x': x_unique, 'y': y_unique},
+            coordinates=coord_list,  # Full coordinate list required
             feature_names=feature_cols,
             metadata={
                 'source': 'parquet_direct',
                 'n_points': len(df),
                 'transform': transform,
                 'no_gridding': True,
-                'coordinate_system': 'geographic'
-            }
+                'coordinate_system': 'geographic',
+                'actual_shape': shape,
+                'actual_sparsity': sparsity,
+                'sparse_data': sparse_data,  # Store sparse representation
+                'x_coords': x_unique.tolist(),
+                'y_coords': y_unique.tolist()
+            },
+            is_sparse=sparsity > 0.5
         )

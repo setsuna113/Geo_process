@@ -267,8 +267,19 @@ class BiomeReporter:
         lon_bins = np.linspace(-180, 180, n_lon + 1)
         lon_grid, lat_grid = np.meshgrid(lon_bins, lat_bins)
         
-        # Plot biomes
-        im = ax.pcolormesh(lon_grid, lat_grid, dominant_component, 
+        # Interpolate for smoother visualization
+        from scipy.ndimage import zoom
+        # Upsample by factor of 5 for smoother appearance
+        zoom_factor = 5
+        dominant_component_smooth = zoom(dominant_component, zoom_factor, order=0)  # Nearest neighbor for discrete values
+        
+        # Create higher resolution coordinate grids
+        lat_bins_hr = np.linspace(-90, 90, n_lat * zoom_factor + 1)
+        lon_bins_hr = np.linspace(-180, 180, n_lon * zoom_factor + 1)
+        lon_grid_hr, lat_grid_hr = np.meshgrid(lon_bins_hr, lat_bins_hr)
+        
+        # Plot biomes with higher resolution
+        im = ax.pcolormesh(lon_grid_hr, lat_grid_hr, dominant_component_smooth, 
                           cmap=cmap, vmin=-1, vmax=n_components-1,
                           alpha=0.8, shading='auto')
         
@@ -408,26 +419,29 @@ class BiomeReporter:
         feat_factor = factors[2]
         
         # Select three features for RGB channels
-        # Preferably: plants (R), terrestrial (G), fungi (B)
+        # Map our actual features: plants (R), animals (G), fungi (B)
         feature_indices = {
             'plants': None,
-            'terrestrial': None,
+            'animals': None,
             'fungi': None
         }
         
         for i, name in enumerate(feature_names):
             if 'plant' in name.lower():
                 feature_indices['plants'] = i
-            elif 'terrestrial' in name.lower():
-                feature_indices['terrestrial'] = i
+            elif 'animal' in name.lower():
+                feature_indices['animals'] = i
             elif 'fungi' in name.lower() or 'fung' in name.lower():
-                if feature_indices['fungi'] is None:
+                # Use AM fungi as primary fungi for RGB (more widespread)
+                if 'am' in name.lower() and feature_indices['fungi'] is None:
+                    feature_indices['fungi'] = i
+                elif feature_indices['fungi'] is None:
                     feature_indices['fungi'] = i
         
         # Create RGB channels
         rgb_image = np.zeros((*tensor_shape[:2], 3))
         
-        channels = ['plants', 'terrestrial', 'fungi']
+        channels = ['plants', 'animals', 'fungi']
         colors = ['red', 'green', 'blue']
         
         for chan_idx, (channel, color) in enumerate(zip(channels, colors)):

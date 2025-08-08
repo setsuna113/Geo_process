@@ -401,17 +401,28 @@ class CPWOPT:
         handler = HiCOOHandler()
         
         # Create temporary TensorData for HiCOO conversion
+        # Generate coordinate list for TensorData (required)
+        coord_list = []
+        for i in range(tensor.shape[0]):
+            for j in range(tensor.shape[1]):
+                coord_list.append((i, j))  # Use indices as coordinates
+        
+        # Create feature names
+        feature_names = [f"feature_{i}" for i in range(tensor.shape[2])]
+        
         tensor_data = TensorData(
             tensor=tensor,
             weights=weights,
-            shape=tensor.shape,
-            ndim=tensor.ndim,
-            sparsity=0.95  # Approximate for biodiversity data
+            coordinates=coord_list,
+            feature_names=feature_names,
+            metadata={'temporary': True, 'original_shape': tensor.shape},
+            is_sparse=True
         )
         
         # Convert to HiCOO and compute MTTKRP
         hicoo_tensor = handler.to_hicoo(tensor_data)
-        mttkrp_result = handler.compute_mttkrp_hicoo(
+        # Use the hicoo_mttkrp method - pass backend object, not xp
+        mttkrp_result = handler.hicoo_mttkrp(
             hicoo_tensor, factors, mode, self.backend
         )
         
@@ -649,12 +660,14 @@ class CPWOPT:
         """Reconstruct the tensor from learned factors.
         
         Returns:
-            Reconstructed tensor
+            Reconstructed tensor (as numpy array)
         """
         if self.factors_ is None:
             raise ValueError("Model must be fitted before predict")
             
-        return cp_reconstruct(self.factors_.factors)
+        # Convert factors to CPU/numpy for reconstruction
+        factors_cpu = [self.backend.to_cpu(f) for f in self.factors_.factors]
+        return cp_reconstruct(factors_cpu)
     
     def reconstruct(self) -> np.ndarray:
         """Alias for predict() - reconstruct the tensor from learned factors.
@@ -668,13 +681,14 @@ class CPWOPT:
         """Get factor matrices organized by mode name.
         
         Returns:
-            Dictionary mapping mode name to factor matrix
+            Dictionary mapping mode name to factor matrix (as numpy arrays)
         """
         if self.factors_ is None:
             raise ValueError("Model must be fitted first")
             
+        # Convert to CPU/numpy arrays if on GPU
         return {
-            name: factor
+            name: self.backend.to_cpu(factor)
             for name, factor in zip(self.factors_.mode_names, self.factors_.factors)
         }
     
@@ -696,16 +710,20 @@ class CPWOPT:
             
         top_features = {}
         
+        # Get array module (numpy or cupy)
+        xp = self.backend.get_array_module()
+        
         for mode_name, factor in zip(self.factors_.mode_names, self.factors_.factors):
-            # Get loadings for this component
-            loadings = np.abs(factor[:, component])
+            # Get loadings for this component (using appropriate array module)
+            loadings = xp.abs(factor[:, component])
             
             # Get top indices
-            top_idx = np.argsort(loadings)[-n_top:][::-1]
+            top_idx = xp.argsort(loadings)[-n_top:][::-1]
             
+            # Convert to CPU/numpy for output
             top_features[mode_name] = {
-                'indices': top_idx,
-                'loadings': loadings[top_idx]
+                'indices': self.backend.to_cpu(top_idx),
+                'loadings': self.backend.to_cpu(loadings[top_idx])
             }
             
         return top_features

@@ -4,18 +4,18 @@
 # Data processing configuration
 data_processing:
   data_path: 'data/merged/biodiversity_climate_1x_production.parquet'  # 1.7GB file with 51.9M points
-  spatial_grid_step: 1       # Use ALL points - RTX 4090 can handle it!
+  spatial_grid_step: 10       # PRODUCTION: Sample every 10th point (5.19M points)
   random_seed: 42            # Random seed for reproducibility
   coordinate_cols: ['x', 'y'] # Explicit coordinate columns
-  # Use 4 biodiversity bands (can add climate bands if needed)
+  # Use ONLY 4 biodiversity bands as input features
   feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
 
 # Algorithm parameters
 algorithm:
-  rank: 4                     # 4 biodiversity features → max 4 independent patterns
-  max_iterations: 1000        # Maximum ALS iterations
+  rank: 'auto'                # Use automatic rank selection
+  max_iterations: 5000        # Allow more iterations for convergence
   convergence_threshold: 1e-6 # Relative error threshold
-  init_method: 'nndsvd'       # Non-negative Double SVD - better for sparse non-negative data
+  init_method: 'nndsvd'       # Non-negative double SVD (better for sparse data)
   optimizer: 'als'            # Optimizer: 'als' is most stable for large-scale
   random_state: 42            # For reproducibility
   learning_rate: 0.01         # Learning rate for SGD methods
@@ -23,11 +23,12 @@ algorithm:
 
 # Rank selection parameters (when rank='auto')
 rank_selection:
-  method: 'elbow'             # Selection method: 'elbow', 'cross_validation', 'core_consistency'
-  min_rank: 2                 # Minimum meaningful components
-  max_rank: 4                 # Cannot exceed number of features (4 biodiversity bands)
-  n_trials: 3                 # Number of trials per rank for stability
+  method: 'greedy'            # Use greedy expansion with BIC selection
+  min_rank: 2                 # Start with 2 components
+  max_rank: 30                # PRODUCTION: Test up to 30 components for complex patterns
+  fit_improvement_threshold: 0.002  # PRODUCTION: Stricter improvement threshold (0.2%)
   plot: true                  # Generate diagnostic plot
+  target_fit: 0.75            # PRODUCTION: Target 75% fit quality for better reconstruction
 
 # Tensor construction parameters
 tensor_construction:
@@ -67,7 +68,9 @@ optimization:
   momentum: 0.9             # Momentum parameter
   gradient_iterations: 10   # Inner gradient steps
   line_search: true         # Use line search
-  regularization: 1e-4      # Small L2 regularization for stability
+  regularization: 1e-5      # Reduced L2 regularization for better fit
+  extrapolation: true       # Enable Anderson acceleration for faster convergence
+  extrapolation_memory: 5   # Memory for extrapolation
 
 # Component interpretation
 interpretation:
@@ -78,10 +81,10 @@ interpretation:
 
 # Memory management
 memory:
-  max_tensor_gb: 20.0        # Conservative for RTX 4090's 24GB VRAM
+  max_tensor_gb: 22.0        # PRODUCTION: Use most of RTX 4090's 24GB VRAM
   chunk_memory_fraction: 0.9 # Can use more with dedicated GPU memory
   enable_checkpointing: true # Save intermediate results
-  checkpoint_interval: 50    # Checkpoint frequency
+  checkpoint_interval: 100   # PRODUCTION: Less frequent checkpoints for performance
 
 # Parallel processing
 parallel:
@@ -92,10 +95,10 @@ parallel:
 
 # Convergence monitoring
 convergence:
-  patience: 20              # More patience for large dataset
-  min_improvement: 1e-5     # Tighter improvement threshold
+  patience: 100             # PRODUCTION: More patience for thorough convergence
+  min_improvement: 1e-7     # PRODUCTION: Very tight improvement threshold
   check_interval: 10        # Check convergence every N iterations
-  early_stopping: true      # Enable early stopping
+  early_stopping: false     # Disable early stopping - run full iterations
 
 # Output configuration
 output:
@@ -127,7 +130,7 @@ reporting:
 
 # Backend configuration
 backend:
-  use_gpu: 'gpu'           # Force GPU - we have RTX 4090 with 24GB!
+  use_gpu: 'auto'          # Auto-detect GPU availability (use if CuPy installed)
 
 # SAMPLING REMOVED - Use only spatial_grid_step in data_processing
 # Leverage sampling impossible (needs decomposition first - circular dependency)

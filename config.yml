@@ -602,7 +602,7 @@ spatial_analysis:
       
     # Production CP-WOPT analysis
     production_cpwopt:
-      input_parquet: 'outputs/biodiversity_global.parquet'
+      input_parquet: 'data/merged/biodiversity_climate_1x_production.parquet'
       method: 'cpwopt'
       # NO method-specific parameters here!
       
