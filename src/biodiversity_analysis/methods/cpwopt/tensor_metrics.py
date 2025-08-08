@@ -195,15 +195,29 @@ class CPWOPTMetricsCalculator(ITensorMetricsCalculator):
         """Calculate variance explained by the decomposition.
         
         Args:
-            tensor: Original tensor
+            tensor: Original tensor (numpy or cupy array)
             factors: CP factors
             weights: Optional weight mask
             
         Returns:
             Proportion of variance explained (0-1)
         """
+        # Convert to numpy if needed (for CuPy arrays)
+        if hasattr(tensor, 'get'):
+            tensor = tensor.get()
+        
         if weights is None:
             weights = np.ones_like(tensor)
+        elif hasattr(weights, 'get'):
+            weights = weights.get()
+        
+        # Convert factors to numpy if needed
+        factors_np = []
+        for f in factors.factors:
+            if hasattr(f, 'get'):
+                factors_np.append(f.get())
+            else:
+                factors_np.append(f)
         
         # Clean tensor
         tensor_clean = np.nan_to_num(tensor, nan=0.0)
@@ -221,7 +235,7 @@ class CPWOPTMetricsCalculator(ITensorMetricsCalculator):
             return 1.0  # No variance to explain
         
         # Calculate residual variance
-        reconstructed = cp_reconstruct(factors.factors)
+        reconstructed = cp_reconstruct(factors_np)
         residual = (tensor_clean - reconstructed)[valid_mask]
         residual_var = np.var(residual)
         

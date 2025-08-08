@@ -51,6 +51,36 @@ presets:
     interpretation:
       top_n_features: 20
       
+  # Production - optimized for 51.9M point biodiversity dataset
+  production:
+    algorithm:
+      rank: 3  # Likely 3 components for 4 correlated biodiversity features
+      max_iterations: 1000
+      convergence_threshold: 1e-6
+      init_method: 'nndsvd'  # Best for non-negative sparse data
+    rank_selection:  # If using auto rank
+      method: 'elbow'
+      min_rank: 2  # Minimum meaningful components
+      max_rank: 4  # Cannot exceed number of features
+    sparse:
+      force_sparse: true
+      sparsity_threshold: 0.5
+      storage_format: 'hicoo'
+    constraints:
+      nonnegative: true  # Species richness is non-negative
+    optimization:
+      regularization: 1e-4  # Small regularization for stability
+    convergence:
+      patience: 20
+      min_improvement: 1e-5
+    backend:
+      use_gpu: 'gpu'  # Force GPU usage
+    memory:
+      max_tensor_gb: 20.0  # Conservative for 24GB VRAM
+      chunk_memory_fraction: 0.9
+    parallel:
+      n_workers: 32  # Match system cores
+      
 # Default values for all parameters
 defaults:
   algorithm:

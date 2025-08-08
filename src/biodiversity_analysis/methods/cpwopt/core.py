@@ -7,12 +7,10 @@ optimization, specifically designed for sparse biodiversity data.
 import numpy as np
 import logging
 from typing import List, Optional, Dict, Any, Tuple, Callable
-from dataclasses import dataclass
 import time
 
 from src.abstractions.types.tensor_types import (
-    TensorData, CPFactors, TensorMetrics, TensorDecompositionResult,
-    TensorOptimizer, FactorInitMethod
+    TensorData, CPFactors, TensorMetrics
 )
 from src.biodiversity_analysis.shared.tensor_utils import (
     initialize_factors, compute_mttkrp, cp_reconstruct,
@@ -39,7 +37,10 @@ class CPWOPT:
                  init_method: str = DEFAULT_INIT_METHOD,
                  optimizer: str = DEFAULT_OPTIMIZER,
                  random_state: Optional[int] = None,
-                 verbose: bool = True):
+                 verbose: bool = True,
+                 use_gpu: str = 'auto',
+                 learning_rate: float = 0.01,
+                 momentum: float = 0.9):
         """Initialize CP-WOPT algorithm.
         
         Args:
@@ -47,9 +48,18 @@ class CPWOPT:
             max_iterations: Maximum number of iterations
             convergence_threshold: Relative error threshold for convergence
             init_method: Factor initialization method
-            optimizer: Optimization algorithm ('als' or 'lbfgs')
+            optimizer: Optimization algorithm ('als', 'gradient', 'sgd_momentum')
             random_state: Random seed for reproducibility
             verbose: Whether to log progress
+            use_gpu: Device selection ('auto', 'cpu', 'gpu')
+            learning_rate: Learning rate for SGD methods
+            momentum: Momentum parameter for SGD with momentum
+            
+        Attributes:
+            sparse_config: Configuration for HiCOO sparse tensor format
+                - block_size: Size of blocks for HiCOO format (default: 128)
+                - memory_factor: Memory usage factor (default: 0.9)
+                - format: Sparse format to use ('hicoo')
         """
         if rank <= 0:
             raise ValueError(ERROR_INVALID_RANK.format(rank))
@@ -61,6 +71,23 @@ class CPWOPT:
         self.optimizer = optimizer
         self.random_state = random_state
         self.verbose = verbose
+        self.learning_rate = learning_rate
+        self.momentum = momentum
+        
+        # Initialize backend
+        from .backend import CPWOPTBackend
+        self.backend = CPWOPTBackend(use_gpu)
+        
+        # Initialize sparse configuration
+        self.sparse_config = {
+            'block_size': HICOO_BLOCK_SIZE,
+            'memory_factor': HICOO_MEMORY_FACTOR,
+            'format': 'hicoo'
+        }
+        
+        # Initialize factor updater
+        from .factor_updater import FactorUpdater
+        self.updater = FactorUpdater(method=optimizer, backend=self.backend)
         
         # State variables
         self.factors_: Optional[CPFactors] = None
@@ -93,9 +120,17 @@ class CPWOPT:
             
         factors = self._initialize_factors(tensor_data)
         
-        # Optimize
+        # Transfer tensor to device if using GPU
+        if self.backend.device == 'gpu':
+            tensor_data = self.backend.transfer_tensor_data(tensor_data)
+        
+        # Optimize based on selected optimizer
         if self.optimizer == 'als':
             factors, metrics = self._fit_als(tensor_data, factors)
+        elif self.optimizer in ['gradient', 'sgd']:
+            factors, metrics = self._fit_sgd(tensor_data, factors)
+        elif self.optimizer == 'sgd_momentum':
+            factors, metrics = self._fit_sgd_momentum(tensor_data, factors)
         else:
             raise NotImplementedError(f"Optimizer '{self.optimizer}' not implemented")
         
@@ -122,13 +157,36 @@ class CPWOPT:
             logger.warning(WARNING_RANK_TOO_HIGH.format(self.rank, tensor_data.shape))
     
     def _initialize_factors(self, tensor_data: TensorData) -> CPFactors:
-        """Initialize factor matrices."""
+        """Initialize factor matrices with validation.
+        
+        Args:
+            tensor_data: Input tensor data
+            
+        Returns:
+            Initialized CPFactors with validated dimensions
+            
+        Raises:
+            ValueError: If factor dimensions don't match tensor shape
+        """
         factors = initialize_factors(
             tensor_data.shape,
             self.rank,
             method=self.init_method,
             random_state=self.random_state
         )
+        
+        # Validate factor dimensions match tensor shape
+        for i, (factor, dim) in enumerate(zip(factors, tensor_data.shape)):
+            if factor.shape[0] != dim:
+                raise ValueError(
+                    f"Factor {i} dimension mismatch: "
+                    f"got {factor.shape[0]}, expected {dim}"
+                )
+            if factor.shape[1] != self.rank:
+                raise ValueError(
+                    f"Factor {i} rank mismatch: "
+                    f"got {factor.shape[1]}, expected {self.rank}"
+                )
         
         mode_names = ['latitude', 'longitude', 'features']
         
@@ -140,37 +198,74 @@ class CPWOPT:
     
     def _fit_als(self, tensor_data: TensorData, 
                  factors: CPFactors) -> Tuple[CPFactors, TensorMetrics]:
-        """Fit using Alternating Least Squares.
+        """Fit using Alternating Least Squares with optimized GPU memory management.
         
-        This is the core optimization loop for CP-WOPT.
+        Keeps data on device throughout iterations to avoid transfer overhead.
         """
-        tensor = tensor_data.tensor
-        weights = tensor_data.weights
+        # Get backend array module (numpy or cupy)
+        xp = self.backend.get_array_module()
         
-        # Replace NaN with 0 for computation
-        tensor_clean = np.nan_to_num(tensor, nan=0.0)
+        # Transfer tensor data to device ONCE at the beginning
+        try:
+            tensor = self.backend.to_device(tensor_data.tensor)
+            weights = self.backend.to_device(tensor_data.weights)
+            tensor_clean = xp.nan_to_num(tensor, nan=NAN_REPLACEMENT_VALUE)
+        except Exception as e:
+            if 'out of memory' in str(e).lower():
+                logger.error(ERROR_CUDA_OOM)
+                raise RuntimeError(ERROR_CUDA_OOM) from e
+            else:
+                logger.error(ERROR_CUDA_DEVICE.format(str(e)))
+                raise RuntimeError(ERROR_CUDA_DEVICE.format(str(e))) from e
+        
+        # CRITICAL FIX: Convert to HiCOO ONCE before the loop!
+        # This was being done inside _update_factor_als_device on EVERY iteration
+        from .sparse_handler import SparseHandler
+        handler = SparseHandler()  # No config needed - HiCOO only
+        
+        # Create TensorData for HiCOO conversion (done ONCE)
+        # Use empty coordinates for temporary tensor (validation allows this)
+        feature_names = [f"feature_{i}" for i in range(tensor.shape[2])]
+        tensor_data_hicoo = TensorData(
+            tensor=tensor_clean,
+            weights=weights,
+            coordinates=[],  # Empty is allowed for grid-based tensors
+            feature_names=feature_names,
+            metadata={'temporary': True, 'original_shape': tensor.shape},
+            is_sparse=True
+        )
+        hicoo_tensor = handler.to_sparse(tensor_data_hicoo)  # Converts to HiCOO
+        
+        # Transfer factors to device ONCE
+        for mode in range(len(factors.factors)):
+            factors.factors[mode] = self.backend.to_device(factors.factors[mode])
+        
+        # Pre-compute tensor norm ONCE (doesn't change)
+        tensor_norm = float(xp.sqrt(xp.sum(tensor_clean * tensor_clean * weights)))
         
         # Track convergence
         errors = []
         prev_error = np.inf
         
-        # Main ALS loop
+        # Main ALS loop - ALL operations stay on device
         for iteration in range(self.max_iterations):
             
-            # Update each mode
+            # Update each mode (on device)
             for mode in range(tensor.ndim):
-                # Update factor for this mode
-                factors.factors[mode] = self._update_factor_als(
-                    tensor_clean, weights, factors.factors, mode
+                # Perform ALS update directly on device with pre-converted HiCOO
+                updated_factor = self._update_factor_als_device(
+                    hicoo_tensor, handler, factors.factors, mode, xp
                 )
+                factors.factors[mode] = updated_factor
             
-            # Calculate reconstruction error
-            reconstructed = cp_reconstruct(factors.factors)
-            residual = (tensor_clean - reconstructed) * weights
-            error = weighted_norm(residual, weights)
+            # Calculate error on device (only transfer final scalar)
+            error = self._compute_error_device(
+                tensor_clean, weights, factors.factors, xp
+            )
+            error = float(error)  # Only transfer this scalar
             
-            # Calculate relative error and fit
-            tensor_norm = weighted_norm(tensor_clean, weights)
+            
+            # Calculate relative error and fit (on device)
             rel_error = error / (tensor_norm + EPSILON)
             fit = 1.0 - rel_error
             
@@ -179,6 +274,13 @@ class CPWOPT:
             # Log progress
             if self.verbose and iteration % PROGRESS_INTERVAL == 0:
                 logger.info(f"Iteration {iteration}: fit={fit:.4f}, error={error:.4e}")
+                
+                # Monitor GPU memory less frequently (every 50 iterations)
+                # to avoid overhead in the hot path
+                if self.backend.device == 'gpu' and iteration % 50 == 0:
+                    mem_info = self.backend.get_memory_info()
+                    if mem_info.get('memory_pressure') == 'high':
+                        logger.warning(f"High GPU memory usage: {mem_info.get('usage_percent', 0):.1f}%")
                 
             # Progress callback
             if self.progress_callback:
@@ -206,6 +308,10 @@ class CPWOPT:
             convergence_history=errors
         )
         
+        # PERFORMANCE: Batch transfer factors back to CPU
+        # Transfer all factors at once to minimize overhead
+        factors.factors = [self.backend.to_cpu(f) for f in factors.factors]
+        
         # Calculate component weights (norm of each component)
         component_weights = np.zeros(self.rank)
         for r in range(self.rank):
@@ -224,8 +330,227 @@ class CPWOPT:
         
         return factors, metrics
     
-    def _update_factor_als(self, tensor: np.ndarray, weights: np.ndarray,
-                          factors: List[np.ndarray], mode: int) -> np.ndarray:
+    def _fit_sgd(self, tensor_data: TensorData, 
+                 initial_factors: CPFactors) -> Tuple[CPFactors, TensorMetrics]:
+        """Fit CP decomposition using stochastic gradient descent.
+        
+        Uses the gradient update from factor_updater.py.
+        
+        Args:
+            tensor_data: Input tensor with weight mask
+            initial_factors: Initial factor matrices
+            
+        Returns:
+            Tuple of (optimized factors, metrics)
+        """
+        if self.verbose:
+            logger.info(f"Starting SGD optimization (lr={self.learning_rate})")
+        
+        factors = initial_factors
+        convergence_history = []
+        
+        for iteration in range(self.max_iterations):
+            # Update each factor using gradient descent
+            for mode in range(len(factors.factors)):
+                factors.factors[mode] = self.updater._update_gradient(
+                    tensor_data.values,
+                    tensor_data.weights,
+                    factors.factors,
+                    mode,
+                    learning_rate=self.learning_rate,
+                    momentum=0.0,  # No momentum for basic SGD
+                    n_iterations=1  # Single gradient step per mode
+                )
+            
+            # Check convergence periodically
+            if iteration % 10 == 0:
+                error = weighted_norm(
+                    tensor_data.values - cp_reconstruct(factors),
+                    tensor_data.weights
+                )
+                convergence_history.append(error)
+                
+                if self.verbose and iteration % 50 == 0:
+                    logger.info(f"Iteration {iteration}: error={error:.6f}")
+                
+                if len(convergence_history) > 1:
+                    if check_convergence(convergence_history, self.convergence_threshold):
+                        if self.verbose:
+                            logger.info(f"Converged at iteration {iteration}")
+                        break
+            
+            # Update iteration count
+            self.n_iterations_ = iteration + 1
+        
+        # Compute final metrics
+        metrics = self._compute_metrics(tensor_data, factors)
+        self.convergence_history_ = convergence_history
+        
+        return factors, metrics
+    
+    def _fit_sgd_momentum(self, tensor_data: TensorData,
+                         initial_factors: CPFactors) -> Tuple[CPFactors, TensorMetrics]:
+        """Fit CP decomposition using SGD with momentum.
+        
+        Uses the existing _update_gradient from factor_updater.py with momentum.
+        
+        Args:
+            tensor_data: Input tensor with weight mask
+            initial_factors: Initial factor matrices
+            
+        Returns:
+            Tuple of (optimized factors, metrics)
+        """
+        if self.verbose:
+            logger.info(f"Starting SGD with momentum (lr={self.learning_rate}, "
+                       f"momentum={self.momentum})")
+        
+        factors = initial_factors
+        convergence_history = []
+        
+        for iteration in range(self.max_iterations):
+            # Update each factor using gradient descent with momentum
+            for mode in range(len(factors.factors)):
+                factors.factors[mode] = self.updater._update_gradient(
+                    tensor_data.values,
+                    tensor_data.weights,
+                    factors.factors,
+                    mode,
+                    learning_rate=self.learning_rate,
+                    momentum=self.momentum,
+                    n_iterations=1  # Single gradient step per mode
+                )
+            
+            # Check convergence periodically
+            if iteration % 10 == 0:
+                error = weighted_norm(
+                    tensor_data.values - cp_reconstruct(factors),
+                    tensor_data.weights
+                )
+                convergence_history.append(error)
+                
+                if self.verbose and iteration % 50 == 0:
+                    logger.info(f"Iteration {iteration}: error={error:.6f}")
+                
+                if len(convergence_history) > 1:
+                    if check_convergence(convergence_history, self.convergence_threshold):
+                        if self.verbose:
+                            logger.info(f"Converged at iteration {iteration}")
+                        break
+            
+            # Callback for progress tracking
+            if self.progress_callback:
+                self.progress_callback(iteration, error)
+            
+            # Update iteration count
+            self.n_iterations_ = iteration + 1
+        
+        # Compute final metrics
+        metrics = self._compute_metrics(tensor_data, factors)
+        self.convergence_history_ = convergence_history
+        
+        return factors, metrics
+    
+    def _update_factor_als_device(self, hicoo_tensor, handler, factors: List, 
+                                  mode: int, xp):
+        """Update factor on device using pre-converted HiCOO MTTKRP.
+        
+        PERFORMANCE FIX: HiCOO tensor is now pre-converted ONCE before the loop
+        instead of being converted on EVERY iteration!
+        
+        Args:
+            hicoo_tensor: Pre-converted HiCOO tensor (converted ONCE)
+            handler: SparseHandler instance for operations
+            factors: Factor matrices on device
+            mode: Mode to update
+            xp: Array module (numpy or cupy)
+            
+        Returns:
+            Updated factor matrix on device
+        """
+        # CRITICAL FIX: No more HiCOO conversion here!
+        # The tensor is already in HiCOO format
+        
+        # Directly use the pre-converted HiCOO tensor for MTTKRP
+        # The handler wraps HiCOOHandler, so use its hicoo instance
+        mttkrp_result = handler.hicoo.hicoo_mttkrp(
+            hicoo_tensor, factors, mode, self.backend
+        )
+        
+        # Compute Gram matrices for other modes
+        gram_matrices = []
+        for m in range(len(factors)):
+            if m != mode:
+                gram = xp.dot(factors[m].T, factors[m])
+                gram_matrices.append(gram)
+        
+        # Hadamard product of Gram matrices
+        gram_product = gram_matrices[0]
+        for g in gram_matrices[1:]:
+            gram_product = gram_product * g
+        
+        # Solve for updated factor (with regularization for stability)
+        reg = REGULARIZATION_LAMBDA * xp.eye(gram_product.shape[0])
+        updated_factor = xp.linalg.solve(gram_product + reg, mttkrp_result.T).T
+        
+        return updated_factor
+    
+    def _compute_error_device(self, tensor, weights, factors: List, xp):
+        """Compute reconstruction error on device.
+        
+        Args:
+            tensor: Tensor on device
+            weights: Weights on device  
+            factors: Factor matrices on device
+            xp: Array module (numpy or cupy)
+            
+        Returns:
+            Scalar error value on device
+        """
+        # Efficient error computation using Frobenius norm
+        # ||W * (X - [[factors]])||_F^2
+        
+        # Compute factor Gram matrices
+        gram_matrices = [xp.dot(f.T, f) for f in factors]
+        
+        # Compute ||[[factors]]||_F^2 efficiently
+        factor_norm_sq = xp.ones((factors[0].shape[1],))
+        for gram in gram_matrices:
+            factor_norm_sq = factor_norm_sq * xp.diag(gram)
+        factor_norm_sq = xp.sum(factor_norm_sq)
+        
+        # Compute <X, [[factors]]> using MTTKRP for all modes
+        # This is more efficient than reconstructing full tensor
+        inner_product = 0
+        for mode in range(len(factors)):
+            mttkrp = xp.zeros_like(factors[mode])
+            
+            # Compute MTTKRP for each mode
+            if len(factors) == 3:  # 3D tensor case
+                for r in range(factors[0].shape[1]):
+                    if mode == 0:
+                        slice_prod = xp.outer(factors[1][:, r], factors[2][:, r])
+                        mttkrp[:, r] = xp.einsum('ijk,jk->i', tensor * weights, slice_prod)
+                    elif mode == 1:
+                        slice_prod = xp.outer(factors[0][:, r], factors[2][:, r])
+                        mttkrp[:, r] = xp.einsum('ijk,ik->j', tensor * weights, slice_prod)
+                    else:  # mode == 2
+                        slice_prod = xp.outer(factors[0][:, r], factors[1][:, r])
+                        mttkrp[:, r] = xp.einsum('ijk,ij->k', tensor * weights, slice_prod)
+            else:
+                # General n-dimensional case
+                raise NotImplementedError("Error computation for n-D tensors not yet implemented")
+            
+            inner_product += xp.sum(factors[mode] * mttkrp)
+        
+        # Compute error: ||X||^2 - 2<X, [[factors]]> + ||[[factors]]||^2
+        tensor_norm_sq = xp.sum(tensor * tensor * weights)
+        error = xp.sqrt(tensor_norm_sq - 2*inner_product + factor_norm_sq)
+        
+        return error
+    
+    def _update_factor_als(self, tensor, weights,
+                          factors: List, mode: int):
         """Update one factor matrix using weighted ALS.
         
         This solves: A = X_(n) (C ⊙ B)^T [(C^T C) * (B^T B)]^{-1}
@@ -284,7 +609,7 @@ class CPWOPT:
         # Vectorized update for all rows at once
         # Find rows with non-zero weights
         valid_rows = np.sum(weights_unfold, axis=1) > 0
-        n_valid = np.sum(valid_rows)
+        n_valid = int(np.sum(valid_rows))
         
         if n_valid == 0:
             # No valid data, return random initialization
@@ -397,12 +722,14 @@ class CPWOPT:
         """Reconstruct the tensor from learned factors.
         
         Returns:
-            Reconstructed tensor
+            Reconstructed tensor (as numpy array)
         """
         if self.factors_ is None:
             raise ValueError("Model must be fitted before predict")
             
-        return cp_reconstruct(self.factors_.factors)
+        # Convert factors to CPU/numpy for reconstruction
+        factors_cpu = [self.backend.to_cpu(f) for f in self.factors_.factors]
+        return cp_reconstruct(factors_cpu)
     
     def reconstruct(self) -> np.ndarray:
         """Alias for predict() - reconstruct the tensor from learned factors.
@@ -416,13 +743,14 @@ class CPWOPT:
         """Get factor matrices organized by mode name.
         
         Returns:
-            Dictionary mapping mode name to factor matrix
+            Dictionary mapping mode name to factor matrix (as numpy arrays)
         """
         if self.factors_ is None:
             raise ValueError("Model must be fitted first")
             
+        # Convert to CPU/numpy arrays if on GPU
         return {
-            name: factor
+            name: self.backend.to_cpu(factor)
             for name, factor in zip(self.factors_.mode_names, self.factors_.factors)
         }
     
@@ -444,16 +772,20 @@ class CPWOPT:
             
         top_features = {}
         
+        # Get array module (numpy or cupy)
+        xp = self.backend.get_array_module()
+        
         for mode_name, factor in zip(self.factors_.mode_names, self.factors_.factors):
-            # Get loadings for this component
-            loadings = np.abs(factor[:, component])
+            # Get loadings for this component (using appropriate array module)
+            loadings = xp.abs(factor[:, component])
             
             # Get top indices
-            top_idx = np.argsort(loadings)[-n_top:][::-1]
+            top_idx = xp.argsort(loadings)[-n_top:][::-1]
             
+            # Convert to CPU/numpy for output
             top_features[mode_name] = {
-                'indices': top_idx,
-                'loadings': loadings[top_idx]
+                'indices': self.backend.to_cpu(top_idx),
+                'loadings': self.backend.to_cpu(loadings[top_idx])
             }
             
         return top_features

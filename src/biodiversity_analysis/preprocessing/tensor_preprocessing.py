@@ -1,42 +1,38 @@
-"""Tensor preprocessing for biodiversity data.
+"""Tensor preprocessing utilities for biodiversity data.
 
-This module provides preprocessing specifically designed for tensor factorization,
-avoiding compositional transforms that would break tensor structure.
+This module provides utilities for converting biodiversity data into tensor format
+suitable for CP-WOPT decomposition.
 """
 
 import numpy as np
 import pandas as pd
-from typing import Tuple, Dict, Any, List, Optional
 import logging
+from typing import List, Tuple, Optional, Dict, Any, Union
 from scipy import stats
-from scipy.sparse import coo_matrix
+from sklearn.preprocessing import StandardScaler
 
-from src.abstractions.interfaces.tensor_analyzer import ITensorPreprocessor
 from src.abstractions.types.tensor_types import TensorData
 
 logger = logging.getLogger(__name__)
 
 
-class TensorPreprocessor(ITensorPreprocessor):
-    """Preprocessor for converting biodiversity data to tensor format.
-    
-    Key features:
-    - Grids irregular spatial data
-    - Handles extreme sparsity (>95% missing)
-    - Simple transformations that preserve tensor structure
-    - Mode-specific normalization
-    """
+class TensorPreprocessor:
+    """Preprocessor for converting biodiversity data to tensor format."""
     
     def __init__(self, 
                  missing_value: float = np.nan,
                  min_observations_per_cell: int = 1,
-                 aggregation_method: str = 'sum'):
+                 aggregation_method: str = 'mean'):
         """Initialize tensor preprocessor.
+        
+        NOTE: Sampling is now handled exclusively by ParquetLoader:
+        - Use spatial_grid_step for spatial grid sampling (every Nth point)
+        - Use sample_size for random sampling (N random points)
         
         Args:
             missing_value: Value to use for missing data
-            min_observations_per_cell: Minimum observations to consider cell valid
-            aggregation_method: How to aggregate multiple observations ('sum', 'mean', 'max')
+            min_observations_per_cell: Minimum observations required per grid cell
+            aggregation_method: How to aggregate multiple observations ('mean', 'sum', 'max')
         """
         self.missing_value = missing_value
         self.min_observations_per_cell = min_observations_per_cell
@@ -53,255 +49,84 @@ class TensorPreprocessor(ITensorPreprocessor):
             lon_bins: Number of longitude bins
             
         Returns:
-            Tuple of (gridded_tensor, grid_coordinates)
+            Tuple of (gridded_tensor, weight_mask)
         """
-        logger.info(f"Gridding {len(coordinates)} points into {lat_bins}x{lon_bins} grid")
+        if coordinates.shape[0] != values.shape[0]:
+            raise ValueError(f"Coordinate rows {coordinates.shape[0]} != value rows {values.shape[0]}")
         
-        # Create grid bounds
+        # Create bin edges
         lat_min, lat_max = coordinates[:, 0].min(), coordinates[:, 0].max()
         lon_min, lon_max = coordinates[:, 1].min(), coordinates[:, 1].max()
         
-        # Add small buffer to ensure all points fall within grid
-        lat_buffer = (lat_max - lat_min) * 0.001
-        lon_buffer = (lon_max - lon_min) * 0.001
-        
-        lat_edges = np.linspace(lat_min - lat_buffer, lat_max + lat_buffer, lat_bins + 1)
-        lon_edges = np.linspace(lon_min - lon_buffer, lon_max + lon_buffer, lon_bins + 1)
+        lat_edges = np.linspace(lat_min, lat_max, lat_bins + 1)
+        lon_edges = np.linspace(lon_min, lon_max, lon_bins + 1)
         
         # Initialize tensor
-        n_features = values.shape[1]
+        n_features = values.shape[1] if values.ndim > 1 else 1
         tensor = np.full((lat_bins, lon_bins, n_features), self.missing_value)
-        counts = np.zeros((lat_bins, lon_bins))
+        weights = np.zeros((lat_bins, lon_bins, n_features))
+        counts = np.zeros((lat_bins, lon_bins, n_features))
         
-        # Bin coordinates
+        # Bin the data
         lat_indices = np.digitize(coordinates[:, 0], lat_edges) - 1
         lon_indices = np.digitize(coordinates[:, 1], lon_edges) - 1
         
-        # Clip to valid range (handles edge cases)
+        # Clip to valid range
         lat_indices = np.clip(lat_indices, 0, lat_bins - 1)
         lon_indices = np.clip(lon_indices, 0, lon_bins - 1)
         
-        # Aggregate values into grid cells
+        # Aggregate values
         for i in range(len(coordinates)):
             lat_idx = lat_indices[i]
             lon_idx = lon_indices[i]
             
-            # Skip if values are all NaN
-            if np.all(np.isnan(values[i])):
-                continue
-                
-            if np.isnan(tensor[lat_idx, lon_idx, 0]):
-                # First value in cell
-                tensor[lat_idx, lon_idx] = values[i]
-                counts[lat_idx, lon_idx] = 1
+            if values.ndim == 1:
+                val = values[i]
+                if not np.isnan(val):
+                    if counts[lat_idx, lon_idx, 0] == 0:
+                        tensor[lat_idx, lon_idx, 0] = val
+                    else:
+                        if self.aggregation_method == 'mean':
+                            # Running mean
+                            n = counts[lat_idx, lon_idx, 0]
+                            tensor[lat_idx, lon_idx, 0] = (tensor[lat_idx, lon_idx, 0] * n + val) / (n + 1)
+                        elif self.aggregation_method == 'sum':
+                            tensor[lat_idx, lon_idx, 0] += val
+                        elif self.aggregation_method == 'max':
+                            tensor[lat_idx, lon_idx, 0] = max(tensor[lat_idx, lon_idx, 0], val)
+                    
+                    counts[lat_idx, lon_idx, 0] += 1
+                    weights[lat_idx, lon_idx, 0] = 1
             else:
-                # Aggregate with existing values
-                if self.aggregation_method == 'sum':
-                    # For sum, we need to handle NaN carefully
-                    for j in range(n_features):
-                        if not np.isnan(values[i, j]):
-                            if np.isnan(tensor[lat_idx, lon_idx, j]):
-                                tensor[lat_idx, lon_idx, j] = values[i, j]
-                            else:
-                                tensor[lat_idx, lon_idx, j] += values[i, j]
-                elif self.aggregation_method == 'mean':
-                    # Track for mean calculation later
-                    for j in range(n_features):
-                        if not np.isnan(values[i, j]):
-                            if np.isnan(tensor[lat_idx, lon_idx, j]):
-                                tensor[lat_idx, lon_idx, j] = values[i, j]
-                            else:
-                                tensor[lat_idx, lon_idx, j] += values[i, j]
-                elif self.aggregation_method == 'max':
-                    tensor[lat_idx, lon_idx] = np.nanmax([tensor[lat_idx, lon_idx], values[i]], axis=0)
-                
-                counts[lat_idx, lon_idx] += 1
+                for j in range(n_features):
+                    val = values[i, j]
+                    if not np.isnan(val):
+                        if counts[lat_idx, lon_idx, j] == 0:
+                            tensor[lat_idx, lon_idx, j] = val
+                        else:
+                            if self.aggregation_method == 'mean':
+                                n = counts[lat_idx, lon_idx, j]
+                                tensor[lat_idx, lon_idx, j] = (tensor[lat_idx, lon_idx, j] * n + val) / (n + 1)
+                            elif self.aggregation_method == 'sum':
+                                tensor[lat_idx, lon_idx, j] += val
+                            elif self.aggregation_method == 'max':
+                                tensor[lat_idx, lon_idx, j] = max(tensor[lat_idx, lon_idx, j], val)
+                        
+                        counts[lat_idx, lon_idx, j] += 1
+                        weights[lat_idx, lon_idx, j] = 1
         
-        # Apply mean if needed
-        if self.aggregation_method == 'mean':
-            for i in range(lat_bins):
-                for j in range(lon_bins):
-                    if counts[i, j] > 1:
-                        mask = ~np.isnan(tensor[i, j])
-                        tensor[i, j, mask] /= counts[i, j]
+        # Apply minimum observation threshold
+        insufficient_mask = counts < self.min_observations_per_cell
+        tensor[insufficient_mask] = self.missing_value
+        weights[insufficient_mask] = 0
         
-        # Create grid coordinates (cell centers)
-        lat_centers = (lat_edges[:-1] + lat_edges[1:]) / 2
-        lon_centers = (lon_edges[:-1] + lon_edges[1:]) / 2
+        # Replace missing values with 0 for CP decomposition
+        tensor[np.isnan(tensor)] = 0
         
-        grid_coords = []
-        for i in range(lat_bins):
-            for j in range(lon_bins):
-                grid_coords.append((lat_centers[i], lon_centers[j]))
+        logger.info(f"Gridded {len(coordinates)} points into {lat_bins}x{lon_bins}x{n_features} tensor")
+        logger.info(f"Grid cells with data: {np.sum(weights[:, :, 0] > 0)}/{lat_bins * lon_bins}")
         
-        # Log sparsity
-        n_valid = np.sum(counts >= self.min_observations_per_cell)
-        sparsity = 1.0 - (n_valid / (lat_bins * lon_bins))
-        logger.info(f"Grid sparsity: {sparsity:.2%} ({n_valid} valid cells)")
-        
-        return tensor, np.array(grid_coords)
-    
-    def create_weight_mask(self, tensor: np.ndarray) -> np.ndarray:
-        """Create weight mask for missing values.
-        
-        Args:
-            tensor: Input tensor (may contain NaN)
-            
-        Returns:
-            Binary weight mask (1 for observed, 0 for missing)
-        """
-        # Simple approach: 1 where not NaN, 0 where NaN
-        weights = (~np.isnan(tensor)).astype(np.float32)
-        
-        # Log statistics
-        n_observed = np.sum(weights)
-        n_total = tensor.size
-        logger.info(f"Weight mask: {n_observed}/{n_total} observed ({n_observed/n_total:.2%})")
-        
-        return weights
-    
-    def transform_features(self, tensor: np.ndarray, 
-                          method: str = 'log1p') -> np.ndarray:
-        """Apply feature transformation suitable for tensor factorization.
-        
-        Args:
-            tensor: Input tensor
-            method: Transformation method ('log1p', 'sqrt', 'none')
-            
-        Returns:
-            Transformed tensor
-        """
-        logger.info(f"Applying {method} transformation")
-        
-        # Create copy to avoid modifying input
-        transformed = tensor.copy()
-        
-        if method == 'log1p':
-            # log(x + 1) transformation - handles zeros well
-            # Only apply to non-negative values
-            mask = ~np.isnan(transformed) & (transformed >= 0)
-            transformed[mask] = np.log1p(transformed[mask])
-            
-        elif method == 'sqrt':
-            # Square root transformation
-            mask = ~np.isnan(transformed) & (transformed >= 0)
-            transformed[mask] = np.sqrt(transformed[mask])
-            
-        elif method == 'asinh':
-            # Inverse hyperbolic sine - handles negative values
-            mask = ~np.isnan(transformed)
-            transformed[mask] = np.arcsinh(transformed[mask])
-            
-        elif method == 'none':
-            # No transformation
-            pass
-            
-        else:
-            raise ValueError(f"Unknown transformation method: {method}")
-        
-        return transformed
-    
-    def normalize_modes(self, tensor: np.ndarray, 
-                       center: bool = True,
-                       scale: bool = True) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """Normalize tensor modes (dimensions).
-        
-        Args:
-            tensor: Input tensor
-            center: Whether to center each mode
-            scale: Whether to scale each mode
-            
-        Returns:
-            Tuple of (normalized_tensor, normalization_params)
-        """
-        logger.info(f"Normalizing modes (center={center}, scale={scale})")
-        
-        normalized = tensor.copy()
-        params = {
-            'center': center,
-            'scale': scale,
-            'means': {},
-            'stds': {}
-        }
-        
-        # Normalize each mode separately
-        n_modes = tensor.ndim
-        
-        for mode in range(n_modes):
-            # Move mode to first axis for easier processing
-            perm = list(range(n_modes))
-            perm[0], perm[mode] = perm[mode], perm[0]
-            tensor_perm = np.transpose(normalized, perm)
-            
-            # Flatten all other dimensions
-            mode_size = tensor_perm.shape[0]
-            tensor_flat = tensor_perm.reshape(mode_size, -1)
-            
-            # Calculate statistics ignoring NaN
-            if center:
-                means = np.nanmean(tensor_flat, axis=1)
-                params['means'][f'mode_{mode}'] = means
-                tensor_flat -= means[:, np.newaxis]
-            
-            if scale:
-                stds = np.nanstd(tensor_flat, axis=1)
-                # Avoid division by zero
-                stds[stds == 0] = 1.0
-                params['stds'][f'mode_{mode}'] = stds
-                tensor_flat /= stds[:, np.newaxis]
-            
-            # Reshape back and transpose to original order
-            tensor_perm = tensor_flat.reshape(tensor_perm.shape)
-            normalized = np.transpose(tensor_perm, np.argsort(perm))
-        
-        return normalized, params
-    
-    def create_sparse_tensor(self, tensor: np.ndarray, 
-                           threshold: float = 0.95) -> Optional[Dict[str, Any]]:
-        """Convert to sparse format if sparsity exceeds threshold.
-        
-        Args:
-            tensor: Input tensor
-            threshold: Sparsity threshold for conversion
-            
-        Returns:
-            Sparse representation or None if not sparse enough
-        """
-        # Calculate sparsity
-        n_missing = np.sum(np.isnan(tensor))
-        n_zeros = np.sum(tensor == 0, where=~np.isnan(tensor))
-        sparsity = (n_missing + n_zeros) / tensor.size
-        
-        if sparsity < threshold:
-            logger.info(f"Sparsity {sparsity:.2%} below threshold {threshold:.2%}, keeping dense")
-            return None
-        
-        logger.info(f"Converting to sparse format (sparsity: {sparsity:.2%})")
-        
-        # For 3D tensor, we need to handle this carefully
-        # Store as dictionary of 2D sparse matrices (one per feature)
-        sparse_data = {}
-        
-        if tensor.ndim == 3:
-            n_features = tensor.shape[2]
-            for f in range(n_features):
-                # Get 2D slice
-                slice_2d = tensor[:, :, f]
-                
-                # Replace NaN with 0 for sparse format
-                slice_clean = np.nan_to_num(slice_2d, nan=0.0)
-                
-                # Convert to COO format
-                sparse_data[f'feature_{f}'] = coo_matrix(slice_clean)
-        else:
-            raise NotImplementedError("Only 3D tensors supported for sparse conversion")
-        
-        return {
-            'sparse_matrices': sparse_data,
-            'shape': tensor.shape,
-            'sparsity': sparsity,
-            'format': 'coo'
-        }
+        return tensor, weights
     
     def dataframe_to_tensor(self, df: pd.DataFrame, 
                            lat_bins: int = 20,
@@ -334,106 +159,310 @@ class TensorPreprocessor(ITensorPreprocessor):
         values = df[feature_cols].values
         
         # Grid the data
-        tensor, grid_coords = self.grid_spatial_data(
-            coordinates, values, lat_bins, lon_bins
-        )
+        tensor, weights = self.grid_spatial_data(coordinates, values, lat_bins, lon_bins)
         
         # Apply transformation
-        if transform != 'none':
-            tensor = self.transform_features(tensor, method=transform)
+        tensor = self.transform_features(tensor, method=transform)
         
-        # Create weight mask
-        weights = self.create_weight_mask(tensor)
+        # Create coordinate grid for tensor
+        lat_min, lat_max = coordinates[:, 0].min(), coordinates[:, 0].max()
+        lon_min, lon_max = coordinates[:, 1].min(), coordinates[:, 1].max()
         
-        # Calculate sparsity
-        n_missing = np.sum(np.isnan(tensor))
-        n_zeros = np.sum(tensor == 0, where=~np.isnan(tensor))
-        sparsity = (n_missing + n_zeros) / tensor.size
+        lat_centers = np.linspace(lat_min, lat_max, lat_bins)
+        lon_centers = np.linspace(lon_min, lon_max, lon_bins)
+        
+        tensor_coords = []
+        for lat in lat_centers:
+            for lon in lon_centers:
+                tensor_coords.append((lat, lon))
         
         # Create TensorData object
-        return TensorData(
+        tensor_data = TensorData(
             tensor=tensor,
             weights=weights,
-            coordinates=[],  # Grid-based, so coordinates are implicit
+            coordinates=tensor_coords,
             feature_names=feature_cols,
             metadata={
-                'mode_names': ['latitude', 'longitude', 'features'],
                 'lat_bins': lat_bins,
                 'lon_bins': lon_bins,
                 'transform': transform,
                 'aggregation': self.aggregation_method,
-                'sparsity': sparsity
-            },
-            is_sparse=False
+                'original_shape': df.shape
+            }
         )
+        
+        return tensor_data
+    
+    def transform_features(self, tensor: np.ndarray, 
+                          method: str = 'log1p') -> np.ndarray:
+        """Apply transformation to tensor features.
+        
+        Args:
+            tensor: Input tensor
+            method: Transformation method ('log1p', 'sqrt', 'none', 'standardize')
+            
+        Returns:
+            Transformed tensor
+        """
+        if method == 'none':
+            return tensor
+        
+        # Apply transformation
+        if method == 'log1p':
+            # Log transform with offset for zeros
+            tensor = np.log1p(np.maximum(tensor, 0))
+        elif method == 'sqrt':
+            # Square root transform
+            tensor = np.sqrt(np.maximum(tensor, 0))
+        elif method == 'standardize':
+            # Standardize each feature
+            for i in range(tensor.shape[2]):
+                feature_slice = tensor[:, :, i]
+                valid_mask = feature_slice != 0
+                if np.any(valid_mask):
+                    mean = np.mean(feature_slice[valid_mask])
+                    std = np.std(feature_slice[valid_mask])
+                    if std > 0:
+                        tensor[:, :, i] = (feature_slice - mean) / std
+        elif method == 'robust':
+            # Robust scaling using median and MAD
+            for i in range(tensor.shape[2]):
+                feature_slice = tensor[:, :, i]
+                valid_mask = feature_slice != 0
+                if np.any(valid_mask):
+                    median = np.median(feature_slice[valid_mask])
+                    mad = np.median(np.abs(feature_slice[valid_mask] - median))
+                    if mad > 0:
+                        tensor[:, :, i] = (feature_slice - median) / (1.4826 * mad)
+        else:
+            logger.warning(f"Unknown transform method: {method}")
+        
+        return tensor
+    
+    def normalize_modes(self, tensor: np.ndarray, 
+                       mode_weights: Optional[List[float]] = None) -> np.ndarray:
+        """Normalize tensor modes to have similar scales.
+        
+        Args:
+            tensor: Input tensor
+            mode_weights: Optional weights for each mode
+            
+        Returns:
+            Normalized tensor
+        """
+        if mode_weights is None:
+            mode_weights = [1.0] * tensor.ndim
+        
+        # Normalize each mode
+        for mode in range(tensor.ndim):
+            # Compute mode norm
+            mode_norm = np.linalg.norm(tensor, axis=mode, keepdims=True)
+            mode_norm[mode_norm == 0] = 1  # Avoid division by zero
+            
+            # Apply normalization
+            tensor = tensor / mode_norm * mode_weights[mode]
+        
+        return tensor
+    
+    def create_sparse_tensor(self, coordinates: np.ndarray, 
+                           values: np.ndarray,
+                           shape: Tuple[int, ...],
+                           feature_names: Optional[List[str]] = None) -> TensorData:
+        """Create a sparse tensor representation.
+        
+        Args:
+            coordinates: (N, ndim) array of coordinates
+            values: (N,) array of values
+            shape: Shape of full tensor
+            feature_names: Optional feature names
+            
+        Returns:
+            TensorData in sparse format
+        """
+        # Validate inputs
+        if coordinates.shape[0] != values.shape[0]:
+            raise ValueError("Number of coordinates must match number of values")
+        
+        if coordinates.shape[1] != len(shape):
+            raise ValueError(f"Coordinate dimensions {coordinates.shape[1]} != tensor dimensions {len(shape)}")
+        
+        # Create weight mask
+        weights = np.ones_like(values)
+        
+        # Handle missing values
+        valid_mask = ~np.isnan(values)
+        coordinates = coordinates[valid_mask]
+        values = values[valid_mask]
+        weights = weights[valid_mask]
+        
+        # Create sparse tensor data
+        tensor_data = TensorData(
+            tensor=self._sparse_to_dense(coordinates, values, shape),
+            weights=self._sparse_to_dense(coordinates, weights, shape),
+            coordinates=[(c[0], c[1]) for c in coordinates[:, :2]] if coordinates.shape[1] >= 2 else [],
+            feature_names=feature_names or [f"feature_{i}" for i in range(shape[-1] if len(shape) > 2 else 1)],
+            metadata={
+                'sparse': True,
+                'nnz': len(values),
+                'density': len(values) / np.prod(shape)
+            }
+        )
+        
+        return tensor_data
+    
+    def _sparse_to_dense(self, coordinates: np.ndarray, 
+                        values: np.ndarray, 
+                        shape: Tuple[int, ...]) -> np.ndarray:
+        """Convert sparse representation to dense tensor.
+        
+        Args:
+            coordinates: Sparse coordinates
+            values: Sparse values
+            shape: Dense tensor shape
+            
+        Returns:
+            Dense tensor
+        """
+        dense = np.zeros(shape)
+        for i, coord in enumerate(coordinates):
+            dense[tuple(coord)] = values[i]
+        return dense
 
 
-def create_biodiversity_tensor(data_df: pd.DataFrame,
-                              lat_col: str,
-                              lon_col: str,
-                              feature_cols: List[str],
-                              lat_bins: int = 50,
-                              lon_bins: int = 50,
-                              transform: str = 'log1p',
-                              normalize: bool = True) -> TensorData:
-    """Convenience function to create tensor from biodiversity dataframe.
+def create_biodiversity_tensor(data: pd.DataFrame,
+                              lat_bins: int = 20,
+                              lon_bins: int = 20,
+                              feature_transform: str = 'log1p',
+                              aggregation: str = 'mean',
+                              min_observations: int = 1) -> TensorData:
+    """Convenience function to create biodiversity tensor from dataframe.
     
     Args:
-        data_df: Input dataframe
-        lat_col: Name of latitude column
-        lon_col: Name of longitude column  
-        feature_cols: List of feature column names
+        data: Input dataframe with lat/lon and feature columns
         lat_bins: Number of latitude bins
         lon_bins: Number of longitude bins
-        transform: Feature transformation method
-        normalize: Whether to normalize modes
+        feature_transform: Transformation to apply to features
+        aggregation: Aggregation method for multiple observations
+        min_observations: Minimum observations per cell
         
     Returns:
-        TensorData object ready for factorization
+        TensorData object ready for CP-WOPT
     """
-    # Extract coordinates and values
-    coordinates = data_df[[lat_col, lon_col]].values
-    values = data_df[feature_cols].values
-    
-    # Create preprocessor
-    preprocessor = TensorPreprocessor(aggregation_method='sum')
-    
-    # Grid the data
-    tensor, grid_coords = preprocessor.grid_spatial_data(
-        coordinates, values, lat_bins, lon_bins
+    preprocessor = TensorPreprocessor(
+        missing_value=0.0,
+        min_observations_per_cell=min_observations,
+        aggregation_method=aggregation
     )
     
-    # Transform features
-    tensor = preprocessor.transform_features(tensor, method=transform)
+    return preprocessor.dataframe_to_tensor(
+        data, 
+        lat_bins=lat_bins,
+        lon_bins=lon_bins,
+        transform=feature_transform
+    )
+
+
+def validate_tensor_data(tensor_data: TensorData) -> bool:
+    """Validate tensor data for CP-WOPT.
     
-    # Normalize if requested
-    normalization_params = None
-    if normalize:
-        tensor, normalization_params = preprocessor.normalize_modes(tensor)
+    Args:
+        tensor_data: TensorData to validate
+        
+    Returns:
+        True if valid
+        
+    Raises:
+        ValueError: If validation fails
+    """
+    # Check tensor and weights have same shape
+    if tensor_data.tensor.shape != tensor_data.weights.shape:
+        raise ValueError(f"Tensor shape {tensor_data.tensor.shape} != weights shape {tensor_data.weights.shape}")
     
-    # Create weight mask
-    weights = preprocessor.create_weight_mask(tensor)
+    # Check for NaN/Inf
+    if np.any(np.isnan(tensor_data.tensor)) or np.any(np.isinf(tensor_data.tensor)):
+        raise ValueError("Tensor contains NaN or Inf values")
     
-    # Create metadata
-    metadata = {
-        'lat_bins': lat_bins,
-        'lon_bins': lon_bins,
-        'transform': transform,
-        'normalized': normalize,
-        'normalization_params': normalization_params,
-        'aggregation_method': 'sum',
-        'original_shape': data_df.shape
-    }
+    # Check weights are binary
+    unique_weights = np.unique(tensor_data.weights)
+    if not np.all(np.isin(unique_weights, [0, 1])):
+        raise ValueError(f"Weights must be binary (0 or 1), got {unique_weights}")
     
-    # Check if sparse representation would be beneficial
-    sparsity = 1.0 - (np.sum(weights) / weights.size)
-    is_sparse = sparsity > 0.95
+    # Check coordinates if provided
+    if tensor_data.coordinates:
+        expected_coords = tensor_data.tensor.shape[0] * tensor_data.tensor.shape[1]
+        if len(tensor_data.coordinates) != expected_coords:
+            logger.warning(f"Coordinate count {len(tensor_data.coordinates)} != expected {expected_coords}")
+    
+    # Check feature names
+    if tensor_data.ndim >= 3:
+        if len(tensor_data.feature_names) != tensor_data.tensor.shape[2]:
+            raise ValueError(f"Feature names {len(tensor_data.feature_names)} != tensor features {tensor_data.tensor.shape[2]}")
+    
+    return True
+
+
+def create_tensor_from_sparse(indices: np.ndarray,
+                             values: np.ndarray,
+                             shape: Tuple[int, ...],
+                             feature_names: Optional[List[str]] = None,
+                             metadata: Optional[Dict[str, Any]] = None) -> TensorData:
+    """Create TensorData from sparse representation.
+    
+    Args:
+        indices: (nnz, ndim) array of indices
+        values: (nnz,) array of values
+        shape: Shape of full tensor
+        feature_names: Optional feature names
+        metadata: Optional metadata
+        
+    Returns:
+        TensorData object
+    """
+    # Convert to dense
+    tensor = np.zeros(shape)
+    weights = np.zeros(shape)
+    
+    for i, (idx, val) in enumerate(zip(indices, values)):
+        tensor[tuple(idx)] = val
+        weights[tuple(idx)] = 1
+    
+    # Create coordinate list
+    if len(shape) >= 2:
+        coords = [(i, j) for i in range(shape[0]) for j in range(shape[1])]
+    else:
+        coords = []
+    
+    # Default feature names
+    if feature_names is None and len(shape) >= 3:
+        feature_names = [f"feature_{i}" for i in range(shape[2])]
+    elif feature_names is None:
+        feature_names = ["feature_0"]
+    
+    # Default metadata
+    if metadata is None:
+        metadata = {}
+    
+    metadata.update({
+        'original_format': 'sparse',
+        'nnz': len(values),
+        'density': len(values) / np.prod(shape)
+    })
+    
+    # Determine if sparse
+    is_sparse = len(values) / np.prod(shape) < 0.1
     
     return TensorData(
         tensor=tensor,
         weights=weights,
-        coordinates=grid_coords.tolist(),
-        feature_names=feature_cols,
+        coordinates=coords,
+        feature_names=feature_names,
         metadata=metadata,
         is_sparse=is_sparse
     )
+
+
+# REMOVED TensorPreprocessorWithSampling class
+# Sampling is now handled exclusively by ParquetLoader:
+#   - spatial_grid_step: For spatial grid sampling (takes every Nth point)
+#   - sample_size: For random sampling (takes N random points)
+# This is more efficient as it happens during data loading, not after tensor creation
