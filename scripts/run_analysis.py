@@ -347,6 +347,7 @@ class StandaloneAnalysisRunner:
         """
         # ONLY pass generic parameters that all methods need
         params = {
+            'method': analysis_method,  # Include the method name for metrics
             'save_results': analysis_config.get('save_results', True),
             'output_dir': analysis_config.get('output_dir', f'outputs/analysis_results/{analysis_method}'),
             'experiment_name': analysis_config.get('experiment_name', 'default'),
@@ -401,8 +402,9 @@ class StandaloneAnalysisRunner:
         # This can be enhanced later with more sophisticated chunked processing
         
         # Set up progress callback with error handling
-        def progress_callback(current: int, total: int, message: str = ""):
-            progress_percent = (current / total) * 100
+        def progress_callback(message: str, progress: float):
+            # Progress is given as a value between 0 and 1
+            progress_percent = progress * 100
             try:
                 # Try to update progress, but don't fail if it doesn't work
                 if hasattr(self.progress_manager, 'update_progress'):
@@ -410,15 +412,14 @@ class StandaloneAnalysisRunner:
                         node_id=f"analysis/{params.get('method', 'analysis')}",
                         completed_units=int(progress_percent),
                         status="running",
-                        metadata={"message": message, "current": current, "total": total}
+                        metadata={"message": message, "progress": progress_percent}
                     )
             except Exception as e:
                 # Log progress errors but don't fail the analysis
                 self.logger.debug(f"Progress callback error (non-fatal): {e}")
             
             # Always log progress to console
-            if current % 100 == 0 or current == total:  # Log every 100 iterations or at end
-                self.logger.info(f"Analysis progress: {message} ({current}/{total} - {progress_percent:.1f}%)")
+            self.logger.info(f"Analysis progress: {message} - {progress_percent:.1f}%")
         
         # Set progress callback if analyzer supports it
         if hasattr(analyzer, 'set_progress_callback'):
@@ -555,7 +556,7 @@ Running Experiments:
     # Method override
     analysis_group.add_argument(
         '--method', '-m',
-        choices=['som', 'gwpca', 'maxp_regions', 'cpwopt'],
+        choices=['som', 'gwpca', 'maxp_regions', 'cpwopt', 'kmeans', 'kmeans_hierarchical'],
         help='Analysis method (overrides experiment config)'
     )
     

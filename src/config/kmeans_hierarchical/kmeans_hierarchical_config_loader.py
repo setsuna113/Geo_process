@@ -40,7 +40,9 @@ class KMeansHierarchicalConfigLoader(IMethodConfig):
                 'handle_missing': 'complete_cases',
                 'normalization': 'robust',
                 'remove_outliers': False,
-                'min_features_prefilter': 1
+                'min_features_prefilter': 1,
+                'spatial_grid_step': 50  # Sample every 50th grid point for systematic spatial sampling
+                # Note: spatial_grid_step provides better coverage than random sampling
             },
             'visualization': {
                 'generate_dendrogram': True,

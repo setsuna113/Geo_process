@@ -8,10 +8,10 @@ from pathlib import Path
 import json
 from datetime import datetime
 
-from src.biodiversity_analysis.base_analyzer import BaseBiodiversityAnalyzer
+from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
-from src.biodiversity_analysis.preprocessing.pipeline import BiodiversityPreprocessingPipeline
-from .core import BiodiversityKMeans
+from src.biodiversity_analysis.preprocessing.pipeline import SharedPreprocessor
+from .core_simplified import BiodiversityKMeans
 from .kmeans_config import KMeansConfig
 from .visualization import KMeansVisualizer
 
@@ -79,45 +79,33 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
         logger.info(f"Loaded data: {biodiv_data.n_samples} samples, "
                    f"{biodiv_data.n_features} features")
         
-        # Preprocess features using new pipeline
-        logger.info("Preprocessing features with advanced pipeline...")
+        # Preprocess features using shared preprocessor for consistency
+        logger.info("Preprocessing features...")
         
-        # Initialize preprocessing pipeline with optimal settings
-        preprocessing_pipeline = BiodiversityPreprocessingPipeline(
-            # Use hurdle model for better zero-inflation handling
-            compositional_transform='hurdle',
-            structural_zero_threshold=0.95,
-            pseudo_count_method='adaptive',
-            
-            # Use predictive MEM for better spatial patterns
-            use_pmem=True,
-            pmem_dwf='exponential',
-            spatial_neighbors=8,
-            spatial_scales=[5, 10, 25, 50, 100],
-            n_moran_eigenvectors=20,
-            
-            # Disable diversity indices to avoid circular reasoning
-            calculate_diversity_indices=False,
-            calculate_interactions=False,
-            
-            # Robust standardization for outliers
-            standardize=True,
-            standardization_method='robust'
+        # Use SharedPreprocessor with robust settings
+        preprocessor = SharedPreprocessor(
+            method_name='kmeans',
+            normalize=True,
+            normalization_method='robust',
+            handle_missing=True,
+            missing_strategy='mean',
+            remove_constant_features=True
         )
         
         # Transform the data
-        features_processed, feature_names, preprocessing_metadata = preprocessing_pipeline.fit_transform(
-            species_data=biodiv_data.features,
-            coordinates=biodiv_data.coordinates,
-            species_names=biodiv_data.feature_names
-        )
+        features_processed = preprocessor.fit_transform(biodiv_data.features)
+        
+        # Update feature names if any were removed
+        feature_names = biodiv_data.feature_names
+        if hasattr(preprocessor, 'selected_features_'):
+            feature_names = [feature_names[i] for i in preprocessor.selected_features_]
+        
+        logger.info(f"Preprocessing complete: {features_processed.shape} "
+                   f"(original: {biodiv_data.features.shape})")
         
         # Update biodiversity data with preprocessed features
         biodiv_data.features = features_processed
         biodiv_data.feature_names = feature_names
-        
-        logger.info(f"Preprocessing complete: {features_processed.shape[1]} features "
-                   f"(original: {preprocessing_metadata.get('n_original_features', 'unknown')})")
         
         # Create k-means configuration
         config = self._create_kmeans_config(**kwargs)
@@ -198,7 +186,7 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
     
     def _determine_optimal_k(self, features: np.ndarray, coordinates: np.ndarray,
                            base_config: KMeansConfig, k_range) -> int:
-        """Determine optimal number of clusters."""
+        """Determine optimal number of clusters using silhouette score."""
         # Convert to list if needed
         if hasattr(k_range, 'start'):
             k_values = list(k_range)
@@ -207,46 +195,25 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
             k_values = list(k_range)
             logger.info(f"Testing k values: {k_values}")
         
-        if base_config.determine_k_method == 'silhouette':
-            scores = []
-            
-            for k in k_values:
-                logger.debug(f"Testing k={k}")
-                config = KMeansConfig(**{**base_config.__dict__, 'n_clusters': k})
-                km = BiodiversityKMeans(config)
-                km.fit(features, coordinates)
-                
-                # Calculate silhouette score
-                score = self._calculate_silhouette_score(features, km.labels_, sample_size=1000)
-                scores.append(score)
-                logger.debug(f"k={k}, silhouette={score:.3f}")
-            
-            # Find best k
-            best_idx = np.argmax(scores)
-            best_k = k_values[best_idx]
-            logger.info(f"Best k={best_k} with silhouette score={scores[best_idx]:.3f}")
-            
-            return best_k
-            
-        elif base_config.determine_k_method == 'elbow':
-            inertias = []
-            
-            for k in k_values:
-                logger.debug(f"Testing k={k}")
-                config = KMeansConfig(**{**base_config.__dict__, 'n_clusters': k})
-                km = BiodiversityKMeans(config)
-                km.fit(features, coordinates)
-                inertias.append(km.inertia_)
-            
-            # Find elbow point
-            best_k = self._find_elbow_point(k_values, inertias)
-            logger.info(f"Elbow point at k={best_k}")
-            
-            return best_k
+        scores = []
         
-        else:
-            # Default to middle of range
-            return k_values[len(k_values) // 2]
+        for k in k_values:
+            logger.debug(f"Testing k={k}")
+            config = KMeansConfig(**{**base_config.__dict__, 'n_clusters': k})
+            km = BiodiversityKMeans(config)
+            km.fit(features, coordinates)
+            
+            # Calculate silhouette score
+            score = self._calculate_silhouette_score(features, km.labels_, sample_size=1000)
+            scores.append(score)
+            logger.debug(f"k={k}, silhouette={score:.3f}")
+        
+        # Find best k
+        best_idx = np.argmax(scores)
+        best_k = k_values[best_idx]
+        logger.info(f"Best k={best_k} with silhouette score={scores[best_idx]:.3f}")
+        
+        return best_k
     
     def _calculate_quality_metrics(self, features: np.ndarray, labels: np.ndarray,
                                  coordinates: np.ndarray) -> Dict[str, Any]:
@@ -285,22 +252,12 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
                 missing_by_cluster[int(k)] = float(cluster_missing)
         metrics['missing_data_by_cluster'] = missing_by_cluster
         
-        # Geographic coherence (skip for now - could be added later)
-        # if coordinates is not None:
-        #     coherence = self._calculate_geographic_coherence(coordinates, labels)
-        #     metrics['geographic_coherence'] = float(coherence)
-        
-        # Feature weights used
-        if self.kmeans.feature_weights_ is not None:
-            metrics['feature_weights'] = self.kmeans.feature_weights_.tolist()
-        
         return metrics
     
     def _calculate_silhouette_score(self, features: np.ndarray, labels: np.ndarray,
                                    sample_size: Optional[int] = None) -> float:
         """Calculate silhouette score with partial distance support."""
         from sklearn.metrics import silhouette_score
-        from sklearn.metrics.pairwise import pairwise_distances
         
         # Handle sampling for large datasets
         if sample_size is not None and len(features) > sample_size:
@@ -319,69 +276,9 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
         features_valid = features_sample[valid_mask]
         labels_valid = labels_sample[valid_mask]
         
-        # Custom distance matrix for partial distances
-        if self.kmeans.config.distance_metric == 'bray_curtis':
-            # Compute pairwise distances using our adaptive calculator
-            n = len(features_valid)
-            distances = np.zeros((n, n))
-            
-            for i in range(n):
-                for j in range(i+1, n):
-                    d = self.kmeans.distance_calculator.calculate_distance(
-                        features_valid[i], features_valid[j]
-                    )
-                    if np.isfinite(d) and d >= 0:
-                        distances[i, j] = distances[j, i] = d
-                    else:
-                        distances[i, j] = distances[j, i] = 1.0  # Max distance for Bray-Curtis
-            
-            return silhouette_score(distances, labels_valid, metric='precomputed')
-        else:
-            # Use sklearn's implementation for Euclidean
-            return silhouette_score(features_valid, labels_valid, metric='euclidean')
-    
-    def _calculate_geographic_coherence(self, coordinates: np.ndarray, 
-                                      labels: np.ndarray) -> float:
-        """Calculate geographic coherence of clusters."""
-        from ..som.spatial_utils import calculate_morans_i, construct_spatial_weights_matrix
-        
-        # Create binary cluster membership matrices
-        unique_labels = np.unique(labels[labels >= 0])
-        coherence_scores = []
-        
-        for k in unique_labels:
-            # Binary vector: 1 if in cluster k, 0 otherwise
-            membership = (labels == k).astype(float)
-            
-            # Calculate Moran's I for this cluster
-            weights_matrix = construct_spatial_weights_matrix(
-                coordinates, 
-                k_neighbors=min(10, len(coordinates) // 10)
-            )
-            
-            moran_i = calculate_morans_i(membership, weights_matrix)
-            coherence_scores.append(moran_i)
-        
-        # Return average coherence
-        return np.mean(coherence_scores) if coherence_scores else 0.0
-    
-    def _find_elbow_point(self, k_values: List[int], inertias: List[float]) -> int:
-        """Find elbow point in inertia curve."""
-        if len(k_values) < 3:
-            return k_values[0]
-        
-        # Calculate curvature
-        deltas = np.diff(inertias)
-        delta_deltas = np.diff(deltas)
-        
-        # Find point with maximum curvature
-        if len(delta_deltas) > 0:
-            elbow_idx = np.argmax(np.abs(delta_deltas)) + 2
-            if elbow_idx < len(k_values):
-                return k_values[elbow_idx]
-        
-        # Fallback to middle
-        return k_values[len(k_values) // 2]
+        # Simplified implementation - always use Euclidean distance
+        # The complex distance calculations are removed in the simplified version
+        return silhouette_score(features_valid, labels_valid, metric='euclidean')
     
     def _create_additional_outputs(self, biodiv_data, features_processed,
                                  quality_metrics: Dict[str, Any]) -> Dict[str, Any]:
@@ -492,8 +389,7 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
             'cluster_sizes': quality_metrics.get('cluster_sizes', {}),
             'silhouette_score': quality_metrics.get('silhouette_score', 
                                 quality_metrics.get('silhouette_score_sampled', None)),
-            'missing_data_by_cluster': quality_metrics.get('missing_data_by_cluster', {}),
-            'feature_weights': quality_metrics.get('feature_weights', None)
+            'missing_data_by_cluster': quality_metrics.get('missing_data_by_cluster', {})
         }
         
         # Add coordinate information to additional outputs
@@ -590,18 +486,6 @@ class KMeansAnalyzer(BaseBiodiversityAnalyzer):
                 errors.append("k_range must be provided when determine_k=True")
             elif not hasattr(k_range, '__iter__'):
                 errors.append("k_range must be iterable (list, range, etc.)")
-        
-        # Validate distance metric
-        if 'distance_metric' in parameters:
-            valid_metrics = ['bray_curtis', 'euclidean']
-            if parameters['distance_metric'] not in valid_metrics:
-                errors.append(f"distance_metric must be one of {valid_metrics}")
-        
-        # Validate weight method
-        if 'weight_method' in parameters:
-            valid_methods = ['auto', 'completeness', 'variance', 'fixed']
-            if parameters['weight_method'] not in valid_methods:
-                errors.append(f"weight_method must be one of {valid_methods}")
         
         return len(errors) == 0, errors
     

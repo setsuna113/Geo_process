@@ -14,12 +14,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import logging
 
-from .visualization import KMeansVisualizer
-
 logger = logging.getLogger(__name__)
 
 
-class HierarchicalVisualizer(KMeansVisualizer):
+class HierarchicalVisualizer:
     """Extended visualizer for two-stage clustering with heavy visualization focus."""
     
     def plot_dendrogram(self, linkage_matrix: np.ndarray, optimal_k: int,
@@ -321,6 +319,49 @@ class HierarchicalVisualizer(KMeansVisualizer):
                 ax4.grid(True, alpha=0.3, axis='y')
         
         plt.suptitle('Clustering Validation Metrics', fontsize=16, fontweight='bold')
+        return fig
+    
+    def plot_cluster_profiles(self, features: np.ndarray, labels: np.ndarray,
+                            feature_names: List[str]) -> plt.Figure:
+        """Plot average feature profiles for each cluster.
+        
+        Args:
+            features: Feature array
+            labels: Cluster labels
+            feature_names: Names of features
+            
+        Returns:
+            Matplotlib figure with cluster profiles
+        """
+        n_clusters = len(np.unique(labels))
+        n_features = features.shape[1]
+        
+        # Calculate cluster centers
+        centers = np.zeros((n_clusters, n_features))
+        for k in range(n_clusters):
+            mask = labels == k
+            if mask.any():
+                centers[k] = features[mask].mean(axis=0)
+        
+        # Create heatmap
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        im = ax.imshow(centers.T, aspect='auto', cmap='RdBu_r')
+        
+        # Set ticks and labels
+        ax.set_xticks(range(n_clusters))
+        ax.set_xticklabels([f'C{i}' for i in range(n_clusters)])
+        ax.set_yticks(range(n_features))
+        ax.set_yticklabels(feature_names[:n_features] if feature_names else 
+                          [f'F{i}' for i in range(n_features)])
+        
+        ax.set_xlabel('Cluster')
+        ax.set_ylabel('Feature')
+        ax.set_title('Average Feature Values by Cluster')
+        
+        plt.colorbar(im, ax=ax)
+        plt.tight_layout()
+        
         return fig
     
     def plot_parallel_coordinates(self, features: np.ndarray, labels: np.ndarray,

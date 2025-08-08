@@ -105,14 +105,8 @@ class KMeansHierarchicalAnalyzerAdapter(IAnalyzer):
         Returns:
             Path to saved results
         """
-        if output_dir is None:
-            output_dir = Path("./results/kmeans")
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # The analyzer already saves results internally
-        # This is just for interface compatibility
-        return output_dir
+        # Delegate to the analyzer's save_results method
+        return self._analyzer.save_results(result, output_name, output_dir)
     
     def set_progress_callback(self, callback: Any):
         """Set progress callback function.
