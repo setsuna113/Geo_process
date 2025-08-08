@@ -12,7 +12,7 @@ from datetime import datetime
 
 from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
-from src.biodiversity_analysis.preprocessing.pipeline import BiodiversityPreprocessingPipeline
+from src.biodiversity_analysis.preprocessing.pipeline import SharedPreprocessor
 
 from .hierarchical_core import (
     TwoStageClusterer,
@@ -51,14 +51,30 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         """
         start_time = datetime.now()
         
-        # Load and validate data
+        # Load and validate data with spatial grid sampling
         logger.info(f"Loading biodiversity data from {data_path}")
-        biodiv_data = self.load_data(data_path)
+        
+        # Get spatial sampling parameter from config or kwargs
+        spatial_grid_step = kwargs.get('spatial_grid_step', self.data_config.get('spatial_grid_step', 1))
+        
+        if spatial_grid_step > 1:
+            logger.info(f"Using systematic spatial sampling with grid step: {spatial_grid_step}")
+            logger.info("This provides better geographic coverage than random sampling")
+        else:
+            logger.info("Using full dataset (no spatial sampling)")
+        
+        biodiv_data = self.load_data(
+            data_path, 
+            spatial_grid_step=spatial_grid_step
+        )
         
         logger.info(f"Loaded {biodiv_data.n_samples:,} samples with "
                    f"{biodiv_data.n_features} features")
         
-        # Preprocess features
+        # Store original data shape
+        original_n_samples = biodiv_data.n_samples
+        
+        # Preprocess features (returns only complete cases)
         features_processed, feature_names = self._preprocess_features(
             biodiv_data.features,
             biodiv_data.coordinates,
@@ -68,32 +84,57 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         # Create configuration
         config = self._create_config(**kwargs)
         
-        # Perform two-stage clustering
-        self.clusterer, final_labels = self._perform_clustering(
+        # Perform two-stage clustering on complete cases
+        self.clusterer, labels_complete = self._perform_clustering(
             features_processed,
             config
         )
         
-        # Calculate quality metrics
+        # Map labels back to full dataset
+        final_labels = np.full(original_n_samples, -1, dtype=int)
+        final_labels[self._complete_mask] = labels_complete
+        
+        # Calculate quality metrics on complete cases
         quality_metrics = calculate_clustering_metrics(
             features_processed,
-            final_labels,
-            sample_size=config.silhouette_sample_size
+            labels_complete,
+            sample_size=config.silhouette_sample_size,
+            method_name='kmeans_hierarchical'
         )
         
         # Generate visualizations if requested
         visualizations = {}
         if any([config.generate_dendrogram, config.generate_geographic_maps,
                 config.generate_3d_visualization, config.generate_validation_plots]):
+            # Create clean data object for visualization (complete cases only)
+            from dataclasses import dataclass
+            @dataclass
+            class BiodivDataComplete:
+                features: np.ndarray
+                coordinates: np.ndarray
+                feature_names: list
+                n_samples: int
+                n_features: int
+                metadata: dict
+            
+            biodiv_data_complete = BiodivDataComplete(
+                features=features_processed,
+                coordinates=biodiv_data.coordinates[self._complete_mask],
+                feature_names=feature_names,
+                n_samples=len(features_processed),
+                n_features=features_processed.shape[1],
+                metadata=biodiv_data.metadata
+            )
+            
             visualizations = self._generate_visualizations(
-                biodiv_data,
+                biodiv_data_complete,
                 features_processed,
-                final_labels,
+                labels_complete,
                 quality_metrics,
                 config
             )
         
-        # Create result
+        # Create result with full labels
         return self._create_result(
             biodiv_data,
             final_labels,
@@ -104,29 +145,32 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         )
     
     def _preprocess_features(self, features, coordinates, feature_names):
-        """Preprocess features using shared pipeline."""
+        """Preprocess features using shared preprocessor."""
         logger.info("Preprocessing features...")
         
-        # Use shared preprocessing pipeline
-        preprocessing_pipeline = BiodiversityPreprocessingPipeline(
-            compositional_transform='hurdle',
-            structural_zero_threshold=0.95,
-            use_pmem=False,  # Disable spatial features for clustering
-            calculate_diversity_indices=False,
-            calculate_interactions=False,
-            standardize=True,
-            standardization_method='robust'
+        # Use SharedPreprocessor which has proper fit/transform separation
+        preprocessor = SharedPreprocessor(
+            method_name='kmeans_hierarchical',
+            normalize=True,
+            normalization_method='robust',
+            handle_missing=True,
+            missing_strategy='keep',  # We'll handle complete cases in clustering
+            remove_constant_features=False
         )
         
-        features_processed, new_feature_names, _ = preprocessing_pipeline.fit_transform(
-            species_data=features,
-            coordinates=coordinates,
-            species_names=feature_names
-        )
+        features_processed = preprocessor.fit_transform(features)
         
-        logger.info(f"Preprocessing complete: {features_processed.shape}")
+        # Create mask for complete cases
+        valid_mask = ~np.isnan(features_processed).any(axis=1)
+        features_clean = features_processed[valid_mask]
         
-        return features_processed, new_feature_names
+        logger.info(f"Preprocessing complete: {features_clean.shape}")
+        logger.info(f"Complete cases: {valid_mask.sum()} / {len(valid_mask)} ({valid_mask.mean():.1%})")
+        
+        # Store mask for later use
+        self._complete_mask = valid_mask
+        
+        return features_clean, feature_names
     
     def _create_config(self, **kwargs):
         """Create configuration from kwargs and defaults."""
@@ -136,18 +180,22 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         # Override with user parameters
         config_dict = {**defaults, **kwargs}
         
+        # Filter out non-config parameters and legacy parameters
+        non_config_keys = ['save_results', 'output_dir', 'experiment_name', 'resume', 'method',
+                          'distance_metric', 'weight_method', 'adaptive_mode', 'grid_size_km',
+                          'handle_zeros', 'prefilter_empty', 'min_features_prefilter',
+                          'use_sparse_distances', 'determine_k_method']
+        for key in non_config_keys:
+            config_dict.pop(key, None)
+        
         # Create config object
         return KMeansHierarchicalConfig(**config_dict)
     
     def _perform_clustering(self, features, config):
-        """Perform two-stage clustering."""
+        """Perform two-stage clustering.
         
-        # Handle complete cases only
-        complete_mask = ~np.isnan(features).any(axis=1)
-        features_complete = features[complete_mask]
-        
-        logger.info(f"Using {complete_mask.sum():,} complete cases "
-                   f"({complete_mask.mean():.1%} of data)")
+        Note: features are already preprocessed complete cases only.
+        """
         
         # Determine optimal k for k-means if needed
         if config.use_variance_preservation:
@@ -157,7 +205,7 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
                 k_range=config.variance_k_range,
                 batch_size=config.batch_size
             )
-            n_pre_clusters = vp_kmeans.determine_k(features_complete)
+            n_pre_clusters = vp_kmeans.determine_k(features)
         else:
             n_pre_clusters = config.n_pre_clusters
         
@@ -171,7 +219,7 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         )
         
         # Fit clustering
-        clusterer.fit(features_complete)
+        clusterer.fit(features)
         
         # Determine optimal final k if not fixed
         if config.final_k is None:
@@ -179,10 +227,17 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
                 logger.info("Determining optimal k using bootstrap stability...")
                 bootstrap = BootstrapStability(
                     n_bootstrap=config.n_bootstrap,
-                    sample_ratio=config.bootstrap_sample_ratio
+                    sample_ratio=config.bootstrap_sample_ratio,
+                    linkage_method=config.linkage_method
+                )
+                # Use filtered centroids if available
+                centroids_for_bootstrap = (
+                    clusterer.filtered_centroids_ 
+                    if hasattr(clusterer, 'filtered_centroids_') and clusterer.filtered_centroids_ is not None
+                    else clusterer.kmeans.cluster_centers_
                 )
                 optimal_k = bootstrap.evaluate(
-                    clusterer.kmeans.cluster_centers_,
+                    centroids_for_bootstrap,
                     clusterer.linkage_matrix,
                     config.final_k_range
                 )
@@ -190,15 +245,11 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
                 # Re-cluster with optimal k
                 clusterer.final_k = optimal_k
                 clusterer._fit_hierarchical()
-                clusterer._map_labels(features_complete)
-        
-        # Map labels back to full dataset
-        full_labels = np.full(len(features), -1, dtype=int)
-        full_labels[complete_mask] = clusterer.final_labels_
+                clusterer._map_labels(features)
         
         logger.info(f"Clustering complete: {clusterer.final_k} final clusters")
         
-        return clusterer, full_labels
+        return clusterer, clusterer.final_labels_
     
     def _generate_visualizations(self, biodiv_data, features, labels, 
                                 metrics, config):
@@ -254,7 +305,9 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
             )
             
         except Exception as e:
-            logger.warning(f"Some visualizations failed: {e}")
+            logger.error(f"Visualization failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         return viz
     
@@ -359,15 +412,55 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         
         # Save metadata as JSON
         import json
+        
+        # Convert numpy types to Python native types for JSON serialization
+        def convert_numpy(obj):
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_numpy(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy(v) for v in obj]
+            return obj
+        
         metadata_file = output_dir / f"{output_name}_metadata.json"
         with open(metadata_file, 'w') as f:
             json.dump({
                 'analysis_type': result.metadata.analysis_type,
                 'input_shape': result.metadata.input_shape,
-                'parameters': result.metadata.parameters,
+                'parameters': convert_numpy(result.metadata.parameters),
                 'processing_time': result.metadata.processing_time,
                 'timestamp': result.metadata.timestamp
             }, f, indent=2)
+        
+        # Save visualizations if present
+        if hasattr(result, 'additional_outputs') and result.additional_outputs:
+            viz_dir = output_dir / 'visualizations'
+            viz_dir.mkdir(exist_ok=True)
+            
+            for viz_name, viz_obj in result.additional_outputs.items():
+                if viz_name == 'coordinates':
+                    continue  # Skip coordinate data
+                    
+                try:
+                    # Handle matplotlib figures
+                    if hasattr(viz_obj, 'savefig'):
+                        viz_file = viz_dir / f"{viz_name}.png"
+                        viz_obj.savefig(viz_file, dpi=100, bbox_inches='tight')
+                        logger.info(f"Saved visualization: {viz_name}.png")
+                        
+                    # Handle plotly figures
+                    elif hasattr(viz_obj, 'write_html'):
+                        viz_file = viz_dir / f"{viz_name}.html"
+                        viz_obj.write_html(str(viz_file))
+                        logger.info(f"Saved visualization: {viz_name}.html")
+                        
+                except Exception as e:
+                    logger.warning(f"Could not save visualization {viz_name}: {e}")
         
         logger.info(f"Results saved to {output_dir}")
         return output_dir

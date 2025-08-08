@@ -1,22 +1,22 @@
 """Configuration for two-stage k-means hierarchical clustering.
 
-Clean configuration that extends base k-means config without redundancy.
+Standalone configuration without deprecated dependencies.
 """
 
 from dataclasses import dataclass
 from typing import Optional, Tuple, Literal
-from .kmeans_config import KMeansConfig
 
 
 @dataclass
-class KMeansHierarchicalConfig(KMeansConfig):
+class KMeansHierarchicalConfig:
     """Configuration for two-stage k-means → hierarchical clustering.
     
-    Inherits k-means parameters and adds hierarchical-specific settings.
+    Standalone configuration for hierarchical clustering parameters.
     """
     
-    # Override n_clusters to be n_pre_clusters for clarity
+    # K-means pre-clustering parameters
     n_pre_clusters: int = 750  # Number of k-means pre-clusters
+    random_state: int = 42
     
     # Variance preservation for automatic k selection
     use_variance_preservation: bool = True
@@ -44,14 +44,11 @@ class KMeansHierarchicalConfig(KMeansConfig):
     generate_validation_plots: bool = True
     n_samples_for_viz: int = 100000  # Max samples for expensive visualizations
     
+    # Additional processing parameters
+    silhouette_sample_size: int = 50000  # Sample size for silhouette calculation
+    
     def __post_init__(self):
         """Validate hierarchical configuration."""
-        # Call parent validation
-        super().__post_init__()
-        
-        # Map n_clusters to n_pre_clusters for compatibility
-        self.n_clusters = self.n_pre_clusters
-        
         # Validate hierarchical-specific settings
         if self.variance_threshold <= 0 or self.variance_threshold > 1:
             raise ValueError("variance_threshold must be in (0, 1]")
@@ -64,7 +61,3 @@ class KMeansHierarchicalConfig(KMeansConfig):
             
         if self.n_bootstrap < 10:
             raise ValueError("n_bootstrap should be at least 10 for stability")
-            
-        if self.linkage_method == 'ward' and self.distance_metric != 'euclidean':
-            # Ward requires Euclidean distance
-            self.distance_metric = 'euclidean'
