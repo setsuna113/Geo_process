@@ -54,6 +54,12 @@ class CPWOPT:
             use_gpu: Device selection ('auto', 'cpu', 'gpu')
             learning_rate: Learning rate for SGD methods
             momentum: Momentum parameter for SGD with momentum
+            
+        Attributes:
+            sparse_config: Configuration for HiCOO sparse tensor format
+                - block_size: Size of blocks for HiCOO format (default: 128)
+                - memory_factor: Memory usage factor (default: 0.9)
+                - format: Sparse format to use ('hicoo')
         """
         if rank <= 0:
             raise ValueError(ERROR_INVALID_RANK.format(rank))
@@ -71,6 +77,13 @@ class CPWOPT:
         # Initialize backend
         from .backend import CPWOPTBackend
         self.backend = CPWOPTBackend(use_gpu)
+        
+        # Initialize sparse configuration
+        self.sparse_config = {
+            'block_size': HICOO_BLOCK_SIZE,
+            'memory_factor': HICOO_MEMORY_FACTOR,
+            'format': 'hicoo'
+        }
         
         # Initialize factor updater
         from .factor_updater import FactorUpdater
@@ -170,9 +183,17 @@ class CPWOPT:
         xp = self.backend.get_array_module()
         
         # Transfer tensor data to device ONCE at the beginning
-        tensor = self.backend.to_device(tensor_data.tensor)
-        weights = self.backend.to_device(tensor_data.weights)
-        tensor_clean = xp.nan_to_num(tensor, nan=0.0)
+        try:
+            tensor = self.backend.to_device(tensor_data.tensor)
+            weights = self.backend.to_device(tensor_data.weights)
+            tensor_clean = xp.nan_to_num(tensor, nan=NAN_REPLACEMENT_VALUE)
+        except Exception as e:
+            if 'out of memory' in str(e).lower():
+                logger.error(ERROR_CUDA_OOM)
+                raise RuntimeError(ERROR_CUDA_OOM) from e
+            else:
+                logger.error(ERROR_CUDA_DEVICE.format(str(e)))
+                raise RuntimeError(ERROR_CUDA_DEVICE.format(str(e))) from e
         
         # CRITICAL FIX: Convert to HiCOO ONCE before the loop!
         # This was being done inside _update_factor_als_device on EVERY iteration
@@ -230,6 +251,20 @@ class CPWOPT:
             # Log progress
             if self.verbose and iteration % PROGRESS_INTERVAL == 0:
                 logger.info(f"Iteration {iteration}: fit={fit:.4f}, error={error:.4e}")
+                
+                # Monitor GPU memory if available
+                if self.backend.device == 'gpu':
+                    try:
+                        import cupy
+                        mempool = cupy.get_default_memory_pool()
+                        used_gb = mempool.used_bytes() / 1e9
+                        total_gb = mempool.total_bytes() / 1e9
+                        if total_gb > 0:
+                            usage_pct = (used_gb / total_gb) * 100
+                            if usage_pct > 90:
+                                logger.warning(f"High GPU memory usage: {usage_pct:.1f}%")
+                    except Exception:
+                        pass  # Silently ignore if memory monitoring fails
                 
             # Progress callback
             if self.progress_callback:
@@ -438,7 +473,7 @@ class CPWOPT:
             gram_product = gram_product * g
         
         # Solve for updated factor (with regularization for stability)
-        reg = 1e-9 * xp.eye(gram_product.shape[0])
+        reg = REGULARIZATION_LAMBDA * xp.eye(gram_product.shape[0])
         updated_factor = xp.linalg.solve(gram_product + reg, mttkrp_result.T).T
         
         return updated_factor
