@@ -11,7 +11,7 @@
 
 # Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 1  # Production: Use full dataset (no sampling)
+  spatial_grid_step: 2  # Sample every 2nd point for memory efficiency
   feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']  # 4 biodiversity richness columns
   coordinate_columns: ['x', 'y']  # Column names for coordinates
   observed_columns: [0, 1, 2, 3]  # All four biodiversity columns are observed
@@ -38,7 +38,7 @@ preprocessing_config:
 # Core architecture parameters (ONLY structure, no training params)
 architecture_config:
   type: 'GeoSOM_VLRSOM'
-  grid_size: [60, 60]  # Optimal: 60x60 grid (3600 neurons) - balanced performance
+  grid_size: [50, 50]  # Original training used 50x50 grid
   topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
   spatial_weight: 0.2  # 20% spatial, 80% biodiversity
   geographic_distance: 'haversine'
@@ -55,7 +55,7 @@ architecture_config:
 training_config:
   max_epochs: 200  # Limited to 200 for 3-day completion requirement
   chunk_size: 25000  # Optimized: Smaller chunks for better memory efficiency
-  n_workers: 150  # Optimized: 150 workers for high parallelization with memory safety
+  n_workers: 100  # Reduced to 100 workers due to swap pressure
   use_minibatch: true  # Enable mini-batch processing for memory efficiency
   minibatch_size: 5000  # Reduced proportionally to match smaller chunk size
   
