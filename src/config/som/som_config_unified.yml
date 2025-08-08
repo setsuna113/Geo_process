@@ -11,7 +11,7 @@
 
 # Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 1  # Production: Use full dataset (no sampling)
+  spatial_grid_step: 2  # Sample every 2nd point for memory efficiency
   feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']  # 4 biodiversity richness columns
   coordinate_columns: ['x', 'y']  # Column names for coordinates
   observed_columns: [0, 1, 2, 3]  # All four biodiversity columns are observed
@@ -38,7 +38,7 @@ preprocessing_config:
 # Core architecture parameters (ONLY structure, no training params)
 architecture_config:
   type: 'GeoSOM_VLRSOM'
-  grid_size: [60, 60]  # Optimal: 60x60 grid (3600 neurons) - balanced performance
+  grid_size: [50, 50]  # Original training used 50x50 grid
   topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
   spatial_weight: 0.2  # 20% spatial, 80% biodiversity
   geographic_distance: 'haversine'
@@ -53,9 +53,9 @@ architecture_config:
 
 # Training parameters (ALL training-related settings here)
 training_config:
-  max_epochs: 200  # Limited to 200 for 3-day completion requirement
+  max_epochs: 500  # Extended for complete convergence
   chunk_size: 25000  # Optimized: Smaller chunks for better memory efficiency
-  n_workers: 150  # Optimized: 150 workers for high parallelization with memory safety
+  n_workers: 80  # Conservative setting for stressed system (full swap, high load)
   use_minibatch: true  # Enable mini-batch processing for memory efficiency
   minibatch_size: 5000  # Reduced proportionally to match smaller chunk size
   
@@ -63,19 +63,20 @@ training_config:
   initial_learning_rate: 0.4  # Reduced from 0.8 for better stability with sparse data
   min_learning_rate: 0.1  # Floor at 0.1 (was 0.05)
   max_learning_rate: 1.0
-  lr_increase_factor: 1.3  # More aggressive increase
-  lr_decrease_factor: 0.90  # GENTLER decay to prevent rapid collapse (was 0.85)
   
-  # Adaptive LR ranges (moved from architecture_config)
-  high_qe_lr_range: [0.5, 1.0]  # For QE > 0.5
-  low_qe_lr_range: [0.1, 0.8]  # For QE < 0.02 - MIN matches floor of 0.1
+  # VLRSOM Parameters - Variable Learning Rate Self-Organizing Map
+  # Based on paper "A faster dynamic convergency approach for self-organizing maps"
+  # Formula: μ'(t+1) = αμ(t) + γJ²(t)
+  vlrsom_alpha: 0.95  # Decay factor (0 < α < 1) - paper suggests 0.9-0.99
+  vlrsom_gamma: 0.001  # Adaptation parameter (γ > 0) - paper suggests 0.001-0.01
+  vlrsom_min_lr: 0.05  # Minimum LR bound (from paper Equation 21)
+  vlrsom_max_lr: 0.8   # Maximum LR bound (from paper Equation 21)
+  vlrsom_error_sample_size: 10000  # Samples for J²(t) calculation (efficiency vs accuracy)
   
-  # Convergence criteria (moved from architecture_config.convergence)
+  # Convergence criteria
   patience: 50  # Epochs without improvement
   geographic_coherence_threshold: 0.6  # Ensure meaningful geographic organization
   geographic_coherence_weight: 0.3  # Weight for geographic coherence in convergence
-  lr_stability_threshold: 0.1  # Increased from 0.05
-  lr_stability_window: 3  # Check over 3 epochs
   early_convergence_epochs: 200  # Consider converged after 200 epochs
   qe_improvement_threshold: 0.001  # < 0.1% improvement
   
@@ -85,23 +86,6 @@ training_config:
   te_low_threshold: 0.05   # TE < 0.05 is considered low
   te_high_radius_modifier: 1.1  # Slow down radius decay by 10% for high TE
   te_low_radius_modifier: 0.95  # Speed up radius decay by 5% for low TE
-  
-  # Adaptive learning rate thresholds
-  lr_recovery_threshold: 0.02  # Trigger recovery when LR drops below this
-  qe_poor_threshold: 0.055  # Consider QE poor above this value
-  lr_recovery_target: 0.05  # Target LR after recovery
-  
-  # Improvement thresholds for LR adaptation
-  significant_improvement: 0.05  # >5% improvement
-  small_improvement: 0.01  # 1-5% improvement  
-  small_degradation: -0.02  # 0-2% degradation (noise)
-  moderate_degradation: -0.05  # 2-5% degradation
-  small_increase_factor: 1.02  # Factor for small LR increase
-  gentle_decrease_factor: 0.98  # Factor for gentle LR decrease
-  
-  # QE region thresholds
-  high_qe_threshold: 0.5  # QE above this indicates poor performance
-  low_qe_threshold: 0.02  # QE below this indicates excellent performance
 
 # Validation settings
 validation_config:

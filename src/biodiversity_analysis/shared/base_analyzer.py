@@ -16,7 +16,7 @@ from typing import Dict, Any, Optional, Tuple, List, Callable
 from src.abstractions.interfaces.analyzer import IAnalyzer, AnalysisResult, AnalysisMetadata
 from src.abstractions.types.biodiversity_types import BiodiversityData
 from src.config import get_biodiversity_config
-from .shared.data import ParquetLoader
+from .data import ParquetLoader
 
 logger = logging.getLogger(__name__)
 
