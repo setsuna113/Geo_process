@@ -38,16 +38,35 @@ class EnhancedCoverageAnalyzer:
         self.total_land_pixels = 0
         self._load_land_mask()
     
-    def _load_land_mask(self) -> None:
-        """Load climate parquet to extract land-only coordinates"""
+    def _load_land_mask(self, sample_fraction: float = 0.1) -> None:
+        """Load climate parquet to extract land-only coordinates (with sampling for large files)"""
         print("Loading land mask from climate data...")
         
         if not self.climate_parquet_path.exists():
             print(f"Warning: Climate file not found at {self.climate_parquet_path}")
             return
         
-        # Load climate data
-        climate_df = pd.read_parquet(self.climate_parquet_path)
+        # Load climate data with sampling for large files
+        try:
+            # First, get schema to see available columns
+            parquet_file = pd.read_parquet(self.climate_parquet_path, nrows=1)
+            print(f"Available columns: {list(parquet_file.columns)}")
+            
+            # Load coordinates (using correct column names)
+            coord_cols = ['x', 'y'] if 'x' in parquet_file.columns else ['longitude', 'latitude']
+            climate_df = pd.read_parquet(self.climate_parquet_path, columns=coord_cols)
+            total_rows = len(climate_df)
+            
+            if total_rows > 1_000_000:  # If > 1M rows, sample
+                sample_size = max(100_000, int(total_rows * sample_fraction))
+                print(f"Large file detected ({total_rows:,} rows). Sampling {sample_size:,} rows ({sample_fraction*100:.1f}%)")
+                climate_df = climate_df.sample(n=sample_size, random_state=42)
+            else:
+                print(f"Loading full dataset ({total_rows:,} rows)")
+                
+        except Exception as e:
+            print(f"Error loading climate data: {e}")
+            return
         print(f"Climate data shape: {climate_df.shape}")
         
         # Extract unique coordinates (these are land-only)
