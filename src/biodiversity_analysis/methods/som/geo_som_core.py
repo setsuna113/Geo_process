@@ -526,8 +526,8 @@ class GeoSOMVLRSOM:
                 logger.info(f"Epoch {epoch+1}/{self.config.max_epochs}: QE={qe:.6f}, "
                            f"LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
             
-            # VLRSOM: Adapt learning rate based on immediate QE improvement
-            self._adapt_learning_rate(qe, best_qe)
+            # VLRSOM: Adapt learning rate using proper error function
+            self._adapt_learning_rate(data, coordinates)
             
             # Update best QE
             if qe < best_qe:
@@ -678,77 +678,118 @@ class GeoSOMVLRSOM:
     
     # Note: Checkpoint saving is handled by the standardized save_checkpoint method at line 1376
     
-    def _adapt_learning_rate(self, current_qe: float, best_qe: float):
-        """VLRSOM: Adapt learning rate based on QE improvement."""
-        # Calculate improvement ratio
-        if best_qe > 0:
-            improvement = (best_qe - current_qe) / best_qe
+    def _calculate_vlrsom_error_squared(self, data: np.ndarray, 
+                                       coordinates: Optional[np.ndarray] = None,
+                                       sample_size: int = 10000) -> float:
+        """Calculate J²(t) error function for VLRSOM.
+        
+        From paper Equation (18): J(t) = (1/n) Σ ||wc(t) - xi(t)||²
+        
+        Args:
+            data: Input data samples
+            coordinates: Geographic coordinates (optional)
+            sample_size: Number of samples to use for approximation
+            
+        Returns:
+            J²(t): Squared error function value
+        """
+        n_samples = len(data)
+        
+        # Use sampling for efficiency (leverages existing infrastructure)
+        if n_samples > sample_size:
+            indices = np.random.choice(n_samples, sample_size, replace=False)
+            data_sample = data[indices]
+            coords_sample = coordinates[indices] if coordinates is not None else None
         else:
-            improvement = 0
+            data_sample = data
+            coords_sample = coordinates
         
-        # Check if learning rate is critically low and needs recovery
-        lr_recovery_threshold = getattr(self.config, 'lr_recovery_threshold', 0.02)
-        qe_poor_threshold = getattr(self.config, 'qe_poor_threshold', 0.055)
-        lr_recovery_target = getattr(self.config, 'lr_recovery_target', 0.05)
-        if self.current_lr < lr_recovery_threshold and current_qe > qe_poor_threshold:
-            # Force a small recovery to escape local minimum
-            self.current_lr = min(self.current_lr * 1.5, lr_recovery_target)
-            logger.info(f"Learning rate recovery triggered: LR={self.current_lr:.4f}")
-            return
+        # Pre-filter valid samples
+        valid_features = (~np.isnan(data_sample)).sum(axis=1)
+        valid_mask = valid_features >= self.config.min_valid_features
         
-        # More nuanced adaptation based on improvement magnitude
-        # Get thresholds from config
-        significant_improvement = getattr(self.config, 'significant_improvement', 0.05)
-        small_improvement = getattr(self.config, 'small_improvement', 0.01)
-        small_degradation = getattr(self.config, 'small_degradation', -0.02)
-        moderate_degradation = getattr(self.config, 'moderate_degradation', -0.05)
-        small_increase_factor = getattr(self.config, 'small_increase_factor', 1.02)
-        gentle_decrease_factor = getattr(self.config, 'gentle_decrease_factor', 0.98)
+        if not valid_mask.any():
+            logger.warning("No valid samples for VLRSOM error calculation")
+            return 1.0  # High error value
         
-        if improvement > significant_improvement:
-            # Increase learning rate
-            self.current_lr = min(
-                self.current_lr * self.config.lr_increase_factor,
-                self.config.max_learning_rate
-            )
-        elif improvement > small_improvement:
-            # Keep learning rate stable or slightly increase
-            self.current_lr = min(
-                self.current_lr * small_increase_factor,  # Slight increase to encourage progress
-                self.config.max_learning_rate
-            )
-        elif improvement > small_degradation:
-            # Keep stable - this might be noise
-            pass
-        elif improvement > moderate_degradation:
-            # Slightly decrease learning rate
-            self.current_lr = max(
-                self.current_lr * gentle_decrease_factor,  # Very gentle decrease
-                self.config.min_learning_rate
-            )
-        else:  # Significant degradation (>5%)
-            # Decrease learning rate more
-            self.current_lr = max(
-                self.current_lr * self.config.lr_decrease_factor,
-                self.config.min_learning_rate
-            )
+        data_valid = data_sample[valid_mask]
+        coords_valid = coords_sample[valid_mask] if coords_sample is not None else None
+        n_valid = len(data_valid)
         
-        # Adaptive regions based on QE level
-        high_qe_threshold = getattr(self.config, 'high_qe_threshold', 0.5)
-        low_qe_threshold = getattr(self.config, 'low_qe_threshold', 0.02)
+        # Calculate distances to all neurons for each sample
+        if coordinates is not None and hasattr(self, 'neuron_coords'):
+            # Combined distance (feature + geographic)
+            distances = self._vectorized_combined_distance(
+                data_valid, self.weights, coords_valid, self.neuron_coords
+            )
+        else:
+            # Feature distance only
+            distances = self._vectorized_partial_bray_curtis_chunk(data_valid, self.weights)
         
-        if current_qe > high_qe_threshold:  # High QE region (poor performance)
-            self.current_lr = np.clip(
-                self.current_lr,
-                self.config.high_qe_lr_min,
-                self.config.high_qe_lr_max
-            )
-        elif current_qe < low_qe_threshold:  # Very low QE region (excellent performance)
-            self.current_lr = np.clip(
-                self.current_lr,
-                self.config.low_qe_lr_min,
-                self.config.low_qe_lr_max
-            )
+        # Find BMU for each sample
+        bmu_indices = np.argmin(distances, axis=1)
+        min_distances = np.take_along_axis(
+            distances, bmu_indices[:, np.newaxis], axis=1
+        ).squeeze()
+        
+        # Handle invalid distances
+        valid_distances = min_distances[~np.isinf(min_distances)]
+        if len(valid_distances) == 0:
+            logger.warning("All samples have infinite distances in VLRSOM error calculation")
+            return 1.0
+        
+        # Calculate mean squared error: J(t) = (1/n) Σ ||error||²
+        mean_squared_error = np.mean(valid_distances ** 2)
+        
+        # Return J²(t) as required by VLRSOM formula
+        return mean_squared_error
+    
+    def _adapt_learning_rate_vlrsom(self, data: np.ndarray,
+                                   coordinates: Optional[np.ndarray] = None):
+        """VLRSOM: Adapt learning rate using proper algorithm from paper.
+        
+        From paper Equation (20): μ'(t+1) = αμ(t) + γJ²(t)
+        From paper Equation (21): Bounds checking
+        
+        Args:
+            data: Current training data (already sampled by caller)
+            coordinates: Geographic coordinates (if available)
+        """
+        # Get VLRSOM parameters from config
+        alpha = getattr(self.config, 'vlrsom_alpha', 0.95)  # Decay factor (0 < α < 1)
+        gamma = getattr(self.config, 'vlrsom_gamma', 0.001)  # Adaptation parameter (γ > 0)
+        
+        # Calculate J²(t) using existing sampling infrastructure
+        error_sample_size = getattr(self.config, 'vlrsom_error_sample_size', 10000)
+        j_squared = self._calculate_vlrsom_error_squared(data, coordinates, error_sample_size)
+        
+        # Apply VLRSOM formula: μ'(t+1) = αμ(t) + γJ²(t)
+        new_lr = alpha * self.current_lr + gamma * j_squared
+        
+        # Apply bounds from paper Equation (21)
+        min_lr = getattr(self.config, 'vlrsom_min_lr', self.config.min_learning_rate)
+        max_lr = getattr(self.config, 'vlrsom_max_lr', self.config.max_learning_rate)
+        
+        self.current_lr = np.clip(new_lr, min_lr, max_lr)
+        
+        # Log VLRSOM adaptation for debugging
+        if hasattr(self, '_vlrsom_log_frequency'):
+            epoch = len(self.training_history.get('learning_rates', [])) 
+            if epoch % 10 == 0:
+                logger.debug(f"VLRSOM: J²(t)={j_squared:.6f}, α={alpha}, γ={gamma}, "
+                           f"LR: {self.current_lr:.6f} (bounds: [{min_lr:.6f}, {max_lr:.6f}])")
+        
+    def _adapt_learning_rate(self, data: np.ndarray, 
+                           coordinates: Optional[np.ndarray] = None):
+        """Adapt learning rate using VLRSOM algorithm.
+        
+        This is the main entry point called by the training loop.
+        
+        Args:
+            data: Current training data (already sampled by caller)
+            coordinates: Geographic coordinates (if available)
+        """
+        self._adapt_learning_rate_vlrsom(data, coordinates)
     
     def _get_scheduled_radius(self, epoch: int) -> float:
         """Get the scheduled radius for a given epoch without adjustment."""
@@ -1481,9 +1522,22 @@ class GeoSOMVLRSOM:
         
         # Also save a 'latest' symlink for easy access
         latest_link = checkpoint_path / "som_checkpoint_latest.npz"
-        if latest_link.exists():
-            latest_link.unlink()
-        latest_link.symlink_to(checkpoint_file.name)
+        try:
+            if latest_link.exists() or latest_link.is_symlink():
+                latest_link.unlink()
+            latest_link.symlink_to(checkpoint_file.name)
+            logger.info(f"Created symlink: som_checkpoint_latest.npz -> {checkpoint_file.name}")
+        except (FileExistsError, OSError) as e:
+            # If symlink creation fails, remove any existing link and try once more
+            logger.warning(f"Symlink creation failed: {e}, attempting to fix...")
+            try:
+                if latest_link.exists() or latest_link.is_symlink():
+                    latest_link.unlink()
+                latest_link.symlink_to(checkpoint_file.name)
+                logger.info(f"Successfully created symlink on retry: som_checkpoint_latest.npz -> {checkpoint_file.name}")
+            except Exception as retry_error:
+                logger.error(f"Failed to create symlink after retry: {retry_error}")
+                logger.warning("Checkpoint saved but symlink creation failed - resume may not work")
         
         logger.info(f"Saved checkpoint at epoch {epoch} to {checkpoint_file}")
         

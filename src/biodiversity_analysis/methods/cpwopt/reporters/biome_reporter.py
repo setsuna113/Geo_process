@@ -408,18 +408,18 @@ class BiomeReporter:
         feat_factor = factors[2]
         
         # Select three features for RGB channels
-        # Preferably: plants (R), terrestrial (G), fungi (B)
+        # Preferably: plants (R), animals (G), fungi (B)
         feature_indices = {
             'plants': None,
-            'terrestrial': None,
+            'animals': None,
             'fungi': None
         }
         
         for i, name in enumerate(feature_names):
             if 'plant' in name.lower():
                 feature_indices['plants'] = i
-            elif 'terrestrial' in name.lower():
-                feature_indices['terrestrial'] = i
+            elif 'terrestrial' in name.lower() or 'animal' in name.lower():
+                feature_indices['animals'] = i
             elif 'fungi' in name.lower() or 'fung' in name.lower():
                 if feature_indices['fungi'] is None:
                     feature_indices['fungi'] = i
@@ -427,7 +427,7 @@ class BiomeReporter:
         # Create RGB channels
         rgb_image = np.zeros((*tensor_shape[:2], 3))
         
-        channels = ['plants', 'terrestrial', 'fungi']
+        channels = ['plants', 'animals', 'fungi']
         colors = ['red', 'green', 'blue']
         
         for chan_idx, (channel, color) in enumerate(zip(channels, colors)):
