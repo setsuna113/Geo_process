@@ -16,6 +16,7 @@ from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
 from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
 from ...base import BaseRegressionMethod
+from ...utils.h2o_utils import ensure_h2o_initialized
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +42,8 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         self.glm_config = self.config.get_glm_config()
         self.spatial_config = self.config.get_spatial_config()
         
-        # Initialize H2O
-        self._ensure_h2o_initialized()
+        # Initialize H2O using centralized utility
+        ensure_h2o_initialized()
         
         # Initialize MESF preprocessor
         self.mesf_preprocessor = MESFPreprocessor()
@@ -51,21 +52,6 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         self.model_full = None
         self.model_interaction = None
         self.data_h2o = None
-        
-    def _ensure_h2o_initialized(self):
-        """Ensure H2O cluster is running."""
-        try:
-            h2o.cluster()
-            logger.info("Using existing H2O cluster")
-        except:
-            n_threads = os.cpu_count() or 256
-            logger.info(f"Starting H2O cluster with {n_threads} threads")
-            h2o.init(
-                nthreads=n_threads,
-                max_mem_size="128G",  # Adjust based on system
-                min_mem_size="8G",
-                strict_version_check=False
-            )
     
     def load_data(self, parquet_path: str) -> h2o.H2OFrame:
         """Load data directly from parquet to H2O.

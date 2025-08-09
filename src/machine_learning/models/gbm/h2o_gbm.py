@@ -38,7 +38,12 @@ class H2OGBM:
         # Map LightGBM params to H2O params
         self.params = self._map_lightgbm_params(kwargs)
         
-        self._ensure_h2o_initialized()
+        # Initialize H2O using centralized utility
+        from ...utils.h2o_utils import ensure_h2o_initialized
+        ensure_h2o_initialized(
+            n_threads=self.n_threads,
+            max_mem_size=self.max_mem_size
+        )
         
         self.model = None
         self.feature_names = None
@@ -70,22 +75,6 @@ class H2OGBM:
             h2o_params['distribution'] = 'multinomial'
         
         return h2o_params
-    
-    def _ensure_h2o_initialized(self):
-        """Ensure H2O cluster is initialized."""
-        try:
-            # Check if H2O is already running
-            h2o.cluster()
-            logger.info("Using existing H2O cluster")
-        except:
-            # Initialize new H2O cluster
-            logger.info(f"Starting H2O cluster with {self.n_threads} threads, {self.max_mem_size} memory")
-            h2o.init(
-                nthreads=self.n_threads,
-                max_mem_size=self.max_mem_size,
-                min_mem_size="4G",
-                strict_version_check=False
-            )
     
     def train(self,
              train_set: Union[Dict, h2o.H2OFrame],

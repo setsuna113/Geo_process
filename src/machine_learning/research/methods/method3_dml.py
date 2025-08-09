@@ -1,77 +1,248 @@
-"""Method 3: Double Machine Learning (DML) - H2O optimized version.
+"""Method 3: Double Machine Learning (DML) with pure H2O processing.
 
-This module now redirects to the H2O implementation for massive datasets.
-The original pandas/LightGBM version has been replaced for 180M+ point efficiency.
+Optimized for 180M+ points using H2O's distributed computing and weighted bootstrap.
+No pandas, no memory duplication, full parallelization on 256 cores.
 """
 
+import os
 import logging
-from typing import Dict, Any, Optional
+import numpy as np
+import h2o
+from h2o.estimators.gbm import H2OGradientBoostingEstimator
+from typing import Dict, Any, Optional, List, Tuple
+from pathlib import Path
 
-# Import the H2O version
-from .method3_dml_h2o import Method3DMLH2O
+from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
+from ...utils.h2o_utils import ensure_h2o_initialized
 
 logger = logging.getLogger(__name__)
 
 
 class Method3DML:
-    """Method 3: Double Machine Learning - Now using H2O implementation.
+    """Pure H2O implementation of Double Machine Learning.
     
-    This class is a wrapper that redirects to the H2O version for efficiency.
-    The original pandas/LightGBM implementation has been replaced to handle
-    180M+ points without memory duplication.
-    
-    Key improvements:
+    Key improvements over pandas version:
     1. All operations in H2O (256-thread parallel)
-    2. Weighted bootstrap instead of data copies (avoids 3TB memory ops)
+    2. Weighted bootstrap instead of data copies
     3. Direct parquet loading (no pandas intermediate)
-    4. H2O GBM instead of LightGBM for consistency
+    4. H2O GBM for nuisance functions (consistent with Methods 1&2)
     """
     
-    def __init__(self, config: Optional[MLRegressionConfig] = None):
-        """Initialize Method 3 DML using H2O backend.
+    def __init__(self, config: MLRegressionConfig):
+        """Initialize Method 3 DML with H2O.
         
         Args:
             config: ML regression configuration
         """
-        logger.warning("Method3DML now uses H2O backend for 180M+ point efficiency")
-        self.config = config or MLRegressionConfig()
+        self.config = config
+        self.preprocessing_config = self.config.get_preprocessing_config()
+        self.dml_config = self.config.get_dml_config()
+        self.spatial_config = self.config.get_spatial_config()
         
-        # Create H2O implementation
-        self.h2o_impl = Method3DMLH2O(self.config)
+        # DML settings
+        self.n_folds = self.dml_config.get('n_folds', 5)
+        self.n_bootstrap = self.dml_config.get('n_bootstrap', 100)
         
-        # Delegate attributes for compatibility
-        self.n_folds = self.h2o_impl.n_folds
-        self.data_processed = None  # Compatibility
-        self.causal_effects = self.h2o_impl.causal_effects
+        # Initialize H2O using centralized utility
+        # DML needs more memory for its many models
+        ensure_h2o_initialized(max_mem_size="256G", min_mem_size="16G")
         
-        logger.info("Method 3 DML initialized with H2O backend (256-core parallel, weighted bootstrap)")
+        # Initialize MESF preprocessor
+        self.mesf_preprocessor = MESFPreprocessor()
+        
+        # Storage
+        self.data_h2o = None
+        self.causal_effects = {}
+        self.nuisance_models = {}
+        
+        logger.info(f"Initialized H2O DML with {self.n_folds}-fold cross-fitting")
     
-    def prepare_data(self, data: Any) -> Any:
-        """Prepare data - now delegates to H2O implementation.
+    def load_data(self, parquet_path: str) -> h2o.H2OFrame:
+        """Load data directly from parquet to H2O.
+        
+        Automatically handles MESF computation if not present.
         
         Args:
-            data: Can be a parquet path (str) or H2OFrame
-        
+            parquet_path: Path to parquet file
+            
         Returns:
-            H2OFrame ready for DML
+            H2OFrame with all data including MESF
         """
-        logger.info("Delegating to H2O implementation for data preparation")
+        logger.info(f"Loading data from {parquet_path}")
         
-        # If string path, load directly to H2O
-        if isinstance(data, str):
-            h2o_data = self.h2o_impl.load_data(data)
+        # Process parquet to ensure MESF is included
+        augmented_path = self.mesf_preprocessor.process_and_augment_parquet(
+            parquet_path,
+            self.spatial_config,
+            force_recompute=False
+        )
+        
+        # Load directly to H2O (no pandas!)
+        logger.info("Loading augmented data to H2O...")
+        h2o_data = h2o.import_file(augmented_path, parse_dates=False)
+        
+        # Verify MESF columns
+        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
+        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
+        logger.info(f"Including {len(me_cols)} MESF eigenvectors")
+        
+        return h2o_data
+    
+    def prepare_data_h2o(self, h2o_data: h2o.H2OFrame) -> h2o.H2OFrame:
+        """Prepare data using H2O operations (no pandas!).
+        
+        Args:
+            h2o_data: Raw H2O DataFrame
+            
+        Returns:
+            Processed H2O DataFrame
+        """
+        logger.info("Preparing data in H2O for Method 3 (DML)")
+        
+        # Apply complete case analysis
+        initial_rows = h2o_data.nrows
+        required_cols = [
+            'fungi_richness', 'plants_richness', 'vertebrates_richness',
+            'bio1', 'bio4', 'bio12', 'bio15', 'elevation',
+            'longitude', 'latitude'
+        ]
+        
+        # Remove rows with missing values
+        for col in required_cols:
+            if col in h2o_data.columns:
+                h2o_data = h2o_data[h2o_data[col].isna() == False]
+        
+        rows_dropped = initial_rows - h2o_data.nrows
+        logger.info(f"Complete case analysis: dropped {rows_dropped:,} rows "
+                   f"({rows_dropped/initial_rows*100:.2f}%)")
+        
+        # Standardize climate variables (H2O operations)
+        climate_vars = ['bio1', 'bio4', 'bio12', 'bio15', 'elevation']
+        
+        for var in climate_vars:
+            if var in h2o_data.columns:
+                mean_val = h2o_data[var].mean()[0, 0]
+                sd_val = h2o_data[var].sd()[0, 0]
+                h2o_data[f'{var}_std'] = (h2o_data[var] - mean_val) / (2 * sd_val)
+                logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
+        
+        # Add quadratic elevation term
+        h2o_data['elevation_std_sq'] = h2o_data['elevation_std'] ** 2
+        
+        # Log transform biotic predictors
+        h2o_data['plants_richness_log'] = (h2o_data['plants_richness'] + 1).log()
+        h2o_data['vertebrates_richness_log'] = (h2o_data['vertebrates_richness'] + 1).log()
+        logger.info("Created log-transformed biotic predictors")
+        
+        # Create interaction terms for different hypotheses
+        # H1: plants × bio4 interaction
+        h2o_data['plants_bio4_interaction'] = (
+            h2o_data['plants_richness_log'] * h2o_data['bio4_std']
+        )
+        
+        # H2: categorical interaction (temperate × high plant diversity)
+        bio1_median = h2o_data['bio1'].median()[0, 0]
+        plants_median = h2o_data['plants_richness'].median()[0, 0]
+        
+        h2o_data['temperate'] = (h2o_data['bio1'] < bio1_median).ifelse(1, 0)
+        h2o_data['plant_high'] = (h2o_data['plants_richness'] > plants_median).ifelse(1, 0)
+        h2o_data['temperate_x_plant_high'] = h2o_data['temperate'] * h2o_data['plant_high']
+        
+        self.data_h2o = h2o_data
+        return h2o_data
+    
+    def _get_treatment_confounders_outcome(self, hypothesis: str) -> Tuple[str, List[str], str]:
+        """Get treatment, confounders, and outcome for each hypothesis.
+        
+        Args:
+            hypothesis: 'h0', 'h1', or 'h2'
+            
+        Returns:
+            Tuple of (treatment, confounders, outcome)
+        """
+        # Get ME columns
+        me_cols = [col for col in self.data_h2o.columns if col.startswith('ME')]
+        
+        # Base confounders (climate + spatial)
+        base_confounders = [
+            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
+            'elevation_std', 'elevation_std_sq',
+            'vertebrates_richness_log'
+        ] + me_cols
+        
+        if hypothesis == 'h0':
+            # H0: No interaction
+            treatment = 'plants_richness_log'
+            confounders = base_confounders
+        elif hypothesis == 'h1':
+            # H1: Continuous interaction
+            treatment = 'plants_bio4_interaction'
+            confounders = base_confounders + ['plants_richness_log']
+        elif hypothesis == 'h2':
+            # H2: Categorical interaction
+            treatment = 'temperate_x_plant_high'
+            confounders = base_confounders + ['temperate', 'plant_high']
         else:
-            # Assume it's already H2OFrame
-            h2o_data = data
+            raise ValueError(f"Unknown hypothesis: {hypothesis}")
         
-        # Process in H2O
-        processed = self.h2o_impl.prepare_data_h2o(h2o_data)
-        self.data_processed = processed  # Store for compatibility
-        return processed
+        outcome = 'fungi_richness'
+        return treatment, confounders, outcome
+    
+    def _fit_nuisance_functions_h2o(self,
+                                    train_frame: h2o.H2OFrame,
+                                    treatment: str,
+                                    confounders: List[str],
+                                    outcome: str,
+                                    weights: Optional[str] = None) -> Tuple[Any, Any]:
+        """Fit nuisance functions using H2O GBM.
+        
+        Args:
+            train_frame: H2O frame with training data
+            treatment: Treatment column name
+            confounders: List of confounder column names
+            outcome: Outcome column name
+            weights: Optional column name for sample weights
+            
+        Returns:
+            Tuple of (g_model, m_model) where:
+                g_model: E[Y|X] model
+                m_model: E[D|X] model
+        """
+        # Configure H2O GBM for nuisance functions
+        gbm_params = {
+            'ntrees': 100,
+            'max_depth': 6,
+            'learn_rate': 0.1,
+            'sample_rate': 0.8,
+            'col_sample_rate': 0.7,
+            'min_rows': 20,
+            'distribution': 'gaussian',
+            'seed': 42
+        }
+        
+        # Fit g-model: E[Y|X]
+        g_model = H2OGradientBoostingEstimator(**gbm_params)
+        g_model.train(
+            x=confounders,
+            y=outcome,
+            training_frame=train_frame,
+            weights_column=weights
+        )
+        
+        # Fit m-model: E[D|X]
+        m_model = H2OGradientBoostingEstimator(**gbm_params)
+        m_model.train(
+            x=confounders,
+            y=treatment,
+            training_frame=train_frame,
+            weights_column=weights
+        )
+        
+        return g_model, m_model
     
     def cross_fit_dml(self, hypothesis: str = 'h1') -> Dict[str, Any]:
-        """Perform cross-fitted DML estimation.
+        """Perform cross-fitted DML estimation using H2O.
         
         Args:
             hypothesis: Which hypothesis to test ('h0', 'h1', 'h2')
@@ -79,133 +250,269 @@ class Method3DML:
         Returns:
             Dictionary with causal effect estimates and statistics
         """
-        return self.h2o_impl.cross_fit_dml(hypothesis)
-    
-    def test_robustness(self, hypothesis: str = 'h1') -> Dict[str, Any]:
-        """Test robustness using weighted bootstrap.
+        if self.data_h2o is None:
+            raise ValueError("Must call prepare_data_h2o() first")
         
-        Uses weighted bootstrap instead of data copies to avoid memory explosion.
-        For 180M points: saves 100 × 30GB = 3TB of memory operations!
+        logger.info(f"Running H2O cross-fitted DML for hypothesis {hypothesis.upper()}")
+        
+        # Get treatment, confounders, and outcome
+        treatment, confounders, outcome = self._get_treatment_confounders_outcome(hypothesis)
+        
+        # Storage for cross-fit estimates
+        theta_estimates = []
+        fold_results = []
+        
+        # Create fold assignment column
+        self.data_h2o['fold'] = self.data_h2o.kfold_column(n_folds=self.n_folds, seed=42)
+        
+        for fold_idx in range(self.n_folds):
+            logger.info(f"Processing fold {fold_idx + 1}/{self.n_folds}")
+            
+            # Split data using H2O operations
+            train_frame = self.data_h2o[self.data_h2o['fold'] != fold_idx]
+            test_frame = self.data_h2o[self.data_h2o['fold'] == fold_idx]
+            
+            # Fit nuisance functions on training fold
+            g_model, m_model = self._fit_nuisance_functions_h2o(
+                train_frame, treatment, confounders, outcome
+            )
+            
+            # Compute residuals on test fold
+            g_pred = g_model.predict(test_frame).as_data_frame().values.ravel()
+            m_pred = m_model.predict(test_frame).as_data_frame().values.ravel()
+            
+            # Get actual values
+            Y_test = test_frame[outcome].as_data_frame().values.ravel()
+            D_test = test_frame[treatment].as_data_frame().values.ravel()
+            
+            # Orthogonalized residuals
+            V_test = D_test - m_pred  # Treatment residual
+            U_test = Y_test - g_pred  # Outcome residual
+            
+            # DML estimator (orthogonal moment)
+            theta_fold = np.mean(V_test * U_test) / np.mean(V_test * V_test)
+            
+            theta_estimates.append(theta_fold)
+            fold_results.append({
+                'fold': fold_idx,
+                'theta': theta_fold,
+                'n_test': len(V_test)
+            })
+            
+            logger.info(f"Fold {fold_idx + 1} theta: {theta_fold:.6f}")
+        
+        # Aggregate estimates
+        theta_dml = np.mean(theta_estimates)
+        theta_se = np.std(theta_estimates) / np.sqrt(self.n_folds)
+        
+        results = {
+            'causal_effect': theta_dml,
+            'standard_error': theta_se,
+            't_statistic': theta_dml / theta_se,
+            'p_value': 2 * (1 - np.abs(theta_dml / theta_se)),
+            'fold_estimates': theta_estimates,
+            'fold_results': fold_results,
+            'hypothesis': hypothesis
+        }
+        
+        logger.info(f"DML causal effect: {theta_dml:.6f} (SE: {theta_se:.6f})")
+        
+        return results
+    
+    def weighted_bootstrap_dml(self, hypothesis: str = 'h1', n_bootstrap: int = None) -> Dict[str, Any]:
+        """Perform weighted bootstrap for uncertainty quantification.
+        
+        Key innovation: Uses sample weights instead of data copies!
+        For 180M points, this avoids 100 × 30GB = 3TB of memory operations.
+        
+        Args:
+            hypothesis: Which hypothesis to test
+            n_bootstrap: Number of bootstrap iterations
+            
+        Returns:
+            Dictionary with bootstrap results
+        """
+        if self.data_h2o is None:
+            raise ValueError("Must call prepare_data_h2o() first")
+        
+        n_bootstrap = n_bootstrap or self.n_bootstrap
+        logger.info(f"Running weighted bootstrap DML with {n_bootstrap} iterations")
+        
+        # Get treatment, confounders, and outcome
+        treatment, confounders, outcome = self._get_treatment_confounders_outcome(hypothesis)
+        
+        n = self.data_h2o.nrows
+        bootstrap_effects = []
+        
+        for b in range(n_bootstrap):
+            if b % 10 == 0:
+                logger.info(f"Bootstrap iteration {b}/{n_bootstrap}")
+            
+            # Generate bootstrap weights (Multinomial distribution)
+            # This gives us counts for each observation
+            weights = np.random.multinomial(n, [1/n]*n)
+            
+            # Normalize weights to sum to n (for stability)
+            weights = weights.astype(float)
+            weights = weights / weights.sum() * n
+            
+            # Add weights to H2O frame
+            self.data_h2o['bootstrap_weight'] = h2o.H2OFrame(weights.reshape(-1, 1))
+            
+            # Storage for this bootstrap's fold estimates
+            fold_estimates = []
+            
+            # Cross-fitting with weights
+            self.data_h2o['fold'] = self.data_h2o.kfold_column(n_folds=self.n_folds, seed=42+b)
+            
+            for fold_idx in range(self.n_folds):
+                # Split data
+                train_frame = self.data_h2o[self.data_h2o['fold'] != fold_idx]
+                test_frame = self.data_h2o[self.data_h2o['fold'] == fold_idx]
+                
+                # Fit nuisance functions WITH WEIGHTS
+                g_model, m_model = self._fit_nuisance_functions_h2o(
+                    train_frame, treatment, confounders, outcome,
+                    weights='bootstrap_weight'  # KEY: Use weights!
+                )
+                
+                # Predictions on test fold
+                g_pred = g_model.predict(test_frame).as_data_frame().values.ravel()
+                m_pred = m_model.predict(test_frame).as_data_frame().values.ravel()
+                
+                # Get actual values and weights
+                Y_test = test_frame[outcome].as_data_frame().values.ravel()
+                D_test = test_frame[treatment].as_data_frame().values.ravel()
+                W_test = test_frame['bootstrap_weight'].as_data_frame().values.ravel()
+                
+                # Weighted orthogonalized residuals
+                V_test = D_test - m_pred
+                U_test = Y_test - g_pred
+                
+                # Weighted DML estimator
+                theta_fold = np.average(V_test * U_test, weights=W_test) / np.average(V_test * V_test, weights=W_test)
+                fold_estimates.append(theta_fold)
+            
+            # Average across folds for this bootstrap
+            theta_boot = np.mean(fold_estimates)
+            bootstrap_effects.append(theta_boot)
+        
+        # Compute bootstrap statistics
+        boot_mean = np.mean(bootstrap_effects)
+        boot_se = np.std(bootstrap_effects)
+        boot_ci_lower = np.percentile(bootstrap_effects, 2.5)
+        boot_ci_upper = np.percentile(bootstrap_effects, 97.5)
+        
+        logger.info(f"Bootstrap mean: {boot_mean:.6f} (SE: {boot_se:.6f})")
+        logger.info(f"Bootstrap 95% CI: [{boot_ci_lower:.6f}, {boot_ci_upper:.6f}]")
+        
+        return {
+            'bootstrap_mean': boot_mean,
+            'bootstrap_se': boot_se,
+            'ci_lower': boot_ci_lower,
+            'ci_upper': boot_ci_upper,
+            'n_bootstrap': n_bootstrap,
+            'bootstrap_effects': bootstrap_effects
+        }
+    
+    def test_hypothesis(self, hypothesis: str = 'h1') -> Dict[str, Any]:
+        """Test a specific hypothesis using DML with bootstrap inference.
         
         Args:
             hypothesis: Which hypothesis to test
             
         Returns:
-            Robustness test results including bootstrap CI
+            Complete results including point estimate and bootstrap CI
         """
-        logger.info("Using weighted bootstrap (no data copies!)")
-        return self.h2o_impl.test_hypothesis(hypothesis)
-    
-    def run_full_analysis(self, data_path: str) -> Dict[str, Any]:
-        """Run complete DML analysis on large dataset.
+        # Point estimate from cross-fitted DML
+        dml_results = self.cross_fit_dml(hypothesis)
         
-        Args:
-            data_path: Path to parquet file
-            
-        Returns:
-            Complete analysis results
-        """
-        logger.info("Running full DML analysis with H2O backend")
-        return self.h2o_impl.process_large_dataset(data_path)
-    
-    # Backwards compatibility methods
-    def fit_nuisance_models(self, *args, **kwargs):
-        """Deprecated - use cross_fit_dml instead."""
-        logger.warning("fit_nuisance_models is deprecated, using cross_fit_dml")
-        return self.cross_fit_dml()
-    
-    def compute_causal_effect(self, hypothesis: str = 'h1') -> Dict[str, Any]:
-        """Compute causal effect for hypothesis."""
-        return self.h2o_impl.cross_fit_dml(hypothesis)
-    
-    def test_all_hypotheses(self) -> Dict[str, Any]:
-        """Test all hypotheses (H0, H1, H2).
+        # Bootstrap inference (weighted, no copies!)
+        bootstrap_results = self.weighted_bootstrap_dml(hypothesis)
         
-        Returns:
-            Dictionary with results for all hypotheses
-        """
-        results = {}
-        for hyp in ['h0', 'h1', 'h2']:
-            try:
-                result = self.h2o_impl.test_hypothesis(hyp)
-                results[hyp] = {
-                    'causal_effect': result.get('causal_effect', 0),
-                    'standard_error': result.get('standard_error', 0),
-                    'p_value': result.get('p_value', 1),
-                    'significant': result.get('p_value', 1) < 0.05,
-                    'interpretation': self._interpret_hypothesis(hyp, result)
-                }
-            except Exception as e:
-                logger.warning(f"Failed to test {hyp}: {e}")
-                results[hyp] = {
-                    'causal_effect': None,
-                    'p_value': None,
-                    'error': str(e)
-                }
-        return results
-    
-    def _interpret_hypothesis(self, hyp: str, result: Dict[str, Any]) -> str:
-        """Interpret hypothesis test results."""
-        if result.get('p_value') is None:
-            return f"Could not test {hyp}"
-        
-        p_val = result['p_value']
-        effect = result.get('causal_effect', 0)
-        
-        if hyp == 'h0':
-            if p_val >= 0.05:
-                return "Fungi richness is independent of plant/vertebrate richness (H0 supported)"
-            else:
-                return "Fungi richness depends on plant/vertebrate richness (H0 rejected)"
-        elif hyp == 'h1':
-            if p_val < 0.05 and effect > 0:
-                return "Positive causal effect: biodiversity begets biodiversity (H1 supported)"
-            else:
-                return "No positive causal effect detected (H1 not supported)"
-        elif hyp == 'h2':
-            if p_val < 0.05 and effect < 0:
-                return "Temperate mismatch detected: negative interaction (H2 supported)"
-            else:
-                return "No temperate mismatch detected (H2 not supported)"
-        return "Unknown hypothesis"
-    
-    def run_robustness_checks(self) -> Dict[str, Any]:
-        """Run robustness checks using weighted bootstrap.
-        
-        Returns:
-            Robustness test results
-        """
-        try:
-            # Test robustness for main hypothesis (H1)
-            return self.h2o_impl.test_robustness('h1')
-        except Exception as e:
-            logger.error(f"Robustness checks failed: {e}")
-            return {'error': str(e)}
-    
-    def summarize_results(self) -> Dict[str, Any]:
-        """Summarize Method 3 DML results.
-        
-        Returns:
-            Dictionary with summary
-        """
-        summary = {
-            'method': 'Method 3: Double Machine Learning (DML)',
-            'implementation': 'H2O backend with weighted bootstrap',
-            'n_folds': self.n_folds
+        # Combine results
+        results = {
+            **dml_results,
+            'bootstrap': bootstrap_results,
+            'significant': bootstrap_results['ci_lower'] * bootstrap_results['ci_upper'] > 0,
+            'interpretation': self._interpret_results(dml_results, bootstrap_results, hypothesis)
         }
         
-        # Add hypothesis test results if available
-        if hasattr(self.h2o_impl, 'causal_effects') and self.h2o_impl.causal_effects:
-            summary['causal_effects'] = self.h2o_impl.causal_effects
-        
-        return summary
+        return results
     
-    def create_visualization(self, save_path: Optional[str] = None):
-        """Create DML visualization.
+    def _interpret_results(self, dml_results: Dict, bootstrap_results: Dict, hypothesis: str) -> str:
+        """Interpret the DML results."""
+        effect = dml_results['causal_effect']
+        ci_lower = bootstrap_results['ci_lower']
+        ci_upper = bootstrap_results['ci_upper']
+        
+        if ci_lower * ci_upper > 0:  # CI doesn't include 0
+            if hypothesis == 'h1':
+                if effect > 0:
+                    return f"Significant positive interaction (β={effect:.4f}): Plant-fungi relationship strengthens with temperature seasonality"
+                else:
+                    return f"Significant negative interaction (β={effect:.4f}): Plant-fungi relationship weakens with temperature seasonality"
+            elif hypothesis == 'h2':
+                if effect > 0:
+                    return f"Significant interaction (β={effect:.4f}): Plant-fungi relationship is stronger in temperate regions with high plant diversity"
+                else:
+                    return f"Significant interaction (β={effect:.4f}): Plant-fungi relationship is weaker in temperate regions with high plant diversity"
+        else:
+            return f"No significant interaction detected (CI includes 0: [{ci_lower:.4f}, {ci_upper:.4f}])"
+    
+    def process_large_dataset(self, parquet_path: str) -> Dict[str, Any]:
+        """Complete pipeline for large datasets.
         
         Args:
-            save_path: Path to save visualization
+            parquet_path: Path to parquet file
+            
+        Returns:
+            Analysis results for all hypotheses
         """
-        logger.info(f"DML visualization would be saved to {save_path}")
-        # Placeholder for DML-specific visualizations
-        pass
+        # Step 1: Load data directly to H2O (with MESF handling)
+        h2o_data = self.load_data(parquet_path)
+        
+        # Step 2: Prepare data in H2O
+        h2o_data = self.prepare_data_h2o(h2o_data)
+        
+        # Step 3: Test all hypotheses
+        results = {}
+        
+        for hypothesis in ['h0', 'h1', 'h2']:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Testing hypothesis {hypothesis.upper()}")
+            logger.info('='*60)
+            
+            results[hypothesis] = self.test_hypothesis(hypothesis)
+            
+            logger.info(f"\nResults for {hypothesis.upper()}:")
+            logger.info(f"Causal effect: {results[hypothesis]['causal_effect']:.6f}")
+            logger.info(f"Bootstrap CI: [{results[hypothesis]['bootstrap']['ci_lower']:.6f}, "
+                       f"{results[hypothesis]['bootstrap']['ci_upper']:.6f}]")
+            logger.info(f"Interpretation: {results[hypothesis]['interpretation']}")
+        
+        # Step 4: Compare hypotheses
+        results['comparison'] = self._compare_hypotheses(results)
+        
+        return results
+    
+    def _compare_hypotheses(self, results: Dict) -> Dict[str, Any]:
+        """Compare results across hypotheses."""
+        comparison = {
+            'h0_effect': results['h0']['causal_effect'],
+            'h1_effect': results['h1']['causal_effect'],
+            'h2_effect': results['h2']['causal_effect'],
+            'h1_significant': results['h1']['significant'],
+            'h2_significant': results['h2']['significant'],
+            'strongest_effect': None
+        }
+        
+        # Determine strongest effect
+        effects = {
+            'h0': abs(results['h0']['causal_effect']),
+            'h1': abs(results['h1']['causal_effect']),
+            'h2': abs(results['h2']['causal_effect'])
+        }
+        comparison['strongest_effect'] = max(effects, key=effects.get)
+        
+        return comparison

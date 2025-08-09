@@ -27,6 +27,7 @@ from ..utils.constants import (
 from ..calculators.partial_metrics import validate_missing_data_handling
 from src.biodiversity_analysis.shared.metrics.distance_calculator import SharedDistanceCalculator
 from ..trainers.batch_som_trainer import OptimizedBatchTrainer, OptimizedBatchConfig
+from ..trainers.parallel_batch_processor import ParallelBatchProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -218,22 +219,25 @@ class GeoSOMVLRSOM:
             min_valid_features=self._get_config('min_valid_features', 2, 'data'),
         )
         
-        self.batch_trainer = OptimizedBatchTrainer(
-            grid_width=self.grid_cols,
-            grid_height=self.grid_rows,
-            n_features=1,  # Placeholder, will be updated when weights are initialized
-            config=optimized_config
-        )
-        
-        # All optimizations are now always enabled in the trainer:
-        # - Numba-optimized Bray-Curtis distance calculation
-        # - Momentum-based weight updates with adaptive decay
-        # - Precomputed neuron-to-neuron distances
-        # - All Numba JIT with cache=True, fastmath=True
-        # - Contiguous memory layout for cache efficiency
-        logger.info(f"Initialized fully optimized batch SOM trainer with batch_size={optimized_config.batch_size}, "
-                   f"momentum={optimized_config.initial_momentum}->{optimized_config.final_momentum}, "
-                   f"learning_schedule={optimized_config.learning_schedule}")
+        # Initialize parallel batch processor if enabled
+        if config.use_parallel:
+            # Use ParallelBatchProcessor for true parallel batch SOM
+            self.parallel_processor = ParallelBatchProcessor(n_workers=config.n_workers)
+            self.batch_trainer = None  # Not used in parallel mode
+            logger.info(f"Initialized ParallelBatchProcessor with {self.parallel_processor.n_workers} workers")
+            logger.info("Using BATCH SOM with parallel processing - weight updates once per epoch")
+        else:
+            # Fall back to sequential mini-batch trainer
+            self.parallel_processor = None
+            self.batch_trainer = OptimizedBatchTrainer(
+                grid_width=self.grid_cols,
+                grid_height=self.grid_rows,
+                n_features=1,  # Placeholder, will be updated when weights are initialized
+                config=optimized_config
+            )
+            logger.info(f"Initialized sequential mini-batch trainer with batch_size={optimized_config.batch_size}, "
+                       f"momentum={optimized_config.initial_momentum}->{optimized_config.final_momentum}, "
+                       f"learning_schedule={optimized_config.learning_schedule}")
         
         # Training state
         self.current_lr = config.initial_learning_rate
@@ -703,30 +707,82 @@ class GeoSOMVLRSOM:
         }
     
     def _execute_minibatch_training(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray]) -> float:
-        """Execute mini-batch training for one epoch."""
-        logger.info(f"Starting mini-batch training for epoch {epoch+1}")
+        """Execute training for one epoch - either parallel batch or sequential mini-batch."""
         
-        # Use the minibatch trainer's train_epoch method
-        training_stats = self.batch_trainer.train_epoch(
-            data=data, 
-            weights=self.weights,
-            epoch=epoch,
-            max_epochs=self.config.max_epochs
-        )
-        
-        # Update learning rate from trainer (uses standard schedule)
-        self.current_lr = training_stats['learning_rate']
-        self.current_radius = training_stats['radius']
-        
-        # Get QE from training stats (calculated after weight updates)
-        qe = training_stats.get('qe', 0.0)
-        if qe == 0.0 or qe is None:
-            # If QE wasn't calculated this epoch, calculate it now
+        if self.config.use_parallel and self.parallel_processor is not None:
+            # PARALLEL BATCH SOM - process all data in parallel, update weights once
+            logger.info(f"Starting parallel batch SOM training for epoch {epoch+1} with {self.parallel_processor.n_workers} workers")
+            
+            # Calculate current learning rate and radius using decay schedules
+            progress = epoch / self.config.max_epochs
+            self.current_lr = self._calculate_learning_rate(epoch, self.config.max_epochs)
+            self.current_radius = self._calculate_radius(epoch, self.config.max_epochs)
+            
+            # Create config object for parallel processor
+            from types import SimpleNamespace
+            proc_config = SimpleNamespace(
+                min_valid_features=self.config.min_valid_features,
+                spatial_weight=self.config.spatial_weight
+            )
+            
+            # Get neuron coordinates if using spatial distance
+            neuron_coords = self.neuron_coordinates if coordinates is not None else None
+            
+            # Process all data in parallel to get numerator and denominator for batch update
+            numerator, denominator = self.parallel_processor.process_chunks_parallel(
+                data=data,
+                coordinates=coordinates,
+                weights=self.weights,
+                neuron_coords=neuron_coords,
+                config=proc_config,
+                grid_positions=self.grid_positions,
+                current_radius=self.current_radius,
+                chunk_size=self.config.chunk_size
+            )
+            
+            # Apply batch SOM weight update: w_k = Σ(h_k * x) / Σ(h_k)
+            # Add small epsilon to avoid division by zero
+            epsilon = 1e-10
+            denominator_safe = np.where(denominator > epsilon, denominator, epsilon)
+            
+            # Update weights with learning rate
+            for k in range(len(self.weights)):
+                if denominator[k] > epsilon:
+                    target_weight = numerator[k] / denominator_safe[k]
+                    # Apply learning rate to the update
+                    self.weights[k] = (1 - self.current_lr) * self.weights[k] + self.current_lr * target_weight
+            
+            # Calculate QE after weight update
             qe = self.calculate_quantization_error(data, coordinates)
-        
-        converged = training_stats.get('converged', False)
-        logger.info(f"Completed mini-batch training for epoch {epoch+1}: "
-                   f"QE={qe:.6f}, LR={self.current_lr:.4f}, converged={converged}")
+            
+            logger.info(f"Completed parallel batch training for epoch {epoch+1}: "
+                       f"QE={qe:.6f}, LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
+            
+        else:
+            # SEQUENTIAL MINI-BATCH - original implementation
+            logger.info(f"Starting sequential mini-batch training for epoch {epoch+1}")
+            
+            # Use the minibatch trainer's train_epoch method
+            training_stats = self.batch_trainer.train_epoch(
+                data=data, 
+                weights=self.weights,
+                epoch=epoch,
+                max_epochs=self.config.max_epochs
+            )
+            
+            # Update learning rate from trainer (uses standard schedule)
+            self.current_lr = training_stats['learning_rate']
+            self.current_radius = training_stats['radius']
+            
+            # Get QE from training stats (calculated after weight updates)
+            qe = training_stats.get('qe', 0.0)
+            if qe == 0.0 or qe is None:
+                # If QE wasn't calculated this epoch, calculate it now
+                qe = self.calculate_quantization_error(data, coordinates)
+            
+            converged = training_stats.get('converged', False)
+            logger.info(f"Completed sequential mini-batch training for epoch {epoch+1}: "
+                       f"QE={qe:.6f}, LR={self.current_lr:.4f}, converged={converged}")
         
         return qe
     
@@ -1059,6 +1115,31 @@ class GeoSOMVLRSOM:
             raise NotImplementedError(
                 f"Neighborhood {self.neighborhood_function} not implemented"
             )
+    
+    def _calculate_learning_rate(self, epoch: int, max_epochs: int) -> float:
+        """Calculate learning rate for current epoch using exponential decay."""
+        if self.config.initial_learning_rate == self.config.min_learning_rate:
+            return self.config.initial_learning_rate
+        
+        # Exponential decay
+        decay_rate = np.log(self.config.min_learning_rate / self.config.initial_learning_rate) / max_epochs
+        lr = self.config.initial_learning_rate * np.exp(decay_rate * epoch)
+        return max(lr, self.config.min_learning_rate)
+    
+    def _calculate_radius(self, epoch: int, max_epochs: int) -> float:
+        """Calculate neighborhood radius for current epoch."""
+        initial_radius = self.config.initial_radius or (max(self.grid_rows, self.grid_cols) / 2)
+        final_radius = self.config.final_radius
+        
+        if self.config.radius_decay == "linear":
+            # Linear decay
+            radius = initial_radius - (initial_radius - final_radius) * (epoch / max_epochs)
+        else:
+            # Exponential decay (default)
+            decay_rate = np.log(final_radius / initial_radius) / max_epochs
+            radius = initial_radius * np.exp(decay_rate * epoch)
+        
+        return max(radius, final_radius)
     
     def calculate_quantization_error(self, data: np.ndarray, 
                                    coordinates: Optional[np.ndarray] = None,

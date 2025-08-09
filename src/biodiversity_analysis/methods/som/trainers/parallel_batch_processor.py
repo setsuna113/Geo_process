@@ -77,11 +77,9 @@ def process_single_chunk(chunk_idx: int,
             n_valid_samples=0
         )
     
-    # Calculate distances for this chunk using memory chunked calculator
-    # Note: use_chunking parameter maintained for API compatibility but memory chunking is always used
-    calculator = StreamlinedDistanceCalculator(
-        chunk_size=chunk_size_internal if use_chunking else len(chunk_data)
-    )
+    # Calculate distances for this chunk using optimized calculator
+    # Note: OptimizedDistanceCalculator handles memory-efficient processing
+    calculator = OptimizedDistanceCalculator()
     
     if chunk_coords is not None and neuron_coords is not None:
         chunk_distances = calculator.combined_distance_chunked(
