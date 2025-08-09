@@ -48,9 +48,14 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
         self.version = version
         self.progress_callback = progress_callback
         
-        # Load configuration
-        config_manager = get_biodiversity_config()
-        self.config = config_manager.get_method_config(method_name)
+        # Load configuration from the proper registry
+        try:
+            from src.config import MethodConfigRegistry
+            self.config = MethodConfigRegistry.get_method_config(method_name)
+        except:
+            # Fallback to old config system
+            config_manager = get_biodiversity_config()
+            self.config = config_manager.get_method_config(method_name)
         
         # Data processing settings
         self.data_config = self.config.get('data_processing', {})
@@ -104,8 +109,6 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
                   coordinate_cols: Optional[List[str]] = None,
                   feature_cols: Optional[List[str]] = None,
                   species_cols: Optional[List[str]] = None,
-                  sample_size: Optional[int] = None,
-                  random_seed: Optional[int] = None,
                   spatial_grid_step: int = 1) -> BiodiversityData:
         """
         Load biodiversity data from parquet file.
@@ -128,8 +131,6 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
                 feature_cols=feature_cols,
                 species_cols=species_cols,
                 validate=True,
-                sample_size=sample_size,
-                random_seed=random_seed,
                 spatial_grid_step=spatial_grid_step
             )
             

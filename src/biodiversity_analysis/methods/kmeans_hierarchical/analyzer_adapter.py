@@ -1,4 +1,4 @@
-"""Adapter to make KMeansAnalyzer compatible with IAnalyzer interface."""
+"""Adapter to make KMeansHierarchicalAnalyzer compatible with IAnalyzer interface."""
 
 import numpy as np
 import xarray as xr
@@ -6,37 +6,31 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple, List
 
 from src.abstractions.interfaces.analyzer import IAnalyzer, AnalysisResult
-from .analyzer import KMeansAnalyzer
+from .hierarchical_analyzer import KMeansHierarchicalAnalyzer
 
 
-class KMeansAnalyzerAdapter(IAnalyzer):
-    """Adapter for KMeansAnalyzer to implement IAnalyzer interface.
+class KMeansHierarchicalAnalyzerAdapter(IAnalyzer):
+    """Adapter for KMeansHierarchicalAnalyzer to implement IAnalyzer interface.
     
-    This adapter allows KMeansAnalyzer to work with the analyzer factory
+    This adapter allows KMeansHierarchicalAnalyzer to work with the analyzer factory
     while maintaining compatibility with the existing pipeline.
     """
     
     def __init__(self, config: Any, db: Any):
-        """Initialize k-means analyzer adapter.
+        """Initialize k-means hierarchical analyzer adapter.
         
         Args:
             config: Configuration object (used by factory)
             db: Database manager (used by factory, ignored here)
         """
-        # Initialize the actual k-means analyzer
-        self._analyzer = KMeansAnalyzer()
+        # Initialize the actual hierarchical analyzer
+        self._analyzer = KMeansHierarchicalAnalyzer()
         self._config = config
         self._db = db
     
     def get_default_parameters(self) -> Dict[str, Any]:
-        """Get default parameters for k-means analysis."""
-        return {
-            'n_clusters': 20,
-            'determine_k': False,
-            'k_range': [5, 30],
-            'save_results': True,
-            'output_dir': './outputs/kmeans_results'
-        }
+        """Get default parameters for k-means hierarchical analysis."""
+        return self._analyzer.get_default_parameters()
     
     def validate_parameters(self, parameters: Dict[str, Any]) -> Tuple[bool, List[str]]:
         """Validate analysis parameters."""
@@ -111,14 +105,8 @@ class KMeansAnalyzerAdapter(IAnalyzer):
         Returns:
             Path to saved results
         """
-        if output_dir is None:
-            output_dir = Path("./results/kmeans")
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # The analyzer already saves results internally
-        # This is just for interface compatibility
-        return output_dir
+        # Delegate to the analyzer's save_results method
+        return self._analyzer.save_results(result, output_name, output_dir)
     
     def set_progress_callback(self, callback: Any):
         """Set progress callback function.

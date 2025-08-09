@@ -1,0 +1,68 @@
+# K-means Hierarchical configuration for biodiversity analysis
+pipeline:
+  stages:
+    - name: data_loader
+      params:
+        data_path: "data/merged/biodiversity_climate_1x_production.parquet"  # Relative path
+        
+    - name: analyzer
+      params:
+        method: kmeans_hierarchical
+        # Two-stage clustering parameters
+        n_pre_clusters: 750  # Consistent with hierarchical_config.py default  # Reduced for testing
+        use_variance_preservation: false  # Faster without auto-k
+        variance_threshold: 0.95
+        variance_k_range: [100, 2000]
+        
+        # Hierarchical clustering parameters
+        linkage_method: ward
+        distance_metric: euclidean  # Required for ward
+        
+        # Final cluster selection
+        final_k: 6  # Fixed for testing (faster than bootstrap)
+        final_k_range: [4, 8]
+        selection_method: fixed  # Skip bootstrap for testing
+        n_bootstrap: 10  # Reduced for testing
+        bootstrap_sample_ratio: 0.9
+        
+        # Performance settings
+        use_minibatch: true
+        batch_size: 10000
+        n_jobs: -1  # Use all CPU cores
+        chunk_size: 10000
+        
+        # Visualization settings
+        generate_dendrogram: true
+        generate_geographic_maps: true
+        generate_3d_visualization: true
+        generate_validation_plots: true
+        n_samples_for_viz: 100000
+        
+        # Quality metrics
+        calculate_silhouette: true
+        silhouette_sample_size: 50000
+        
+        # Output settings
+        save_results: true
+        output_dir: "./outputs/kmeans_hierarchical_results"
+
+# Analysis settings
+analysis:
+  experiment_name: "biodiversity_kmeans_hierarchical"
+  description: "Two-stage hierarchical clustering of biodiversity patterns"
+  
+# Data processing
+data_processing:
+  handle_missing: complete_cases
+  normalization: robust
+  remove_outliers: false
+  min_features_prefilter: 1
+  spatial_grid_step: 50  # Systematic spatial sampling - every 50th grid point
+  # Note: Spatial grid sampling provides better geographic coverage than random sampling
+  # and is the preferred method for biodiversity/geographic data
+
+# Memory management for large datasets
+performance:
+  large_dataset_threshold: 1000000
+  memory_chunk_size: 10000
+  max_memory_gb: 16

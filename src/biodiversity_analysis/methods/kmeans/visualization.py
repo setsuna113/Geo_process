@@ -156,44 +156,6 @@ class KMeansVisualizer:
         return fig
     
     @staticmethod
-    def plot_elbow_curve(k_values: list, inertias: list,
-                        figsize: Tuple[int, int] = (8, 6)) -> plt.Figure:
-        """Plot elbow curve for optimal k selection.
-        
-        Args:
-            k_values: List of k values tested
-            inertias: Corresponding inertia values
-            figsize: Figure size
-            
-        Returns:
-            fig: Matplotlib figure
-        """
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        ax.plot(k_values, inertias, 'bo-', linewidth=2, markersize=8)
-        ax.set_xlabel('Number of Clusters (k)')
-        ax.set_ylabel('Inertia')
-        ax.set_title('Elbow Curve for Optimal k')
-        ax.grid(True, alpha=0.3)
-        
-        # Try to identify elbow point
-        if len(k_values) > 2:
-            # Calculate rate of change
-            deltas = np.diff(inertias)
-            delta_deltas = np.diff(deltas)
-            
-            # Find point with maximum curvature
-            if len(delta_deltas) > 0:
-                elbow_idx = np.argmax(delta_deltas) + 2
-                if elbow_idx < len(k_values):
-                    ax.axvline(x=k_values[elbow_idx], color='r', 
-                             linestyle='--', label=f'Elbow at k={k_values[elbow_idx]}')
-                    ax.legend()
-        
-        plt.tight_layout()
-        return fig
-    
-    @staticmethod
     def plot_missing_data_patterns(features: np.ndarray, labels: np.ndarray,
                                  figsize: Tuple[int, int] = (10, 6)) -> plt.Figure:
         """Plot missing data patterns by cluster.

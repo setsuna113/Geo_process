@@ -68,7 +68,7 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  -e, --experiment NAME    Analysis experiment name from config.yml"
             echo "  -i, --input PATH         Input parquet file (overrides experiment config)"
-            echo "  -m, --method METHOD      Analysis method: som|gwpca|maxp_regions|cpwopt"
+            echo "  -m, --method METHOD      Analysis method: som|gwpca|maxp_regions|cpwopt|kmeans_hierarchical"
             echo "  --monitor                Run with tmux monitoring (4-pane layout with live progress)"
             echo "  -d, --daemon             Run as daemon process"
             echo "  -r, --resume             Resume from checkpoint"
@@ -91,10 +91,11 @@ while [[ $# -gt 0 ]]; do
             echo "  $0 --experiment production_som --daemon --process-name som_prod_run"
             echo ""
             echo "Available methods:"
-            echo "  som          - Self-Organizing Maps for clustering biodiversity patterns"
-            echo "  gwpca        - Geographically Weighted Principal Component Analysis"
-            echo "  maxp_regions - MaxP regionalization for spatial clustering"
-            echo "  cpwopt       - CP-WOPT tensor factorization for sparse biodiversity data"
+            echo "  som                - Self-Organizing Maps for clustering biodiversity patterns"
+            echo "  gwpca              - Geographically Weighted Principal Component Analysis"
+            echo "  maxp_regions       - MaxP regionalization for spatial clustering"
+            echo "  cpwopt             - CP-WOPT tensor factorization for sparse biodiversity data"
+            echo "  kmeans_hierarchical - Two-stage k-means + hierarchical clustering for large datasets"
             echo ""
             echo "Monitor mode (--monitor):"
             echo "  Creates a 4-pane tmux layout:"
@@ -170,6 +171,8 @@ if [ "$SKIP_RESOURCE_CHECK" = false ]; then
             CHECK_METHOD="cpwopt"
         elif [[ "$EXPERIMENT_NAME" == *"som"* ]]; then
             CHECK_METHOD="som"
+        elif [[ "$EXPERIMENT_NAME" == *"kmeans_hierarchical"* ]]; then
+            CHECK_METHOD="kmeans_hierarchical"
         fi
     fi
     
