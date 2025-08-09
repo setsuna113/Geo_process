@@ -4,10 +4,8 @@ Tests H2: Climate-diversity interaction differs in temperate vs non-temperate re
 Optimized for massive datasets using H2O-native operations.
 """
 
-import os
 import logging
 import h2o
-from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
@@ -40,39 +38,56 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         # Initialize H2O using centralized utility
         ensure_h2o_initialized()
         
-        # Initialize MESF preprocessor
+        # Initialize MESF preprocessor V2 with caching
         self.mesf_preprocessor = MESFPreprocessor()
         
         self.model = None
         self.data_h2o = None
     
-    def load_data(self, parquet_path: str) -> h2o.H2OFrame:
-        """Load data directly from parquet to H2O.
+    def load_data(self, parquet_path: str, spatial_grid_step: Optional[int] = None) -> h2o.H2OFrame:
+        """Load data with optional spatial grid sampling and MESF computation.
         
-        Automatically handles MESF computation if not present.
+        Uses the new caching system that:
+        1. Never modifies original files
+        2. Caches MESF based on (file, sampling_rate, params)
+        3. Reuses cached computations when possible
         
         Args:
             parquet_path: Path to parquet file
+            spatial_grid_step: Take every Nth point in spatial grid (None=use config default)
             
         Returns:
             H2OFrame with all data including MESF
         """
-        logger.info(f"Loading data from {parquet_path}")
+        from ...preprocessing import ColumnStandardizer
         
-        # Process parquet to ensure MESF is included
-        augmented_path = self.mesf_preprocessor.process_and_augment_parquet(
-            parquet_path,
-            self.spatial_config,
-            force_recompute=False
+        # Use config default if not specified
+        if spatial_grid_step is None:
+            spatial_grid_step = self.config.get_data_config().get('spatial_grid_step', 1)
+        
+        logger.info(f"Loading data from {parquet_path}")
+        logger.info(f"Spatial grid sampling: every {spatial_grid_step}th point")
+        
+        # First standardize columns if needed (also uses caching)
+        standardizer = ColumnStandardizer()
+        standardized_path = standardizer.standardize_if_needed(parquet_path)
+        
+        # Use the new MESF preprocessor with caching
+        # It handles sampling and MESF computation internally
+        augmented_path = self.mesf_preprocessor.process_with_sampling(
+            standardized_path,
+            spatial_grid_step,
+            self.spatial_config
         )
         
-        # Load directly to H2O (MESF already included!)
-        logger.info("Loading augmented data to H2O...")
-        h2o_data = h2o.import_file(augmented_path, parse_dates=False)
+        # Load augmented data to H2O
+        ensure_h2o_initialized()  # Ensure H2O is connected before importing
+        h2o_data = h2o.import_file(augmented_path)
+        
+        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
         
         # Verify MESF columns
         me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
-        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
         logger.info(f"Including {len(me_cols)} MESF eigenvectors")
         
         return h2o_data
@@ -112,8 +127,13 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         
         for var in climate_vars:
             if var in h2o_data.columns:
-                mean_val = h2o_data[var].mean()[0, 0]
-                sd_val = h2o_data[var].sd()[0, 0]
+                mean_val = h2o_data[var].mean()
+                sd_val = h2o_data[var].sd()
+                # H2O's mean() and sd() return lists, so extract the value
+                if isinstance(mean_val, list):
+                    mean_val = mean_val[0]
+                if isinstance(sd_val, list):
+                    sd_val = sd_val[0]
                 h2o_data[f'{var}_std'] = (h2o_data[var] - mean_val) / (2 * sd_val)
                 logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
         
@@ -127,12 +147,16 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         
         # Create categorical variables for H2 testing (per regression_analysis_decisions.md)
         # Temperate regions: top 25% of temperature seasonality (bio4)
-        bio4_q75 = h2o_data['bio4_std'].quantile(0.75)[0, 0]
+        bio4_quantiles = h2o_data['bio4_std'].quantile([0.75])
+        # H2O quantile returns a frame, extract the value
+        bio4_q75 = bio4_quantiles[0, 0] if hasattr(bio4_quantiles, '__getitem__') else bio4_quantiles
         h2o_data['temperate'] = (h2o_data['bio4_std'] > bio4_q75).ifelse(1, 0)
         logger.info(f"Created temperate variable: bio4_std > {bio4_q75:.3f} (75th percentile)")
         
         # High plant richness: top 25% of plant species
-        plants_q75 = h2o_data['plants_richness'].quantile(0.75)[0, 0]
+        plants_quantiles = h2o_data['plants_richness'].quantile([0.75])
+        # H2O quantile returns a frame, extract the value
+        plants_q75 = plants_quantiles[0, 0] if hasattr(plants_quantiles, '__getitem__') else plants_quantiles
         h2o_data['plant_high'] = (h2o_data['plants_richness'] > plants_q75).ifelse(1, 0)
         logger.info(f"Created plant_high variable: plants_richness > {plants_q75:.0f} (75th percentile)")
         
@@ -164,8 +188,13 @@ class Method2CategoricalGLM(BaseRegressionMethod):
             raise ValueError("Must call prepare_data_h2o() first or provide data")
         
         # Check overdispersion
-        fungi_mean = h2o_data['fungi_richness'].mean()[0, 0]
-        fungi_var = h2o_data['fungi_richness'].var()[0, 0]
+        fungi_mean = h2o_data['fungi_richness'].mean()
+        fungi_var = h2o_data['fungi_richness'].var()
+        # H2O's mean() and var() return lists
+        if isinstance(fungi_mean, list):
+            fungi_mean = fungi_mean[0]
+        if isinstance(fungi_var, list):
+            fungi_var = fungi_var[0]
         dispersion_ratio = fungi_var / fungi_mean
         
         logger.info(f"Dispersion ratio: {dispersion_ratio:.2f}")

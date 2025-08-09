@@ -4,13 +4,11 @@ Optimized for 180M+ points using H2O's distributed computing and weighted bootst
 No pandas, no memory duplication, full parallelization on 256 cores.
 """
 
-import os
 import logging
 import numpy as np
 import h2o
 from h2o.estimators.gbm import H2OGradientBoostingEstimator
 from typing import Dict, Any, Optional, List, Tuple
-from pathlib import Path
 
 from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
@@ -39,6 +37,8 @@ class Method3DML:
         self.preprocessing_config = self.config.get_preprocessing_config()
         self.dml_config = self.config.get_dml_config()
         self.spatial_config = self.config.get_spatial_config()
+        # Data config is part of preprocessing
+        self.data_config = self.preprocessing_config
         
         # DML settings
         self.n_folds = self.dml_config.get('n_folds', 5)
@@ -48,7 +48,7 @@ class Method3DML:
         # DML needs more memory for its many models
         ensure_h2o_initialized(max_mem_size="256G", min_mem_size="16G")
         
-        # Initialize MESF preprocessor
+        # Initialize MESF preprocessor with caching
         self.mesf_preprocessor = MESFPreprocessor()
         
         # Storage
@@ -58,33 +58,45 @@ class Method3DML:
         
         logger.info(f"Initialized H2O DML with {self.n_folds}-fold cross-fitting")
     
-    def load_data(self, parquet_path: str) -> h2o.H2OFrame:
-        """Load data directly from parquet to H2O.
-        
-        Automatically handles MESF computation if not present.
+    def load_data(self, parquet_path: str, spatial_grid_step: Optional[int] = None) -> h2o.H2OFrame:
+        """Load data with PyArrow and optional spatial grid sampling.
         
         Args:
             parquet_path: Path to parquet file
+            spatial_grid_step: Take every Nth point in spatial grid (None=use config default)
             
         Returns:
             H2OFrame with all data including MESF
         """
+        import pyarrow.parquet as pq
+        from ...preprocessing import ColumnStandardizer
+        
+        # Use config default if not specified
+        if spatial_grid_step is None:
+            spatial_grid_step = self.data_config.get('spatial_grid_step', 1)
+        
         logger.info(f"Loading data from {parquet_path}")
         
-        # Process parquet to ensure MESF is included
-        augmented_path = self.mesf_preprocessor.process_and_augment_parquet(
-            parquet_path,
-            self.spatial_config,
-            force_recompute=False
+        # First standardize columns if needed
+        standardizer = ColumnStandardizer()
+        standardized_path = standardizer.standardize_if_needed(parquet_path)
+        
+        # Use the new caching MESF preprocessor with spatial sampling
+        logger.info(f"Spatial grid sampling: every {spatial_grid_step}th point")
+        
+        # Process with MESF (handles sampling and caching internally)
+        augmented_path = self.mesf_preprocessor.process_with_sampling(
+            standardized_path,
+            spatial_grid_step,
+            self.spatial_config
         )
         
-        # Load directly to H2O (no pandas!)
-        logger.info("Loading augmented data to H2O...")
-        h2o_data = h2o.import_file(augmented_path, parse_dates=False)
+        # Load augmented data to H2O
+        h2o_data = h2o.import_file(augmented_path)
+        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns after MESF")
         
         # Verify MESF columns
         me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
-        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
         logger.info(f"Including {len(me_cols)} MESF eigenvectors")
         
         return h2o_data
@@ -122,8 +134,13 @@ class Method3DML:
         
         for var in climate_vars:
             if var in h2o_data.columns:
-                mean_val = h2o_data[var].mean()[0, 0]
-                sd_val = h2o_data[var].sd()[0, 0]
+                # H2O mean() and sd() return lists, not frames
+                mean_result = h2o_data[var].mean()
+                mean_val = mean_result[0] if isinstance(mean_result, list) else mean_result
+                
+                sd_result = h2o_data[var].sd()
+                sd_val = sd_result[0] if isinstance(sd_result, list) else sd_result
+                
                 h2o_data[f'{var}_std'] = (h2o_data[var] - mean_val) / (2 * sd_val)
                 logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
         
@@ -142,8 +159,12 @@ class Method3DML:
         )
         
         # H2: categorical interaction (temperate × high plant diversity)
-        bio1_median = h2o_data['bio1'].median()[0, 0]
-        plants_median = h2o_data['plants_richness'].median()[0, 0]
+        # H2O median() returns a list, not a frame
+        bio1_median_result = h2o_data['bio1'].median()
+        bio1_median = bio1_median_result[0] if isinstance(bio1_median_result, list) else bio1_median_result
+        
+        plants_median_result = h2o_data['plants_richness'].median()
+        plants_median = plants_median_result[0] if isinstance(plants_median_result, list) else plants_median_result
         
         h2o_data['temperate'] = (h2o_data['bio1'] < bio1_median).ifelse(1, 0)
         h2o_data['plant_high'] = (h2o_data['plants_richness'] > plants_median).ifelse(1, 0)
@@ -414,6 +435,27 @@ class Method3DML:
             'n_bootstrap': n_bootstrap,
             'bootstrap_effects': bootstrap_effects
         }
+    
+    def fit_model(self, data: Any) -> Dict[str, Any]:
+        """Fit the model - implements abstract method from base class.
+        
+        Args:
+            data: Input data (H2OFrame or path to parquet file)
+            
+        Returns:
+            Model fitting results
+        """
+        # If data is a string path, use process_large_dataset
+        if isinstance(data, str):
+            return self.process_large_dataset(data)
+        # Otherwise prepare and run DML
+        if data is None:
+            data = self.data_h2o
+        if data is None:
+            raise ValueError("Must provide data or call load_data first")
+        
+        # Run DML for default hypothesis
+        return self.test_hypothesis('h1')
     
     def test_hypothesis(self, hypothesis: str = 'h1') -> Dict[str, Any]:
         """Test a specific hypothesis using DML with bootstrap inference.

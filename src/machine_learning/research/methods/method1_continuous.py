@@ -4,12 +4,9 @@ Optimized for large-scale data processing with H2O, avoiding pandas conversion.
 Tests H2: Climate-diversity interaction differs in temperate vs non-temperate regions.
 """
 
-import os
 import logging
 import numpy as np
-import pandas as pd
 import h2o
-from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple
 
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
@@ -45,7 +42,7 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         # Initialize H2O using centralized utility
         ensure_h2o_initialized()
         
-        # Initialize MESF preprocessor
+        # Initialize MESF preprocessor V2 with caching
         self.mesf_preprocessor = MESFPreprocessor()
         
         self.model_null = None
@@ -53,35 +50,49 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         self.model_interaction = None
         self.data_h2o = None
     
-    def load_data(self, parquet_path: str) -> h2o.H2OFrame:
-        """Load data directly from parquet to H2O.
+    def load_data(self, parquet_path: str, spatial_grid_step: Optional[int] = None) -> h2o.H2OFrame:
+        """Load data with optional spatial grid sampling and MESF computation.
         
-        Automatically handles MESF computation if not present.
+        Uses the new caching system that:
+        1. Never modifies original files
+        2. Caches MESF based on (file, sampling_rate, params)
+        3. Reuses cached computations when possible
         
         Args:
             parquet_path: Path to parquet file
+            spatial_grid_step: Take every Nth point in spatial grid (None=use config default)
             
         Returns:
             H2OFrame with all data including MESF
         """
-        logger.info(f"Loading data from {parquet_path}")
+        from ...preprocessing import ColumnStandardizer
         
-        # Process parquet to ensure MESF is included
-        # This is a no-op if MESF already exists in the parquet
-        augmented_path = self.mesf_preprocessor.process_and_augment_parquet(
-            parquet_path,
-            self.spatial_config,
-            force_recompute=False
+        # Use config default if not specified
+        if spatial_grid_step is None:
+            spatial_grid_step = self.config.get_data_config().get('spatial_grid_step', 1)
+        
+        logger.info(f"Loading data from {parquet_path}")
+        logger.info(f"Spatial grid sampling: every {spatial_grid_step}th point")
+        
+        # First standardize columns if needed (also uses caching)
+        standardizer = ColumnStandardizer()
+        standardized_path = standardizer.standardize_if_needed(parquet_path)
+        
+        # Use the new MESF preprocessor with caching
+        # It handles sampling and MESF computation internally
+        augmented_path = self.mesf_preprocessor.process_with_sampling(
+            standardized_path,
+            spatial_grid_step,
+            self.spatial_config
         )
         
-        # Now load the augmented parquet directly to H2O
-        # MESF columns are already included!
-        logger.info("Loading augmented data to H2O (includes MESF)...")
-        h2o_data = h2o.import_file(augmented_path, parse_dates=False)
+        # Load augmented data to H2O
+        h2o_data = h2o.import_file(augmented_path)
         
-        # Verify MESF columns are present
-        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
         logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
+        
+        # Verify MESF columns
+        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
         logger.info(f"Including {len(me_cols)} MESF eigenvectors")
         
         return h2o_data
@@ -119,8 +130,13 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         
         for var in climate_vars:
             if var in h2o_data.columns:
-                mean_val = h2o_data[var].mean()[0, 0]
-                sd_val = h2o_data[var].sd()[0, 0]
+                mean_val = h2o_data[var].mean()
+                sd_val = h2o_data[var].sd()
+                # H2O's mean() and sd() return lists, so extract the value
+                if isinstance(mean_val, list):
+                    mean_val = mean_val[0]
+                if isinstance(sd_val, list):
+                    sd_val = sd_val[0]
                 h2o_data[f'{var}_std'] = (h2o_data[var] - mean_val) / (2 * sd_val)
                 logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
         
@@ -164,6 +180,17 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         
         return h2o_data
     
+    def fit_model(self, data: Any) -> Dict[str, Any]:
+        """Fit the model - implements abstract method from base class.
+        
+        Args:
+            data: Input data (H2OFrame or None to use self.data_h2o)
+            
+        Returns:
+            Model fitting results
+        """
+        return self.fit_models(data)
+    
     def fit_models(self, h2o_data: Optional[h2o.H2OFrame] = None) -> Dict[str, Any]:
         """Fit the nested models using H2O GLM.
         
@@ -180,8 +207,13 @@ class Method1ContinuousGLM(BaseRegressionMethod):
             raise ValueError("Must call prepare_data_h2o() first or provide data")
         
         # Check overdispersion
-        fungi_mean = h2o_data['fungi_richness'].mean()[0, 0]
-        fungi_var = h2o_data['fungi_richness'].var()[0, 0]
+        fungi_mean = h2o_data['fungi_richness'].mean()
+        fungi_var = h2o_data['fungi_richness'].var()
+        # H2O's mean() and var() return lists
+        if isinstance(fungi_mean, list):
+            fungi_mean = fungi_mean[0]
+        if isinstance(fungi_var, list):
+            fungi_var = fungi_var[0]
         dispersion_ratio = fungi_var / fungi_mean
         
         logger.info(f"Dispersion ratio: {dispersion_ratio:.2f}")
@@ -253,7 +285,12 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         }
         
         logger.info(f"H1 test (biodiversity effect): {comparison_h1['summary']}")
-        logger.info(f"H2 test (interaction): LRT p={comparison_h2.get('lrt', {}).get('p_value', 'NA'):.4f}")
+        # Handle case where p_value might be 'NA' string
+        h2_p = comparison_h2.get('lrt', {}).get('p_value', 'NA')
+        if isinstance(h2_p, (int, float)):
+            logger.info(f"H2 test (interaction): LRT p={h2_p:.4f}")
+        else:
+            logger.info(f"H2 test (interaction): LRT p={h2_p}")
         
         return results
     
