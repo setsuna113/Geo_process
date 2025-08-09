@@ -1,7 +1,17 @@
-"""Parallel batch processing utilities for SOM training.
+"""Parallel batch processing for memory-efficient SOM training.
 
-This module provides parallel chunk processing capabilities to utilize
-multiple CPU cores for SOM batch updates.
+PURPOSE: This module handles parallel processing of data chunks for efficient
+batch SOM updates on large datasets. It splits data into manageable chunks
+that can be processed in parallel across CPU cores.
+
+IMPLEMENTATION:
+- Processes data in chunks for memory efficiency and parallelization
+- Each chunk contributes to the batch update using the standard formula: w_k = Σ(h_k * x) / Σ(h_k)
+- Accumulates numerator and denominator across all chunks
+- Applies single weight update after processing all chunks
+
+NOTE: This implements batch SOM with parallel processing. For sequential
+mini-batch training with explicit epoch control, see minibatch_trainer.py.
 """
 
 import numpy as np
@@ -17,7 +27,13 @@ try:
 except ImportError:
     HAS_PSUTIL = False
 
-from .minibatch_distance_calculator import MiniBatchDistanceCalculator, INVALID_DISTANCE
+from ..calculators.optimized_distance_calculator import OptimizedDistanceCalculator
+from ..utils.constants import (
+    INVALID_DISTANCE, DEFAULT_GEO_DISTANCE_NORM, DEFAULT_INTERNAL_CHUNK_SIZE
+)
+
+# NOTE: StreamlinedDistanceCalculator provides memory-efficient distance calculations.
+# Real mini-batch training is implemented in minibatch_trainer.py with MiniBatchTrainer.
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +55,8 @@ def process_single_chunk(chunk_idx: int,
                         config: Any,
                         grid_positions: np.ndarray,
                         current_radius: float,
-                        use_minibatch: bool = True,
-                        minibatch_size: int = 1000) -> ChunkResult:
+                        use_chunking: bool = True,
+                        chunk_size_internal: int = 1000) -> ChunkResult:
     """Process a single chunk of data - standalone function for parallel execution.
     
     This function is defined at module level to be pickleable for multiprocessing.
@@ -61,32 +77,21 @@ def process_single_chunk(chunk_idx: int,
             n_valid_samples=0
         )
     
-    # Calculate distances for this chunk
-    if use_minibatch:
-        # Use mini-batch calculator for memory efficiency
-        calculator = MiniBatchDistanceCalculator(mini_batch_size=minibatch_size)
-        if chunk_coords is not None and neuron_coords is not None:
-            chunk_distances = calculator.combined_distance_minibatch(
-                chunk_data, weights, chunk_coords, neuron_coords,
-                spatial_weight, min_valid_features
-            )
-        else:
-            chunk_distances = calculator.partial_bray_curtis_minibatch(
-                chunk_data, weights, min_valid_features
-            )
+    # Calculate distances for this chunk using memory chunked calculator
+    # Note: use_chunking parameter maintained for API compatibility but memory chunking is always used
+    calculator = StreamlinedDistanceCalculator(
+        chunk_size=chunk_size_internal if use_chunking else len(chunk_data)
+    )
+    
+    if chunk_coords is not None and neuron_coords is not None:
+        chunk_distances = calculator.combined_distance_chunked(
+            chunk_data, weights, chunk_coords, neuron_coords,
+            spatial_weight, min_valid_features
+        )
     else:
-        # Original implementation
-        if chunk_coords is not None and neuron_coords is not None:
-            # Combined distance calculation (feature + geographic)
-            chunk_distances = _vectorized_combined_distance(
-                chunk_data, weights, chunk_coords, neuron_coords,
-                min_valid_features, spatial_weight
-            )
-        else:
-            # Feature distance only
-            chunk_distances = _vectorized_partial_bray_curtis_chunk(
-                chunk_data, weights, min_valid_features
-            )
+        chunk_distances = calculator.partial_bray_curtis_chunked(
+            chunk_data, weights, min_valid_features
+        )
     
     # Find BMUs for chunk
     chunk_bmu_indices = np.argmin(chunk_distances, axis=1)
@@ -117,9 +122,24 @@ def process_single_chunk(chunk_idx: int,
     chunk_data_clean = np.nan_to_num(chunk_data, nan=0.0)
     chunk_valid_mask = ~np.isnan(chunk_data)
     
-    # Calculate numerator and denominator for this chunk
-    numerator = np.einsum('ij,ik,ik->jk', chunk_influences, chunk_data_clean, chunk_valid_mask)
-    denominator = np.einsum('ij,ik->j', chunk_influences, chunk_valid_mask)
+    # Accumulate for BATCH SOM update: w_k = Σ(h_k * x) / Σ(h_k)
+    
+    # Expand dimensions for broadcasting: (samples, neurons, features)
+    chunk_data_expanded = chunk_data_clean[:, np.newaxis, :]  # (samples, 1, features)
+    influences_expanded = chunk_influences[:, :, np.newaxis]  # (samples, neurons, 1)
+    
+    # Accumulate weighted samples: Σ(h_k * x)
+    weighted_samples = influences_expanded * chunk_data_expanded  # (samples, neurons, features)
+    
+    # Apply validity mask to handle missing values
+    valid_mask_expanded = chunk_valid_mask[:, np.newaxis, :]  # (samples, 1, features)
+    masked_weighted_samples = weighted_samples * valid_mask_expanded
+    
+    # Sum across samples for numerator: Σ(h_k * x)
+    numerator = np.sum(masked_weighted_samples, axis=0)       # (neurons, features)
+    
+    # Sum influences for denominator: Σ(h_k)
+    denominator = np.sum(chunk_influences, axis=0)            # (neurons,)
     
     return ChunkResult(
         numerator=numerator,
@@ -127,92 +147,6 @@ def process_single_chunk(chunk_idx: int,
         chunk_idx=chunk_idx,
         n_valid_samples=n_valid
     )
-
-
-def _vectorized_partial_bray_curtis_chunk(data_chunk: np.ndarray, 
-                                        weights: np.ndarray,
-                                        min_valid_features: int) -> np.ndarray:
-    """Vectorized Bray-Curtis distance calculation for a chunk of data."""
-    # Expand dimensions for broadcasting
-    data_exp = data_chunk[:, np.newaxis, :]
-    weights_exp = weights[np.newaxis, :, :]
-    
-    # Find valid pairs
-    valid_mask = ~(np.isnan(data_exp) | np.isnan(weights_exp))
-    n_valid = valid_mask.sum(axis=2)
-    
-    # Clean data for calculation
-    data_clean = np.nan_to_num(data_exp, nan=0.0)
-    weights_clean = np.nan_to_num(weights_exp, nan=0.0)
-    
-    # Bray-Curtis calculation
-    diff = np.abs(data_clean - weights_clean)
-    sum_vals = data_clean + weights_clean
-    
-    numerator = (diff * valid_mask).sum(axis=2)
-    denominator = (sum_vals * valid_mask).sum(axis=2)
-    
-    # Handle division
-    with np.errstate(divide='ignore', invalid='ignore'):
-        distances = numerator / denominator
-    
-    # Set invalid distances
-    invalid = (n_valid < min_valid_features) | (denominator == 0)
-    distances[invalid] = INVALID_DISTANCE
-    
-    return distances
-
-
-def _vectorized_combined_distance(data_chunk: np.ndarray, 
-                                weights: np.ndarray,
-                                coords_chunk: np.ndarray, 
-                                neuron_coords: np.ndarray,
-                                min_valid_features: int,
-                                spatial_weight: float) -> np.ndarray:
-    """Calculate combined feature and geographic distances for a chunk."""
-    # Feature distances
-    feature_distances = _vectorized_partial_bray_curtis_chunk(
-        data_chunk, weights, min_valid_features
-    )
-    
-    # Geographic distances (vectorized haversine)
-    geo_distances = _vectorized_haversine_distances(coords_chunk, neuron_coords)
-    
-    # Normalize geographic distances (rough earth circumference / 2)
-    geo_distances_norm = geo_distances / 20000.0
-    
-    # Combined distance with spatial weighting
-    valid_feature = ~np.isinf(feature_distances)
-    combined = np.full_like(feature_distances, INVALID_DISTANCE)
-    combined[valid_feature] = (
-        (1 - spatial_weight) * feature_distances[valid_feature] +
-        spatial_weight * geo_distances_norm[valid_feature]
-    )
-    
-    return combined
-
-
-def _vectorized_haversine_distances(coords1: np.ndarray, coords2: np.ndarray) -> np.ndarray:
-    """Vectorized haversine distance calculation between coordinate sets."""
-    # Convert to radians
-    coords1_rad = np.radians(coords1)
-    coords2_rad = np.radians(coords2)
-    
-    # Extract lat/lon
-    lat1 = coords1_rad[:, 1:2]  # Keep as (n, 1) for broadcasting
-    lon1 = coords1_rad[:, 0:1]
-    lat2 = coords2_rad[:, 1].reshape(1, -1)  # Shape (1, m)
-    lon2 = coords2_rad[:, 0].reshape(1, -1)
-    
-    # Haversine formula
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
-    c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))  # clip for numerical stability
-    
-    # Earth radius in km
-    return 6371 * c
 
 
 def _vectorized_neighborhood(bmu_indices: np.ndarray, 
@@ -249,25 +183,16 @@ class ParallelBatchProcessor:
         self._executor = None
         
     def _determine_worker_count(self) -> int:
-        """Determine optimal number of workers based on system and data."""
-        # Get available CPUs
+        """Determine number of workers - simplified logic."""
         available_cpus = cpu_count()
         
         # Use environment variable if set
         if 'SOM_MAX_WORKERS' in os.environ:
             max_workers = int(os.environ['SOM_MAX_WORKERS'])
-            return min(max_workers, available_cpus)
-        
-        # For very large systems, don't use all cores
-        if available_cpus > 64:
-            # Use 1/4 of cores but at least 16
-            suggested = max(16, available_cpus // 4)
-        elif available_cpus > 32:
-            # Use 1/2 of cores
-            suggested = available_cpus // 2
+            suggested = min(max_workers, available_cpus)
         else:
-            # Use all but 2 cores (leave some for system)
-            suggested = max(1, available_cpus - 2)
+            # Simple rule: use 3/4 of available CPUs (leave some for system)
+            suggested = max(1, int(available_cpus * 0.75))
             
         logger.info(f"System has {available_cpus} CPUs, using {suggested} workers for SOM")
         return suggested
@@ -328,14 +253,14 @@ class ParallelBatchProcessor:
             chunk_data = data[start_idx:end_idx]
             chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
-            # Add mini-batch parameters from config
-            use_minibatch = getattr(config, 'use_minibatch', True)
-            minibatch_size = getattr(config, 'minibatch_size', 1000)
+            # Memory chunking is always enabled for consistency
+            use_chunking = True  # Maintained for API compatibility
+            chunk_size_internal = DEFAULT_INTERNAL_CHUNK_SIZE
             
             chunk_params.append((
                 chunk_idx, chunk_data, chunk_coords,
                 weights, neuron_coords, config, grid_positions, current_radius,
-                use_minibatch, minibatch_size
+                use_chunking, chunk_size_internal
             ))
         
         # Monitor memory usage and adjust workers if needed
@@ -377,18 +302,18 @@ class ParallelBatchProcessor:
             logger.error(f"Traceback:\n{traceback.format_exc()}")
             raise RuntimeError(f"Parallel processing failed after {timeout_seconds}s timeout: {str(e)}") from e
         
-        # Aggregate results
-        numerator = np.zeros_like(weights)
-        denominator = np.zeros(len(weights))
+        # Aggregate results for batch SOM update
+        accumulated_numerator = np.zeros_like(weights)  # Σ(h_k * x)
+        accumulated_denominator = np.zeros(len(weights))  # Σ(h_k)
         
         for result in results:
-            numerator += result.numerator
-            denominator += result.denominator
+            accumulated_numerator += result.numerator    # Sum weighted samples
+            accumulated_denominator += result.denominator  # Sum influences
         
         total_valid = sum(r.n_valid_samples for r in results)
         logger.info(f"Parallel processing complete. Processed {total_valid} valid samples")
         
-        return numerator, denominator
+        return accumulated_numerator, accumulated_denominator
     
     def _process_chunks_sequential(self,
                                  data: np.ndarray,
@@ -403,8 +328,8 @@ class ParallelBatchProcessor:
         n_samples = len(data)
         n_chunks = (n_samples + chunk_size - 1) // chunk_size
         
-        numerator = np.zeros_like(weights)
-        denominator = np.zeros(len(weights))
+        accumulated_numerator = np.zeros_like(weights)
+        accumulated_denominator = np.zeros(len(weights))
         
         for chunk_idx in range(n_chunks):
             start_idx = chunk_idx * chunk_size
@@ -416,16 +341,16 @@ class ParallelBatchProcessor:
             chunk_data = data[start_idx:end_idx]
             chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
             
-            # Add mini-batch parameters
-            use_minibatch = getattr(config, 'use_minibatch', True)
-            minibatch_size = getattr(config, 'minibatch_size', 1000)
+            # Memory chunking is always enabled for consistency
+            use_chunking = True  # Maintained for API compatibility
+            chunk_size_internal = DEFAULT_INTERNAL_CHUNK_SIZE
             
             result = process_single_chunk(
                 chunk_idx, chunk_data, chunk_coords,
                 weights, neuron_coords, config, grid_positions, current_radius,
-                use_minibatch, minibatch_size
+                use_chunking, chunk_size_internal
             )
-            numerator += result.numerator
-            denominator += result.denominator
+            accumulated_numerator += result.numerator
+            accumulated_denominator += result.denominator
         
-        return numerator, denominator
+        return accumulated_numerator, accumulated_denominator
