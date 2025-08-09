@@ -1,0 +1,178 @@
+# Simplified SOM Configuration
+# This configuration maintains full functionality with clearer organization
+# 
+# USAGE:
+# - For testing: Use as-is (15 epochs, 20x20 grid, spatial_grid_step=100)
+# - For production: Override via environment variables or extend this config
+#
+# Environment variable overrides (optional):
+#   SOM_MAX_EPOCHS=1000
+#   SOM_GRID_SIZE=60
+#   SOM_SPATIAL_GRID_STEP=1
+#   SOM_N_WORKERS=150
+
+# ============================================================================
+# CORE SETTINGS - Essential parameters that define the SOM
+# ============================================================================
+
+# Grid architecture
+grid:
+  size: [20, 20]          # Number of neurons (rows, cols) - 400 neurons for testing
+  topology: 'rectangular'  # Grid topology (hexagonal not yet implemented)
+
+# Data configuration
+data:
+  # Input data sampling
+  spatial_grid_step: 100  # Sample every Nth spatial point (100 = fast testing)
+  
+  # Feature columns
+  features: ['animal_richness', 'plant_richness', 'fungi_richness']
+  coordinates: ['x', 'y']
+  
+  # Missing data handling
+  min_valid_features: 2   # Minimum features required for valid distance
+
+# Distance metrics
+distance:
+  feature_metric: 'bray_curtis'  # Distance metric for biodiversity features
+  spatial_metric: 'haversine'    # Distance metric for geographic coordinates
+  spatial_weight: 0.2             # Weight for spatial distance (0.2 = 20% spatial, 80% features)
+
+# ============================================================================
+# TRAINING PARAMETERS - Control the learning process
+# ============================================================================
+
+training:
+  # Basic settings
+  max_epochs: 15          # Number of training epochs (15 for testing, 200-1000 for production)
+  n_workers: 50           # Parallel workers for processing
+  
+  # Learning rate
+  learning_rate:
+    initial: 0.4          # Starting learning rate
+    minimum: 0.1          # Minimum learning rate
+    maximum: 1.0          # Maximum learning rate
+    
+  # Neighborhood radius
+  radius:
+    initial: 10.0         # Initial neighborhood radius (half of grid size)
+    final: 0.5            # Final neighborhood radius
+    decay: 'linear'       # Decay type: 'linear' or 'exponential'
+    
+  # Batch processing
+  batch:
+    size: 5000            # Samples per batch
+    shuffle: true         # Shuffle batches each epoch
+    
+  # Momentum (for faster convergence)
+  momentum:
+    initial: 0.9          # High initial momentum for global organization
+    final: 0.1            # Low final momentum for fine-tuning
+    schedule: 'linear'    # How momentum decays
+    
+  # Memory optimization
+  memory:
+    chunk_size: 50000     # Process data in chunks to save memory
+    max_memory_gb: 32     # Maximum memory to use
+
+# ============================================================================
+# ADAPTIVE LEARNING (VLRSOM) - Variable learning rate based on quality
+# ============================================================================
+
+vlrsom:
+  enabled: true           # Enable adaptive learning rate
+  
+  # Core VLRSOM parameters (from paper)
+  alpha: 0.95             # Decay factor (0.9-0.99 recommended)
+  gamma: 0.001            # Adaptation parameter (0.001-0.01 recommended)
+  
+  # Adaptation factors
+  increase_factor: 1.1    # Multiply LR when quality improves
+  decrease_factor: 0.95   # Multiply LR when quality worsens
+  
+  # Error sampling
+  sample_size: 10000      # Samples for error calculation
+
+# ============================================================================
+# CONVERGENCE & EARLY STOPPING - When to stop training
+# ============================================================================
+
+convergence:
+  # Early stopping
+  patience: 50                      # Epochs without improvement before stopping
+  min_improvement: 0.001             # Minimum QE improvement to reset patience
+  
+  # Geographic coherence
+  geographic_coherence:
+    threshold: 0.6                   # Minimum coherence for convergence
+    weight: 0.3                      # Weight in convergence decision
+    
+  # Learning rate stability
+  lr_stability_threshold: 0.001      # LR change threshold for convergence
+  
+  # Minimum epochs
+  min_epochs: 200                    # Don't stop before this many epochs
+
+# ============================================================================
+# MONITORING & CHECKPOINTS - Track progress and save state
+# ============================================================================
+
+monitoring:
+  # Checkpointing
+  checkpoint:
+    frequency: 10                    # Save every N epochs
+    directory: 'checkpoints/som'     # Where to save checkpoints
+    
+  # Progress tracking
+  progress:
+    qe_frequency: 5                  # Calculate quantization error every N epochs
+    te_frequency: 10                 # Calculate topographic error every N epochs
+    coherence_frequency: 10          # Calculate geographic coherence every N epochs
+    
+  # Sampling for metrics
+  sampling:
+    large_sample: 50000              # Sample size for accurate metrics
+    quick_sample_divisor: 10         # Divide data size by this for quick metrics
+    
+  # Logging
+  log_level: 'INFO'                  # Logging verbosity
+
+# ============================================================================
+# ADVANCED SETTINGS - Fine-tuning parameters (usually don't need to change)
+# ============================================================================
+
+advanced:
+  # Topographic error adjustments
+  te_adjustment:
+    enabled: true                    # Adjust radius based on topographic error
+    high_threshold: 0.15             # TE > this is considered high
+    low_threshold: 0.05              # TE < this is considered low
+    high_modifier: 1.1               # Slow radius decay for high TE
+    low_modifier: 0.95               # Speed radius decay for low TE
+    
+  # Neighborhood function
+  neighborhood_function: 'gaussian'  # Type of neighborhood function
+  
+  # Cross-validation
+  cv_folds: 0                        # 0 = no CV (use full dataset)
+  
+  # Spatial metrics
+  spatial_metrics:
+    k_neighbors: 50                  # Neighbors for spatial analysis
+    max_distance_km: 500             # Maximum spatial influence
+    
+  # Preprocessing (usually handled by shared preprocessor)
+  preprocessing:
+    transformation: 'log1p'          # Data transformation
+    standardization: 'z_score_by_type'
+    missing_data: 'keep_nan'         # Keep NaN values for partial distance
+
+# ============================================================================
+# OUTPUT SETTINGS - What to save and visualize
+# ============================================================================
+
+output:
+  save_interval: 100                 # Save outputs every N epochs
+  save_component_maps: true          # Save component visualizations
+  save_qe_history: true              # Save quality history
+  save_training_animation: false     # Create animation (expensive)

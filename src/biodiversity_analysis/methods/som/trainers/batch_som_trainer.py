@@ -13,7 +13,7 @@ from typing import Dict, Any, Tuple, Optional
 import logging
 from dataclasses import dataclass
 
-from ..calculators.optimized_distance_calculator import OptimizedDistanceCalculator
+from src.biodiversity_analysis.shared.metrics.distance_calculator import SharedDistanceCalculator
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ class OptimizedBatchTrainer:
         self._precompute_neuron_distances()
         
         # Initialize optimized distance calculator
-        self.distance_calculator = OptimizedDistanceCalculator(
+        self.distance_calculator = SharedDistanceCalculator(
             distance_metric=self.config.distance_metric,
             min_valid_features=self.config.min_valid_features
         )
@@ -164,8 +164,8 @@ class OptimizedBatchTrainer:
     
     def _precompute_neuron_distances(self):
         """Precompute squared distances between all neurons."""
-        # Use Numba-optimized distance calculation
-        from .optimized_distance_calculator import euclidean_distances_numba
+        # Use shared distance calculation
+        from src.biodiversity_analysis.shared.metrics.distance_calculator import euclidean_distances_numba
         
         # For neuron positions, we don't have NaN values
         self.neuron_distances_sq = euclidean_distances_numba(

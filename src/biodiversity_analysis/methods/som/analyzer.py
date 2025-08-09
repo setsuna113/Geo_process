@@ -117,10 +117,11 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Load data with flexible coordinate column names and spatial sampling
         # First check kwargs, then fall back to config
         logger.info(f"self.config keys: {self.config.keys() if self.config else 'None'}")
-        data_config = self.config.get('data_config', {})
+        # Support both old ('data_config') and new ('data') config structure
+        data_config = self.config.get('data', self.config.get('data_config', {}))
         logger.info(f"data_config from self.config: {data_config}")
-        coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinate_columns', ['longitude', 'latitude']))
-        feature_cols = kwargs.get('feature_cols', data_config.get('feature_cols', None))
+        coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinates', data_config.get('coordinate_columns', ['longitude', 'latitude'])))
+        feature_cols = kwargs.get('feature_cols', data_config.get('features', data_config.get('feature_cols', None)))
         sample_size = kwargs.get('sample_size', None)  # Optional random sampling
         random_seed = kwargs.get('random_seed', None)
         spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
@@ -387,15 +388,17 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         """Create GeoSOM configuration from settings."""
         # Use the config we already loaded in __init__, not load it again
         default_config = self.config
-        arch_config = default_config['architecture_config']
-        training_config = default_config['training_config']  # ALL training params are here now
+        
+        # Get SOM config instance for compatibility layer
+        from src.config.som import get_som_config
+        som_config = get_som_config()
+        
+        # Use compatibility layer methods to get config in old format
+        arch_config = som_config.get_architecture_config()
+        training_config = som_config.get_training_config()
         
         # Use iterations from kwargs if provided, otherwise from training_config
         max_epochs = kwargs.get('iterations', training_config['max_epochs'])  # FIXED: Now reads from training_config!
-        
-        # Import SOM config to get performance settings
-        from src.config.som import get_som_config
-        som_config = get_som_config()
         
         # Get performance settings - prefer training_config values
         chunk_size = training_config.get('chunk_size', som_config.get_chunk_size())
@@ -440,7 +443,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             qe_improvement_threshold=training_config['qe_improvement_threshold'],
             patience=training_config['patience'],
             max_epochs=max_epochs,
-            min_valid_features=default_config['distance_config']['min_valid_features'],
+            min_valid_features=default_config.get('distance', {}).get('min_valid_features', 
+                                                  default_config.get('distance_config', {}).get('min_valid_features', 2)),
             random_seed=kwargs.get('random_seed', 42),
             # Add performance settings
             chunk_size=kwargs.get('chunk_size', chunk_size),
