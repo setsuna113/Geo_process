@@ -10,6 +10,9 @@ from typing import Dict, List, Optional, Tuple, Union
 import logging
 from sklearn.preprocessing import RobustScaler, StandardScaler, MinMaxScaler
 from sklearn.impute import SimpleImputer
+from .zero_inflation import ZeroInflationPreprocessor
+from .spatial_features import SpatialFeatureEngineering
+from .diversity_features import BiodiversityFeatureEngineering
 
 logger = logging.getLogger(__name__)
 
@@ -314,18 +317,18 @@ class BiodiversityPreprocessingPipeline:
         logger.info("Step 1: Fitting zero-inflation preprocessor...")
         self.zero_preprocessor.fit(species_data, self.species_names_)
         
-        # Calculate diversity features to get feature names
-        logger.info("Step 2: Calculating diversity features...")
-        div_features, div_names = self.diversity_engineer.fit_transform(
+        # Fit diversity engineer (don't transform yet, just fit)
+        logger.info("Step 2: Fitting diversity feature engineer...")
+        self.diversity_engineer.fit(
             species_data, coordinates, species_names,
             environmental_data, trait_data, phylo_distances
         )
         
-        # Calculate spatial features on diversity features
-        logger.info("Step 3: Calculating spatial features...")
-        spatial_features, spatial_names = self.spatial_engineer.fit_transform(
-            div_features, coordinates, div_names
-        )
+        # Fit spatial engineer (don't transform yet, just fit) 
+        logger.info("Step 3: Fitting spatial feature engineer...")
+        # Need to get zero features to fit spatial engineer properly
+        zero_features, _ = self.zero_preprocessor.transform(species_data)
+        self.spatial_engineer.fit(zero_features, coordinates, self.species_names_)
         
         # Fit scaler if needed
         if self.standardize:
@@ -339,10 +342,38 @@ class BiodiversityPreprocessingPipeline:
             else:
                 raise ValueError(f"Unknown standardization method: {self.standardization_method}")
             
-            # Fit on all features
+            # Transform to get the actual features that will be used
+            # This ensures consistency between fit and transform
+            all_features = []
+            
+            # Zero features
             zero_features, _ = self.zero_preprocessor.transform(species_data)
-            all_features = np.hstack([zero_features, div_features, spatial_features])
-            self.scaler.fit(all_features)
+            all_features.append(zero_features)
+            
+            # Diversity features (conditional)
+            if self.calculate_diversity_indices:
+                div_features, _ = self.diversity_engineer.transform(
+                    species_data, coordinates, 
+                    environmental_data, trait_data, phylo_distances
+                )
+                all_features.append(div_features)
+            
+            # Spatial features on zero data
+            spatial_zero_features, _ = self.spatial_engineer.transform(
+                zero_features, coordinates
+            )
+            all_features.append(spatial_zero_features)
+            
+            # Spatial features on diversity (conditional)
+            if self.calculate_diversity_indices:
+                spatial_div_features, _ = self.spatial_engineer.transform(
+                    div_features, coordinates
+                )
+                all_features.append(spatial_div_features)
+            
+            # Combine and fit scaler
+            combined = np.hstack(all_features)
+            self.scaler.fit(combined)
         
         self._fitted = True
         logger.info("Pipeline fitting complete!")
@@ -382,8 +413,8 @@ class BiodiversityPreprocessingPipeline:
         # Step 2: Diversity features (conditional)
         if self.calculate_diversity_indices:
             logger.info("Step 2/5: Creating diversity features...")
-            div_features, div_names = self.diversity_engineer.fit_transform(
-                species_data, coordinates, self.species_names_,
+            div_features, div_names = self.diversity_engineer.transform(
+                species_data, coordinates,
                 environmental_data, trait_data, phylo_distances
             )
             all_features.append(div_features)
@@ -395,8 +426,8 @@ class BiodiversityPreprocessingPipeline:
         
         # Step 3: Spatial features on zero-inflated data
         logger.info("Step 3/5: Creating spatial features on species data...")
-        spatial_zero_features, spatial_zero_names = self.spatial_engineer.fit_transform(
-            zero_features, coordinates, zero_names
+        spatial_zero_features, spatial_zero_names = self.spatial_engineer.transform(
+            zero_features, coordinates
         )
         all_features.append(spatial_zero_features)
         all_names.extend(spatial_zero_names)
@@ -404,8 +435,8 @@ class BiodiversityPreprocessingPipeline:
         # Step 4: Spatial features on diversity indices (conditional)
         if self.calculate_diversity_indices:
             logger.info("Step 4/5: Creating spatial features on diversity indices...")
-            spatial_div_features, spatial_div_names = self.spatial_engineer.fit_transform(
-                div_features, coordinates, div_names
+            spatial_div_features, spatial_div_names = self.spatial_engineer.transform(
+                div_features, coordinates
             )
             all_features.append(spatial_div_features)
             all_names.extend(spatial_div_names)

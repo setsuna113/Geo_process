@@ -25,8 +25,6 @@ class ParquetLoader:
              feature_cols: Optional[List[str]] = None,
              species_cols: Optional[List[str]] = None,
              validate: bool = True,
-             sample_size: Optional[int] = None,
-             random_seed: Optional[int] = None,
              spatial_grid_step: int = 1) -> BiodiversityData:
         """Load biodiversity data from parquet file.
         
@@ -36,9 +34,8 @@ class ParquetLoader:
             feature_cols: Feature columns to use (all numeric if None)
             species_cols: Species column names if applicable
             validate: Whether to validate the loaded data
-            sample_size: Random sample size (used if spatial_grid_step=1)
-            random_seed: Random seed for sampling
             spatial_grid_step: Take every Nth point in spatial grid (1=all points, 10=every 10th)
+                             This provides better geographic coverage than random sampling.
             
         Returns:
             BiodiversityData object
@@ -120,15 +117,6 @@ class ParquetLoader:
             # Load full parquet file
             df = pd.read_parquet(data_path)
             logger.info(f"Loaded {len(df)} rows with {len(df.columns)} columns")
-            
-        # Apply random sampling if requested (only if not using spatial grid)
-        if sample_size and sample_size < len(df) and spatial_grid_step == 1:
-            logger.info(f"Random sampling {sample_size:,} rows from {len(df):,} total rows")
-            if random_seed is not None:
-                df = df.sample(n=sample_size, random_state=random_seed)
-            else:
-                df = df.sample(n=sample_size)
-            logger.info(f"Sampled data shape: {df.shape}")
         
         # Auto-detect coordinate columns if not specified
         if coordinate_cols is None:
