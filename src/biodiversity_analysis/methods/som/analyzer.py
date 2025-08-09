@@ -14,11 +14,11 @@ from datetime import datetime
 
 from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
-from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
-from ...preprocessing import SharedPreprocessor
-from .spatial_utils import SpatialBlockGenerator, GeographicCoherence
-from .partial_metrics import validate_missing_data_handling
-from .progress_tracker import SOMProgressTracker, create_progress_callback
+from .core.geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
+from src.biodiversity_analysis.preprocessing import SharedPreprocessor
+from .utils.spatial_utils import SpatialBlockGenerator, GeographicCoherence
+from .calculators.partial_metrics import validate_missing_data_handling
+from .utils.progress_tracker import SOMProgressTracker, create_progress_callback
 
 logger = logging.getLogger(__name__)
 
@@ -238,8 +238,14 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         progress_cb = None
         if hasattr(self, 'progress_callback') and self.progress_callback:
             def progress_cb(progress):
-                msg = f"Training SOM: {int(progress * 100)}% complete"
-                self.progress_callback(msg, progress)
+                # Handle both dict and float progress values
+                if isinstance(progress, dict):
+                    # Extract progress value from dict (e.g., from mini-batch training)
+                    progress_val = progress.get('progress', progress.get('epoch', 0) / self._geosom_config.max_epochs)
+                else:
+                    progress_val = progress
+                msg = f"Training SOM: {int(progress_val * 100)}% complete"
+                self.progress_callback(msg, progress_val)
         
         self.training_result = self.som.train_batch(
             features_processed,
@@ -397,9 +403,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         use_parallel = som_config.is_parallel_enabled()
         n_workers = training_config.get('n_workers', som_config.get_n_workers())
         
-        # Get mini-batch settings from training config
-        use_minibatch = training_config.get('use_minibatch', True)
-        minibatch_size = training_config.get('minibatch_size', 1000)
+        # Get batch training settings from training config
+        # All optimizations are now built-in and always enabled
+        batch_config = training_config.get('batch_training', {
+            'batch_size': 5000,
+            'shuffle_batches': True
+        })
         
         # Get memory and performance config
         memory_config = default_config.get('memory_config', {})
@@ -438,9 +447,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size),
             use_parallel=kwargs.get('use_parallel', use_parallel),
             n_workers=kwargs.get('n_workers', n_workers),
-            # Add mini-batch settings
-            use_minibatch=kwargs.get('use_minibatch', use_minibatch),
-            minibatch_size=kwargs.get('minibatch_size', minibatch_size)
+            # Add batch training settings as a config dict
+            batch_training=batch_config
         )
         
         # Add the new config parameters from training_config and memory_config
