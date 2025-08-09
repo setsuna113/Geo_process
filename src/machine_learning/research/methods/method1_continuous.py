@@ -242,15 +242,32 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         self.model_interaction = GLMClass(self.config.config)
         self.model_interaction.fit(interaction_data, y='fungi_richness')
         
-        # Compute model comparisons
+        # Compute model comparisons using GLMComparison
+        from ...evaluation.statistical_tests import GLMComparison
+        
+        # Compare null vs full (H0 vs H1)
+        comparison_h1 = GLMComparison.comprehensive_glm_comparison(
+            self.model_null, self.model_full
+        )
+        
+        # Compare full vs interaction (H1 vs H2)
+        comparison_h2 = GLMComparison.comprehensive_glm_comparison(
+            self.model_full, self.model_interaction
+        )
+        
         results = {
             'distribution': 'negative_binomial' if dispersion_ratio > 1.2 else 'poisson',
             'n_samples': h2o_data.nrows,
             'model_null': self.model_null,
             'model_full': self.model_full,
             'model_interaction': self.model_interaction,
-            'dispersion_ratio': dispersion_ratio
+            'dispersion_ratio': dispersion_ratio,
+            'h1_test': comparison_h1,  # H0 vs H1 comparison
+            'h2_test': comparison_h2   # Test for interaction significance
         }
+        
+        logger.info(f"H1 test (biodiversity effect): {comparison_h1['summary']}")
+        logger.info(f"H2 test (interaction): LRT p={comparison_h2.get('lrt', {}).get('p_value', 'NA'):.4f}")
         
         return results
     
