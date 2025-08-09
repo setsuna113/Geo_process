@@ -221,6 +221,41 @@ class OptimizedDistanceCalculator:
         # Use the optimized Bray-Curtis function
         return bray_curtis_distances_numba(u, v, min_valid_features)
     
+    def combined_distance_chunked(self, data: np.ndarray, weights: np.ndarray,
+                                 data_coords: np.ndarray, neuron_coords: np.ndarray,
+                                 spatial_weight: float, min_valid_features: int = None) -> np.ndarray:
+        """Compute combined feature and spatial distances.
+        
+        Args:
+            data: Input data (n_samples, n_features)
+            weights: SOM weights (n_neurons, n_features)
+            data_coords: Coordinates for data samples (n_samples, 2) [x, y]
+            neuron_coords: Coordinates for neurons (n_neurons, 2) [x, y]
+            spatial_weight: Weight for spatial distance (0-1)
+            min_valid_features: Minimum valid features required
+            
+        Returns:
+            Combined distance matrix (n_samples, n_neurons)
+        """
+        if min_valid_features is None:
+            min_valid_features = self.min_valid_features
+            
+        # Compute feature distances
+        feature_distances = self.partial_bray_curtis_chunked(data, weights, min_valid_features)
+        
+        # Compute spatial distances
+        spatial_distances = self.haversine_distances_chunked(data_coords, neuron_coords)
+        
+        # Normalize spatial distances to [0, 1] range
+        max_spatial = np.max(spatial_distances)
+        if max_spatial > 0:
+            spatial_distances = spatial_distances / max_spatial
+        
+        # Combine distances
+        combined_distances = (1 - spatial_weight) * feature_distances + spatial_weight * spatial_distances
+        
+        return combined_distances
+    
     def haversine_distances_chunked(self, coords1: np.ndarray, coords2: np.ndarray) -> np.ndarray:
         """Compute haversine distances between two sets of coordinates.
         

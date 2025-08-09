@@ -51,8 +51,13 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         self.max_mem_size = max_mem_size
         self.fit_intercept = glm_config.get('fit_intercept', True)
         
-        # Initialize H2O cluster
-        self._init_h2o()
+        # Initialize H2O using centralized utility
+        from ...utils.h2o_utils import ensure_h2o_initialized
+        ensure_h2o_initialized(
+            n_threads=self.n_threads,
+            max_mem_size=self.max_mem_size,
+            min_mem_size="4G"
+        )
         
         self.model = None
         self.model_result = None
@@ -60,28 +65,6 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         self.dispersion_ratio = None
         
         logger.info(f"Initialized H2O Negative Binomial GLM with {self.n_threads} threads")
-    
-    def _init_h2o(self):
-        """Initialize H2O cluster with optimal settings."""
-        try:
-            # Check if H2O is already running
-            h2o.cluster()
-            logger.info("H2O cluster already running")
-        except:
-            # Initialize new H2O cluster
-            logger.info(f"Starting H2O cluster with {self.n_threads} threads, {self.max_mem_size} memory")
-            h2o.init(
-                nthreads=self.n_threads,
-                max_mem_size=self.max_mem_size,
-                min_mem_size="4G",
-                strict_version_check=False
-            )
-            
-            # Display cluster info
-            cluster_info = h2o.cluster()
-            logger.info(f"H2O cluster started: {cluster_info.cloud_size} nodes, "
-                       f"{cluster_info.total_cores} cores, "
-                       f"{cluster_info.total_memory / (1024**3):.1f}GB memory")
     
     def check_overdispersion(self, y: np.ndarray) -> Tuple[float, bool]:
         """Check for overdispersion in the response variable.
