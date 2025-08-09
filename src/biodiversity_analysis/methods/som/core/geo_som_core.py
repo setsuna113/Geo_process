@@ -1165,8 +1165,9 @@ class GeoSOMVLRSOM:
                                       coordinates: np.ndarray) -> float:
         """Calculate geographic coherence using Moran's I.
         
-        Uses vectorized operations for O(n²) distance calculations to improve
-        performance on large datasets.
+        Uses chunked processing for large datasets to avoid O(n²) memory usage.
+        For datasets > 10k samples, uses a chunked approach that processes
+        the distance matrix in blocks.
         """
         # Get cluster assignments using vectorized approach
         logger.debug(f"Finding BMUs for {len(data)} samples for geographic coherence")
@@ -1194,6 +1195,13 @@ class GeoSOMVLRSOM:
         coords_valid = coordinates[valid]
         n = len(coords_valid)
         
+        # For large datasets, use chunked processing to avoid memory explosion
+        if n > 10000:
+            return self._calculate_geographic_coherence_chunked(
+                clusters[valid], coords_valid
+            )
+        
+        # Original implementation for smaller datasets
         # Vectorized haversine distance calculation
         # Convert to radians
         coords_rad = np.radians(coords_valid)
@@ -1238,6 +1246,95 @@ class GeoSOMVLRSOM:
             return 0.0
         
         morans_i = numerator / denominator
+        return morans_i
+    
+    def _calculate_geographic_coherence_chunked(self, clusters: np.ndarray,
+                                                coords: np.ndarray) -> float:
+        """Calculate Moran's I using chunked processing for large datasets.
+        
+        This method processes the spatial weight matrix in chunks to avoid
+        creating the full n×n matrix in memory, which would require O(n²) memory.
+        
+        Args:
+            clusters: Cluster assignments for valid samples
+            coords: Geographic coordinates (lon, lat) for valid samples
+            
+        Returns:
+            Moran's I statistic
+        """
+        n = len(coords)
+        logger.info(f"Using chunked geographic coherence calculation for {n} samples")
+        
+        # Convert to radians once
+        coords_rad = np.radians(coords)
+        lat = coords_rad[:, 1]
+        lon = coords_rad[:, 0]
+        
+        # Pre-compute cos(lat) for efficiency
+        cos_lat = np.cos(lat)
+        
+        # Calculate deviations from mean
+        mean_cluster = clusters.mean()
+        deviations = clusters - mean_cluster
+        
+        # Process in chunks to calculate weighted sum
+        chunk_size = min(1000, max(100, n // 10))  # Adaptive chunk size with minimum
+        logger.debug(f"Processing geographic coherence in chunks of {chunk_size}")
+        numerator = 0.0
+        total_weight = 0.0
+        
+        for i in range(0, n, chunk_size):
+            end_i = min(i + chunk_size, n)
+            
+            # Calculate distances for this chunk against all points
+            lat_chunk = lat[i:end_i]
+            lon_chunk = lon[i:end_i]
+            cos_lat_chunk = cos_lat[i:end_i]
+            dev_chunk = deviations[i:end_i]
+            
+            # Vectorized distance calculation for chunk
+            lat_diff = lat_chunk[:, np.newaxis] - lat[np.newaxis, :]
+            lon_diff = lon_chunk[:, np.newaxis] - lon[np.newaxis, :]
+            
+            # Haversine formula
+            a = np.sin(lat_diff/2)**2 + \
+                cos_lat_chunk[:, np.newaxis] * cos_lat[np.newaxis, :] * \
+                np.sin(lon_diff/2)**2
+            c = 2 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
+            distances_chunk = 6371 * c  # Earth radius in km
+            
+            # Create weights for this chunk (inverse distance)
+            # Handle diagonal elements (self-connections)
+            for j in range(end_i - i):
+                if i + j < n:
+                    distances_chunk[j, i + j] = np.inf
+            
+            W_chunk = np.where(distances_chunk > 0, 1.0 / distances_chunk, 0)
+            
+            # Zero out diagonal
+            for j in range(end_i - i):
+                if i + j < n:
+                    W_chunk[j, i + j] = 0
+            
+            # Calculate contribution to numerator
+            # sum(W[i,j] * dev[i] * dev[j])
+            numerator += np.sum(W_chunk * (dev_chunk[:, np.newaxis] * deviations[np.newaxis, :]))
+            total_weight += np.sum(W_chunk)
+        
+        # Normalize by total weight
+        if total_weight > 0:
+            numerator = numerator / total_weight
+        else:
+            return 0.0
+        
+        # Calculate denominator
+        denominator = np.sum(deviations**2) / n
+        
+        if denominator == 0:
+            return 0.0
+        
+        # Final Moran's I calculation
+        morans_i = (n / np.sum(deviations != 0)) * numerator / denominator
         return morans_i
     
     def _check_convergence(self, geo_coherence: float, patience_counter: int) -> bool:
