@@ -24,8 +24,8 @@ from ..utils.constants import (
     INVALID_DISTANCE, INVALID_INDEX, INVALID_COORDINATE,
     MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG, DEFAULT_GEO_DISTANCE_NORM
 )
-from ..utils.spatial_utils import haversine_distance_numba
 from ..calculators.partial_metrics import validate_missing_data_handling
+from src.biodiversity_analysis.shared.metrics.distance_calculator import SharedDistanceCalculator
 from ..trainers.batch_som_trainer import OptimizedBatchTrainer, OptimizedBatchConfig
 
 logger = logging.getLogger(__name__)
@@ -176,10 +176,10 @@ class GeoSOMVLRSOM:
         self.patience = config.patience
         self.neighborhood_function = config.neighborhood_function
         
-        distance_calc_batch_size = self._get_config('distance_calc_batch_size', DEFAULT_DISTANCE_CALC_BATCH_SIZE, 'memory_optimization')
-        
-        self.distance_calculator = StreamlinedDistanceCalculator(
-            chunk_size=distance_calc_batch_size
+        # Use shared distance calculator for consistency across methods
+        self.distance_calculator = SharedDistanceCalculator(
+            distance_metric='bray_curtis',
+            min_valid_features=self.min_valid_features
         )
         
         # Initialize fully optimized batch SOM trainer with momentum
@@ -294,7 +294,7 @@ class GeoSOMVLRSOM:
     def partial_bray_curtis(self, u: np.ndarray, v: np.ndarray) -> float:
         """Bray-Curtis distance for vectors with missing values.
         
-        Uses StreamlinedDistanceCalculator for consistent implementation.
+        Uses SharedDistanceCalculator for consistent implementation.
         Only compares non-NA pairs, requires minimum valid features.
         
         Args:
@@ -303,10 +303,9 @@ class GeoSOMVLRSOM:
         Returns:
             Distance value or INVALID_DISTANCE (np.inf) if insufficient valid pairs
         """
-        # Use StreamlinedDistanceCalculator for consistency
-        calculator = StreamlinedDistanceCalculator()
-        distances = calculator.partial_bray_curtis_chunked(
-            u.reshape(1, -1), v.reshape(1, -1), self.min_valid_features
+        # Use the shared distance calculator for consistency
+        distances = self.distance_calculator.compute_distances(
+            u.reshape(1, -1), v.reshape(1, -1)
         )
         return distances[0, 0]
     
@@ -319,8 +318,14 @@ class GeoSOMVLRSOM:
         Returns:
             Distance in kilometers
         """
-        # Use optimized numba implementation
-        return haversine_distance_numba(coord1[0], coord1[1], coord2[0], coord2[1])
+        # Use shared distance calculator for consistency
+        # Convert from [lon, lat] to [lat, lon] for SharedDistanceCalculator
+        coords1 = np.array([[coord1[1], coord1[0]]])  # [lat, lon]
+        coords2 = np.array([[coord2[1], coord2[0]]])  # [lat, lon]
+        distances = self.distance_calculator.compute_pairwise_distances(
+            coords1, coords2, metric='haversine'
+        )
+        return distances[0, 0]
     
     def combined_distance(self, sample: np.ndarray, weights: np.ndarray,
                          sample_coord: np.ndarray, neuron_coord: np.ndarray) -> float:
@@ -359,8 +364,7 @@ class GeoSOMVLRSOM:
     def _vectorized_partial_bray_curtis_chunk(self, data_chunk: np.ndarray, weights: np.ndarray) -> np.ndarray:
         """Vectorized Bray-Curtis distance calculation for a data chunk.
         
-        This is a high-performance vectorized implementation for calculating
-        Bray-Curtis distances between data samples and SOM weights.
+        Uses SharedDistanceCalculator to maintain abstraction and avoid code duplication.
         
         Args:
             data_chunk: Shape (n_samples, n_features)
@@ -369,42 +373,15 @@ class GeoSOMVLRSOM:
         Returns:
             distances: Shape (n_samples, n_neurons)
         """
-        # Expand dimensions for broadcasting: (n_samples, 1, n_features) and (1, n_neurons, n_features)
-        data_exp = data_chunk[:, np.newaxis, :]
-        weights_exp = weights[np.newaxis, :, :]
-        
-        # Find valid pairs (where both data and weights are not NaN)
-        valid_mask = ~(np.isnan(data_exp) | np.isnan(weights_exp))
-        n_valid = valid_mask.sum(axis=2)
-        
-        # Replace NaN values with 0 for calculation
-        data_clean = np.nan_to_num(data_exp, nan=0.0)
-        weights_clean = np.nan_to_num(weights_exp, nan=0.0)
-        
-        # Vectorized Bray-Curtis calculation
-        diff = np.abs(data_clean - weights_clean)
-        sum_vals = data_clean + weights_clean
-        
-        # Apply valid mask and sum over features
-        numerator = (diff * valid_mask).sum(axis=2)
-        denominator = (sum_vals * valid_mask).sum(axis=2)
-        
-        # Handle division by zero and insufficient features
-        with np.errstate(divide='ignore', invalid='ignore'):
-            distances = numerator / denominator
-        
-        # Set invalid distances
-        invalid = (n_valid < self.min_valid_features) | (denominator == 0)
-        distances[invalid] = INVALID_DISTANCE
-        
-        return distances
+        # Use shared distance calculator - fixes abstraction violation
+        return self.distance_calculator.compute_distances(data_chunk, weights)
     
     def _vectorized_combined_distance(self, data_chunk: np.ndarray, weights: np.ndarray,
                                     coords_chunk: np.ndarray, neuron_coords: np.ndarray) -> np.ndarray:
         """Vectorized combined distance calculation (feature + geographic).
         
-        This is a high-performance implementation that combines Bray-Curtis feature
-        distances with Haversine geographic distances.
+        Combines Bray-Curtis feature distances with Haversine geographic distances
+        using SharedDistanceCalculator to maintain proper abstraction.
         
         Args:
             data_chunk: Shape (n_samples, n_features)
@@ -415,12 +392,12 @@ class GeoSOMVLRSOM:
         Returns:
             distances: Shape (n_samples, n_neurons)
         """
-        # Calculate feature distances
-        feature_distances = self._vectorized_partial_bray_curtis_chunk(data_chunk, weights)
+        # Calculate feature distances using shared calculator
+        feature_distances = self.distance_calculator.compute_distances(data_chunk, weights)
         
-        # Calculate geographic distances using distance calculator for efficiency
-        geo_distances = self.distance_calculator.haversine_distances_chunked(
-            coords_chunk, neuron_coords
+        # Calculate geographic distances using shared calculator  
+        geo_distances = self.distance_calculator.compute_pairwise_distances(
+            coords_chunk, neuron_coords, metric='haversine'
         )
         
         # Normalize geographic distances (max ~20,000 km)

@@ -11,10 +11,10 @@
 
 # Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 2  # Sample every 2nd point for high quality (~13M samples)
-  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']  # 4 biodiversity richness columns
+  spatial_grid_step: 100  # Sample every 100th point for testing (~260K samples)
+  feature_cols: ['animal_richness', 'plant_richness', 'fungi_richness']  # 3 biodiversity richness columns
   coordinate_columns: ['x', 'y']  # Column names for coordinates  
-  observed_columns: [0, 1, 2, 3]  # All four biodiversity columns are observed
+  observed_columns: [0, 1, 2]  # All three biodiversity columns are observed
   predicted_columns: []  # No predicted columns (biodiversity-only analysis)
 
 # Distance calculation configuration
@@ -38,7 +38,7 @@ preprocessing_config:
 # Core architecture parameters (ONLY structure, no training params)
 architecture_config:
   type: 'GeoSOM_VLRSOM'
-  grid_size: [60, 60]  # Balanced grid for production (3,600 neurons)
+  grid_size: [20, 20]  # Reduced grid for testing (400 neurons)
   topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
   spatial_weight: 0.2  # 20% spatial, 80% biodiversity
   geographic_distance: 'haversine'
@@ -47,14 +47,14 @@ architecture_config:
   
   # Neighborhood settings (structural, not training)
   neighborhood_function: 'gaussian'
-  initial_radius: 30.0  # Half of grid size for 60x60
+  initial_radius: 10.0  # Half of grid size for 20x20
   final_radius: 0.5  # Smaller than 1.0 for finer distinctions
   radius_decay: 'linear'  # More predictable decay for better stability
 
 # Training parameters (ALL training-related settings here)
 training_config:
-  max_epochs: 500  # Extended training for convergence
-  n_workers: 200  # Maximum parallelization
+  max_epochs: 15  # Reduced for testing (will stop at epoch 15)
+  n_workers: 50  # Reduced for testing
   
   # Batch SOM with optimized processing
   batch_training:

@@ -7,6 +7,7 @@ All optimizations are built-in with no configuration options to avoid redundancy
 import numpy as np
 from numba import jit, prange
 import logging
+from ..utils.spatial_utils import haversine_distance_numba
 
 logger = logging.getLogger(__name__)
 
@@ -193,3 +194,53 @@ class OptimizedDistanceCalculator:
         """
         distances = self.compute_distances(data, weights)
         return find_bmu_indices(distances)
+    
+    def partial_bray_curtis_chunked(self, u: np.ndarray, v: np.ndarray, 
+                                   min_valid_features: int = None) -> np.ndarray:
+        """Compute partial Bray-Curtis distance between vectors.
+        
+        This method is for compatibility with the GeoSOM implementation.
+        
+        Args:
+            u: First vector or array (n_samples1, n_features)
+            v: Second vector or array (n_samples2, n_features)
+            min_valid_features: Minimum valid features (uses instance default if None)
+            
+        Returns:
+            Distance matrix (n_samples1, n_samples2)
+        """
+        if min_valid_features is None:
+            min_valid_features = self.min_valid_features
+            
+        # Ensure 2D arrays
+        if u.ndim == 1:
+            u = u.reshape(1, -1)
+        if v.ndim == 1:
+            v = v.reshape(1, -1)
+            
+        # Use the optimized Bray-Curtis function
+        return bray_curtis_distances_numba(u, v, min_valid_features)
+    
+    def haversine_distances_chunked(self, coords1: np.ndarray, coords2: np.ndarray) -> np.ndarray:
+        """Compute haversine distances between two sets of coordinates.
+        
+        Args:
+            coords1: First set of coordinates (n_samples1, 2) [lat, lon]
+            coords2: Second set of coordinates (n_samples2, 2) [lat, lon]
+            
+        Returns:
+            Distance matrix (n_samples1, n_samples2) in kilometers
+        """
+        n_samples1 = coords1.shape[0]
+        n_samples2 = coords2.shape[0]
+        distances = np.zeros((n_samples1, n_samples2), dtype=np.float32)
+        
+        for i in range(n_samples1):
+            for j in range(n_samples2):
+                # coords are [lat, lon] so lon=coords[:,1], lat=coords[:,0]
+                distances[i, j] = haversine_distance_numba(
+                    coords1[i, 1], coords1[i, 0],  # lon1, lat1
+                    coords2[j, 1], coords2[j, 0]   # lon2, lat2
+                )
+        
+        return distances
