@@ -1,0 +1,162 @@
+# Simplified SOM Configuration
+# This configuration maintains full functionality with clearer organization
+# 
+# USAGE:
+# - For testing: Use as-is (15 epochs, 20x20 grid, spatial_grid_step=100)
+# - For production: Override via environment variables or extend this config
+#
+# Environment variable overrides (optional):
+#   SOM_MAX_EPOCHS=1000
+#   SOM_GRID_SIZE=60
+#   SOM_SPATIAL_GRID_STEP=1
+#   SOM_N_WORKERS=150
+
+# ============================================================================
+# CORE SETTINGS - Essential parameters that define the SOM
+# ============================================================================
+
+# Grid architecture
+grid:
+  size: [60, 60]          # Number of neurons (rows, cols) - 3600 neurons for production
+  topology: 'rectangular'  # Grid topology (hexagonal not yet implemented)
+
+# Data configuration
+data:
+  # Input data sampling
+  spatial_grid_step: 1  # Sample every Nth spatial point (100 = fast testing)
+  
+  # Feature columns (standardized naming)
+  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
+  coordinate_columns: ['x', 'y']
+  
+  # Missing data handling
+  min_valid_features: 2   # Minimum features required for valid distance
+
+# Distance metrics
+distance:
+  feature_metric: 'bray_curtis'  # Distance metric for biodiversity features
+  geographic_distance: 'haversine'  # Distance metric for geographic coordinates (standardized name)
+  spatial_weight: 0.2             # Weight for spatial distance (0.2 = 20% spatial, 80% features)
+
+# ============================================================================
+# TRAINING PARAMETERS - Control the learning process
+# ============================================================================
+
+training:
+  # Basic settings
+  max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
+  n_workers: 240          # Parallel workers (optimized for 256-core system)
+  
+  # Learning rate
+  learning_rate:
+    initial: 0.8          # Starting learning rate
+    minimum: 0.1          # Minimum learning rate
+    maximum: 1.0          # Maximum learning rate
+    
+  # Neighborhood radius
+  radius:
+    initial: 20.0         # Initial neighborhood radius (half of grid size)
+    final: 0.5            # Final neighborhood radius
+    decay: 'exponential'       # Decay type: 'linear' or 'exponential'
+    
+  # Batch processing
+  batch:
+    size: 10000            # Samples per batch
+    shuffle: true         # Shuffle batches each epoch
+    
+  # Momentum (for faster convergence)
+  momentum:
+    initial: 0.9          # High initial momentum for global organization
+    final: 0.1            # Low final momentum for fine-tuning
+    schedule: 'exponential'    # How momentum decays
+    
+  # Memory optimization
+  memory:
+    chunk_size: 500000    # Process data in chunks (optimized for 817GB available RAM)
+    max_memory_gb: 800    # Maximum memory to use (conservative, 817GB available)
+
+# ============================================================================
+# CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training
+# ============================================================================
+# Training stops when ANY of these conditions are met:
+# 1. Max epochs reached (see training.max_epochs)
+# 2. Patience exceeded (50 epochs without >0.1% QE improvement)
+# 3. Convergence achieved: QE stable AND (TE < threshold OR GC > threshold)
+#
+# The patience counter works as follows:
+# - Resets to 0 when QE improves by >0.1%
+# - Increments when QE improvement is <0.1% or QE gets worse
+# - Training stops when counter reaches patience value
+
+convergence:
+  # Quantization Error (QE) criteria
+  qe:
+    min_improvement: 0.001           # QE must improve by >0.1% to reset patience counter
+    # Note: patience counter increments when improvement < 0.1% or QE gets worse
+    
+  # Topographic Error (TE) criteria  
+  topographic_error:
+    threshold: 0.05                  # TE < this means good topology preservation
+    calculation_frequency: 10        # Calculate TE every N epochs
+    # Adaptive radius adjustment based on TE
+    adjustment:
+      enabled: true                  # Adjust radius based on TE
+      high_threshold: 0.15           # TE > this = poor topology (slow down radius decay)
+      low_threshold: 0.05            # TE < this = good topology (speed up radius decay)
+      high_modifier: 1.1             # Multiplier when TE is high
+      low_modifier: 0.95             # Multiplier when TE is low
+    
+  # Geographic Coherence (GC) criteria - for spatial data
+  geographic_coherence:
+    threshold: 0.6                   # GC > this means good spatial clustering
+    calculation_frequency: 10        # Calculate GC every N epochs
+    # weight: 0.3                    # NOT IMPLEMENTED - reserved for weighted logic
+    
+  # Convergence logic (currently OR-based)
+  # Converges when: (QE stable) AND (TE < threshold OR GC > threshold)
+  logic: 'or'                        # 'or' = either TE or GC, 'weighted' = combine scores
+  
+  # Early stopping patience
+  patience: 50                      # Stop after N epochs without meaningful QE improvement (>0.1%)
+
+# ============================================================================
+# MONITORING & CHECKPOINTS - Track progress and save state
+# ============================================================================
+
+monitoring:
+  # Checkpointing
+  checkpoint:
+    frequency: 10                    # Save every N epochs
+    directory: 'checkpoints/som'     # Where to save checkpoints
+    
+  # Sampling for metrics
+  sampling:
+    large_sample: 50000              # Sample size for accurate metrics
+
+# ============================================================================
+# VALIDATION - Cross-validation settings
+# ============================================================================
+
+validation_config:
+  cv_folds: 0  # 0 = no CV, use all data for training (production mode)
+               # 5 = 5-fold spatial block CV (for model validation)
+
+# ============================================================================
+# SPATIAL ANALYSIS - Parameters for geographic coherence and BMU calculations
+# ============================================================================
+
+spatial_metrics:
+  k_neighbors: 50                  # Neighbors for spatial analysis
+  max_distance_km: 500             # Maximum spatial influence
+  neighborhood_function: 'gaussian'  # Type of neighborhood function for SOM
+
+# ============================================================================
+# VLRSOM SETTINGS - Variable Learning Rate SOM parameters
+# ============================================================================
+# Note: When enabled=false, uses standard learning rate schedule from training section
+
+vlrsom:
+  enabled: false                     # Enable/disable VLRSOM adaptation (false = use standard schedule)
+  alpha: 0.95                        # Decay factor (0 < α < 1) - only used when enabled=true
+  gamma: 0.001                       # Adaptation parameter (γ > 0) - only used when enabled=true
+  error_sample_size: 10000          # Sample size for J²(t) calculation - only used when enabled=true
