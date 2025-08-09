@@ -11,10 +11,10 @@
 
 # Data selection and sampling (DEFAULT - will be overridden)
 data_config:
-  spatial_grid_step: 100  # Aggressive sampling for testing - every 100th point
-  feature_cols: ['animal_richness', 'plant_richness', 'fungi_richness']  # 3 biodiversity richness columns
+  spatial_grid_step: 2  # Sample every 2nd point for high quality (~13M samples)
+  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']  # 4 biodiversity richness columns
   coordinate_columns: ['x', 'y']  # Column names for coordinates  
-  observed_columns: [0, 1, 2]  # All three biodiversity columns are observed
+  observed_columns: [0, 1, 2, 3]  # All four biodiversity columns are observed
   predicted_columns: []  # No predicted columns (biodiversity-only analysis)
 
 # Distance calculation configuration
@@ -38,7 +38,7 @@ preprocessing_config:
 # Core architecture parameters (ONLY structure, no training params)
 architecture_config:
   type: 'GeoSOM_VLRSOM'
-  grid_size: [50, 50]  # Original training used 50x50 grid
+  grid_size: [60, 60]  # Balanced grid for production (3,600 neurons)
   topology: 'rectangular'  # Using rectangular as hexagonal not implemented yet
   spatial_weight: 0.2  # 20% spatial, 80% biodiversity
   geographic_distance: 'haversine'
@@ -47,27 +47,41 @@ architecture_config:
   
   # Neighborhood settings (structural, not training)
   neighborhood_function: 'gaussian'
-  initial_radius: 30.0  # Optimal: Half of grid size for 60x60
+  initial_radius: 30.0  # Half of grid size for 60x60
   final_radius: 0.5  # Smaller than 1.0 for finer distinctions
   radius_decay: 'linear'  # More predictable decay for better stability
 
 # Training parameters (ALL training-related settings here)
 training_config:
-  max_epochs: 15  # Quick test with aggressive sampling
-  n_workers: 80  # Conservative setting for stressed system (full swap, high load)
+  max_epochs: 500  # Extended training for convergence
+  n_workers: 200  # Maximum parallelization
   
-  # REAL Mini-batch Training (stochastic weight updates) - ALWAYS ENABLED
-  minibatch_training:
-    batch_size: 1000                    # True mini-batch size for stochastic updates
-    update_frequency: 5                 # Update weights every N mini-batches
+  # Batch SOM with optimized processing
+  batch_training:
+    batch_size: 5000                    # Process data in chunks of 5000 samples
     shuffle_batches: true               # Shuffle mini-batches each epoch
-    accumulation_strategy: "weighted"   # "weighted" or "simple"
+    
+    # Momentum settings for accelerated convergence
+    initial_momentum: 0.9               # High initial momentum for fast global organization
+    final_momentum: 0.1                 # Low final momentum for fine-tuning details
+    momentum_schedule: 'linear'         # How momentum decays: 'linear' or 'exponential'
+    
+    # Distance metric settings
+    distance_metric: 'bray_curtis'      # Use optimized Bray-Curtis distance
+    min_valid_features: 2                # Minimum valid features for distance calculation
+    
+    # Note: All optimizations are now built-in and always enabled:
+    # - Numba-optimized Bray-Curtis distance calculation
+    # - Momentum-based weight updates with adaptive decay
+    # - Precomputed neuron-to-neuron distances
+    # - All Numba JIT with cache=True, fastmath=True
+    # - Contiguous memory layout for cache efficiency
   
   # Memory Optimization (memory chunking only)
   memory_optimization:
     enabled: true
-    chunk_size: 25000                   # Memory processing chunk size
-    distance_calc_batch_size: 5000      # Distance calculation memory chunking
+    chunk_size: 50000                   # Larger chunks for better efficiency
+    distance_calc_batch_size: 10000     # Larger distance calculation chunks
   
   # Learning rate settings (moved from architecture_config)
   initial_learning_rate: 0.4  # Reduced from 0.8 for better stability with sparse data
@@ -115,11 +129,11 @@ validation_config:
     
   progress_tracking:
     enabled: true
-    checkpoint_frequency: 10  # Save checkpoint at epoch 10
+    checkpoint_frequency: 10  # Save checkpoint every 10 epochs
     checkpoint_dir: 'checkpoints/som'  # Directory for checkpoints
-    qe_sample_frequency: 10  # Calculate QE on larger sample every N epochs
-    te_calculation_frequency: 10  # Calculate topographic error every N epochs
-    geographic_coherence_frequency: 10  # Calculate geographic coherence every N epochs
+    qe_sample_frequency: 5   # Calculate QE on larger sample every 5 epochs
+    te_calculation_frequency: 10  # Calculate topographic error every 10 epochs
+    geographic_coherence_frequency: 10  # Calculate geographic coherence every 10 epochs
     large_sample_size: 50000  # Sample size for accurate QE calculation
     quick_sample_divisor: 10  # Divide data size by this for quick samples
 

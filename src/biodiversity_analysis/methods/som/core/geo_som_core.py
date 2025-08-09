@@ -20,22 +20,21 @@ from scipy.spatial.distance import cdist
 # Moran's I calculation is in spatial_utils module
 
 from src.abstractions.types.som_types import SOMConfig, SOMTrainingResult
-from .constants import (
+from ..utils.constants import (
     INVALID_DISTANCE, INVALID_INDEX, INVALID_COORDINATE,
-    MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG
+    MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG, DEFAULT_GEO_DISTANCE_NORM
 )
-from .memory_optimized_distance_calculator import MiniBatchDistanceCalculator
-from .partial_metrics import partial_bray_curtis_numba, partial_euclidean_numba
-from .minibatch_trainer import MiniBatchTrainer, MiniBatchConfig, MiniBatchVLRSOM
+from ..utils.spatial_utils import haversine_distance_numba
+from ..calculators.partial_metrics import validate_missing_data_handling
+from ..trainers.batch_som_trainer import OptimizedBatchTrainer, OptimizedBatchConfig
 
 logger = logging.getLogger(__name__)
 
-# Configuration constants (can be overridden via config or environment variables)
-DEFAULT_CHUNK_SIZE = int(os.environ.get('SOM_CHUNK_SIZE', '50000'))
-DEFAULT_GEO_DISTANCE_NORM = float(os.environ.get('SOM_GEO_DISTANCE_NORM', '20000.0'))
-DEFAULT_QE_SAMPLE_SIZE = int(os.environ.get('SOM_QE_SAMPLE_SIZE', '50000'))
-DEFAULT_PROGRESS_LOG_INTERVAL = int(os.environ.get('SOM_PROGRESS_LOG_INTERVAL', '50000'))
-MEMORY_THRESHOLD_BYTES = int(os.environ.get('SOM_MEMORY_THRESHOLD', '100000000'))
+# Import constants from central location
+from ..utils.constants import (
+    DEFAULT_CHUNK_SIZE, DEFAULT_QE_SAMPLE_SIZE, DEFAULT_PROGRESS_LOG_INTERVAL,
+    MEMORY_THRESHOLD_BYTES, DEFAULT_DISTANCE_CALC_BATCH_SIZE
+)
 
 
 @dataclass
@@ -49,8 +48,8 @@ class GeoSOMConfig:
     spatial_weight: float = 0.3  # k=0.3 (30% spatial, 70% features)
     geographic_distance: str = "haversine"
     
-    # Real Mini-batch Training Configuration
-    minibatch_training: Optional[Dict[str, Any]] = None
+    # Batch SOM Training Configuration (processes mini-batches for memory efficiency)
+    batch_training: Optional[Dict[str, Any]] = None
     
     # Memory Optimization Configuration  
     memory_optimization: Optional[Dict[str, Any]] = None
@@ -105,8 +104,45 @@ class GeoSOMVLRSOM:
     # Class constants
     INVALID_INDEX = -1
     
+    def _init_config_accessor(self):
+        """Initialize standardized config access patterns."""
+        self._config_cache = {}
+        
+    def _get_config(self, key: str, default: Any = None, section: Optional[str] = None):
+        """Standardized config access with caching and clean fallbacks.
+        
+        Args:
+            key: Config key to access
+            default: Default value if key not found
+            section: Optional config section (e.g., 'memory_optimization', 'minibatch_training')
+            
+        Returns:
+            Config value or default
+        """
+        cache_key = f"{section}.{key}" if section else key
+        
+        if cache_key in self._config_cache:
+            return self._config_cache[cache_key]
+            
+        value = default
+        if section:
+            # Access nested config section
+            section_config = getattr(self.config, section, None)
+            if section_config:
+                if isinstance(section_config, dict):
+                    value = section_config.get(key, default)
+                else:
+                    value = getattr(section_config, key, default)
+        else:
+            # Direct config access
+            value = getattr(self.config, key, default)
+            
+        self._config_cache[cache_key] = value
+        return value
+    
     def __init__(self, config: GeoSOMConfig):
         self.config = config
+        self._init_config_accessor()
         
         # Validate grid size configuration
         if not isinstance(config.grid_size, (list, tuple)) or len(config.grid_size) != 2:
@@ -117,11 +153,9 @@ class GeoSOMVLRSOM:
         
         # Warn if grid is too large relative to expected data
         grid_neurons = config.grid_size[0] * config.grid_size[1]
-        max_neurons_warning = getattr(config, 'max_grid_neurons_warning', 10000)
-        if grid_neurons > max_neurons_warning:
+        if grid_neurons > self._get_config('max_grid_neurons_warning', 10000):
             logger.warning(f"Large grid size ({config.grid_size[0]}x{config.grid_size[1]} = {grid_neurons} neurons) "
-                         f"exceeds warning threshold ({max_neurons_warning}). "
-                         f"May lead to slow training and memory issues")
+                         f"exceeds warning threshold. May lead to slow training and memory issues")
         
         self.weights = None
         self.input_dim = None
@@ -131,46 +165,55 @@ class GeoSOMVLRSOM:
         # Initialize grid positions
         self._init_grid_positions()
         
-        # Initialize distance calculator for memory optimization (always enabled)
-        # Store configuration attributes
+        # FIXED: Streamlined distance calculator without counterproductive caching
+        from ..calculators.optimized_distance_calculator import OptimizedDistanceCalculator
+        
         self.spatial_weight = config.spatial_weight
         self.min_valid_features = config.min_valid_features
+        self.max_epochs = config.max_epochs
+        self.qe_improvement_threshold = config.qe_improvement_threshold
+        self.geographic_coherence_threshold = config.geographic_coherence_threshold
+        self.patience = config.patience
+        self.neighborhood_function = config.neighborhood_function
         
-        memory_config = config.memory_optimization or {}
-        distance_calc_batch_size = memory_config.get('distance_calc_batch_size', 1000)
+        distance_calc_batch_size = self._get_config('distance_calc_batch_size', DEFAULT_DISTANCE_CALC_BATCH_SIZE, 'memory_optimization')
         
-        self.distance_calculator = MiniBatchDistanceCalculator(
-            mini_batch_size=distance_calc_batch_size
+        self.distance_calculator = StreamlinedDistanceCalculator(
+            chunk_size=distance_calc_batch_size
         )
         
-        # Initialize real mini-batch trainer (mandatory - replaces all batch training)
-        minibatch_training_config = config.minibatch_training or {}
-        minibatch_config = MiniBatchConfig(
-            batch_size=minibatch_training_config.get('batch_size', 1000),
-            update_frequency=minibatch_training_config.get('update_frequency', 5),
-            shuffle_batches=minibatch_training_config.get('shuffle_batches', True),
-            accumulation_strategy=minibatch_training_config.get('accumulation_strategy', 'weighted')
+        # Initialize fully optimized batch SOM trainer with momentum
+        # All optimizations are built-in with no configuration redundancy
+        optimized_config = OptimizedBatchConfig(
+            batch_size=self._get_config('batch_size', 5000, 'batch_training'),
+            learning_schedule=self._get_config('learning_schedule', 'exponential', 'batch_training'),
+            initial_learning_rate=config.initial_learning_rate,
+            final_learning_rate=config.min_learning_rate,
+            # Momentum settings (NEW)
+            initial_momentum=self._get_config('initial_momentum', 0.9, 'batch_training'),
+            final_momentum=self._get_config('final_momentum', 0.1, 'batch_training'),
+            momentum_schedule=self._get_config('momentum_schedule', 'linear', 'batch_training'),
+            # Distance metric settings
+            distance_metric=self._get_config('distance_metric', 'bray_curtis', 'batch_training'),
+            min_valid_features=self._get_config('min_valid_features', 2, 'batch_training'),
         )
         
-        self.minibatch_trainer = MiniBatchTrainer(
-            config=minibatch_config,
-            distance_calculator=self.distance_calculator,
-            spatial_weight=config.spatial_weight,
-            min_valid_features=config.min_valid_features
+        self.batch_trainer = OptimizedBatchTrainer(
+            grid_width=self.grid_cols,
+            grid_height=self.grid_rows,
+            n_features=1,  # Placeholder, will be updated when weights are initialized
+            config=optimized_config
         )
         
-        # Initialize VLRSOM with mini-batch support
-        vlrsom_config = {
-            'initial_learning_rate': config.initial_learning_rate,
-            'min_learning_rate': config.min_learning_rate,
-            'max_learning_rate': config.max_learning_rate,
-            'lr_increase_factor': config.lr_increase_factor,
-            'lr_decrease_factor': config.lr_decrease_factor
-        }
-        
-        self.minibatch_vlrsom = MiniBatchVLRSOM(vlrsom_config, self.minibatch_trainer)
-        logger.info(f"Initialized real mini-batch training with batch_size={minibatch_config.batch_size}, "
-                   f"update_frequency={minibatch_config.update_frequency}")
+        # All optimizations are now always enabled in the trainer:
+        # - Numba-optimized Bray-Curtis distance calculation
+        # - Momentum-based weight updates with adaptive decay
+        # - Precomputed neuron-to-neuron distances
+        # - All Numba JIT with cache=True, fastmath=True
+        # - Contiguous memory layout for cache efficiency
+        logger.info(f"Initialized fully optimized batch SOM trainer with batch_size={optimized_config.batch_size}, "
+                   f"momentum={optimized_config.initial_momentum}->{optimized_config.final_momentum}, "
+                   f"learning_schedule={optimized_config.learning_schedule}")
         
         # Training state
         self.current_lr = config.initial_learning_rate
@@ -251,17 +294,21 @@ class GeoSOMVLRSOM:
     def partial_bray_curtis(self, u: np.ndarray, v: np.ndarray) -> float:
         """Bray-Curtis distance for vectors with missing values.
         
-        Uses Numba-optimized implementation for better performance.
+        Uses StreamlinedDistanceCalculator for consistent implementation.
         Only compares non-NA pairs, requires minimum valid features.
         
         Args:
             u, v: Vectors to compare (may contain NaN)
             
         Returns:
-            Distance value or INVALID_DISTANCE (np.nan) if insufficient valid pairs
+            Distance value or INVALID_DISTANCE (np.inf) if insufficient valid pairs
         """
-        # Delegate to Numba-optimized implementation from partial_metrics
-        return partial_bray_curtis_numba(u, v, self.config.min_valid_features)
+        # Use StreamlinedDistanceCalculator for consistency
+        calculator = StreamlinedDistanceCalculator()
+        distances = calculator.partial_bray_curtis_chunked(
+            u.reshape(1, -1), v.reshape(1, -1), self.min_valid_features
+        )
+        return distances[0, 0]
     
     def haversine_distance(self, coord1: np.ndarray, coord2: np.ndarray) -> float:
         """Calculate haversine distance between geographic coordinates.
@@ -272,19 +319,8 @@ class GeoSOMVLRSOM:
         Returns:
             Distance in kilometers
         """
-        # Convert to radians
-        lon1, lat1 = np.radians(coord1)
-        lon2, lat2 = np.radians(coord2)
-        
-        # Haversine formula
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
-        c = 2 * np.arcsin(np.sqrt(a))
-        
-        # Earth radius in km
-        r = 6371
-        return c * r
+        # Use optimized numba implementation
+        return haversine_distance_numba(coord1[0], coord1[1], coord2[0], coord2[1])
     
     def combined_distance(self, sample: np.ndarray, weights: np.ndarray,
                          sample_coord: np.ndarray, neuron_coord: np.ndarray) -> float:
@@ -314,9 +350,9 @@ class GeoSOMVLRSOM:
         else:
             geo_dist_norm = 0.0
         
-        # Weighted combination
-        combined = (1 - self.config.spatial_weight) * feature_dist + \
-                   self.config.spatial_weight * geo_dist_norm
+        # Weighted combination (using cached config value)
+        combined = (1 - self.spatial_weight) * feature_dist + \
+                   self.spatial_weight * geo_dist_norm
         
         return combined
 
@@ -383,7 +419,7 @@ class GeoSOMVLRSOM:
         feature_distances = self._vectorized_partial_bray_curtis_chunk(data_chunk, weights)
         
         # Calculate geographic distances using distance calculator for efficiency
-        geo_distances = self.distance_calculator.haversine_distances_minibatch(
+        geo_distances = self.distance_calculator.haversine_distances_chunked(
             coords_chunk, neuron_coords
         )
         
@@ -410,6 +446,15 @@ class GeoSOMVLRSOM:
             method: Initialization method
         """
         self.input_dim = data.shape[1]
+        
+        # Update mini-batch trainer with correct n_features
+        self.batch_trainer.n_features = self.input_dim
+        
+        # WeightUpdater is only needed for standard trainer (fast trainer has internal accumulation)
+        if hasattr(self.batch_trainer, 'weight_updater'):
+            self.batch_trainer.weight_updater = WeightUpdater(
+                self.batch_trainer.n_neurons, self.input_dim
+            )
         
         # Validate coordinates if provided
         if coordinates is not None:
@@ -557,7 +602,7 @@ class GeoSOMVLRSOM:
         training_state = self._initialize_training_state(data, coordinates)
         
         # Main training loop
-        for epoch in range(training_state['start_epoch'], self.config.max_epochs):
+        for epoch in range(training_state['start_epoch'], self.max_epochs):
             epoch_result = self._train_single_epoch(
                 epoch, data, coordinates, training_state, progress_callback
             )
@@ -593,7 +638,7 @@ class GeoSOMVLRSOM:
         }
         
         # Check for resume from checkpoint
-        resume_checkpoint = getattr(self.config, 'resume_checkpoint', None)
+        resume_checkpoint = self._get_config('resume_checkpoint', None)
         if resume_checkpoint and os.path.exists(resume_checkpoint):
             logger.info(f"Resuming from checkpoint: {resume_checkpoint}")
             checkpoint_data = self.load_checkpoint(resume_checkpoint)
@@ -624,7 +669,7 @@ class GeoSOMVLRSOM:
     def _train_single_epoch(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray],
                           training_state: Dict[str, Any], progress_callback: Optional[Callable]) -> Dict[str, Any]:
         """Train a single epoch."""
-        logger.info(f"Starting epoch {epoch+1}/{self.config.max_epochs}")
+        logger.info(f"Starting epoch {epoch+1}/{self.max_epochs}")
         
         # Update radius
         self._update_radius(epoch)
@@ -657,20 +702,27 @@ class GeoSOMVLRSOM:
         """Execute mini-batch training for one epoch."""
         logger.info(f"Starting mini-batch training for epoch {epoch+1}")
         
-        def neighborhood_func(bmu_idx, radius, n_neurons):
-            self.current_radius = radius
-            return self._calculate_neighborhood(bmu_idx)
-        
-        training_stats, new_lr = self.minibatch_vlrsom.train_epoch_with_vlrsom(
-            data=data, coordinates=coordinates, weights=self.weights, 
-            neuron_coords=self.neuron_coords, learning_rate=self.current_lr, 
-            radius=self.current_radius, neighborhood_func=neighborhood_func
+        # Use the minibatch trainer's train_epoch method
+        training_stats = self.batch_trainer.train_epoch(
+            data=data, 
+            weights=self.weights,
+            epoch=epoch,
+            max_epochs=self.config.max_epochs
         )
-        self.current_lr = new_lr
         
-        qe = training_stats.get('mean_mini_batch_qe', np.inf)
+        # Update learning rate from trainer (uses standard schedule)
+        self.current_lr = training_stats['learning_rate']
+        self.current_radius = training_stats['radius']
+        
+        # Get QE from training stats (calculated after weight updates)
+        qe = training_stats.get('qe', 0.0)
+        if qe == 0.0 or qe is None:
+            # If QE wasn't calculated this epoch, calculate it now
+            qe = self.calculate_quantization_error(data, coordinates)
+        
+        converged = training_stats.get('converged', False)
         logger.info(f"Completed mini-batch training for epoch {epoch+1}: "
-                   f"QE={qe:.6f}, LR={self.current_lr:.4f}")
+                   f"QE={qe:.6f}, LR={self.current_lr:.4f}, converged={converged}")
         
         return qe
     
@@ -681,7 +733,7 @@ class GeoSOMVLRSOM:
         
         if qe < best_qe:
             improvement = (best_qe - qe) / best_qe if best_qe != np.inf else 1.0
-            if improvement < self.config.qe_improvement_threshold:
+            if improvement < self.qe_improvement_threshold:
                 patience_counter += 1
             else:
                 patience_counter = 0
@@ -695,12 +747,12 @@ class GeoSOMVLRSOM:
                                     best_qe: float, patience_counter: int) -> bool:
         """Handle topographic error, geographic coherence, and checkpoints."""
         # Topographic error calculation
-        te_freq = getattr(self.config.progress_tracking, 'te_calculation_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
+        te_freq = self._get_config('te_calculation_frequency', 10, 'progress_tracking')
         if epoch % te_freq == 0 and epoch > 0:
             self._calculate_and_adjust_topographic_error(epoch, data, coordinates)
         
         # Geographic coherence and convergence check
-        geo_freq = getattr(self.config.progress_tracking, 'geographic_coherence_frequency', 10) if hasattr(self.config, 'progress_tracking') else 10
+        geo_freq = self._get_config('geographic_coherence_frequency', 10, 'progress_tracking')
         if coordinates is not None and epoch % geo_freq == 0 and epoch > 0:
             return self._handle_geographic_coherence_and_checkpoints(epoch, data, coordinates, best_qe, patience_counter)
         
@@ -713,21 +765,21 @@ class GeoSOMVLRSOM:
         logger.info(f"Topographic error: {te:.4f}")
         self.training_history['topographic_errors'].append(te)
         
-        if getattr(self.config, 'te_radius_adjustment', True):
+        if self._get_config('te_radius_adjustment', True):
             self._adjust_radius_based_on_te(te, epoch)
     
     def _adjust_radius_based_on_te(self, te: float, epoch: int) -> None:
         """Adjust radius based on topographic error."""
         next_epoch_radius = self._get_scheduled_radius(epoch + 1)
-        te_high_threshold = getattr(self.config, 'te_high_threshold', 0.15)
-        te_low_threshold = getattr(self.config, 'te_low_threshold', 0.05)
+        te_high_threshold = self._get_config('te_high_threshold', 0.15)
+        te_low_threshold = self._get_config('te_low_threshold', 0.05)
         
         if te > te_high_threshold:
-            radius_modifier = getattr(self.config, 'te_high_radius_modifier', 1.1)
+            radius_modifier = self._get_config('te_high_radius_modifier', 1.1)
             adjusted_radius = next_epoch_radius * radius_modifier
             logger.info(f"High TE ({te:.3f}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
         elif te < te_low_threshold:
-            radius_modifier = getattr(self.config, 'te_low_radius_modifier', 0.95)
+            radius_modifier = self._get_config('te_low_radius_modifier', 0.95)
             adjusted_radius = next_epoch_radius * radius_modifier
             logger.info(f"Low TE ({te:.3f}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
         else:
@@ -743,8 +795,8 @@ class GeoSOMVLRSOM:
         logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
         
         # Calculate geographic coherence with sampling for large datasets
-        coherence_sample_threshold = getattr(self.config, 'coherence_sample_threshold', 10000)
-        coherence_sample_size = getattr(self.config, 'coherence_sample_size', 5000)
+        coherence_sample_threshold = self._get_config('coherence_sample_threshold', 10000)
+        coherence_sample_size = self._get_config('coherence_sample_size', 5000)
         
         if len(data) > coherence_sample_threshold:
             indices = np.random.choice(len(data), coherence_sample_size, replace=False)
@@ -768,13 +820,8 @@ class GeoSOMVLRSOM:
     
     def _handle_checkpoint_saving(self, epoch: int, best_qe: float, patience_counter: int) -> None:
         """Handle checkpoint saving."""
-        progress_config = getattr(self.config, 'progress_tracking', {})
-        if isinstance(progress_config, dict):
-            checkpoint_frequency = progress_config.get('checkpoint_frequency', 10)
-            checkpoint_dir = progress_config.get('checkpoint_dir', 'checkpoints/som')
-        else:
-            checkpoint_frequency = getattr(progress_config, 'checkpoint_frequency', 10)
-            checkpoint_dir = getattr(progress_config, 'checkpoint_dir', 'checkpoints/som')
+        checkpoint_frequency = self._get_config('checkpoint_frequency', 10, 'progress_tracking')
+        checkpoint_dir = self._get_config('checkpoint_dir', 'checkpoints/som', 'progress_tracking')
         
         if checkpoint_frequency > 0 and epoch % checkpoint_frequency == 0:
             self.save_checkpoint(checkpoint_dir, epoch, best_qe, patience_counter)
@@ -783,8 +830,8 @@ class GeoSOMVLRSOM:
         """Handle progress callback without fallbacks."""
         progress_info = {
             'epoch': epoch + 1,
-            'max_epochs': self.config.max_epochs,
-            'progress': (epoch + 1) / self.config.max_epochs,
+            'max_epochs': self.max_epochs,
+            'progress': (epoch + 1) / self.max_epochs,
             'qe': qe,
             'learning_rate': self.current_lr,
             'radius': self.current_radius
@@ -834,7 +881,7 @@ class GeoSOMVLRSOM:
         
         # Pre-filter valid samples
         valid_features = (~np.isnan(data_sample)).sum(axis=1)
-        valid_mask = valid_features >= self.config.min_valid_features
+        valid_mask = valid_features >= self.min_valid_features
         
         if not valid_mask.any():
             logger.warning("No valid samples for VLRSOM error calculation")
@@ -884,19 +931,19 @@ class GeoSOMVLRSOM:
             coordinates: Geographic coordinates (if available)
         """
         # Get VLRSOM parameters from config
-        alpha = getattr(self.config, 'vlrsom_alpha', 0.95)  # Decay factor (0 < α < 1)
-        gamma = getattr(self.config, 'vlrsom_gamma', 0.001)  # Adaptation parameter (γ > 0)
+        alpha = self._get_config('vlrsom_alpha', 0.95)  # Decay factor (0 < α < 1)
+        gamma = self._get_config('vlrsom_gamma', 0.001)  # Adaptation parameter (γ > 0)
         
         # Calculate J²(t) using existing sampling infrastructure
-        error_sample_size = getattr(self.config, 'vlrsom_error_sample_size', 10000)
+        error_sample_size = self._get_config('vlrsom_error_sample_size', 10000)
         j_squared = self._calculate_vlrsom_error_squared(data, coordinates, error_sample_size)
         
         # Apply VLRSOM formula: μ'(t+1) = αμ(t) + γJ²(t)
         new_lr = alpha * self.current_lr + gamma * j_squared
         
         # Apply bounds from paper Equation (21)
-        min_lr = getattr(self.config, 'vlrsom_min_lr', self.config.min_learning_rate)
-        max_lr = getattr(self.config, 'vlrsom_max_lr', self.config.max_learning_rate)
+        min_lr = self._get_config('vlrsom_min_lr', self.config.min_learning_rate)
+        max_lr = self._get_config('vlrsom_max_lr', self.config.max_learning_rate)
         
         self.current_lr = np.clip(new_lr, min_lr, max_lr)
         
@@ -984,7 +1031,7 @@ class GeoSOMVLRSOM:
     
     def _calculate_neighborhood(self, bmu_idx: int) -> np.ndarray:
         """Calculate neighborhood influence for all neurons."""
-        if self.config.neighborhood_function == "gaussian":
+        if self.neighborhood_function == "gaussian":
             bmu_pos = self._grid_positions[bmu_idx]
             distances_squared = np.sum(
                 (self._grid_positions - bmu_pos)**2, axis=1
@@ -993,7 +1040,7 @@ class GeoSOMVLRSOM:
             return influences
         else:
             raise NotImplementedError(
-                f"Neighborhood {self.config.neighborhood_function} not implemented"
+                f"Neighborhood {self.neighborhood_function} not implemented"
             )
     
     def calculate_quantization_error(self, data: np.ndarray, 
@@ -1018,7 +1065,7 @@ class GeoSOMVLRSOM:
         
         # Pre-filter valid samples to avoid unnecessary computation
         valid_features = (~np.isnan(data)).sum(axis=1)
-        valid_mask = valid_features >= self.config.min_valid_features
+        valid_mask = valid_features >= self.min_valid_features
         
         if not valid_mask.any():
             return np.inf
@@ -1027,7 +1074,7 @@ class GeoSOMVLRSOM:
         coords_valid = coordinates[valid_mask] if coordinates is not None else None
         
         # Process in chunks for memory efficiency
-        chunk_size = getattr(self.config, 'qe_calc_chunk_size', 1000)
+        chunk_size = self._get_config('qe_calc_chunk_size', 1000)
         total_error = 0.0
         n_valid = 0
         
@@ -1083,7 +1130,7 @@ class GeoSOMVLRSOM:
         
         # Pre-filter valid samples
         valid_features = (~np.isnan(data)).sum(axis=1)
-        valid_mask = valid_features >= self.config.min_valid_features
+        valid_mask = valid_features >= self.min_valid_features
         
         if not valid_mask.any():
             return 1.0  # Maximum error if no valid samples
@@ -1217,13 +1264,13 @@ class GeoSOMVLRSOM:
         return morans_i
     
     def _check_convergence(self, geo_coherence: float, patience_counter: int) -> bool:
-        """Check convergence criteria - requires BOTH QE stability AND geographic coherence."""
+        """Check convergence criteria using topology preservation metrics from VLRSOM paper."""
         converged_qe = False
-        converged_geo = False
+        converged_topology = False
         
-        # Check QE stability over window (new criterion)
-        qe_stability_window = getattr(self.config, 'qe_stability_window', 20)
-        qe_stability_threshold = getattr(self.config, 'qe_stability_threshold', 0.001)
+        # Check QE stability over window
+        qe_stability_window = self._get_config('qe_stability_window', 20)
+        qe_stability_threshold = self._get_config('qe_stability_threshold', 0.001)
         
         if len(self.training_history['quantization_errors']) >= qe_stability_window:
             recent_qes = self.training_history['quantization_errors'][-qe_stability_window:]
@@ -1234,30 +1281,32 @@ class GeoSOMVLRSOM:
                 logger.info(f"QE stable over {qe_stability_window} epochs (range = {qe_relative_range:.5f} < {qe_stability_threshold})")
                 converged_qe = True
         
-        # Alternative: Check QE improvement threshold (original criterion)
-        if not converged_qe and len(self.training_history['quantization_errors']) > 10:
-            recent_qes = self.training_history['quantization_errors'][-10:]
-            qe_improvement = abs(recent_qes[-1] - recent_qes[0]) / recent_qes[0]
-            if qe_improvement < self.config.qe_improvement_threshold:
-                logger.info(f"QE stabilized (improvement = {qe_improvement:.5f} < {self.config.qe_improvement_threshold})")
-                converged_qe = True
+        # Check topographic error (from VLRSOM paper) - better topology preservation metric
+        if len(self.training_history['topographic_errors']) >= 5:
+            recent_te = self.training_history['topographic_errors'][-5:]
+            avg_te = np.mean(recent_te)
+            te_threshold = self._get_config('te_convergence_threshold', 0.05)
+            
+            if avg_te < te_threshold:
+                logger.info(f"Topographic error converged: {avg_te:.4f} < {te_threshold}")
+                converged_topology = True
         
-        # Geographic coherence threshold
-        if geo_coherence > self.config.geographic_coherence_threshold:
-            logger.info(f"Geographic coherence {geo_coherence:.3f} > threshold {self.config.geographic_coherence_threshold}")
-            converged_geo = True
+        # Fallback to geographic coherence for geo-specific applications
+        if not converged_topology and geo_coherence > self.geographic_coherence_threshold:
+            logger.info(f"Geographic coherence {geo_coherence:.3f} > threshold {self.geographic_coherence_threshold}")
+            converged_topology = True
         
-        # Require BOTH criteria to be met
-        if converged_qe and converged_geo:
-            logger.info("Both QE stability and geographic coherence criteria met - converged!")
+        # Require BOTH QE stability and topology preservation
+        if converged_qe and converged_topology:
+            logger.info("Convergence criteria met (QE stability + topology preservation)")
             return True
         elif converged_qe:
-            logger.info("QE converged but geographic coherence not met - continuing...")
-        elif converged_geo:
-            logger.info("Geographic coherence met but QE not stable - continuing...")
+            logger.info("QE converged but topology not preserved - continuing...")
+        elif converged_topology:
+            logger.info("Topology preserved but QE not stable - continuing...")
         
         # Alternative: Patience exceeded with reasonable QE
-        if patience_counter >= self.config.patience:
+        if patience_counter >= self.patience:
             if len(self.training_history['quantization_errors']) > 20:
                 recent_qes = self.training_history['quantization_errors'][-20:]
                 qe_trend = recent_qes[-1] - recent_qes[0]
@@ -1405,7 +1454,7 @@ class GeoSOMVLRSOM:
         bmu_indices = np.full(n_samples, INVALID_INDEX, dtype=np.int32)
         
         # Process in chunks for memory efficiency
-        prediction_chunk_size = getattr(self.config, 'prediction_chunk_size', 5000)
+        prediction_chunk_size = self._get_config('prediction_chunk_size', 5000)
         chunk_size = min(prediction_chunk_size, n_samples)
         
         for start_idx in range(0, n_samples, chunk_size):
