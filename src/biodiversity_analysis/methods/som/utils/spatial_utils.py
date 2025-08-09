@@ -220,8 +220,11 @@ class GeographicCoherence:
     
     @staticmethod
     def _inverse_distance_weights(coordinates: np.ndarray, 
-                                 max_distance: float = 1000.0) -> np.ndarray:
+                                 max_distance: float = None) -> np.ndarray:
         """Create inverse distance spatial weights matrix."""
+        from .constants import DEFAULT_MAX_DISTANCE_KM
+        if max_distance is None:
+            max_distance = DEFAULT_MAX_DISTANCE_KM
         n = len(coordinates)
         W = np.zeros((n, n))
         

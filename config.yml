@@ -549,32 +549,6 @@ spatial_analysis:
       input_parquet: '/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet'
       method: 'som'
       # Uses src/config/som/som_config_unified.yml with production settings
-    
-    # Checkpoint test experiment  
-    test_checkpoint_demo:
-      input_parquet: '/scratch/yl998/biodiversity_climate_fine_v5.parquet'
-      method: 'som'
-      # Uses aggressive sampling from som_config_unified.yml for checkpoint testing
-      
-    
-    # SOM with 4x sampling on real data
-    biodiv_som_4x:
-      input_parquet: 'provided_via_cli'  # Will use --input flag
-      method: 'som'
-      # Uses 4x sampling from som_config_unified.yml
-      # NO method-specific parameters here!
-      
-    # Batch SOM test
-    test_batch_som:
-      input_parquet: 'outputs/test_biodiversity.parquet'
-      method: 'som'
-      # NO method-specific parameters here!
-      
-    # Advanced SOM test
-    test_advanced_som:
-      input_parquet: 'outputs/test_biodiversity.parquet'
-      method: 'som'
-      # NO method-specific parameters here!
       
     # GWPCA test
     test_gwpca:

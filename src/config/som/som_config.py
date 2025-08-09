@@ -290,8 +290,8 @@ class SOMConfig(IMethodConfig):
             'grid_size': self._config.get('grid', {}).get('size', [20, 20]),
             'topology': self._config.get('grid', {}).get('topology', 'rectangular'),
             'spatial_weight': self._config.get('distance', {}).get('spatial_weight', 0.2),
-            'geographic_distance': self._config.get('distance', {}).get('spatial_metric', 'haversine'),
-            'neighborhood_function': self._config.get('advanced', {}).get('neighborhood_function', 'gaussian'),
+            'geographic_distance': self._config.get('distance', {}).get('geographic_distance', 'haversine'),
+            'neighborhood_function': self._config.get('spatial_metrics', {}).get('neighborhood_function', 'gaussian'),
             'initial_radius': self._config.get('training', {}).get('radius', {}).get('initial', 10.0),
             'final_radius': self._config.get('training', {}).get('radius', {}).get('final', 0.5),
             'radius_decay': self._config.get('training', {}).get('radius', {}).get('decay', 'linear')
@@ -313,20 +313,25 @@ class SOMConfig(IMethodConfig):
             'batch_size': training.get('batch', {}).get('size', 5000),
             'chunk_size': training.get('memory', {}).get('chunk_size', 50000),
             'patience': convergence.get('patience', 50),
+            # VLRSOM parameters now properly read from vlrsom section
             'vlrsom_alpha': vlrsom.get('alpha', 0.95),
             'vlrsom_gamma': vlrsom.get('gamma', 0.001),
+            'vlrsom_error_sample_size': vlrsom.get('error_sample_size', 10000),
             # VLRSOM adaptation factors
             'lr_increase_factor': vlrsom.get('increase_factor', 1.1),
             'lr_decrease_factor': vlrsom.get('decrease_factor', 0.95),
             'high_qe_lr_range': [0.01, 0.8],  # Default values for compatibility
             'low_qe_lr_range': [0.01, 0.8],   # Default values for compatibility
-            # Convergence criteria
+            # Convergence criteria - updated to new structure
             'geographic_coherence_threshold': convergence.get('geographic_coherence', {}).get('threshold', 0.6),
             'geographic_coherence_weight': convergence.get('geographic_coherence', {}).get('weight', 0.3),
             'lr_stability_threshold': convergence.get('lr_stability_threshold', 0.001),
-            'qe_improvement_threshold': convergence.get('min_improvement', 0.001),
-            # Batch training config
-            'batch_training': training.get('batch', {})
+            'qe_improvement_threshold': convergence.get('qe', {}).get('min_improvement', 0.001),
+            'te_threshold': convergence.get('topographic_error', {}).get('threshold', 0.05),
+            # Batch training config with momentum properly linked
+            'batch_training': training.get('batch', {}),
+            # Add momentum config for easy access
+            'momentum': training.get('momentum', {})
         }
     
     def get_grid_size(self) -> list:

@@ -17,17 +17,17 @@
 
 # Grid architecture
 grid:
-  size: [20, 20]          # Number of neurons (rows, cols) - 400 neurons for testing
+  size: [60, 60]          # Number of neurons (rows, cols) - 3600 neurons for production
   topology: 'rectangular'  # Grid topology (hexagonal not yet implemented)
 
 # Data configuration
 data:
   # Input data sampling
-  spatial_grid_step: 100  # Sample every Nth spatial point (100 = fast testing)
+  spatial_grid_step: 1  # Sample every Nth spatial point (100 = fast testing)
   
-  # Feature columns
-  features: ['animal_richness', 'plant_richness', 'fungi_richness']
-  coordinates: ['x', 'y']
+  # Feature columns (standardized naming)
+  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
+  coordinate_columns: ['x', 'y']
   
   # Missing data handling
   min_valid_features: 2   # Minimum features required for valid distance
@@ -35,7 +35,7 @@ data:
 # Distance metrics
 distance:
   feature_metric: 'bray_curtis'  # Distance metric for biodiversity features
-  spatial_metric: 'haversine'    # Distance metric for geographic coordinates
+  geographic_distance: 'haversine'  # Distance metric for geographic coordinates (standardized name)
   spatial_weight: 0.2             # Weight for spatial distance (0.2 = 20% spatial, 80% features)
 
 # ============================================================================
@@ -44,74 +44,80 @@ distance:
 
 training:
   # Basic settings
-  max_epochs: 15          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 50           # Parallel workers for processing
+  max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
+  n_workers: 240          # Parallel workers (optimized for 256-core system)
   
   # Learning rate
   learning_rate:
-    initial: 0.4          # Starting learning rate
+    initial: 0.8          # Starting learning rate
     minimum: 0.1          # Minimum learning rate
     maximum: 1.0          # Maximum learning rate
     
   # Neighborhood radius
   radius:
-    initial: 10.0         # Initial neighborhood radius (half of grid size)
+    initial: 20.0         # Initial neighborhood radius (half of grid size)
     final: 0.5            # Final neighborhood radius
-    decay: 'linear'       # Decay type: 'linear' or 'exponential'
+    decay: 'exponential'       # Decay type: 'linear' or 'exponential'
     
   # Batch processing
   batch:
-    size: 5000            # Samples per batch
+    size: 10000            # Samples per batch
     shuffle: true         # Shuffle batches each epoch
     
   # Momentum (for faster convergence)
   momentum:
     initial: 0.9          # High initial momentum for global organization
     final: 0.1            # Low final momentum for fine-tuning
-    schedule: 'linear'    # How momentum decays
+    schedule: 'exponential'    # How momentum decays
     
   # Memory optimization
   memory:
-    chunk_size: 50000     # Process data in chunks to save memory
-    max_memory_gb: 32     # Maximum memory to use
+    chunk_size: 500000    # Process data in chunks (optimized for 817GB available RAM)
+    max_memory_gb: 800    # Maximum memory to use (conservative, 817GB available)
 
 # ============================================================================
-# ADAPTIVE LEARNING (VLRSOM) - Variable learning rate based on quality
+# CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training
 # ============================================================================
-
-vlrsom:
-  enabled: true           # Enable adaptive learning rate
-  
-  # Core VLRSOM parameters (from paper)
-  alpha: 0.95             # Decay factor (0.9-0.99 recommended)
-  gamma: 0.001            # Adaptation parameter (0.001-0.01 recommended)
-  
-  # Adaptation factors
-  increase_factor: 1.1    # Multiply LR when quality improves
-  decrease_factor: 0.95   # Multiply LR when quality worsens
-  
-  # Error sampling
-  sample_size: 10000      # Samples for error calculation
-
-# ============================================================================
-# CONVERGENCE & EARLY STOPPING - When to stop training
-# ============================================================================
+# Training stops when ANY of these conditions are met:
+# 1. Max epochs reached (see training.max_epochs)
+# 2. Patience exceeded (50 epochs without >0.1% QE improvement)
+# 3. Convergence achieved: QE stable AND (TE < threshold OR GC > threshold)
+#
+# The patience counter works as follows:
+# - Resets to 0 when QE improves by >0.1%
+# - Increments when QE improvement is <0.1% or QE gets worse
+# - Training stops when counter reaches patience value
 
 convergence:
-  # Early stopping
-  patience: 50                      # Epochs without improvement before stopping
-  min_improvement: 0.001             # Minimum QE improvement to reset patience
-  
-  # Geographic coherence
-  geographic_coherence:
-    threshold: 0.6                   # Minimum coherence for convergence
-    weight: 0.3                      # Weight in convergence decision
+  # Quantization Error (QE) criteria
+  qe:
+    min_improvement: 0.001           # QE must improve by >0.1% to reset patience counter
+    # Note: patience counter increments when improvement < 0.1% or QE gets worse
     
-  # Learning rate stability
-  lr_stability_threshold: 0.001      # LR change threshold for convergence
+  # Topographic Error (TE) criteria  
+  topographic_error:
+    threshold: 0.05                  # TE < this means good topology preservation
+    calculation_frequency: 10        # Calculate TE every N epochs
+    # Adaptive radius adjustment based on TE
+    adjustment:
+      enabled: true                  # Adjust radius based on TE
+      high_threshold: 0.15           # TE > this = poor topology (slow down radius decay)
+      low_threshold: 0.05            # TE < this = good topology (speed up radius decay)
+      high_modifier: 1.1             # Multiplier when TE is high
+      low_modifier: 0.95             # Multiplier when TE is low
+    
+  # Geographic Coherence (GC) criteria - for spatial data
+  geographic_coherence:
+    threshold: 0.6                   # GC > this means good spatial clustering
+    calculation_frequency: 10        # Calculate GC every N epochs
+    # weight: 0.3                    # NOT IMPLEMENTED - reserved for weighted logic
+    
+  # Convergence logic (currently OR-based)
+  # Converges when: (QE stable) AND (TE < threshold OR GC > threshold)
+  logic: 'or'                        # 'or' = either TE or GC, 'weighted' = combine scores
   
-  # Minimum epochs
-  min_epochs: 200                    # Don't stop before this many epochs
+  # Early stopping patience
+  patience: 50                      # Stop after N epochs without meaningful QE improvement (>0.1%)
 
 # ============================================================================
 # MONITORING & CHECKPOINTS - Track progress and save state
@@ -123,56 +129,34 @@ monitoring:
     frequency: 10                    # Save every N epochs
     directory: 'checkpoints/som'     # Where to save checkpoints
     
-  # Progress tracking
-  progress:
-    qe_frequency: 5                  # Calculate quantization error every N epochs
-    te_frequency: 10                 # Calculate topographic error every N epochs
-    coherence_frequency: 10          # Calculate geographic coherence every N epochs
-    
   # Sampling for metrics
   sampling:
     large_sample: 50000              # Sample size for accurate metrics
-    quick_sample_divisor: 10         # Divide data size by this for quick metrics
-    
-  # Logging
-  log_level: 'INFO'                  # Logging verbosity
 
 # ============================================================================
-# ADVANCED SETTINGS - Fine-tuning parameters (usually don't need to change)
+# VALIDATION - Cross-validation settings
 # ============================================================================
 
-advanced:
-  # Topographic error adjustments
-  te_adjustment:
-    enabled: true                    # Adjust radius based on topographic error
-    high_threshold: 0.15             # TE > this is considered high
-    low_threshold: 0.05              # TE < this is considered low
-    high_modifier: 1.1               # Slow radius decay for high TE
-    low_modifier: 0.95               # Speed radius decay for low TE
-    
-  # Neighborhood function
-  neighborhood_function: 'gaussian'  # Type of neighborhood function
-  
-  # Cross-validation
-  cv_folds: 0                        # 0 = no CV (use full dataset)
-  
-  # Spatial metrics
-  spatial_metrics:
-    k_neighbors: 50                  # Neighbors for spatial analysis
-    max_distance_km: 500             # Maximum spatial influence
-    
-  # Preprocessing (usually handled by shared preprocessor)
-  preprocessing:
-    transformation: 'log1p'          # Data transformation
-    standardization: 'z_score_by_type'
-    missing_data: 'keep_nan'         # Keep NaN values for partial distance
+validation_config:
+  cv_folds: 0  # 0 = no CV, use all data for training (production mode)
+               # 5 = 5-fold spatial block CV (for model validation)
 
 # ============================================================================
-# OUTPUT SETTINGS - What to save and visualize
+# SPATIAL ANALYSIS - Parameters for geographic coherence and BMU calculations
 # ============================================================================
 
-output:
-  save_interval: 100                 # Save outputs every N epochs
-  save_component_maps: true          # Save component visualizations
-  save_qe_history: true              # Save quality history
-  save_training_animation: false     # Create animation (expensive)
+spatial_metrics:
+  k_neighbors: 50                  # Neighbors for spatial analysis
+  max_distance_km: 500             # Maximum spatial influence
+  neighborhood_function: 'gaussian'  # Type of neighborhood function for SOM
+
+# ============================================================================
+# VLRSOM SETTINGS - Variable Learning Rate SOM parameters
+# ============================================================================
+# Note: When enabled=false, uses standard learning rate schedule from training section
+
+vlrsom:
+  enabled: false                     # Enable/disable VLRSOM adaptation (false = use standard schedule)
+  alpha: 0.95                        # Decay factor (0 < α < 1) - only used when enabled=true
+  gamma: 0.001                       # Adaptation parameter (γ > 0) - only used when enabled=true
+  error_sample_size: 10000          # Sample size for J²(t) calculation - only used when enabled=true

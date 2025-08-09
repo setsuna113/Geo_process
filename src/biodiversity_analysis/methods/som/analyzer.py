@@ -120,8 +120,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Support both old ('data_config') and new ('data') config structure
         data_config = self.config.get('data', self.config.get('data_config', {}))
         logger.info(f"data_config from self.config: {data_config}")
-        coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinates', data_config.get('coordinate_columns', ['longitude', 'latitude'])))
-        feature_cols = kwargs.get('feature_cols', data_config.get('features', data_config.get('feature_cols', None)))
+        # Use standardized naming: coordinate_columns and feature_cols
+        coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinate_columns', ['longitude', 'latitude']))
+        feature_cols = kwargs.get('feature_cols', data_config.get('feature_cols', None))
         sample_size = kwargs.get('sample_size', None)  # Optional random sampling
         random_seed = kwargs.get('random_seed', None)
         spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
@@ -165,8 +166,18 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # The shared preprocessor handles all features uniformly
         
         # Determine grid size - first check config file, then kwargs, then auto
-        arch_config = self.config.get('architecture_config', {})
-        config_grid_size = arch_config.get('grid_size', 'auto')
+        # Check both new 'grid' section and old 'architecture_config' for compatibility
+        grid_config = self.config.get('grid', {})
+        config_grid_size = grid_config.get('size', None)
+        
+        if config_grid_size is None:
+            # Fallback to old architecture_config for compatibility
+            arch_config = self.config.get('architecture_config', {})
+            config_grid_size = arch_config.get('grid_size', 'auto')
+        
+        # Ensure it's in the right format
+        if isinstance(config_grid_size, list):
+            config_grid_size = tuple(config_grid_size)
         
         # Use kwargs grid_size if provided, otherwise use config, otherwise auto
         grid_size_param = kwargs.get('grid_size', config_grid_size)
@@ -361,7 +372,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Allow forcing grid size via environment variable
         import os
-        force_grid = os.environ.get('SOM_FORCE_GRID_SIZE', '').lower() in ['1', 'true', 'yes']
+        force_grid_value = os.environ.get('SOM_FORCE_GRID_SIZE', '')
+        force_grid = force_grid_value.lower() in ['1', 'true', 'yes']
+        logger.info(f"SOM_FORCE_GRID_SIZE env var: '{force_grid_value}', force_grid: {force_grid}")
         
         if total_required_mb > safe_available and not force_grid:
             # Reduce grid size to fit memory
@@ -422,6 +435,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             topology=arch_config['topology'],
             spatial_weight=arch_config['spatial_weight'],
             geographic_distance=arch_config['geographic_distance'],
+            _config=som_config._config,  # Pass raw config dict for _get_config access
             # Learning rate settings now from training_config
             initial_learning_rate=training_config['initial_learning_rate'],
             min_learning_rate=training_config['min_learning_rate'],

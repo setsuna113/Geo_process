@@ -48,6 +48,9 @@ class GeoSOMConfig:
     spatial_weight: float = 0.3  # k=0.3 (30% spatial, 70% features)
     geographic_distance: str = "haversine"
     
+    # Raw config dict for _get_config access
+    _config: Optional[Dict[str, Any]] = None
+    
     # Batch SOM Training Configuration (processes mini-batches for memory efficiency)
     batch_training: Optional[Dict[str, Any]] = None
     
@@ -114,7 +117,7 @@ class GeoSOMVLRSOM:
         Args:
             key: Config key to access
             default: Default value if key not found
-            section: Optional config section (e.g., 'memory_optimization', 'minibatch_training')
+            section: Optional config section (e.g., 'memory_optimization', 'training.momentum', 'vlrsom')
             
         Returns:
             Config value or default
@@ -126,13 +129,28 @@ class GeoSOMVLRSOM:
             
         value = default
         if section:
-            # Access nested config section
-            section_config = getattr(self.config, section, None)
-            if section_config:
-                if isinstance(section_config, dict):
-                    value = section_config.get(key, default)
-                else:
-                    value = getattr(section_config, key, default)
+            # Handle nested sections with dots (e.g., 'training.momentum')
+            # Access the raw config dict if available
+            if hasattr(self.config, '_config') and self.config._config:
+                # Navigate through nested dicts
+                parts = section.split('.')
+                current = self.config._config
+                for part in parts:
+                    if isinstance(current, dict) and part in current:
+                        current = current[part]
+                    else:
+                        current = None
+                        break
+                if current is not None and isinstance(current, dict):
+                    value = current.get(key, default)
+            else:
+                # Fallback to attribute access
+                section_config = getattr(self.config, section, None)
+                if section_config:
+                    if isinstance(section_config, dict):
+                        value = section_config.get(key, default)
+                    else:
+                        value = getattr(section_config, key, default)
         else:
             # Direct config access
             value = getattr(self.config, key, default)
@@ -177,25 +195,27 @@ class GeoSOMVLRSOM:
         self.neighborhood_function = config.neighborhood_function
         
         # Use shared distance calculator for consistency across methods
+        # Read distance metric from config instead of hardcoding
+        distance_metric = self._get_config('feature_metric', 'bray_curtis', 'distance')
         self.distance_calculator = SharedDistanceCalculator(
-            distance_metric='bray_curtis',
+            distance_metric=distance_metric,
             min_valid_features=self.min_valid_features
         )
         
         # Initialize fully optimized batch SOM trainer with momentum
         # All optimizations are built-in with no configuration redundancy
         optimized_config = OptimizedBatchConfig(
-            batch_size=self._get_config('batch_size', 5000, 'batch_training'),
+            batch_size=self._get_config('size', 5000, 'training.batch'),
             learning_schedule=self._get_config('learning_schedule', 'exponential', 'batch_training'),
             initial_learning_rate=config.initial_learning_rate,
             final_learning_rate=config.min_learning_rate,
-            # Momentum settings (NEW)
-            initial_momentum=self._get_config('initial_momentum', 0.9, 'batch_training'),
-            final_momentum=self._get_config('final_momentum', 0.1, 'batch_training'),
-            momentum_schedule=self._get_config('momentum_schedule', 'linear', 'batch_training'),
-            # Distance metric settings
-            distance_metric=self._get_config('distance_metric', 'bray_curtis', 'batch_training'),
-            min_valid_features=self._get_config('min_valid_features', 2, 'batch_training'),
+            # Momentum settings - read from correct location
+            initial_momentum=self._get_config('initial', 0.9, 'training.momentum'),
+            final_momentum=self._get_config('final', 0.1, 'training.momentum'),
+            momentum_schedule=self._get_config('schedule', 'linear', 'training.momentum'),
+            # Distance metric settings - use config value
+            distance_metric=distance_metric,
+            min_valid_features=self._get_config('min_valid_features', 2, 'data'),
         )
         
         self.batch_trainer = OptimizedBatchTrainer(
@@ -606,6 +626,13 @@ class GeoSOMVLRSOM:
     
     def _initialize_training_state(self, data: np.ndarray, coordinates: Optional[np.ndarray]) -> Dict[str, Any]:
         """Initialize training state including resume from checkpoint."""
+        # Log VLRSOM status
+        vlrsom_enabled = self._get_config('enabled', True, 'vlrsom')
+        if vlrsom_enabled:
+            logger.info("VLRSOM adaptation is ENABLED - learning rate will adapt based on J²(t)")
+        else:
+            logger.info("VLRSOM adaptation is DISABLED - using standard learning rate schedule")
+        
         state = {
             'converged': False,
             'best_qe': np.inf,
@@ -723,13 +750,13 @@ class GeoSOMVLRSOM:
     def _handle_periodic_calculations(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray],
                                     best_qe: float, patience_counter: int) -> bool:
         """Handle topographic error, geographic coherence, and checkpoints."""
-        # Topographic error calculation
-        te_freq = self._get_config('te_calculation_frequency', 10, 'progress_tracking')
+        # Topographic error calculation - read from new convergence section
+        te_freq = self._get_config('calculation_frequency', 10, 'convergence.topographic_error')
         if epoch % te_freq == 0 and epoch > 0:
             self._calculate_and_adjust_topographic_error(epoch, data, coordinates)
         
-        # Geographic coherence and convergence check
-        geo_freq = self._get_config('geographic_coherence_frequency', 10, 'progress_tracking')
+        # Geographic coherence and convergence check - read from new convergence section
+        geo_freq = self._get_config('calculation_frequency', 10, 'convergence.geographic_coherence')
         if coordinates is not None and epoch % geo_freq == 0 and epoch > 0:
             return self._handle_geographic_coherence_and_checkpoints(epoch, data, coordinates, best_qe, patience_counter)
         
@@ -748,15 +775,16 @@ class GeoSOMVLRSOM:
     def _adjust_radius_based_on_te(self, te: float, epoch: int) -> None:
         """Adjust radius based on topographic error."""
         next_epoch_radius = self._get_scheduled_radius(epoch + 1)
-        te_high_threshold = self._get_config('te_high_threshold', 0.15)
-        te_low_threshold = self._get_config('te_low_threshold', 0.05)
+        # Read from new convergence.topographic_error.adjustment section
+        te_high_threshold = self._get_config('high_threshold', 0.15, 'convergence.topographic_error.adjustment')
+        te_low_threshold = self._get_config('low_threshold', 0.05, 'convergence.topographic_error.adjustment')
         
         if te > te_high_threshold:
-            radius_modifier = self._get_config('te_high_radius_modifier', 1.1)
+            radius_modifier = self._get_config('high_modifier', 1.1, 'convergence.topographic_error.adjustment')
             adjusted_radius = next_epoch_radius * radius_modifier
             logger.info(f"High TE ({te:.3f}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
         elif te < te_low_threshold:
-            radius_modifier = self._get_config('te_low_radius_modifier', 0.95)
+            radius_modifier = self._get_config('low_modifier', 0.95, 'convergence.topographic_error.adjustment')
             adjusted_radius = next_epoch_radius * radius_modifier
             logger.info(f"Low TE ({te:.3f}): adjusting radius {next_epoch_radius:.3f} → {adjusted_radius:.3f}")
         else:
@@ -797,8 +825,9 @@ class GeoSOMVLRSOM:
     
     def _handle_checkpoint_saving(self, epoch: int, best_qe: float, patience_counter: int) -> None:
         """Handle checkpoint saving."""
-        checkpoint_frequency = self._get_config('checkpoint_frequency', 10, 'progress_tracking')
-        checkpoint_dir = self._get_config('checkpoint_dir', 'checkpoints/som', 'progress_tracking')
+        # Read from correct config location: monitoring.checkpoint
+        checkpoint_frequency = self._get_config('frequency', 10, 'monitoring.checkpoint')
+        checkpoint_dir = self._get_config('directory', 'checkpoints/som', 'monitoring.checkpoint')
         
         if checkpoint_frequency > 0 and epoch % checkpoint_frequency == 0:
             self.save_checkpoint(checkpoint_dir, epoch, best_qe, patience_counter)
@@ -845,6 +874,9 @@ class GeoSOMVLRSOM:
         Returns:
             J²(t): Squared error function value
         """
+        # Check if VLRSOM is enabled
+        if not self._get_config('enabled', True, 'vlrsom'):
+            return 0.0  # Return 0 when disabled (won't be used anyway)
         n_samples = len(data)
         
         # Use sampling for efficiency (leverages existing infrastructure)
@@ -907,12 +939,17 @@ class GeoSOMVLRSOM:
             data: Current training data (already sampled by caller)
             coordinates: Geographic coordinates (if available)
         """
-        # Get VLRSOM parameters from config
-        alpha = self._get_config('vlrsom_alpha', 0.95)  # Decay factor (0 < α < 1)
-        gamma = self._get_config('vlrsom_gamma', 0.001)  # Adaptation parameter (γ > 0)
+        # Check if VLRSOM is enabled
+        if not self._get_config('enabled', True, 'vlrsom'):
+            # When disabled, do nothing - keep current learning rate from standard schedule
+            return
+        
+        # Get VLRSOM parameters from correct config location
+        alpha = self._get_config('alpha', 0.95, 'vlrsom')  # Decay factor (0 < α < 1)
+        gamma = self._get_config('gamma', 0.001, 'vlrsom')  # Adaptation parameter (γ > 0)
         
         # Calculate J²(t) using existing sampling infrastructure
-        error_sample_size = self._get_config('vlrsom_error_sample_size', 10000)
+        error_sample_size = self._get_config('error_sample_size', 10000, 'vlrsom')
         j_squared = self._calculate_vlrsom_error_squared(data, coordinates, error_sample_size)
         
         # Apply VLRSOM formula: μ'(t+1) = αμ(t) + γJ²(t)
@@ -941,7 +978,10 @@ class GeoSOMVLRSOM:
             data: Current training data (already sampled by caller)
             coordinates: Geographic coordinates (if available)
         """
-        self._adapt_learning_rate_vlrsom(data, coordinates)
+        # Only call VLRSOM if enabled
+        if self._get_config('enabled', True, 'vlrsom'):
+            self._adapt_learning_rate_vlrsom(data, coordinates)
+        # Otherwise, learning rate follows standard schedule from batch trainer
     
     def _get_scheduled_radius(self, epoch: int) -> float:
         """Get the scheduled radius for a given epoch without adjustment."""
