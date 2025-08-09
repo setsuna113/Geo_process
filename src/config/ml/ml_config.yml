@@ -2,6 +2,11 @@
 # Based on regression_analysis_decisions.md requirements
 
 regression_analysis:
+  # Data loading and sampling
+  data:
+    spatial_grid_step: 100  # Take every 100th point in spatial grid for testing
+    log_message: "Loading data with spatial grid sampling"
+  
   # Data preprocessing (lines 199-277 from regression_analysis_decisions.md)
   preprocessing:
     missing_data:
@@ -100,21 +105,21 @@ regression_analysis:
   experiments:
     regression_full:
       description: "Full regression analysis with all three methods"
-      input_parquet: "outputs/biodiversity_data.parquet"
+      input_parquet: "/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet"
       target_column: "fungi_richness"
       methods: ["method1_continuous", "method2_categorical", "method3_dml"]
       run_diagnostics: true
       
     h2_temperate:
       description: "Focus on H2 temperate mismatch hypothesis"
-      input_parquet: "outputs/biodiversity_data.parquet"
+      input_parquet: "/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet"
       target_column: "fungi_richness"
       methods: ["method2_categorical"]  # Uses emmeans contrasts
       run_diagnostics: true
       
     dml_only:
       description: "DML causal inference only"
-      input_parquet: "outputs/biodiversity_data.parquet"
+      input_parquet: "/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet"
       target_column: "fungi_richness"
       methods: ["method3_dml"]
       run_diagnostics: false

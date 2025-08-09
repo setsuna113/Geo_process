@@ -38,35 +38,43 @@ class H2OManager:
         if self._initialized:
             try:
                 # Check if cluster is still running
-                h2o.cluster()
-                return
+                cluster_info = h2o.cluster()
+                if cluster_info is not None:
+                    logger.info("Using existing H2O cluster")
+                    return
+                # Cluster returns None, need to reinitialize
+                self._initialized = False
             except:
                 # Cluster died, need to reinitialize
                 self._initialized = False
         
         try:
             # Check if H2O is already running
-            h2o.cluster()
-            logger.info("Using existing H2O cluster")
-            self._initialized = True
+            cluster_info = h2o.cluster()
+            if cluster_info is not None:
+                logger.info("Using existing H2O cluster")
+                self._initialized = True
+                return
         except:
-            # Initialize new H2O cluster
-            if n_threads is None:
-                n_threads = os.cpu_count() or 256
-            
-            logger.info(f"Starting H2O cluster with {n_threads} threads, "
-                       f"{max_mem_size} max memory")
-            h2o.init(
-                nthreads=n_threads,
-                max_mem_size=max_mem_size,
-                min_mem_size=min_mem_size,
-                strict_version_check=False
-            )
-            self._initialized = True
-            
-            # Display cluster info
-            cluster = h2o.cluster()
-            logger.info(f"H2O cluster ready: {cluster}")
+            pass
+        
+        # Initialize new H2O cluster
+        if n_threads is None:
+            n_threads = os.cpu_count() or 256
+        
+        logger.info(f"Starting H2O cluster with {n_threads} threads, "
+                   f"{max_mem_size} max memory")
+        h2o.init(
+            nthreads=n_threads,
+            max_mem_size=max_mem_size,
+            min_mem_size=min_mem_size,
+            strict_version_check=False
+        )
+        self._initialized = True
+        
+        # Display cluster info
+        cluster = h2o.cluster()
+        logger.info(f"H2O cluster ready: {cluster}")
     
     def shutdown(self) -> None:
         """Shutdown H2O cluster if running."""
@@ -90,12 +98,12 @@ class H2OManager:
         
         try:
             cluster = h2o.cluster()
+            # H2O cluster info is in the string representation
+            cluster_info = str(cluster).split('\n')
             return {
                 "status": "running",
-                "nodes": len(cluster.nodes),
-                "total_memory": cluster.total_memory,
-                "free_memory": cluster.free_memory,
-                "cores": cluster.cores
+                "nodes": len(cluster.nodes) if hasattr(cluster, 'nodes') else 1,
+                "cluster_info": cluster_info
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}

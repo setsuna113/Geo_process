@@ -24,11 +24,20 @@ class Config:
             if config_file and config_file.exists():
                 try:
                     self._load_yaml_config(config_file, preserve_test_db=False)
-                    print(f"✅ Loaded configuration from {config_file}")
+                    # Only print in main process to avoid spam from parallel workers
+                    import os
+                    if os.getenv('JOBLIB_WORKER_ID') is None:
+                        print(f"✅ Loaded configuration from {config_file}")
                 except Exception as e:
-                    print(f"⚠️  Config file loading failed: {e} - using defaults")
+                    # Only print in main process
+                    import os
+                    if os.getenv('JOBLIB_WORKER_ID') is None:
+                        print(f"⚠️  Config file loading failed: {e} - using defaults")
             else:
-                print("ℹ️  No config.yml found - using defaults only")
+                # Only print in main process
+                import os
+                if os.getenv('JOBLIB_WORKER_ID') is None:
+                    print("ℹ️  No config.yml found - using defaults only")
         else:
             print("🧪 Test mode detected - using test database configuration (port 5432)")
             print("🧪 Ignoring config.yml completely in test mode")
