@@ -230,16 +230,21 @@ class Method3DML:
                 g_model: E[Y|X] model
                 m_model: E[D|X] model
         """
-        # Configure H2O GBM for nuisance functions
+        # Configure H2O GBM for DML nuisance functions
+        # Note: These are DML-appropriate settings:
+        # - Fixed ntrees (no early stopping with validation)
+        # - Conservative max_depth to prevent overfitting
+        # - No validation frame will be used (all data for training)
         gbm_params = {
-            'ntrees': 100,
-            'max_depth': 6,
+            'ntrees': 100,  # Fixed iterations, no early stopping
+            'max_depth': 6,  # Shallow trees to prevent overfitting
             'learn_rate': 0.1,
             'sample_rate': 0.8,
             'col_sample_rate': 0.7,
-            'min_rows': 20,
+            'min_rows': 20,  # Regularization through minimum leaf size
             'distribution': 'gaussian',
-            'seed': 42
+            'seed': 42,
+            'stopping_rounds': 0  # Explicitly disable early stopping
         }
         
         # Fit g-model: E[Y|X]
