@@ -24,8 +24,8 @@ class H2OManager:
     
     def ensure_initialized(self, 
                          n_threads: Optional[int] = None,
-                         max_mem_size: str = "128G",
-                         min_mem_size: str = "8G") -> None:
+                         max_mem_size: str = "4G",
+                         min_mem_size: str = "1G") -> None:
         """Ensure H2O cluster is initialized.
         
         This method is idempotent - safe to call multiple times.
@@ -149,8 +149,8 @@ h2o_manager = H2OManager()
 
 
 def ensure_h2o_initialized(n_threads: Optional[int] = None,
-                          max_mem_size: str = "128G",
-                          min_mem_size: str = "8G") -> None:
+                          max_mem_size: str = "4G",
+                          min_mem_size: str = "1G") -> None:
     """Convenience function to ensure H2O is initialized.
     
     Args:
