@@ -622,7 +622,13 @@ spatial_analysis:
     production_kmeans_hierarchical:
       input_parquet: 'data/merged/biodiversity_climate_1x_production.parquet'
       method: 'kmeans_hierarchical'
-      # All config in src/config/kmeans_hierarchical/kmeans_hierarchical_config.yml
+      # Uses production settings from src/config/kmeans_hierarchical/kmeans_hierarchical_config.yml
+      # Key production settings:
+      # - n_pre_clusters: 2000 (vs 750 test)
+      # - variance_threshold: 0.98 (vs 0.95 test)
+      # - n_bootstrap: 100 (vs 10 test)
+      # - spatial_grid_step: 2 (vs 50 test) - ~13M points (25% of data)
+      # - final_k_range: [6, 20] for ecological diversity
       
     # MaxP regionalization test
     test_maxp:
