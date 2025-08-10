@@ -33,24 +33,36 @@ class KMeansHierarchicalAnalyzerAdapter(IAnalyzer):
         return self._analyzer.get_default_parameters()
     
     def validate_parameters(self, parameters: Dict[str, Any]) -> Tuple[bool, List[str]]:
-        """Validate analysis parameters."""
+        """Validate analysis parameters for k-means hierarchical clustering."""
         errors = []
         
-        # Validate n_clusters
-        if 'n_clusters' in parameters:
-            n_clusters = parameters['n_clusters']
-            if not isinstance(n_clusters, int) or n_clusters < 2:
-                errors.append("n_clusters must be an integer >= 2")
+        # Validate n_pre_clusters
+        if 'n_pre_clusters' in parameters:
+            n = parameters['n_pre_clusters']
+            if not isinstance(n, int) or n < 10:
+                errors.append("n_pre_clusters must be an integer >= 10")
         
-        # Validate k_range if determine_k is True
-        if parameters.get('determine_k', False):
-            k_range = parameters.get('k_range', [5, 30])
+        # Validate final_k_range
+        if 'final_k_range' in parameters:
+            k_range = parameters['final_k_range']
             if not isinstance(k_range, (list, tuple)) or len(k_range) != 2:
-                errors.append("k_range must be a list or tuple of 2 integers")
+                errors.append("final_k_range must be a list or tuple of 2 integers")
             elif not all(isinstance(k, int) for k in k_range):
-                errors.append("k_range values must be integers")
+                errors.append("final_k_range values must be integers")
             elif k_range[0] >= k_range[1]:
-                errors.append("k_range[0] must be less than k_range[1]")
+                errors.append("final_k_range[0] must be less than final_k_range[1]")
+        
+        # Validate linkage_method
+        if 'linkage_method' in parameters:
+            valid_methods = ['ward', 'complete', 'average', 'single']
+            if parameters['linkage_method'] not in valid_methods:
+                errors.append(f"linkage_method must be one of {valid_methods}")
+        
+        # Validate clustering_approach
+        if 'clustering_approach' in parameters:
+            valid_approaches = ['geometric', 'ecological']
+            if parameters['clustering_approach'] not in valid_approaches:
+                errors.append(f"clustering_approach must be one of {valid_approaches}")
         
         return len(errors) == 0, errors
     
