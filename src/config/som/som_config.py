@@ -72,7 +72,7 @@ class SOMConfig(IMethodConfig):
         Find the SOM configuration file.
         
         Returns:
-            Path to the unified config file
+            Path to the simplified config file
             
         Raises:
             SOMConfigError: If configuration file cannot be found
@@ -82,30 +82,34 @@ class SOMConfig(IMethodConfig):
         if env_path and Path(env_path).exists():
             return Path(env_path)
         
-        # Strategy 2: Use the unified config
+        # Strategy 2: Use the simplified config (NEW DEFAULT)
         current_dir = Path(__file__).parent
+        simplified_path = current_dir / 'som_config_simplified.yml'
+        
+        if simplified_path.exists():
+            return simplified_path
+        
+        # Fallback for testing if unified config still exists (DEPRECATED)
         unified_path = current_dir / 'som_config_unified.yml'
-        
         if unified_path.exists():
-            return unified_path
-        
-        # Fallback: try som_config.yml (legacy name)
-        legacy_path = current_dir / 'som_config.yml'
-        if legacy_path.exists():
             import warnings
             warnings.warn(
-                "Using legacy config name 'som_config.yml', consider renaming to 'som_config_unified.yml'",
-                UserWarning,
+                "DEPRECATED: som_config_unified.yml is deprecated. Using som_config_simplified.yml instead.",
+                DeprecationWarning,
                 stacklevel=2
             )
-            return legacy_path
+            # Don't use it, force using simplified
+            if not simplified_path.exists():
+                raise SOMConfigError(
+                    "som_config_unified.yml found but is deprecated. "
+                    "Please use som_config_simplified.yml instead."
+                )
         
         raise SOMConfigError(
             f"Could not find SOM configuration. Searched for:\n" +
             f"  - Environment variable SOM_CONFIG_PATH: {env_path}\n" +
-            f"  - Unified config: {unified_path}\n" +
-            f"  - Legacy config: {legacy_path}\n" +
-            "Provide SOM_CONFIG_PATH or ensure som_config_unified.yml exists"
+            f"  - Simplified config: {simplified_path}\n" +
+            "Provide SOM_CONFIG_PATH or ensure som_config_simplified.yml exists"
         )
     
     def _load_config(self):
@@ -124,11 +128,17 @@ class SOMConfig(IMethodConfig):
             if not isinstance(config, dict):
                 raise SOMConfigError(f"Configuration file must contain a YAML dictionary, got {type(config)}")
             
-            # Validate required sections
-            required_sections = ['architecture_config', 'training_config']
+            # Validate required sections for new simplified config
+            required_sections = ['grid', 'data', 'distance', 'training']
             missing_sections = [s for s in required_sections if s not in config]
             if missing_sections:
-                raise SOMConfigError(f"Missing required configuration sections: {missing_sections}")
+                # Try to handle old config format gracefully
+                if 'architecture_config' in config or 'training_config' in config:
+                    logger.warning("Old config format detected. Please migrate to simplified config.")
+                    # Convert old format to new format
+                    config = self._convert_old_to_new_format(config)
+                else:
+                    raise SOMConfigError(f"Missing required configuration sections: {missing_sections}")
             
             self._config = config
             self._validate_config()
@@ -137,6 +147,44 @@ class SOMConfig(IMethodConfig):
             raise SOMConfigError(f"Error parsing YAML configuration: {e}")
         except Exception as e:
             raise SOMConfigError(f"Error loading configuration: {e}")
+    
+    def _convert_old_to_new_format(self, old_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert old config format to new simplified format."""
+        new_config = {
+            'grid': {
+                'size': old_config.get('architecture_config', {}).get('grid_size', [20, 20]),
+                'topology': old_config.get('architecture_config', {}).get('topology', 'rectangular')
+            },
+            'data': {
+                'spatial_grid_step': old_config.get('data_config', {}).get('spatial_grid_step', 100),
+                'features': old_config.get('data_config', {}).get('feature_cols', ['animal_richness', 'plant_richness', 'fungi_richness']),
+                'coordinates': old_config.get('data_config', {}).get('coordinate_columns', ['x', 'y']),
+                'min_valid_features': old_config.get('distance_config', {}).get('min_valid_features', 2)
+            },
+            'distance': {
+                'feature_metric': old_config.get('distance_config', {}).get('input_space', 'bray_curtis'),
+                'spatial_metric': old_config.get('architecture_config', {}).get('geographic_distance', 'haversine'),
+                'spatial_weight': old_config.get('architecture_config', {}).get('spatial_weight', 0.2)
+            },
+            'training': old_config.get('training_config', {}),
+            'vlrsom': {
+                'enabled': True,
+                'alpha': old_config.get('training_config', {}).get('vlrsom_alpha', 0.95),
+                'gamma': old_config.get('training_config', {}).get('vlrsom_gamma', 0.001)
+            },
+            'convergence': {
+                'patience': old_config.get('training_config', {}).get('patience', 50),
+                'min_improvement': old_config.get('training_config', {}).get('qe_improvement_threshold', 0.001)
+            },
+            'monitoring': {
+                'checkpoint': {
+                    'frequency': old_config.get('validation_config', {}).get('progress_tracking', {}).get('checkpoint_frequency', 10),
+                    'directory': old_config.get('validation_config', {}).get('progress_tracking', {}).get('checkpoint_dir', 'checkpoints/som')
+                }
+            },
+            'output': old_config.get('output_config', {})
+        }
+        return new_config
     
     def _validate_config(self):
         """Validate configuration values against defined rules."""
@@ -236,48 +284,84 @@ class SOMConfig(IMethodConfig):
     
     # Convenience methods for common configurations
     def get_architecture_config(self) -> Dict[str, Any]:
-        """Get architecture configuration section."""
-        return self._config.get('architecture_config', {})
+        """Get architecture configuration (compatibility layer)."""
+        # Map new config to old format for backward compatibility
+        return {
+            'grid_size': self._config.get('grid', {}).get('size', [20, 20]),
+            'topology': self._config.get('grid', {}).get('topology', 'rectangular'),
+            'spatial_weight': self._config.get('distance', {}).get('spatial_weight', 0.2),
+            'geographic_distance': self._config.get('distance', {}).get('geographic_distance', 'haversine'),
+            'neighborhood_function': self._config.get('spatial_metrics', {}).get('neighborhood_function', 'gaussian'),
+            'initial_radius': self._config.get('training', {}).get('radius', {}).get('initial', 10.0),
+            'final_radius': self._config.get('training', {}).get('radius', {}).get('final', 0.5),
+            'radius_decay': self._config.get('training', {}).get('radius', {}).get('decay', 'linear')
+        }
     
     def get_training_config(self) -> Dict[str, Any]:
-        """Get training configuration section."""
-        return self._config.get('training_config', {})
+        """Get training configuration (compatibility layer)."""
+        # Map new config to old format for backward compatibility
+        training = self._config.get('training', {})
+        vlrsom = self._config.get('vlrsom', {})
+        convergence = self._config.get('convergence', {})
+        
+        return {
+            'max_epochs': training.get('max_epochs', 15),
+            'n_workers': training.get('n_workers', 50),
+            'initial_learning_rate': training.get('learning_rate', {}).get('initial', 0.4),
+            'min_learning_rate': training.get('learning_rate', {}).get('minimum', 0.1),
+            'max_learning_rate': training.get('learning_rate', {}).get('maximum', 1.0),
+            'batch_size': training.get('batch', {}).get('size', 5000),
+            'chunk_size': training.get('memory', {}).get('chunk_size', 50000),
+            'patience': convergence.get('patience', 50),
+            # VLRSOM parameters now properly read from vlrsom section
+            'vlrsom_alpha': vlrsom.get('alpha', 0.95),
+            'vlrsom_gamma': vlrsom.get('gamma', 0.001),
+            'vlrsom_error_sample_size': vlrsom.get('error_sample_size', 10000),
+            # VLRSOM adaptation factors
+            'lr_increase_factor': vlrsom.get('increase_factor', 1.1),
+            'lr_decrease_factor': vlrsom.get('decrease_factor', 0.95),
+            'high_qe_lr_range': [0.01, 0.8],  # Default values for compatibility
+            'low_qe_lr_range': [0.01, 0.8],   # Default values for compatibility
+            # Convergence criteria - updated to new structure
+            'geographic_coherence_threshold': convergence.get('geographic_coherence', {}).get('threshold', 0.6),
+            'geographic_coherence_weight': convergence.get('geographic_coherence', {}).get('weight', 0.3),
+            'lr_stability_threshold': convergence.get('lr_stability_threshold', 0.001),
+            'qe_improvement_threshold': convergence.get('qe', {}).get('min_improvement', 0.001),
+            'te_threshold': convergence.get('topographic_error', {}).get('threshold', 0.05),
+            # Batch training config with momentum properly linked
+            'batch_training': training.get('batch', {}),
+            # Add momentum config for easy access
+            'momentum': training.get('momentum', {})
+        }
     
     def get_grid_size(self) -> list:
         """Get SOM grid size."""
-        arch_config = self.get_architecture_config()
-        return arch_config.get('grid_size', [20, 20])
+        return self._config.get('grid', {}).get('size', [20, 20])
     
     def get_initial_learning_rate(self) -> float:
         """Get initial learning rate."""
-        train_config = self.get_training_config()
-        return train_config.get('initial_learning_rate', 0.5)
+        return self._config.get('training', {}).get('learning_rate', {}).get('initial', 0.4)
     
     def get_chunk_size(self) -> int:
         """Get chunk size for batch processing."""
-        train_config = self.get_training_config()
-        memory_mgmt = train_config.get('memory_management', {})
-        return memory_mgmt.get('chunk_size', 50000)
+        return self._config.get('training', {}).get('memory', {}).get('chunk_size', 50000)
     
     def get_sampling_config(self) -> Dict[str, Any]:
         """Get sampling configuration."""
-        train_config = self.get_training_config()
-        return train_config.get('sampling', {})
+        return self._config.get('monitoring', {}).get('sampling', {})
     
     def get_qe_sample_size(self) -> int:
         """Get sample size for QE calculation."""
-        sampling_config = self.get_sampling_config()
-        qe_config = sampling_config.get('qe_calculation', {})
-        return qe_config.get('sample_size', 100000)
+        return self._config.get('monitoring', {}).get('sampling', {}).get('large_sample', 50000)
     
     def get_parallel_config(self) -> Dict[str, Any]:
         """Get parallel processing configuration."""
-        train_config = self.get_training_config()
-        return train_config.get('parallel', {
+        training = self._config.get('training', {})
+        return {
             'enabled': True,
-            'n_workers': None,
+            'n_workers': training.get('n_workers', 50),
             'min_samples_for_parallel': 100000
-        })
+        }
     
     def is_parallel_enabled(self) -> bool:
         """Check if parallel processing is enabled."""
@@ -419,21 +503,29 @@ class SOMConfig(IMethodConfig):
         
         # Check for SOM-specific environment variables
         env_overrides = {
-            'SOM_MAX_EPOCHS': ('training_config', 'max_epochs', int),
-            'SOM_MAX_WORKERS': ('training_config', 'n_workers', int),
-            'SOM_CHUNK_SIZE': ('training_config', 'chunk_size', int),
-            'SOM_SPATIAL_GRID_STEP': ('data_config', 'spatial_grid_step', int),
-            'SOM_GRID_SIZE': ('architecture_config', 'grid_size', lambda x: [int(v) for v in x.split(',')]),
-            'SOM_INITIAL_LR': ('training_config', 'initial_learning_rate', float),
+            'SOM_MAX_EPOCHS': ('training', 'max_epochs', int),
+            'SOM_MAX_WORKERS': ('training', 'n_workers', int),
+            'SOM_CHUNK_SIZE': ('training.memory', 'chunk_size', int),
+            'SOM_SPATIAL_GRID_STEP': ('data', 'spatial_grid_step', int),
+            'SOM_GRID_SIZE': ('grid', 'size', lambda x: [int(v) for v in x.split(',')]),
+            'SOM_INITIAL_LR': ('training.learning_rate', 'initial', float),
         }
         
-        for env_var, (section, key, converter) in env_overrides.items():
+        for env_var, (section_path, key, converter) in env_overrides.items():
             if env_var in os.environ:
                 try:
                     value = converter(os.environ[env_var])
-                    if section not in config:
-                        config[section] = {}
-                    config[section][key] = value
+                    # Handle nested paths like 'training.memory'
+                    sections = section_path.split('.')
+                    target = config
+                    for section in sections[:-1]:
+                        if section not in target:
+                            target[section] = {}
+                        target = target[section]
+                    # Set the final value
+                    if sections[-1] not in target:
+                        target[sections[-1]] = {}
+                    target[sections[-1]][key] = value
                 except (ValueError, TypeError) as e:
                     import logging
                     logging.warning(f"Failed to parse {env_var}: {e}")
