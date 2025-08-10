@@ -41,7 +41,7 @@ class KMeansHierarchicalConfigLoader(IMethodConfig):
                 'normalization': 'robust',
                 'remove_outliers': False,
                 'min_features_prefilter': 1,
-                'spatial_grid_step': 50  # Sample every 50th grid point for systematic spatial sampling
+                'spatial_grid_step': 2  # Maximum resolution: every 2nd grid point for highest quality
                 # Note: spatial_grid_step provides better coverage than random sampling
             },
             'visualization': {
