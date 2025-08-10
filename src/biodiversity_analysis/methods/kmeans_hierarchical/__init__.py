@@ -6,7 +6,7 @@ datasets (millions of points) while preserving hierarchical structure.
 """
 
 from .hierarchical_analyzer import KMeansHierarchicalAnalyzer
-from .hierarchical_core import TwoStageClusterer, VariancePreservingKMeans, BootstrapStability
+from .hierarchical_core import TwoStageClusterer, ElbowMethodKMeans, BootstrapStability
 from .hierarchical_config import KMeansHierarchicalConfig
 from .analyzer_adapter import KMeansHierarchicalAnalyzerAdapter
 
@@ -15,6 +15,6 @@ __all__ = [
     'KMeansHierarchicalAnalyzerAdapter', 
     'TwoStageClusterer',
     'KMeansHierarchicalConfig',
-    'VariancePreservingKMeans',
+    'ElbowMethodKMeans',
     'BootstrapStability'
 ]

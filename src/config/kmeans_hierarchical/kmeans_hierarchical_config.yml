@@ -1,69 +1,54 @@
-# K-means Hierarchical configuration for biodiversity analysis - PRODUCTION
-pipeline:
-  stages:
-    - name: data_loader
-      params:
-        data_path: "data/merged/biodiversity_climate_1x_production.parquet"  # Relative path
-        
-    - name: analyzer
-      params:
-        method: kmeans_hierarchical
-        
-        # Two-stage clustering parameters - PRODUCTION SETTINGS
-        n_pre_clusters: 2000  # Higher for better representation (was 750)
-        use_variance_preservation: true  # Enable automatic k selection for quality
-        variance_threshold: 0.98  # Higher threshold for better quality (was 0.95)
-        variance_k_range: [500, 5000]  # Wider range for better optimization
-        
-        # Hierarchical clustering parameters
-        linkage_method: ward  # Best for compact, spherical clusters
-        distance_metric: euclidean  # Required for ward
-        
-        # Final cluster selection - PRODUCTION SETTINGS
-        final_k: null  # Let bootstrap determine optimal k
-        final_k_range: [6, 20]  # Wider range for ecological diversity
-        selection_method: bootstrap  # Use bootstrap for stability
-        n_bootstrap: 100  # Higher for better stability assessment (was 10)
-        bootstrap_sample_ratio: 0.8  # Standard for bootstrap
-        
-        # Performance settings
-        use_minibatch: true
-        batch_size: 50000  # Larger batches for better quality (was 10000)
-        n_jobs: -1  # Use all CPU cores
-        chunk_size: 50000  # Match batch size
-        
-        # Visualization settings - ALL ENABLED FOR PRODUCTION
-        generate_dendrogram: true
-        generate_geographic_maps: true
-        generate_3d_visualization: true
-        generate_validation_plots: true
-        n_samples_for_viz: 500000  # More samples for detailed viz (was 100000)
-        
-        # Quality metrics
-        calculate_silhouette: true
-        silhouette_sample_size: 100000  # Larger sample for accurate metrics
-        
-        # Output settings
-        save_results: true
-        output_dir: "./outputs/kmeans_hierarchical_production"
+# K-means Hierarchical Configuration
+# This file contains ONLY method-specific settings
+# Input paths and experiment names should be in config.yml
 
-# Analysis settings
-analysis:
-  experiment_name: "biodiversity_kmeans_hierarchical_production"
-  description: "Production two-stage hierarchical clustering of global biodiversity patterns"
+# Method parameters
+method_params:
+  # Two-stage clustering parameters
+  n_pre_clusters: 5000  # Default if elbow method is disabled
+  use_elbow_method: true  # Use elbow method to find optimal k
+  k_range: [1000, 10000]  # Range to test for elbow method
+  elbow_threshold: 0.01  # Stop when improvement < 1%
   
-# Data processing - PRODUCTION SETTINGS
+  # Clustering approach (automatically sets linkage and distance)
+  # 'ecological' → Average + Bray-Curtis (for biodiversity gradients)
+  # 'geometric'  → Ward + Euclidean (for compact clusters)
+  clustering_approach: geometric  # BEST for biodiversity hotspots
+  
+  # Final cluster selection
+  final_k: null  # Let bootstrap determine
+  final_k_range: [6, 20]
+  selection_method: bootstrap
+  n_bootstrap: 100
+  bootstrap_sample_ratio: 0.8
+  
+  # Performance
+  use_minibatch: true
+  batch_size: 50000  # Larger batches for better k-means quality
+  n_jobs: -1
+  chunk_size: 50000
+
+# Data processing
 data_processing:
   handle_missing: complete_cases
-  normalization: robust  # Robust to outliers
-  remove_outliers: false  # Keep all ecological data
+  normalization: robust
+  remove_outliers: false
   min_features_prefilter: 1
-  spatial_grid_step: 2  # Maximum resolution sampling (was 50)
-  # Note: spatial_grid_step=2 means ~13M points from 52M (25% of data)
-  # This provides maximum geographic coverage for highest quality results
+  spatial_grid_step: 2  # Sample every 2nd point (~13M) - best quality within memory limits
+  selected_features: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
 
-# Memory management for large datasets
+# Visualization
+visualization:
+  generate_dendrogram: true
+  generate_geographic_maps: true
+  generate_3d_visualization: true
+  generate_validation_plots: true
+  n_samples_for_viz: 500000
+  calculate_silhouette: true
+  silhouette_sample_size: 100000
+
+# Memory management
 performance:
   large_dataset_threshold: 1000000
-  memory_chunk_size: 50000  # Larger chunks for efficiency
-  max_memory_gb: 32  # Adjust based on your system (was 16)
+  memory_chunk_size: 50000
+  max_memory_gb: 32

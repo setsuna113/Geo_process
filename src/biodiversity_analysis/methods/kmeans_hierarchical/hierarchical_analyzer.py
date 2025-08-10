@@ -16,7 +16,7 @@ from src.biodiversity_analysis.preprocessing.pipeline import SharedPreprocessor
 
 from .hierarchical_core import (
     TwoStageClusterer,
-    VariancePreservingKMeans,
+    ElbowMethodKMeans,
     BootstrapStability,
     calculate_clustering_metrics
 )
@@ -63,9 +63,17 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         else:
             logger.info("Using full dataset (no spatial sampling)")
         
+        # Get selected features from config
+        selected_features = kwargs.get('selected_features', self.data_config.get('selected_features', None))
+        if selected_features:
+            logger.info(f"Using selected features for clustering: {selected_features}")
+        else:
+            logger.info("Using all available features for clustering")
+        
         biodiv_data = self.load_data(
             data_path, 
-            spatial_grid_step=spatial_grid_step
+            spatial_grid_step=spatial_grid_step,
+            feature_cols=selected_features
         )
         
         logger.info(f"Loaded {biodiv_data.n_samples:,} samples with "
@@ -107,6 +115,10 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
             sample_size=config.silhouette_sample_size,
             method_name='kmeans_hierarchical'
         )
+        
+        # Add hierarchical-specific metrics
+        quality_metrics['cophenetic_correlation'] = self.clusterer.cophenetic_correlation_
+        quality_metrics['variance_preserved'] = self.clusterer.variance_preserved_
         
         # Generate visualizations if requested
         visualizations = {}
@@ -186,11 +198,27 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         # Override with user parameters
         config_dict = {**defaults, **kwargs}
         
+        # Handle clustering approach - ensure valid combinations
+        approach = config_dict.get('clustering_approach', 'ecological')
+        if approach == 'geometric':
+            # Geometric approach: Ward + Euclidean
+            config_dict['linkage_method'] = 'ward'
+            config_dict['distance_metric'] = 'euclidean'
+            logger.info("Using GEOMETRIC clustering: Ward linkage + Euclidean distance")
+        elif approach == 'ecological':
+            # Ecological approach: Average + Bray-Curtis
+            config_dict['linkage_method'] = 'average'
+            config_dict['distance_metric'] = 'braycurtis'
+            logger.info("Using ECOLOGICAL clustering: Average linkage + Bray-Curtis distance")
+        else:
+            raise ValueError(f"Invalid clustering_approach: {approach}. Use 'geometric' or 'ecological'")
+        
         # Filter out non-config parameters and legacy parameters
         non_config_keys = ['save_results', 'output_dir', 'experiment_name', 'resume', 'method',
-                          'distance_metric', 'weight_method', 'adaptive_mode', 'grid_size_km',
+                          'weight_method', 'adaptive_mode', 'grid_size_km',
                           'handle_zeros', 'prefilter_empty', 'min_features_prefilter',
-                          'use_sparse_distances', 'determine_k_method']
+                          'use_sparse_distances', 'determine_k_method', 'clustering_approach',
+                          'n_jobs', 'chunk_size', 'calculate_silhouette']
         for key in non_config_keys:
             config_dict.pop(key, None)
         
@@ -203,15 +231,15 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         Note: features are already preprocessed complete cases only.
         """
         
-        # Determine optimal k for k-means if needed
-        if config.use_variance_preservation:
-            logger.info("Determining optimal k using variance preservation...")
-            vp_kmeans = VariancePreservingKMeans(
-                variance_threshold=config.variance_threshold,
-                k_range=config.variance_k_range,
-                batch_size=config.batch_size
+        # Determine optimal k for k-means using elbow method
+        if config.use_elbow_method:
+            logger.info("Determining optimal k using elbow method...")
+            elbow_kmeans = ElbowMethodKMeans(
+                k_range=config.k_range,
+                batch_size=config.batch_size,
+                elbow_threshold=config.elbow_threshold
             )
-            n_pre_clusters = vp_kmeans.determine_k(features)
+            n_pre_clusters = elbow_kmeans.determine_k(features)
         else:
             n_pre_clusters = config.n_pre_clusters
         
@@ -219,6 +247,7 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         clusterer = TwoStageClusterer(
             n_pre_clusters=n_pre_clusters,
             linkage_method=config.linkage_method,
+            distance_metric=config.distance_metric,
             final_k=config.final_k,
             batch_size=config.batch_size,
             random_state=config.random_state
@@ -392,12 +421,15 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         return len(errors) == 0, errors
     
     def get_default_parameters(self) -> Dict[str, Any]:
-        """Get default parameters."""
+        """Get default parameters for k-means hierarchical clustering."""
         return {
             'n_pre_clusters': 750,
-            'use_variance_preservation': True,
-            'variance_threshold': 0.95,
-            'linkage_method': 'ward',
+            'use_elbow_method': True,
+            'elbow_threshold': 0.01,
+            'k_range': (1000, 10000),
+            'clustering_approach': 'ecological',  # ecological or geometric
+            'linkage_method': 'average',  # Set by clustering_approach
+            'distance_metric': 'braycurtis',  # Set by clustering_approach
             'final_k_range': (4, 8),
             'selection_method': 'bootstrap',
             'n_bootstrap': 30,

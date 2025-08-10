@@ -23,13 +23,14 @@ class KMeansHierarchicalConfig:
     n_pre_clusters: int = 750  # Number of k-means pre-clusters
     random_state: int = 42
     
-    # Variance preservation for automatic k selection
-    use_variance_preservation: bool = True
-    variance_threshold: float = 0.95
-    variance_k_range: Tuple[int, int] = (100, 2000)
+    # Elbow method for automatic k selection
+    use_elbow_method: bool = True
+    k_range: Tuple[int, int] = (100, 2000)
+    elbow_threshold: float = 0.01  # 1% improvement threshold
     
     # Hierarchical clustering parameters
     linkage_method: Literal['ward', 'complete', 'average', 'single'] = 'ward'
+    distance_metric: str = 'euclidean'  # Distance metric for hierarchical clustering
     final_k_range: Tuple[int, int] = (4, 8)
     final_k: Optional[int] = None  # If set, overrides range and selection
     
@@ -55,8 +56,8 @@ class KMeansHierarchicalConfig:
     def __post_init__(self):
         """Validate hierarchical configuration."""
         # Validate hierarchical-specific settings
-        if self.variance_threshold <= 0 or self.variance_threshold > 1:
-            raise ValueError("variance_threshold must be in (0, 1]")
+        if self.elbow_threshold <= 0 or self.elbow_threshold > 1:
+            raise ValueError("elbow_threshold must be in (0, 1]")
             
         if self.final_k_range[0] >= self.final_k_range[1]:
             raise ValueError("final_k_range must have min < max")
@@ -66,3 +67,7 @@ class KMeansHierarchicalConfig:
             
         if self.n_bootstrap < 10:
             raise ValueError("n_bootstrap should be at least 10 for stability")
+            
+        # Validate distance metric compatibility with linkage method
+        if self.linkage_method == 'ward' and self.distance_metric != 'euclidean':
+            raise ValueError("Ward linkage requires euclidean distance metric")

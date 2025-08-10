@@ -5,9 +5,11 @@ Clean implementation with proper abstraction and no redundancy.
 
 import numpy as np
 from typing import Tuple, Optional, Dict, Any
-from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.cluster.hierarchy import linkage, fcluster, cophenet, is_valid_linkage
+from scipy.spatial.distance import pdist
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics import silhouette_score, davies_bouldin_score
+from sklearn.preprocessing import StandardScaler
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ class TwoStageClusterer:
     def __init__(self, 
                  n_pre_clusters: int = 750,
                  linkage_method: str = 'ward',
+                 distance_metric: str = 'euclidean',
                  final_k: Optional[int] = None,
                  batch_size: int = 10000,
                  random_state: int = 42):
@@ -53,12 +56,14 @@ class TwoStageClusterer:
         Args:
             n_pre_clusters: Number of k-means clusters (stage 1)
             linkage_method: Hierarchical clustering linkage method
+            distance_metric: Distance metric for hierarchical clustering
             final_k: Number of final clusters (if None, will be determined)
             batch_size: Batch size for MiniBatchKMeans
             random_state: Random seed for reproducibility
         """
         self.n_pre_clusters = n_pre_clusters
         self.linkage_method = linkage_method
+        self.distance_metric = distance_metric
         self.final_k = final_k
         self.batch_size = batch_size
         self.random_state = random_state
@@ -117,7 +122,6 @@ class TwoStageClusterer:
         logger.info(f"Stage 1: K-means with k={self.n_pre_clusters}")
         
         # Standardize data for better clustering
-        from sklearn.preprocessing import StandardScaler
         self.scaler = StandardScaler()
         X_scaled = self.scaler.fit_transform(X)
         
@@ -164,24 +168,21 @@ class TwoStageClusterer:
         # Store filtered centroids for bootstrap
         self.filtered_centroids_ = centroids
         
-        # Ward linkage requires Euclidean distance
+        # Use configured distance metric (with validation for ward)
         if self.linkage_method == 'ward':
+            if self.distance_metric != 'euclidean':
+                logger.warning(f"Ward linkage requires euclidean distance, ignoring {self.distance_metric}")
             metric = 'euclidean'
-        elif self.linkage_method in ['single', 'complete', 'average']:
-            metric = 'euclidean'  # Can also use 'cityblock', 'cosine', etc.
         else:
-            metric = 'euclidean'  # Default for other methods
+            metric = self.distance_metric
             
         self.linkage_matrix = linkage(centroids, method=self.linkage_method, metric=metric)
         
         # Validate linkage matrix
-        from scipy.cluster.hierarchy import is_valid_linkage
         if not is_valid_linkage(self.linkage_matrix, warning=True):
             logger.warning("Linkage matrix validation failed")
         
         # Calculate cophenetic correlation for quality assessment
-        from scipy.cluster.hierarchy import cophenet
-        from scipy.spatial.distance import pdist
         c, coph_dists = cophenet(self.linkage_matrix, pdist(centroids, metric=metric))
         self.cophenetic_correlation_ = c
         logger.info(f"Cophenetic correlation: {c:.3f} (>0.7 is good)")
@@ -293,31 +294,35 @@ class TwoStageClusterer:
                 self.cluster_centers_[k] = X[mask].mean(axis=0)
 
 
-class VariancePreservingKMeans:
-    """K-means with automatic k selection based on variance preservation.
+class ElbowMethodKMeans:
+    """K-means with automatic k selection using elbow method.
     
-    Determines the minimum k that preserves a specified fraction of variance.
+    Finds optimal k where WCSS improvement becomes marginal.
     """
     
     def __init__(self, 
-                 variance_threshold: float = 0.95,
                  k_range: Optional[Tuple[int, int]] = None,
-                 batch_size: int = 10000):
-        """Initialize variance-preserving k-means.
+                 batch_size: int = 10000,
+                 elbow_threshold: float = 0.01,
+                 save_elbow_plot: bool = True):
+        """Initialize elbow method k-means.
         
         Args:
-            variance_threshold: Minimum variance to preserve (0-1)
             k_range: Range of k values to test (min, max)
             batch_size: Batch size for MiniBatchKMeans
+            elbow_threshold: Relative improvement threshold (default 1%)
+            save_elbow_plot: Whether to save elbow curve plot
         """
-        self.variance_threshold = variance_threshold
         self.k_range = k_range or (100, 2000)
         self.batch_size = batch_size
+        self.elbow_threshold = elbow_threshold
+        self.save_elbow_plot = save_elbow_plot
         self.optimal_k_ = None
+        self.wcss_curve_ = {}
         self.variance_curve_ = {}
         
     def determine_k(self, X: np.ndarray, sample_size: int = 100000) -> int:
-        """Determine optimal k for variance preservation.
+        """Determine optimal k using elbow method.
         
         Args:
             X: Data array
@@ -333,53 +338,178 @@ class VariancePreservingKMeans:
         else:
             X_sample = X
             
-        # Test k values
+        # Get evenly spaced k values for elbow method
         k_values = self._get_k_values()
+        logger.info(f"Testing k values for elbow method: {k_values}")
         
+        # Test ALL k values (don't stop early!)
         for k in k_values:
             logger.debug(f"Testing k={k}")
             
             kmeans = MiniBatchKMeans(
                 n_clusters=k,
                 batch_size=self.batch_size,
-                n_init='auto',  # Will use 1 with k-means++ for efficiency
+                n_init='auto',
                 random_state=42
             )
             
             kmeans.fit(X_sample)
             
-            # Calculate variance preserved
+            # Calculate WCSS and variance
+            wcss = kmeans.inertia_
             reconstructed = kmeans.cluster_centers_[kmeans.labels_]
             variance_preserved = calculate_variance_preserved(X_sample, reconstructed)
             
+            self.wcss_curve_[k] = wcss
             self.variance_curve_[k] = variance_preserved
-            logger.debug(f"k={k}: {variance_preserved:.3f} variance preserved")
-            
-            if variance_preserved >= self.variance_threshold:
-                self.optimal_k_ = k
-                logger.info(f"Optimal k={k} preserves {variance_preserved:.3f} variance")
-                return k
-                
-        # If threshold not met, use maximum k
-        self.optimal_k_ = k_values[-1]
-        logger.warning(f"Variance threshold not met. Using k={self.optimal_k_}")
+            logger.info(f"k={k}: WCSS={wcss:.2f}, variance={variance_preserved:.3f}")
+        
+        # Find elbow point
+        self.optimal_k_ = self._find_elbow_point()
+        logger.info(f"Elbow method selected k={self.optimal_k_} (variance={self.variance_curve_[self.optimal_k_]:.3f})")
+        
+        # Save elbow plot if requested
+        if self.save_elbow_plot:
+            self._save_elbow_plot()
+        
         return self.optimal_k_
         
     def _get_k_values(self) -> list:
-        """Get k values to test."""
-        # Exponential spacing for efficiency
+        """Get evenly spaced k values for elbow method."""
         min_k, max_k = self.k_range
-        k_values = []
-        k = min_k
-        while k <= max_k:
-            k_values.append(k)
-            k = int(k * 1.5)  # Exponential growth
+        
+        # Determine step size based on range
+        if max_k - min_k > 5000:
+            step = 1000  # Test every 1000 for large ranges
+        elif max_k - min_k > 1000:
+            step = 500   # Test every 500 for medium ranges
+        elif max_k - min_k > 500:
+            step = 100   # Test every 100 for smaller ranges
+        else:
+            step = 50    # Test every 50 for small ranges
+            
+        k_values = list(range(min_k, max_k + 1, step))
         
         # Ensure max_k is included
         if k_values[-1] < max_k:
             k_values.append(max_k)
             
         return k_values
+    
+    def _find_elbow_point(self) -> int:
+        """Find the elbow point using kneedle algorithm (maximum curvature)."""
+        k_values = sorted(self.wcss_curve_.keys())
+        wcss_values = [self.wcss_curve_[k] for k in k_values]
+        
+        if len(k_values) < 3:
+            return k_values[-1]
+        
+        # Normalize both axes to [0, 1] for fair comparison
+        k_norm = np.array(k_values, dtype=float)
+        k_norm = (k_norm - k_norm.min()) / (k_norm.max() - k_norm.min())
+        
+        wcss_norm = np.array(wcss_values, dtype=float)
+        wcss_norm = (wcss_norm - wcss_norm.min()) / (wcss_norm.max() - wcss_norm.min())
+        
+        # Method 1: Maximum distance from line connecting first and last points
+        # This is the "kneedle" algorithm
+        first_point = np.array([k_norm[0], wcss_norm[0]])
+        last_point = np.array([k_norm[-1], wcss_norm[-1]])
+        line_vec = last_point - first_point
+        line_length = np.linalg.norm(line_vec)
+        
+        if line_length > 0:
+            max_distance = 0
+            elbow_idx = 0
+            
+            for i in range(1, len(k_norm) - 1):
+                point = np.array([k_norm[i], wcss_norm[i]])
+                # Calculate perpendicular distance to line
+                distance = np.abs(np.cross(line_vec, first_point - point)) / line_length
+                
+                if distance > max_distance:
+                    max_distance = distance
+                    elbow_idx = i
+            
+            logger.info(f"Kneedle algorithm found elbow at k={k_values[elbow_idx]} (distance={max_distance:.3f})")
+            
+            # Method 2: Also calculate rate of change as secondary criterion
+            improvements = []
+            for i in range(1, len(wcss_values)):
+                if wcss_values[i-1] > 0:
+                    relative_improvement = (wcss_values[i-1] - wcss_values[i]) / wcss_values[i-1]
+                    improvements.append((k_values[i], relative_improvement))
+            
+            # Log the improvements for transparency
+            for k, imp in improvements[:5]:  # Show first 5
+                logger.debug(f"k={k}: {imp:.1%} improvement")
+            
+            # If kneedle gives very low k, check if we have sufficient variance
+            if self.variance_curve_[k_values[elbow_idx]] < 0.99:
+                # Find smallest k with 99% variance
+                for k in k_values:
+                    if self.variance_curve_[k] >= 0.99:
+                        logger.info(f"Adjusting to k={k} for 99% variance (kneedle suggested {k_values[elbow_idx]})")
+                        return k
+            
+            return k_values[elbow_idx]
+        
+        # Fallback: use variance criterion
+        for k in k_values:
+            if self.variance_curve_[k] >= 0.99:
+                logger.info(f"Using k={k} with 99% variance (line detection failed)")
+                return k
+        
+        return k_values[-1]
+    
+    def _save_elbow_plot(self) -> None:
+        """Save elbow curve plot for k selection visualization."""
+        try:
+            import matplotlib.pyplot as plt
+            
+            k_values = sorted(self.wcss_curve_.keys())
+            wcss_values = [self.wcss_curve_[k] for k in k_values]
+            variance_values = [self.variance_curve_[k] for k in k_values]
+            
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+            
+            # Plot WCSS
+            ax1.plot(k_values, wcss_values, 'b-o', markersize=6)
+            ax1.axvline(x=self.optimal_k_, color='r', linestyle='--', 
+                       label=f'Selected k={self.optimal_k_}')
+            ax1.set_xlabel('Number of Clusters (k)')
+            ax1.set_ylabel('Within-Cluster Sum of Squares')
+            ax1.set_title('Elbow Method: WCSS vs k')
+            ax1.grid(True, alpha=0.3)
+            ax1.legend()
+            
+            # Plot Variance Preserved
+            ax2.plot(k_values, variance_values, 'g-o', markersize=6)
+            ax2.axvline(x=self.optimal_k_, color='r', linestyle='--',
+                       label=f'Selected k={self.optimal_k_}')
+            ax2.axhline(y=0.99, color='orange', linestyle=':', 
+                       label='99% variance threshold')
+            ax2.set_xlabel('Number of Clusters (k)')
+            ax2.set_ylabel('Variance Preserved')
+            ax2.set_title('Variance Preservation vs k')
+            ax2.grid(True, alpha=0.3)
+            ax2.legend()
+            
+            plt.suptitle('K-means Pre-cluster Selection Analysis', fontsize=14)
+            plt.tight_layout()
+            
+            # Save to outputs directory
+            import os
+            output_dir = 'outputs/analysis_results/kmeans_hierarchical/production_kmeans_hierarchical'
+            os.makedirs(output_dir, exist_ok=True)
+            plot_path = os.path.join(output_dir, 'elbow_curve.png')
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            logger.info(f"Saved elbow curve plot to {plot_path}")
+            
+        except Exception as e:
+            logger.warning(f"Could not save elbow plot: {e}")
 
 
 class BootstrapStability:
