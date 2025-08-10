@@ -10,12 +10,16 @@ import os
 import hashlib
 import json
 import logging
+import tempfile
+import fcntl
+import shutil
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
+from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +31,29 @@ class MESFCacheManager:
         """Initialize the cache manager.
         
         Args:
-            cache_dir: Directory for cache storage (default: /tmp/ml_cache/mesf)
+            cache_dir: Directory for cache storage (default: system temp dir)
         """
         if cache_dir is None:
-            # Use /tmp for better accessibility by H2O Java process
-            cache_dir = "/tmp/ml_cache/mesf"
+            # Use system temp directory with proper user isolation
+            base_temp = os.environ.get('ML_CACHE_DIR', tempfile.gettempdir())
+            user_id = os.getuid() if hasattr(os, 'getuid') else 'user'
+            cache_dir = os.path.join(base_temp, f'ml_cache_{user_id}', 'mesf')
         
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Set permissions for H2O access
-        os.chmod(self.cache_dir, 0o755)
+        try:
+            # Create directory with restricted permissions
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            # Set restrictive permissions (owner only)
+            os.chmod(self.cache_dir, 0o700)
+        except (OSError, PermissionError) as e:
+            # Fall back to user's home directory if temp fails
+            fallback_dir = Path.home() / '.cache' / 'ml_cache' / 'mesf'
+            logger.warning(f"Failed to create cache at {self.cache_dir}: {e}")
+            logger.info(f"Using fallback cache directory: {fallback_dir}")
+            self.cache_dir = fallback_dir
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.cache_dir, 0o700)
         
         logger.info(f"MESF cache directory: {self.cache_dir}")
     
@@ -54,13 +70,39 @@ class MESFCacheManager:
             
         Returns:
             Unique cache key string
+            
+        Raises:
+            ValueError: If file_path is invalid or contains path traversal
+            FileNotFoundError: If file doesn't exist
         """
-        # Get file stats for cache invalidation
-        file_stat = os.stat(file_path)
+        # Validate and sanitize file path
+        if not file_path:
+            raise ValueError("file_path cannot be empty")
         
-        # Create cache key components
+        # Resolve to absolute path and check for path traversal
+        try:
+            abs_path = Path(file_path).resolve()
+            # Ensure the file actually exists
+            if not abs_path.exists():
+                raise FileNotFoundError(f"File not found: {file_path}")
+            if not abs_path.is_file():
+                raise ValueError(f"Path is not a file: {file_path}")
+        except (RuntimeError, OSError) as e:
+            raise ValueError(f"Invalid file path: {file_path}") from e
+        
+        # Validate spatial_grid_step
+        if not isinstance(spatial_grid_step, int) or spatial_grid_step < 1:
+            raise ValueError(f"spatial_grid_step must be positive integer, got {spatial_grid_step}")
+        
+        # Get file stats for cache invalidation
+        try:
+            file_stat = abs_path.stat()
+        except OSError as e:
+            raise OSError(f"Cannot access file: {abs_path}") from e
+        
+        # Create cache key components using sanitized path
         key_data = {
-            'file_path': os.path.abspath(file_path),
+            'file_path': str(abs_path),
             'file_size': file_stat.st_size,
             'file_mtime': file_stat.st_mtime,
             'spatial_grid_step': spatial_grid_step,
@@ -109,11 +151,50 @@ class MESFCacheManager:
         
         return cached_path.exists() and metadata_path.exists()
     
+    @contextmanager
+    def _file_lock(self, lock_path: Path, timeout: int = 30):
+        """Context manager for file-based locking to prevent race conditions.
+        
+        Args:
+            lock_path: Path to lock file
+            timeout: Maximum seconds to wait for lock
+            
+        Yields:
+            Lock file descriptor
+        """
+        lock_file = None
+        try:
+            lock_file = open(lock_path, 'w')
+            # Try to acquire exclusive lock with timeout
+            import time
+            start_time = time.time()
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except IOError:
+                    if time.time() - start_time > timeout:
+                        raise TimeoutError(f"Could not acquire lock on {lock_path} after {timeout}s")
+                    time.sleep(0.1)
+            
+            yield lock_file
+        finally:
+            if lock_file:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                except:
+                    pass
+                lock_file.close()
+                try:
+                    lock_path.unlink()
+                except:
+                    pass
+
     def save_to_cache(self,
                       cache_key: str,
                       data_table: pa.Table,
                       metadata: Dict[str, Any]) -> str:
-        """Save MESF-augmented data to cache.
+        """Save MESF-augmented data to cache atomically.
         
         Args:
             cache_key: Unique cache key
@@ -122,46 +203,149 @@ class MESFCacheManager:
             
         Returns:
             Path to cached file
+            
+        Raises:
+            OSError: If unable to save to cache (disk full, permissions, etc.)
+            TimeoutError: If unable to acquire lock
         """
         cached_path = self.get_cached_path(cache_key)
         metadata_path = self.get_metadata_path(cache_key)
+        lock_path = self.cache_dir / f".lock_{cache_key}"
         
-        # Save data
-        pq.write_table(data_table, cached_path)
-        # Set permissions for H2O access
-        os.chmod(cached_path, 0o644)
-        logger.info(f"Saved MESF data to cache: {cached_path}")
-        
-        # Save metadata
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        os.chmod(metadata_path, 0o644)
-        
-        return str(cached_path)
+        # Use file locking to prevent race conditions
+        with self._file_lock(lock_path):
+            # Check if another process already created the cache
+            if cached_path.exists() and metadata_path.exists():
+                logger.info(f"Cache already exists (created by another process): {cached_path}")
+                return str(cached_path)
+            
+            # Use atomic write with temporary files
+            temp_data_path = cached_path.with_suffix('.tmp')
+            temp_meta_path = metadata_path.with_suffix('.tmp')
+            
+            try:
+                # Check available disk space first
+                stat = os.statvfs(self.cache_dir)
+                free_bytes = stat.f_bavail * stat.f_frsize
+                # Estimate size (rough estimate: current table size * 1.2 for safety)
+                estimated_size = data_table.nbytes * 1.2 if hasattr(data_table, 'nbytes') else 100 * 1024 * 1024
+                
+                if free_bytes < estimated_size:
+                    raise OSError(f"Insufficient disk space. Need ~{estimated_size/(1024*1024):.1f}MB, "
+                                f"have {free_bytes/(1024*1024):.1f}MB")
+                
+                # Save data to temporary file
+                pq.write_table(data_table, temp_data_path)
+                # Set restrictive permissions
+                os.chmod(temp_data_path, 0o644)
+                
+                # Save metadata to temporary file
+                with open(temp_meta_path, 'w') as f:
+                    json.dump(metadata, f, indent=2)
+                os.chmod(temp_meta_path, 0o644)
+                
+                # Atomic rename (on same filesystem)
+                temp_data_path.rename(cached_path)
+                temp_meta_path.rename(metadata_path)
+                
+                logger.info(f"Saved MESF data to cache: {cached_path}")
+                return str(cached_path)
+                
+            except Exception as e:
+                # Clean up temporary files on error
+                for temp_path in [temp_data_path, temp_meta_path]:
+                    try:
+                        if temp_path.exists():
+                            temp_path.unlink()
+                    except:
+                        pass
+                        
+                logger.error(f"Failed to save cache: {e}")
+                raise OSError(f"Failed to save cache for key {cache_key}") from e
     
     def load_from_cache(self, cache_key: str) -> Tuple[str, Dict[str, Any]]:
-        """Load MESF-augmented data from cache.
+        """Load MESF-augmented data from cache with error handling.
         
         Args:
             cache_key: Unique cache key
             
         Returns:
             Tuple of (cached_file_path, metadata)
+            
+        Raises:
+            ValueError: If cache doesn't exist
+            OSError: If unable to read cache files
         """
         if not self.is_cached(cache_key):
             raise ValueError(f"No cache found for key: {cache_key}")
         
         cached_path = self.get_cached_path(cache_key)
         metadata_path = self.get_metadata_path(cache_key)
+        lock_path = self.cache_dir / f".lock_{cache_key}"
         
-        # Load metadata
-        with open(metadata_path, 'r') as f:
-            metadata = json.load(f)
+        # Use shared lock for reading (multiple readers OK)
+        try:
+            # Quick check without lock first
+            if not cached_path.exists() or not metadata_path.exists():
+                raise ValueError(f"Cache files missing for key: {cache_key}")
+            
+            # Use file locking to ensure consistent read
+            with self._file_lock(lock_path, timeout=10):
+                # Verify files still exist (could have been deleted)
+                if not cached_path.exists() or not metadata_path.exists():
+                    raise ValueError(f"Cache files removed during read for key: {cache_key}")
+                
+                # Load metadata with error handling
+                try:
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                except (json.JSONDecodeError, IOError) as e:
+                    logger.error(f"Failed to read cache metadata: {e}")
+                    # Try to clean up corrupted cache
+                    self._cleanup_cache(cache_key)
+                    raise OSError(f"Corrupted cache metadata for key: {cache_key}") from e
+                
+                # Verify data file is readable
+                try:
+                    # Quick check that parquet file is valid
+                    pq_file = pq.ParquetFile(cached_path)
+                    _ = pq_file.metadata
+                except Exception as e:
+                    logger.error(f"Failed to verify cache data: {e}")
+                    self._cleanup_cache(cache_key)
+                    raise OSError(f"Corrupted cache data for key: {cache_key}") from e
+                
+                logger.info(f"Loaded MESF data from cache: {cached_path}")
+                logger.info(f"Cache metadata: {metadata}")
+                
+                return str(cached_path), metadata
+                
+        except TimeoutError:
+            logger.warning(f"Timeout waiting for cache lock, proceeding without lock")
+            # Fall back to reading without lock (less safe but better than failing)
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                return str(cached_path), metadata
+            except Exception as e:
+                raise OSError(f"Failed to read cache for key: {cache_key}") from e
+    
+    def _cleanup_cache(self, cache_key: str):
+        """Clean up corrupted or incomplete cache files.
         
-        logger.info(f"Loaded MESF data from cache: {cached_path}")
-        logger.info(f"Cache metadata: {metadata}")
+        Args:
+            cache_key: Cache key to clean up
+        """
+        cached_path = self.get_cached_path(cache_key)
+        metadata_path = self.get_metadata_path(cache_key)
         
-        return str(cached_path), metadata
+        for path in [cached_path, metadata_path]:
+            try:
+                if path.exists():
+                    path.unlink()
+                    logger.info(f"Cleaned up cache file: {path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up {path}: {e}")
     
     def get_or_compute_mesf(self,
                            file_path: str,

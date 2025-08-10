@@ -35,46 +35,81 @@ class H2OManager:
             max_mem_size: Maximum memory allocation
             min_mem_size: Minimum memory allocation
         """
-        if self._initialized:
+        # Robust cluster health check
+        def is_cluster_healthy() -> bool:
+            """Check if H2O cluster is healthy and responsive."""
             try:
-                # Check if cluster is still running
                 cluster_info = h2o.cluster()
-                if cluster_info is not None:
-                    logger.info("Using existing H2O cluster")
-                    return
-                # Cluster returns None, need to reinitialize
-                self._initialized = False
-            except:
-                # Cluster died, need to reinitialize
-                self._initialized = False
+                if cluster_info is None:
+                    return False
+                
+                # Verify cluster is actually responsive
+                # Try a simple operation to ensure it's not hanging
+                test_frame = h2o.H2OFrame([[1, 2, 3]])
+                test_sum = test_frame.sum().as_data_frame().values[0][0]
+                h2o.remove(test_frame)
+                
+                # If we got here, cluster is healthy
+                return test_sum == 6
+            except Exception as e:
+                logger.debug(f"Cluster health check failed: {e}")
+                return False
         
-        try:
-            # Check if H2O is already running
-            cluster_info = h2o.cluster()
-            if cluster_info is not None:
-                logger.info("Using existing H2O cluster")
-                self._initialized = True
+        # Check existing cluster if we think it's initialized
+        if self._initialized:
+            if is_cluster_healthy():
+                logger.info("Using existing healthy H2O cluster")
                 return
-        except:
-            pass
+            else:
+                logger.warning("Existing H2O cluster is unhealthy, reinitializing...")
+                self._initialized = False
+                try:
+                    h2o.cluster().shutdown()
+                except:
+                    pass  # Cluster might already be dead
         
-        # Initialize new H2O cluster
+        # Check if there's a cluster we don't know about
+        if not self._initialized and is_cluster_healthy():
+            logger.info("Found existing healthy H2O cluster")
+            self._initialized = True
+            return
+        
+        # Initialize new H2O cluster with retries
         if n_threads is None:
             n_threads = os.cpu_count() or 256
         
-        logger.info(f"Starting H2O cluster with {n_threads} threads, "
-                   f"{max_mem_size} max memory")
-        h2o.init(
-            nthreads=n_threads,
-            max_mem_size=max_mem_size,
-            min_mem_size=min_mem_size,
-            strict_version_check=False
-        )
-        self._initialized = True
-        
-        # Display cluster info
-        cluster = h2o.cluster()
-        logger.info(f"H2O cluster ready: {cluster}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Starting H2O cluster (attempt {attempt + 1}/{max_retries}) "
+                           f"with {n_threads} threads, {max_mem_size} max memory")
+                
+                h2o.init(
+                    nthreads=n_threads,
+                    max_mem_size=max_mem_size,
+                    min_mem_size=min_mem_size,
+                    strict_version_check=False
+                )
+                
+                # Verify the cluster is actually working
+                if is_cluster_healthy():
+                    self._initialized = True
+                    cluster = h2o.cluster()
+                    logger.info(f"H2O cluster ready: {cluster}")
+                    return
+                else:
+                    raise RuntimeError("Cluster started but not healthy")
+                    
+            except Exception as e:
+                logger.error(f"Failed to initialize H2O cluster (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    # Try to clean up before retry
+                    try:
+                        h2o.cluster().shutdown()
+                    except:
+                        pass
+                else:
+                    raise RuntimeError(f"Failed to initialize H2O cluster after {max_retries} attempts") from e
     
     def shutdown(self) -> None:
         """Shutdown H2O cluster if running."""
