@@ -46,7 +46,7 @@ class Method3DML:
         
         # Initialize H2O using centralized utility
         # DML needs more memory for its many models
-        ensure_h2o_initialized(max_mem_size="256G", min_mem_size="16G")
+        ensure_h2o_initialized(max_mem_size="4G", min_mem_size="1G")
         
         # Initialize MESF preprocessor with caching
         self.mesf_preprocessor = MESFPreprocessor()
