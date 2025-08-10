@@ -14,11 +14,11 @@ from datetime import datetime
 
 from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
-from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
-from ...preprocessing import SharedPreprocessor
-from .spatial_utils import SpatialBlockGenerator, GeographicCoherence
-from .partial_metrics import validate_missing_data_handling
-from .progress_tracker import SOMProgressTracker, create_progress_callback
+from .core.geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
+from src.biodiversity_analysis.preprocessing import SharedPreprocessor
+from .utils.spatial_utils import SpatialBlockGenerator, GeographicCoherence
+from .calculators.partial_metrics import validate_missing_data_handling
+from .utils.progress_tracker import SOMProgressTracker, create_progress_callback
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +117,10 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Load data with flexible coordinate column names and spatial sampling
         # First check kwargs, then fall back to config
         logger.info(f"self.config keys: {self.config.keys() if self.config else 'None'}")
-        data_config = self.config.get('data_config', {})
+        # Support both old ('data_config') and new ('data') config structure
+        data_config = self.config.get('data', self.config.get('data_config', {}))
         logger.info(f"data_config from self.config: {data_config}")
+        # Use standardized naming: coordinate_columns and feature_cols
         coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinate_columns', ['longitude', 'latitude']))
         feature_cols = kwargs.get('feature_cols', data_config.get('feature_cols', None))
         sample_size = kwargs.get('sample_size', None)  # Optional random sampling
@@ -164,8 +166,18 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # The shared preprocessor handles all features uniformly
         
         # Determine grid size - first check config file, then kwargs, then auto
-        arch_config = self.config.get('architecture_config', {})
-        config_grid_size = arch_config.get('grid_size', 'auto')
+        # Check both new 'grid' section and old 'architecture_config' for compatibility
+        grid_config = self.config.get('grid', {})
+        config_grid_size = grid_config.get('size', None)
+        
+        if config_grid_size is None:
+            # Fallback to old architecture_config for compatibility
+            arch_config = self.config.get('architecture_config', {})
+            config_grid_size = arch_config.get('grid_size', 'auto')
+        
+        # Ensure it's in the right format
+        if isinstance(config_grid_size, list):
+            config_grid_size = tuple(config_grid_size)
         
         # Use kwargs grid_size if provided, otherwise use config, otherwise auto
         grid_size_param = kwargs.get('grid_size', config_grid_size)
@@ -238,8 +250,14 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         progress_cb = None
         if hasattr(self, 'progress_callback') and self.progress_callback:
             def progress_cb(progress):
-                msg = f"Training SOM: {int(progress * 100)}% complete"
-                self.progress_callback(msg, progress)
+                # Handle both dict and float progress values
+                if isinstance(progress, dict):
+                    # Extract progress value from dict (e.g., from mini-batch training)
+                    progress_val = progress.get('progress', progress.get('epoch', 0) / self._geosom_config.max_epochs)
+                else:
+                    progress_val = progress
+                msg = f"Training SOM: {int(progress_val * 100)}% complete"
+                self.progress_callback(msg, progress_val)
         
         self.training_result = self.som.train_batch(
             features_processed,
@@ -354,7 +372,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Allow forcing grid size via environment variable
         import os
-        force_grid = os.environ.get('SOM_FORCE_GRID_SIZE', '').lower() in ['1', 'true', 'yes']
+        force_grid_value = os.environ.get('SOM_FORCE_GRID_SIZE', '')
+        force_grid = force_grid_value.lower() in ['1', 'true', 'yes']
+        logger.info(f"SOM_FORCE_GRID_SIZE env var: '{force_grid_value}', force_grid: {force_grid}")
         
         if total_required_mb > safe_available and not force_grid:
             # Reduce grid size to fit memory
@@ -381,15 +401,17 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         """Create GeoSOM configuration from settings."""
         # Use the config we already loaded in __init__, not load it again
         default_config = self.config
-        arch_config = default_config['architecture_config']
-        training_config = default_config['training_config']  # ALL training params are here now
+        
+        # Get SOM config instance for compatibility layer
+        from src.config.som import get_som_config
+        som_config = get_som_config()
+        
+        # Use compatibility layer methods to get config in old format
+        arch_config = som_config.get_architecture_config()
+        training_config = som_config.get_training_config()
         
         # Use iterations from kwargs if provided, otherwise from training_config
         max_epochs = kwargs.get('iterations', training_config['max_epochs'])  # FIXED: Now reads from training_config!
-        
-        # Import SOM config to get performance settings
-        from src.config.som import get_som_config
-        som_config = get_som_config()
         
         # Get performance settings - prefer training_config values
         chunk_size = training_config.get('chunk_size', som_config.get_chunk_size())
@@ -397,9 +419,12 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         use_parallel = som_config.is_parallel_enabled()
         n_workers = training_config.get('n_workers', som_config.get_n_workers())
         
-        # Get mini-batch settings from training config
-        use_minibatch = training_config.get('use_minibatch', True)
-        minibatch_size = training_config.get('minibatch_size', 1000)
+        # Get batch training settings from training config
+        # All optimizations are now built-in and always enabled
+        batch_config = training_config.get('batch_training', {
+            'batch_size': 5000,
+            'shuffle_batches': True
+        })
         
         # Get memory and performance config
         memory_config = default_config.get('memory_config', {})
@@ -410,6 +435,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             topology=arch_config['topology'],
             spatial_weight=arch_config['spatial_weight'],
             geographic_distance=arch_config['geographic_distance'],
+            _config=som_config._config,  # Pass raw config dict for _get_config access
             # Learning rate settings now from training_config
             initial_learning_rate=training_config['initial_learning_rate'],
             min_learning_rate=training_config['min_learning_rate'],
@@ -431,16 +457,16 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             qe_improvement_threshold=training_config['qe_improvement_threshold'],
             patience=training_config['patience'],
             max_epochs=max_epochs,
-            min_valid_features=default_config['distance_config']['min_valid_features'],
+            min_valid_features=default_config.get('distance', {}).get('min_valid_features', 
+                                                  default_config.get('distance_config', {}).get('min_valid_features', 2)),
             random_seed=kwargs.get('random_seed', 42),
             # Add performance settings
             chunk_size=kwargs.get('chunk_size', chunk_size),
             qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size),
             use_parallel=kwargs.get('use_parallel', use_parallel),
             n_workers=kwargs.get('n_workers', n_workers),
-            # Add mini-batch settings
-            use_minibatch=kwargs.get('use_minibatch', use_minibatch),
-            minibatch_size=kwargs.get('minibatch_size', minibatch_size)
+            # Add batch training settings as a config dict
+            batch_training=batch_config
         )
         
         # Add the new config parameters from training_config and memory_config
