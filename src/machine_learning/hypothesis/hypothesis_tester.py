@@ -2,18 +2,24 @@
 
 Based on regression_analysis_decisions.md lines 69-178.
 Tests H0, H1, and H2 hypotheses using all three methods.
+
+Hypotheses:
+    H0: Independence - No relationship between plant and fungi diversity
+    H1: Biodiversity begets biodiversity - Relationship varies with climate seasonality
+    H2: Temperate mismatch - Relationship differs in temperate vs non-temperate regions
 """
 
 import numpy as np
 import pandas as pd
+import h2o
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union, Tuple
 import json
 from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from ..research.methods import (
+from ..methods import (
     Method1ContinuousGLM,
     Method2CategoricalGLM,
     Method3DML
@@ -32,7 +38,7 @@ class HypothesisTester:
     - H2: Temperate mismatch (lines 122-178)
     """
     
-    def __init__(self, config: Optional[MLRegressionConfig] = None):
+    def __init__(self, config: Optional[MLRegressionConfig] = None) -> None:
         """Initialize hypothesis tester.
         
         Args:
@@ -41,9 +47,9 @@ class HypothesisTester:
         self.config = config or MLRegressionConfig()
         
         # Initialize all three methods
-        self.method1 = Method1ContinuousGLM(config)
-        self.method2 = Method2CategoricalGLM(config)
-        self.method3 = Method3DML(config)
+        self.method1 = Method1ContinuousGLM(self.config)
+        self.method2 = Method2CategoricalGLM(self.config)
+        self.method3 = Method3DML(self.config)
         
         # Storage for results
         self.data_prepared = None
@@ -173,8 +179,8 @@ class HypothesisTester:
         logger.info("METHOD 3: DOUBLE MACHINE LEARNING (DML)")
         logger.info("="*60)
         
-        # Test all hypotheses
-        hypothesis_results = self.method3.test_all_hypotheses()
+        # Test all hypotheses (using preprocessed data)
+        hypothesis_results = self.method3.test_all_hypotheses(self.data_preprocessed)
         
         # Run robustness checks
         robustness = self.method3.run_robustness_checks()

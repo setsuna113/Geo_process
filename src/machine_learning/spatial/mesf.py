@@ -160,9 +160,6 @@ class StandardMESF:
         if len(positive_idx) >= self.min_eigenvectors:
             n_select = max(n_select, self.min_eigenvectors)
         
-        # Ensure we don't exceed what's available
-        n_select = min(n_select, len(positive_idx))
-        
         selected_idx = positive_idx[:n_select]
         
         # Calculate actual variance explained (handle case where n_select > len(cumvar))

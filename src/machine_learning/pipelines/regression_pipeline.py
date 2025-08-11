@@ -1,13 +1,21 @@
 """Main regression analysis pipeline.
 
 Integrates all components for biodiversity hypothesis testing.
+Orchestrates: Data Loading → HypothesisTester → Methods (1,2,3) → Models (GLM/GBM)
 Based on regression_analysis_decisions.md.
+
+Architecture:
+    Script Layer → Pipeline Layer → Method Layer → Model Layer
+    ↓                ↓                ↓              ↓
+    Entry point      Orchestration    Business logic Training logic
+    (run_ml_pipeline) (this file)     (method1/2/3)  (h2o_gbm/glm)
 """
 
 import logging
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional, Union
+import h2o
+from typing import Dict, Any, Optional, Union, List, Tuple
 from pathlib import Path
 import json
 import time
@@ -16,6 +24,18 @@ from ..config_loader import MLRegressionConfig
 from ..hypothesis import HypothesisTester
 from ..diagnostics import DHARMaDiagnostics
 from ..utils.security_utils import PathValidator, DataLoader
+from ..utils.h2o_utils import ensure_h2o_initialized
+from ..preprocessing.mesf_preprocessor import MESFPreprocessor
+
+# Import preprocessing functions
+from ..preprocessing import (
+    ColumnStandardizer,
+    sample_spatial_grid,
+    remove_missing,
+    standardize_climate_2sd,
+    add_elevation_squared,
+    log_transform_biodiversity
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +47,7 @@ class RegressionPipeline:
     through hypothesis testing and result reporting.
     """
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[Union[str, Path]] = None) -> None:
         """Initialize regression pipeline.
         
         Args:
@@ -50,10 +70,106 @@ class RegressionPipeline:
         logger.info("Initialized RegressionPipeline")
         logger.info(f"Configuration loaded from: {config_path or 'default'}")
     
+    def load_and_preprocess_data(
+        self,
+        data_source: Union[str, Path],
+        spatial_grid_step: Optional[int] = None,
+        use_h2o: bool = True
+    ) -> Union[pd.DataFrame, h2o.H2OFrame]:
+        """Load and preprocess biodiversity data with all common transformations.
+        
+        This method:
+        1. Loads data and standardizes columns (including fungi_richness creation)
+        2. Applies spatial sampling if specified
+        3. Adds MESF spatial eigenvectors
+        4. Removes missing values
+        5. Standardizes climate variables (2SD method)
+        6. Adds polynomial features (elevation squared)
+        7. Adds log-transformed biodiversity variables
+        
+        Args:
+            data_source: Path to parquet file
+            spatial_grid_step: Take every Nth point in spatial grid (None = use config)
+            use_h2o: If True, return H2O Frame; if False, return pandas DataFrame
+            
+        Returns:
+            Preprocessed data ready for methods
+        """
+        logger.info("="*60)
+        logger.info("LOADING AND PREPROCESSING DATA")
+        logger.info("="*60)
+        
+        # Get spatial config
+        if spatial_grid_step is None:
+            spatial_grid_step = self.config.get_data_config().get('spatial_grid_step', 1)
+        
+        # Step 1: Column standardization (includes fungi_richness addition)
+        logger.info("Step 1: Standardizing columns and adding fungi_richness...")
+        standardizer = ColumnStandardizer()
+        standardized_path = standardizer.standardize_if_needed(data_source)
+        
+        # Step 2: Spatial sampling and MESF computation
+        logger.info(f"Step 2: Spatial sampling (step={spatial_grid_step}) and MESF...")
+        mesf_preprocessor = MESFPreprocessor()
+        augmented_path = mesf_preprocessor.process_with_sampling(
+            standardized_path,
+            spatial_grid_step,
+            self.config.get_spatial_config()
+        )
+        
+        # Step 3: Load to H2O or pandas
+        if use_h2o:
+            ensure_h2o_initialized()
+            data = h2o.import_file(augmented_path)
+            logger.info(f"Loaded to H2O: {data.nrows:,} rows, {data.ncols} columns")
+        else:
+            data = pd.read_parquet(augmented_path)
+            logger.info(f"Loaded to pandas: {len(data):,} rows, {len(data.columns)} columns")
+        
+        # Step 4: Remove missing values
+        logger.info("Step 3: Removing missing values...")
+        required_cols = [
+            'fungi_richness', 'plants_richness', 'vertebrates_richness',
+            'bio1', 'bio4', 'bio12', 'bio15', 'elevation',
+            'longitude', 'latitude'
+        ]
+        data = remove_missing(data, columns=required_cols)
+        
+        # Step 5: Standardize climate variables (2SD method)
+        logger.info("Step 4: Standardizing climate variables (2SD method)...")
+        climate_vars = ['bio1', 'bio4', 'bio12', 'bio15', 'elevation']
+        data = standardize_climate_2sd(data, climate_vars)
+        
+        # Step 6: Add polynomial features
+        logger.info("Step 5: Adding polynomial features...")
+        data = add_elevation_squared(data, 'elevation_std', 'elevation_std_sq')
+        
+        # Step 7: Log transform biodiversity variables
+        logger.info("Step 6: Log-transforming biodiversity variables...")
+        data = log_transform_biodiversity(data, ['plants_richness', 'vertebrates_richness'])
+        
+        # Store preprocessed data
+        self.data_preprocessed = data
+        
+        # Log summary
+        logger.info("\nPreprocessing complete:")
+        if use_h2o:
+            logger.info(f"  Final shape: {data.nrows:,} rows × {data.ncols} columns")
+            me_cols = [col for col in data.columns if col.startswith('ME')]
+            logger.info(f"  MESF eigenvectors: {len(me_cols)}")
+        else:
+            logger.info(f"  Final shape: {data.shape}")
+            me_cols = [col for col in data.columns if col.startswith('ME')]
+            logger.info(f"  MESF eigenvectors: {len(me_cols)}")
+        
+        return data
+    
     def load_data(self, data_source: Union[str, pd.DataFrame], 
                   max_file_size_mb: float = 10000,
                   validate_security: bool = True) -> pd.DataFrame:
-        """Load biodiversity data with security validation.
+        """Legacy load method for backwards compatibility.
+        
+        DEPRECATED: Use load_and_preprocess_data() instead.
         
         Args:
             data_source: Path to data file or DataFrame
@@ -135,7 +251,7 @@ class RegressionPipeline:
         
         return self.data
     
-    def _log_data_summary(self):
+    def _log_data_summary(self) -> None:
         """Log summary statistics of the data."""
         logger.info("\nData Summary:")
         logger.info(f"  Total samples: {len(self.data)}")
@@ -207,7 +323,7 @@ class RegressionPipeline:
         
         return self.results
     
-    def _print_summary(self):
+    def _print_summary(self) -> None:
         """Print analysis summary."""
         if 'summary' not in self.results:
             return
@@ -242,7 +358,7 @@ class RegressionPipeline:
             for i, conclusion in enumerate(summary['conclusions'], 1):
                 logger.info(f"  {i}. {conclusion}")
     
-    def save_results(self, output_dir: str):
+    def save_results(self, output_dir: Union[str, Path]) -> None:
         """Save all results to directory.
         
         Args:
