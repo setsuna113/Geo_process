@@ -19,11 +19,7 @@ from .analyzer import GeoSOMAnalyzer
 from .analyzer_adapter import SOMAnalyzer
 
 # Training algorithms
-from .trainers import (
-    OptimizedBatchTrainer,
-    OptimizedBatchConfig,
-    ParallelBatchProcessor
-)
+from .trainers import ParallelBatchProcessor
 
 # Calculators and metrics
 from .calculators import (
@@ -52,8 +48,6 @@ __all__ = [
     'SOMAnalyzer',
     
     # Trainers
-    'OptimizedBatchTrainer',
-    'OptimizedBatchConfig',
     'ParallelBatchProcessor',
     
     # Calculators

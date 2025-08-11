@@ -284,13 +284,8 @@ class ParallelBatchProcessor:
         # Initialize distance calculator before parallel execution to avoid race conditions
         _ = get_distance_calculator()
         
-        if n_chunks < 2:
-            # Not enough chunks to benefit from parallelization
-            logger.info(f"Only {n_chunks} chunks, using sequential processing")
-            return self._process_chunks_sequential(
-                data, coordinates, weights, neuron_coords, 
-                config, grid_positions, current_radius, chunk_size
-            )
+        # Always use parallel processing infrastructure (even with 1 worker or 1 chunk)
+        # This ensures consistency and simplifies the codebase
         
         # Log initial resource usage
         if HAS_PSUTIL:
@@ -393,42 +388,3 @@ class ParallelBatchProcessor:
         
         return accumulated_numerator, accumulated_denominator
     
-    def _process_chunks_sequential(self,
-                                 data: np.ndarray,
-                                 coordinates: Optional[np.ndarray],
-                                 weights: np.ndarray,
-                                 neuron_coords: Optional[np.ndarray],
-                                 config: Any,
-                                 grid_positions: np.ndarray,
-                                 current_radius: float,
-                                 chunk_size: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Fall back to sequential processing for small datasets."""
-        n_samples = len(data)
-        n_chunks = (n_samples + chunk_size - 1) // chunk_size
-        
-        accumulated_numerator = np.zeros_like(weights)
-        accumulated_denominator = np.zeros(len(weights))
-        
-        for chunk_idx in range(n_chunks):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, n_samples)
-            
-            if start_idx >= n_samples:
-                continue
-                
-            chunk_data = data[start_idx:end_idx]
-            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
-            
-            # Memory chunking is always enabled for consistency
-            use_chunking = True  # Maintained for API compatibility
-            chunk_size_internal = DEFAULT_INTERNAL_CHUNK_SIZE
-            
-            result = process_single_chunk(
-                chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius,
-                use_chunking, chunk_size_internal
-            )
-            accumulated_numerator += result.numerator
-            accumulated_denominator += result.denominator
-        
-        return accumulated_numerator, accumulated_denominator

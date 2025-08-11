@@ -412,7 +412,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Get performance settings - prefer training_config values
         chunk_size = training_config.get('chunk_size', som_config.get_chunk_size())
         qe_sample_size = som_config.get_qe_sample_size()
-        use_parallel = som_config.is_parallel_enabled()
         n_workers = training_config.get('n_workers', som_config.get_n_workers())
         
         # Get batch training settings from training config
@@ -459,7 +458,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             # Add performance settings
             chunk_size=kwargs.get('chunk_size', chunk_size),
             qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size),
-            use_parallel=kwargs.get('use_parallel', use_parallel),
             n_workers=kwargs.get('n_workers', n_workers),
             # Add batch training settings as a config dict
             batch_training=batch_config
