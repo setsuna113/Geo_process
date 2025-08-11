@@ -448,11 +448,12 @@ class GeoSOMVLRSOM:
         """
         self.input_dim = data.shape[1]
         
-        # Update mini-batch trainer with correct n_features
-        self.batch_trainer.n_features = self.input_dim
+        # Update mini-batch trainer with correct n_features (if using sequential mode)
+        if self.batch_trainer is not None:
+            self.batch_trainer.n_features = self.input_dim
         
         # WeightUpdater is only needed for standard trainer (fast trainer has internal accumulation)
-        if hasattr(self.batch_trainer, 'weight_updater'):
+        if self.batch_trainer is not None and hasattr(self.batch_trainer, 'weight_updater'):
             self.batch_trainer.weight_updater = WeightUpdater(
                 self.batch_trainer.n_neurons, self.input_dim
             )
@@ -726,7 +727,7 @@ class GeoSOMVLRSOM:
             )
             
             # Get neuron coordinates if using spatial distance
-            neuron_coords = self.neuron_coordinates if coordinates is not None else None
+            neuron_coords = self.neuron_coords if coordinates is not None and hasattr(self, 'neuron_coords') else None
             
             # Process all data in parallel to get numerator and denominator for batch update
             numerator, denominator = self.parallel_processor.process_chunks_parallel(
@@ -735,7 +736,7 @@ class GeoSOMVLRSOM:
                 weights=self.weights,
                 neuron_coords=neuron_coords,
                 config=proc_config,
-                grid_positions=self.grid_positions,
+                grid_positions=self._grid_positions,
                 current_radius=self.current_radius,
                 chunk_size=self.config.chunk_size
             )

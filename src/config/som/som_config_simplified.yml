@@ -17,13 +17,13 @@
 
 # Grid architecture
 grid:
-  size: [60, 60]          # Number of neurons (rows, cols) - 3600 neurons for production
+  size: [50, 50]          # Number of neurons (rows, cols) - 3600 neurons for production
   topology: 'rectangular'  # Grid topology (hexagonal not yet implemented)
 
 # Data configuration
 data:
   # Input data sampling
-  spatial_grid_step: 1  # Sample every Nth spatial point (100 = fast testing)
+  spatial_grid_step: 2  # Sample every Nth spatial point (100 = fast testing)
   
   # Feature columns (standardized naming)
   feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
@@ -45,7 +45,7 @@ distance:
 training:
   # Basic settings
   max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 240          # Parallel workers (optimized for 256-core system)
+  n_workers: 200          # Parallel workers (optimized to use all workers efficiently)
   use_parallel: true      # Use ParallelBatchProcessor for true multi-worker parallelization
   
   # Learning rate
@@ -73,8 +73,8 @@ training:
     
   # Memory optimization
   memory:
-    chunk_size: 500000    # Process data in chunks (optimized for 817GB available RAM)
-    max_memory_gb: 800    # Maximum memory to use (conservative, 817GB available)
+    chunk_size: 65000     # Process data in chunks (200 chunks for 200 workers)
+    max_memory_gb: 600    # Maximum memory to use (conservative with 682GB available)
 
 # ============================================================================
 # CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training
