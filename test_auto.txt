@@ -6,3 +6,4 @@
 # Debug test
 # Debug test 2
 # After new package
+# Test full export
