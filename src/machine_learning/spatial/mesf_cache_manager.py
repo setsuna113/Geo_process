@@ -82,13 +82,14 @@ class MESFCacheManager:
         # Resolve to absolute path and check for path traversal
         try:
             abs_path = Path(file_path).resolve()
-            # Ensure the file actually exists
-            if not abs_path.exists():
-                raise FileNotFoundError(f"File not found: {file_path}")
-            if not abs_path.is_file():
-                raise ValueError(f"Path is not a file: {file_path}")
         except (RuntimeError, OSError) as e:
             raise ValueError(f"Invalid file path: {file_path}") from e
+        
+        # Check file existence separately to preserve FileNotFoundError
+        if not abs_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not abs_path.is_file():
+            raise ValueError(f"Path is not a file: {file_path}")
         
         # Validate spatial_grid_step
         if not isinstance(spatial_grid_step, int) or spatial_grid_step < 1:
@@ -322,12 +323,32 @@ class MESFCacheManager:
                 
         except TimeoutError:
             logger.warning(f"Timeout waiting for cache lock, proceeding without lock")
-            # Fall back to reading without lock (less safe but better than failing)
+            # Fall back to reading without lock with validation
             try:
+                # Verify files exist first
+                if not cached_path.exists() or not metadata_path.exists():
+                    raise ValueError(f"Cache files missing for key: {cache_key}")
+                
+                # Read metadata with error handling
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
+                
+                # Quick validation of parquet file
+                try:
+                    pq_file = pq.ParquetFile(cached_path)
+                    _ = pq_file.metadata
+                except Exception as e:
+                    logger.error(f"Cache data appears corrupted: {e}")
+                    self._cleanup_cache(cache_key)
+                    raise OSError(f"Corrupted cache data for key: {cache_key}") from e
+                
+                logger.info(f"Successfully read cache without lock: {cached_path}")
                 return str(cached_path), metadata
-            except Exception as e:
+                
+            except (json.JSONDecodeError, IOError, ValueError) as e:
+                logger.error(f"Failed to read cache without lock: {e}")
+                # Attempt cleanup on error
+                self._cleanup_cache(cache_key)
                 raise OSError(f"Failed to read cache for key: {cache_key}") from e
     
     def _cleanup_cache(self, cache_key: str):
@@ -436,30 +457,66 @@ class FungiRichnessCacheManager:
             cache_dir: Directory for cache storage
         """
         if cache_dir is None:
-            # Use /tmp for better accessibility
-            cache_dir = "/tmp/ml_cache/fungi"
+            # Use system temp directory with proper user isolation (same as MESF)
+            base_temp = os.environ.get('ML_CACHE_DIR', tempfile.gettempdir())
+            user_id = os.getuid() if hasattr(os, 'getuid') else 'user'
+            cache_dir = os.path.join(base_temp, f'ml_cache_{user_id}', 'fungi')
         
         self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         
-        # Set permissions for accessibility
-        os.chmod(self.cache_dir, 0o755)
+        try:
+            # Create directory with secure permissions (same as MESF)
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            # Set restrictive permissions (owner only)
+            os.chmod(self.cache_dir, 0o700)
+        except (OSError, PermissionError) as e:
+            # Fall back to user's home directory if temp fails
+            fallback_dir = Path.home() / '.cache' / 'ml_cache' / 'fungi'
+            logger.warning(f"Failed to create cache at {self.cache_dir}: {e}")
+            logger.info(f"Using fallback cache directory: {fallback_dir}")
+            self.cache_dir = fallback_dir
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.cache_dir, 0o700)
         
         logger.info(f"Fungi richness cache directory: {self.cache_dir}")
     
     def get_cache_key(self, file_path: str) -> str:
-        """Generate cache key for fungi richness.
+        """Generate cache key for fungi richness with validation.
         
         Args:
             file_path: Path to original data file
             
         Returns:
             Unique cache key
+            
+        Raises:
+            ValueError: If file_path is invalid or contains path traversal
+            FileNotFoundError: If file doesn't exist
         """
-        file_stat = os.stat(file_path)
+        # Validate and sanitize file path (same as MESF)
+        if not file_path:
+            raise ValueError("file_path cannot be empty")
+        
+        # Resolve to absolute path and check for path traversal
+        try:
+            abs_path = Path(file_path).resolve()
+        except (RuntimeError, OSError) as e:
+            raise ValueError(f"Invalid file path: {file_path}") from e
+        
+        # Check file existence separately to preserve FileNotFoundError
+        if not abs_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        if not abs_path.is_file():
+            raise ValueError(f"Path is not a file: {file_path}")
+        
+        # Get file stats for cache invalidation
+        try:
+            file_stat = abs_path.stat()
+        except OSError as e:
+            raise OSError(f"Cannot access file: {abs_path}") from e
         
         key_data = {
-            'file_path': os.path.abspath(file_path),
+            'file_path': str(abs_path),
             'file_size': file_stat.st_size,
             'file_mtime': file_stat.st_mtime
         }
