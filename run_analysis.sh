@@ -272,8 +272,16 @@ if [ "$DAEMON_MODE" = true ]; then
         exit 1
     fi
     
+    # Set thread limits before running Python
+    export OMP_NUM_THREADS=1
+    export MKL_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
+    export NUMEXPR_NUM_THREADS=1
+    export VECLIB_MAXIMUM_THREADS=1
+    export BLIS_NUM_THREADS=1
+    
     # Run as background process with nohup (variables validated)
-    nohup bash -c "exec $(printf '%q ' $PYTHON_CMD $PROJECT_ROOT/scripts/run_analysis.py --experiment $(printf '%q' "$EXPERIMENT_NAME") ${INPUT_PARQUET:+--input $(printf '%q' "$INPUT_PARQUET")} ${ANALYSIS_METHOD:+--method $(printf '%q' "$ANALYSIS_METHOD")} ${RESUME_MODE:+--resume})" > "$PROJECT_ROOT/logs/${PROCESS_NAME}.log" 2>&1 &
+    nohup bash -c "export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 BLIS_NUM_THREADS=1; exec $(printf '%q ' $PYTHON_CMD $PROJECT_ROOT/scripts/run_analysis.py --experiment $(printf '%q' "$EXPERIMENT_NAME") ${INPUT_PARQUET:+--input $(printf '%q' "$INPUT_PARQUET")} ${ANALYSIS_METHOD:+--method $(printf '%q' "$ANALYSIS_METHOD")} ${RESUME_MODE:+--resume})" > "$PROJECT_ROOT/logs/${PROCESS_NAME}.log" 2>&1 &
     PID=$!
     echo "🌙 Analysis pipeline started as daemon (PID: $PID)"
     echo "📝 Logs: $PROJECT_ROOT/logs/${PROCESS_NAME}.log"
@@ -297,7 +305,8 @@ elif [ "$MONITOR_MODE" = true ]; then
     # Create new tmux session with monitoring layout
     tmux new-session -d -s "$SESSION_NAME" -n "Analysis Pipeline"
     
-    # Main pane: Analysis pipeline
+    # Main pane: Analysis pipeline (set thread limits first)
+    tmux send-keys -t "$SESSION_NAME:0.0" "export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 BLIS_NUM_THREADS=1" C-m
     tmux send-keys -t "$SESSION_NAME:0.0" "$ANALYSIS_CMD" C-m
     
     # Split horizontally for logs
@@ -352,6 +361,15 @@ else
     fi
     echo "Command: $ANALYSIS_CMD"
     echo ""
+    
+    # CRITICAL: Set thread limits for NumPy/BLAS BEFORE Python starts
+    # This prevents thread explosion when using threading backend with joblib
+    export OMP_NUM_THREADS=1
+    export MKL_NUM_THREADS=1
+    export OPENBLAS_NUM_THREADS=1
+    export NUMEXPR_NUM_THREADS=1
+    export VECLIB_MAXIMUM_THREADS=1
+    export BLIS_NUM_THREADS=1
     
     # Run directly
     exec $ANALYSIS_CMD

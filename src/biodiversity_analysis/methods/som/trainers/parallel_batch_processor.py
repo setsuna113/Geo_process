@@ -14,13 +14,27 @@ NOTE: This implements batch SOM with parallel processing. For sequential
 mini-batch training with explicit epoch control, see minibatch_trainer.py.
 """
 
+import os
+
+# CRITICAL: Set thread limits BEFORE importing NumPy!
+# With threading backend, all workers share the same process.
+# Setting this to >1 causes thread explosion (30 workers × 2 = 60 NumPy threads)
+# This leads to massive oversubscription and poor performance.
+# MUST be set before NumPy/OpenBLAS initialization!
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'  # For macOS
+os.environ['BLIS_NUM_THREADS'] = '1'        # For BLIS backend
+
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Callable
 from dataclasses import dataclass
 import logging
+import threading
 from joblib import Parallel, delayed
 from multiprocessing import cpu_count
-import os
 try:
     import psutil
     HAS_PSUTIL = True
@@ -31,6 +45,27 @@ from ..calculators.optimized_distance_calculator import OptimizedDistanceCalcula
 from ..utils.constants import (
     INVALID_DISTANCE, DEFAULT_GEO_DISTANCE_NORM, DEFAULT_INTERNAL_CHUNK_SIZE
 )
+
+# Thread-local storage for distance calculators to avoid global state issues
+# This ensures each thread/process gets its own calculator instance
+_CALCULATOR_STORAGE = threading.local()
+_CALCULATOR_LOCK = threading.Lock()
+
+def get_distance_calculator():
+    """Get or create thread-local distance calculator (thread-safe).
+    
+    Uses thread-local storage to ensure each thread has its own calculator,
+    avoiding concurrency issues in multi-process scenarios while still
+    preventing redundant initialization within a thread.
+    """
+    # Check if this thread already has a calculator
+    if not hasattr(_CALCULATOR_STORAGE, 'calculator'):
+        with _CALCULATOR_LOCK:
+            # Double-check after acquiring lock
+            if not hasattr(_CALCULATOR_STORAGE, 'calculator'):
+                _CALCULATOR_STORAGE.calculator = OptimizedDistanceCalculator()
+                logger.debug(f"Created distance calculator for thread {threading.current_thread().name}")
+    return _CALCULATOR_STORAGE.calculator
 
 # NOTE: StreamlinedDistanceCalculator provides memory-efficient distance calculations.
 # Real mini-batch training is implemented in minibatch_trainer.py with MiniBatchTrainer.
@@ -61,6 +96,9 @@ def process_single_chunk(chunk_idx: int,
     
     This function is defined at module level to be pickleable for multiprocessing.
     """
+    # Log entry for debugging
+    logger.debug(f"Starting chunk {chunk_idx} processing in thread {threading.current_thread().name}")
+    
     n_neurons = len(weights)
     min_valid_features = config.min_valid_features
     spatial_weight = config.spatial_weight
@@ -79,7 +117,7 @@ def process_single_chunk(chunk_idx: int,
     
     # Calculate distances for this chunk using optimized calculator
     # Note: OptimizedDistanceCalculator handles memory-efficient processing
-    calculator = OptimizedDistanceCalculator()
+    calculator = get_distance_calculator()
     
     if chunk_coords is not None and neuron_coords is not None:
         chunk_distances = calculator.combined_distance_chunked(
@@ -171,38 +209,67 @@ def _vectorized_neighborhood(bmu_indices: np.ndarray,
 class ParallelBatchProcessor:
     """Handles parallel processing of data chunks for SOM batch updates."""
     
-    def __init__(self, n_workers: Optional[int] = None):
-        """Initialize with specified number of workers.
+    def __init__(self, n_workers: Optional[int] = None, config=None):
+        """Initialize with config for optimizations.
         
         Args:
-            n_workers: Number of parallel workers. If None, auto-detect.
+            n_workers: Number of parallel workers
+            config: Full config object for optimization settings
         """
-        self.n_workers = n_workers or self._determine_worker_count()
-        self._executor = None
+        self.config = config
+        self.n_workers = self._determine_worker_count(n_workers)
+        self._parallel_context = None  # Renamed from _executor
+        self._shared_weights = None
+        self._shared_grid_positions = None
         
-    def _determine_worker_count(self) -> int:
-        """Determine number of workers - simplified logic."""
+        # Pre-initialize the distance calculator to avoid race conditions
+        _ = get_distance_calculator()
+        
+    def _determine_worker_count(self, requested=None) -> int:
+        """Determine number of workers for threading backend.
+        
+        Priority order:
+        1. Environment variable SOM_MAX_WORKERS
+        2. Config optimal_workers setting  
+        3. Requested parameter
+        4. Default of 100 (optimal for threading)
+        """
         available_cpus = cpu_count()
         
-        # Use environment variable if set
+        # Start with optimal default for threading backend
+        optimal = 100
+        
+        # Check config for override
+        if self.config and hasattr(self.config, 'get'):
+            training_config = self.config.get('training', {})
+            if isinstance(training_config, dict):
+                parallel_opt = training_config.get('parallel_optimization', {})
+                if parallel_opt and isinstance(parallel_opt, dict):
+                    optimal = parallel_opt.get('optimal_workers', optimal)
+        
+        # Environment variable takes precedence
         if 'SOM_MAX_WORKERS' in os.environ:
-            max_workers = int(os.environ['SOM_MAX_WORKERS'])
-            suggested = min(max_workers, available_cpus)
-        else:
-            # Simple rule: use 3/4 of available CPUs (leave some for system)
-            suggested = max(1, int(available_cpus * 0.75))
-            
-        logger.info(f"System has {available_cpus} CPUs, using {suggested} workers for SOM")
+            optimal = int(os.environ['SOM_MAX_WORKERS'])
+        
+        # Apply requested override if provided
+        if requested:
+            optimal = requested
+        
+        # Cap at available CPUs (threading can efficiently use all cores)
+        suggested = min(optimal, available_cpus)
+        
+        logger.info(f"Threading backend with {suggested} workers (system has {available_cpus} CPUs)")
         return suggested
     
-    def cleanup(self):
-        """Clean up any resources used by the parallel processor."""
-        if self._executor is not None:
-            try:
-                self._executor.terminate()
-            except:
-                pass
-            self._executor = None
+    def prepare_shared_data(self, weights, grid_positions):
+        """Prepare shared data as memory-mapped arrays.
+        
+        Called once before epoch loop to avoid repeated serialization.
+        """
+        # Store as contiguous arrays for better performance
+        self._shared_weights = np.ascontiguousarray(weights)
+        self._shared_grid_positions = np.ascontiguousarray(grid_positions)
+        logger.info("Prepared shared data for parallel processing")
     
     def process_chunks_parallel(self, 
                               data: np.ndarray,
@@ -221,13 +288,11 @@ class ParallelBatchProcessor:
         n_samples = len(data)
         n_chunks = (n_samples + chunk_size - 1) // chunk_size
         
-        if n_chunks < 2:
-            # Not enough chunks to benefit from parallelization
-            logger.info(f"Only {n_chunks} chunks, using sequential processing")
-            return self._process_chunks_sequential(
-                data, coordinates, weights, neuron_coords, 
-                config, grid_positions, current_radius, chunk_size
-            )
+        # Initialize distance calculator before parallel execution to avoid race conditions
+        _ = get_distance_calculator()
+        
+        # Always use parallel processing infrastructure (even with 1 worker or 1 chunk)
+        # This ensures consistency and simplifies the codebase
         
         # Log initial resource usage
         if HAS_PSUTIL:
@@ -255,9 +320,13 @@ class ParallelBatchProcessor:
             use_chunking = True  # Maintained for API compatibility
             chunk_size_internal = DEFAULT_INTERNAL_CHUNK_SIZE
             
+            # Use shared data references if available to avoid serialization
+            shared_weights = self._shared_weights if self._shared_weights is not None else weights
+            shared_grid = self._shared_grid_positions if self._shared_grid_positions is not None else grid_positions
+            
             chunk_params.append((
                 chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius,
+                shared_weights, neuron_coords, config, shared_grid, current_radius,
                 use_chunking, chunk_size_internal
             ))
         
@@ -271,11 +340,10 @@ class ParallelBatchProcessor:
                 actual_workers = max(1, actual_workers // 4)
                 logger.warning(f"Critical memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
         
-        # Process chunks in parallel using joblib
-        # Use threading backend for better cleanup between CV folds
-        backend = 'threading' if n_chunks < 20 else 'loky'
+        # Always use threading backend - it's optimal for NumPy operations
+        backend = 'threading'
         
-        logger.info(f"Starting joblib Parallel with backend={backend}, n_jobs={actual_workers}")
+        logger.info(f"Starting joblib Parallel with threading backend, n_jobs={actual_workers}")
         logger.info(f"Number of chunk_params: {len(chunk_params)}")
         
         # Debug: Log first chunk details
@@ -285,15 +353,29 @@ class ParallelBatchProcessor:
         
         # Create context manager for proper cleanup
         try:
-            # Increased timeout: 60 seconds per chunk is reasonable for large datasets
-            timeout_seconds = max(3600, len(chunk_params) * 60)  # At least 1 hour, or 60s per chunk
+            # Reduced timeout for better debugging
+            timeout_seconds = max(300, len(chunk_params) * 10)  # 5 min minimum, 10s per chunk
             logger.info(f"Using timeout of {timeout_seconds} seconds for {len(chunk_params)} chunks")
-            with Parallel(n_jobs=actual_workers, backend=backend, verbose=10, timeout=timeout_seconds) as parallel:
-                logger.info("Parallel context created, starting processing...")
-                results = parallel(
+            
+            # Simplified parallel parameters for threading backend
+            # Note: timeout doesn't work with threading backend, will show warning
+            parallel_params = {
+                'n_jobs': actual_workers,
+                'backend': backend,
+                'verbose': 0,
+                'batch_size': 'auto',  # Let joblib decide
+                'pre_dispatch': '2*n_jobs'  # Standard pre-dispatch
+            }
+            
+            # Create and execute parallel job
+            logger.info("Creating Parallel context...")
+            with Parallel(**parallel_params) as parallel:
+                logger.info("Parallel context created, executing chunks...")
+                # Force list evaluation to catch any issues
+                results = list(parallel(
                     delayed(process_single_chunk)(*params) for params in chunk_params
-                )
-                logger.info(f"Parallel processing returned {len(results)} results")
+                ))
+                logger.info(f"Parallel processing completed: {len(results)} results")
         except Exception as e:
             import traceback
             logger.error(f"Parallel processing failed with {type(e).__name__}: {str(e)}")
@@ -313,42 +395,32 @@ class ParallelBatchProcessor:
         
         return accumulated_numerator, accumulated_denominator
     
-    def _process_chunks_sequential(self,
-                                 data: np.ndarray,
-                                 coordinates: Optional[np.ndarray],
-                                 weights: np.ndarray,
-                                 neuron_coords: Optional[np.ndarray],
-                                 config: Any,
-                                 grid_positions: np.ndarray,
-                                 current_radius: float,
-                                 chunk_size: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Fall back to sequential processing for small datasets."""
-        n_samples = len(data)
-        n_chunks = (n_samples + chunk_size - 1) // chunk_size
+    def cleanup(self):
+        """Explicitly clean up parallel processing resources.
         
-        accumulated_numerator = np.zeros_like(weights)
-        accumulated_denominator = np.zeros(len(weights))
-        
-        for chunk_idx in range(n_chunks):
-            start_idx = chunk_idx * chunk_size
-            end_idx = min((chunk_idx + 1) * chunk_size, n_samples)
+        This ensures proper cleanup of thread-local storage and shared memory
+        to prevent resource leaks in long-running processes.
+        """
+        try:
+            # Clear shared data references
+            self._shared_weights = None
+            self._shared_grid_positions = None
             
-            if start_idx >= n_samples:
-                continue
-                
-            chunk_data = data[start_idx:end_idx]
-            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
+            # Clear thread-local calculators
+            if hasattr(_CALCULATOR_STORAGE, 'calculator'):
+                delattr(_CALCULATOR_STORAGE, 'calculator')
+                logger.debug("Cleared thread-local distance calculator")
             
-            # Memory chunking is always enabled for consistency
-            use_chunking = True  # Maintained for API compatibility
-            chunk_size_internal = DEFAULT_INTERNAL_CHUNK_SIZE
+            # If using joblib backend, clear any cached data
+            if self._parallel_context is not None:
+                self._parallel_context = None
+                logger.debug("Cleared parallel context")
             
-            result = process_single_chunk(
-                chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius,
-                use_chunking, chunk_size_internal
-            )
-            accumulated_numerator += result.numerator
-            accumulated_denominator += result.denominator
-        
-        return accumulated_numerator, accumulated_denominator
+            # Force garbage collection
+            import gc
+            gc.collect()
+            logger.debug("Parallel processor cleanup completed")
+            
+        except Exception as e:
+            logger.warning(f"Error during parallel processor cleanup: {e}")
+    

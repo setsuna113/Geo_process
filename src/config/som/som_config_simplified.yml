@@ -17,13 +17,13 @@
 
 # Grid architecture
 grid:
-  size: [60, 60]          # Number of neurons (rows, cols) - 3600 neurons for production
+  size: [50, 50]          # Number of neurons (rows, cols) - 3600 neurons for production
   topology: 'rectangular'  # Grid topology (hexagonal not yet implemented)
 
 # Data configuration
 data:
   # Input data sampling
-  spatial_grid_step: 1  # Sample every Nth spatial point (100 = fast testing)
+  spatial_grid_step: 100  # Sample every Nth spatial point (100 = fast testing)
   
   # Feature columns (standardized naming)
   feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
@@ -44,9 +44,8 @@ distance:
 
 training:
   # Basic settings
-  max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 240          # Parallel workers (optimized for 256-core system)
-  use_parallel: true      # Use ParallelBatchProcessor for true multi-worker parallelization
+  max_epochs: 11          # Number of training epochs (15 for testing, 200-1000 for production)
+  n_workers: 200          # Number of workers (1 for sequential, >1 for parallel)
   
   # Learning rate
   learning_rate:
@@ -73,8 +72,12 @@ training:
     
   # Memory optimization
   memory:
-    chunk_size: 500000    # Process data in chunks (optimized for 817GB available RAM)
-    max_memory_gb: 800    # Maximum memory to use (conservative, 817GB available)
+    chunk_size: 65000     # Process data in chunks (200 chunks for 200 workers)
+    max_memory_gb: 600    # Maximum memory to use (conservative with 682GB available)
+  
+  # Parallel optimization settings (threading backend only)
+  parallel_optimization:
+    optimal_workers: 100        # Number of threading workers (optimal for NumPy operations)
 
 # ============================================================================
 # CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training
@@ -133,6 +136,7 @@ monitoring:
   # Sampling for metrics
   sampling:
     large_sample: 50000              # Sample size for accurate metrics
+    qe_sample_size: 10000            # Sample size for QE calculation each epoch
 
 # ============================================================================
 # VALIDATION - Cross-validation settings
