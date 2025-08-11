@@ -20,9 +20,6 @@ warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='sklearn')
 
-# Import configuration
-from src.config.stat.paths_config import StatisticalDataPaths
-
 # Import unified data utilities
 from src.biodiversity_analysis.data_utils import prepare_for_correlation_analysis
 

@@ -14,8 +14,7 @@ import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
 
-# Import configuration
-from src.config.stat.paths_config import StatisticalDataPaths
+# Note: paths are passed as parameters, no config import needed
 
 
 class EnhancedCoverageAnalyzer:
@@ -30,21 +29,16 @@ class EnhancedCoverageAnalyzer:
         ----------
         climate_parquet_path : Optional[str]
             Path to climate parquet file with ocean removed (land-only coordinates).
-            If None, will use StatisticalDataPaths configuration.
+            Must be provided if coverage analysis requires climate data.
         output_dir : str
             Directory for output files
         """
-        # Initialize paths configuration
-        self.paths_config = StatisticalDataPaths()
-        
         # Set climate parquet path
         if climate_parquet_path is not None:
             self.climate_parquet_path = Path(climate_parquet_path)
         else:
-            climate_path = self.paths_config.get_climate_data_path()
-            if climate_path is None:
-                raise FileNotFoundError("No valid climate data file found. Check configuration.")
-            self.climate_parquet_path = climate_path
+            # No fallback - must be explicitly provided
+            self.climate_parquet_path = None
             
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -58,7 +52,7 @@ class EnhancedCoverageAnalyzer:
         """Load climate parquet to extract land-only coordinates (with sampling for large files)"""
         print("Loading land mask from climate data...")
         
-        if not self.climate_parquet_path.exists():
+        if not self.climate_parquet_path or not self.climate_parquet_path.exists():
             print(f"Warning: Climate file not found at {self.climate_parquet_path}")
             return
         
@@ -611,27 +605,29 @@ class CoverageAnalyzer(EnhancedCoverageAnalyzer):
 
 
 def run_enhanced_coverage_analysis():
-    """Run the enhanced coverage analysis with ocean masking"""
+    """Run the enhanced coverage analysis - example usage only"""
     
-    # Use StatisticalDataPaths for dataset configuration
-    paths_config = StatisticalDataPaths()
-    datasets = {}
+    # Example datasets - must be explicitly provided
+    datasets = {
+        'plants': 'data/richness_maps/daru-plants-richness.tif',
+        'animals': 'data/richness_maps/iucn-terrestrial-richness.tif'
+    }
     
-    # Get all available datasets from configuration
-    for name, dataset_config in paths_config.datasets.items():
-        path = dataset_config.get_valid_path()
-        if path is not None:
-            datasets[name] = str(path)
+    # Verify files exist
+    valid_datasets = {}
+    for name, path in datasets.items():
+        if Path(path).exists():
+            valid_datasets[name] = path
         else:
-            print(f"Warning: No valid path found for {name}")
+            print(f"Warning: Dataset not found: {name} -> {path}")
     
-    if not datasets:
-        print("Error: No valid datasets found. Check configuration and file paths.")
+    if not valid_datasets:
+        print("Error: No valid datasets found.")
         return
     
     # Use the wrapper class
     analyzer = CoverageAnalyzer()
-    analyzer.analyze_coverage(datasets)
+    analyzer.analyze_coverage(valid_datasets)
 
 
 if __name__ == "__main__":
