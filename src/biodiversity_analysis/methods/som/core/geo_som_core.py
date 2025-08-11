@@ -222,7 +222,7 @@ class GeoSOMVLRSOM:
         # Initialize parallel batch processor if enabled
         if config.use_parallel:
             # Use ParallelBatchProcessor for true parallel batch SOM
-            self.parallel_processor = ParallelBatchProcessor(n_workers=config.n_workers)
+            self.parallel_processor = ParallelBatchProcessor(n_workers=config.n_workers, config=config)
             self.batch_trainer = None  # Not used in parallel mode
             logger.info(f"Initialized ParallelBatchProcessor with {self.parallel_processor.n_workers} workers")
             logger.info("Using BATCH SOM with parallel processing - weight updates once per epoch")
@@ -602,6 +602,14 @@ class GeoSOMVLRSOM:
         
         # Initialize training state
         training_state = self._initialize_training_state(data, coordinates)
+        
+        # Prepare shared data for parallel processing to avoid repeated serialization
+        if self.config.use_parallel and self.parallel_processor:
+            self.parallel_processor.prepare_shared_data(
+                self.weights, 
+                self._grid_positions
+            )
+            logger.info("Prepared shared data for parallel batch training")
         
         # Main training loop
         for epoch in range(training_state['start_epoch'], self.max_epochs):

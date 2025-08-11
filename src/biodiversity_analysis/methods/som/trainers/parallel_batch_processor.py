@@ -14,13 +14,26 @@ NOTE: This implements batch SOM with parallel processing. For sequential
 mini-batch training with explicit epoch control, see minibatch_trainer.py.
 """
 
+import os
+
+# CRITICAL: Set thread limits BEFORE importing NumPy!
+# With threading backend, all workers share the same process.
+# Setting this to >1 causes thread explosion (30 workers × 2 = 60 NumPy threads)
+# This leads to massive oversubscription and poor performance.
+# MUST be set before NumPy/OpenBLAS initialization!
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['NUMEXPR_NUM_THREADS'] = '1'
+os.environ['VECLIB_MAXIMUM_THREADS'] = '1'  # For macOS
+os.environ['BLIS_NUM_THREADS'] = '1'        # For BLIS backend
+
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Callable
 from dataclasses import dataclass
 import logging
 from joblib import Parallel, delayed
 from multiprocessing import cpu_count
-import os
 try:
     import psutil
     HAS_PSUTIL = True
@@ -31,6 +44,16 @@ from ..calculators.optimized_distance_calculator import OptimizedDistanceCalcula
 from ..utils.constants import (
     INVALID_DISTANCE, DEFAULT_GEO_DISTANCE_NORM, DEFAULT_INTERNAL_CHUNK_SIZE
 )
+
+# Singleton distance calculator to avoid repeated initialization
+_DISTANCE_CALCULATOR = None
+
+def get_distance_calculator():
+    """Get or create singleton distance calculator."""
+    global _DISTANCE_CALCULATOR
+    if _DISTANCE_CALCULATOR is None:
+        _DISTANCE_CALCULATOR = OptimizedDistanceCalculator()
+    return _DISTANCE_CALCULATOR
 
 # NOTE: StreamlinedDistanceCalculator provides memory-efficient distance calculations.
 # Real mini-batch training is implemented in minibatch_trainer.py with MiniBatchTrainer.
@@ -79,7 +102,7 @@ def process_single_chunk(chunk_idx: int,
     
     # Calculate distances for this chunk using optimized calculator
     # Note: OptimizedDistanceCalculator handles memory-efficient processing
-    calculator = OptimizedDistanceCalculator()
+    calculator = get_distance_calculator()
     
     if chunk_coords is not None and neuron_coords is not None:
         chunk_distances = calculator.combined_distance_chunked(
@@ -171,38 +194,64 @@ def _vectorized_neighborhood(bmu_indices: np.ndarray,
 class ParallelBatchProcessor:
     """Handles parallel processing of data chunks for SOM batch updates."""
     
-    def __init__(self, n_workers: Optional[int] = None):
-        """Initialize with specified number of workers.
+    def __init__(self, n_workers: Optional[int] = None, config=None):
+        """Initialize with config for optimizations.
         
         Args:
-            n_workers: Number of parallel workers. If None, auto-detect.
+            n_workers: Number of parallel workers
+            config: Full config object for optimization settings
         """
-        self.n_workers = n_workers or self._determine_worker_count()
-        self._executor = None
+        self.config = config
+        self.n_workers = self._determine_worker_count(n_workers)
+        self._parallel_context = None  # Renamed from _executor
+        self._shared_weights = None
+        self._shared_grid_positions = None
         
-    def _determine_worker_count(self) -> int:
-        """Determine number of workers - simplified logic."""
+    def _determine_worker_count(self, requested=None) -> int:
+        """Determine number of workers for threading backend.
+        
+        Priority order:
+        1. Environment variable SOM_MAX_WORKERS
+        2. Config optimal_workers setting  
+        3. Requested parameter
+        4. Default of 100 (optimal for threading)
+        """
         available_cpus = cpu_count()
         
-        # Use environment variable if set
+        # Start with optimal default for threading backend
+        optimal = 100
+        
+        # Check config for override
+        if self.config and hasattr(self.config, 'get'):
+            training_config = self.config.get('training', {})
+            if isinstance(training_config, dict):
+                parallel_opt = training_config.get('parallel_optimization', {})
+                if parallel_opt and isinstance(parallel_opt, dict):
+                    optimal = parallel_opt.get('optimal_workers', optimal)
+        
+        # Environment variable takes precedence
         if 'SOM_MAX_WORKERS' in os.environ:
-            max_workers = int(os.environ['SOM_MAX_WORKERS'])
-            suggested = min(max_workers, available_cpus)
-        else:
-            # Simple rule: use 3/4 of available CPUs (leave some for system)
-            suggested = max(1, int(available_cpus * 0.75))
-            
-        logger.info(f"System has {available_cpus} CPUs, using {suggested} workers for SOM")
+            optimal = int(os.environ['SOM_MAX_WORKERS'])
+        
+        # Apply requested override if provided
+        if requested:
+            optimal = requested
+        
+        # Cap at available CPUs (threading can efficiently use all cores)
+        suggested = min(optimal, available_cpus)
+        
+        logger.info(f"Threading backend with {suggested} workers (system has {available_cpus} CPUs)")
         return suggested
     
-    def cleanup(self):
-        """Clean up any resources used by the parallel processor."""
-        if self._executor is not None:
-            try:
-                self._executor.terminate()
-            except:
-                pass
-            self._executor = None
+    def prepare_shared_data(self, weights, grid_positions):
+        """Prepare shared data as memory-mapped arrays.
+        
+        Called once before epoch loop to avoid repeated serialization.
+        """
+        # Store as contiguous arrays for better performance
+        self._shared_weights = np.ascontiguousarray(weights)
+        self._shared_grid_positions = np.ascontiguousarray(grid_positions)
+        logger.info("Prepared shared data for parallel processing")
     
     def process_chunks_parallel(self, 
                               data: np.ndarray,
@@ -255,9 +304,13 @@ class ParallelBatchProcessor:
             use_chunking = True  # Maintained for API compatibility
             chunk_size_internal = DEFAULT_INTERNAL_CHUNK_SIZE
             
+            # Use shared data references if available to avoid serialization
+            shared_weights = self._shared_weights if self._shared_weights is not None else weights
+            shared_grid = self._shared_grid_positions if self._shared_grid_positions is not None else grid_positions
+            
             chunk_params.append((
                 chunk_idx, chunk_data, chunk_coords,
-                weights, neuron_coords, config, grid_positions, current_radius,
+                shared_weights, neuron_coords, config, shared_grid, current_radius,
                 use_chunking, chunk_size_internal
             ))
         
@@ -271,11 +324,10 @@ class ParallelBatchProcessor:
                 actual_workers = max(1, actual_workers // 4)
                 logger.warning(f"Critical memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
         
-        # Process chunks in parallel using joblib
-        # Use threading backend for better cleanup between CV folds
-        backend = 'threading' if n_chunks < 20 else 'loky'
+        # Always use threading backend - it's optimal for NumPy operations
+        backend = 'threading'
         
-        logger.info(f"Starting joblib Parallel with backend={backend}, n_jobs={actual_workers}")
+        logger.info(f"Starting joblib Parallel with threading backend, n_jobs={actual_workers}")
         logger.info(f"Number of chunk_params: {len(chunk_params)}")
         
         # Debug: Log first chunk details
@@ -288,7 +340,18 @@ class ParallelBatchProcessor:
             # Increased timeout: 60 seconds per chunk is reasonable for large datasets
             timeout_seconds = max(3600, len(chunk_params) * 60)  # At least 1 hour, or 60s per chunk
             logger.info(f"Using timeout of {timeout_seconds} seconds for {len(chunk_params)} chunks")
-            with Parallel(n_jobs=actual_workers, backend=backend, verbose=0, timeout=timeout_seconds) as parallel:
+            
+            # Build parallel parameters optimized for threading
+            parallel_params = {
+                'n_jobs': actual_workers,
+                'backend': backend,
+                'verbose': 0,
+                'timeout': timeout_seconds,
+                'batch_size': 50,  # Fixed optimal batch size for threading
+                'pre_dispatch': '1.5*n_jobs'  # Moderate pre-dispatch for threading
+            }
+            
+            with Parallel(**parallel_params) as parallel:
                 logger.info("Parallel context created, starting processing...")
                 results = parallel(
                     delayed(process_single_chunk)(*params) for params in chunk_params

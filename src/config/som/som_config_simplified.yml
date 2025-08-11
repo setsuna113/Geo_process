@@ -75,6 +75,10 @@ training:
   memory:
     chunk_size: 65000     # Process data in chunks (200 chunks for 200 workers)
     max_memory_gb: 600    # Maximum memory to use (conservative with 682GB available)
+  
+  # Parallel optimization settings (threading backend only)
+  parallel_optimization:
+    optimal_workers: 100        # Number of threading workers (optimal for NumPy operations)
 
 # ============================================================================
 # CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training
