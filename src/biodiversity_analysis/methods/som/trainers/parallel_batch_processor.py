@@ -89,6 +89,9 @@ def process_single_chunk(chunk_idx: int,
     
     This function is defined at module level to be pickleable for multiprocessing.
     """
+    # Log entry for debugging
+    logger.debug(f"Starting chunk {chunk_idx} processing in thread {threading.current_thread().name}")
+    
     n_neurons = len(weights)
     min_valid_features = config.min_valid_features
     spatial_weight = config.spatial_weight
@@ -211,6 +214,9 @@ class ParallelBatchProcessor:
         self._parallel_context = None  # Renamed from _executor
         self._shared_weights = None
         self._shared_grid_positions = None
+        
+        # Pre-initialize the distance calculator to avoid race conditions
+        _ = get_distance_calculator()
         
     def _determine_worker_count(self, requested=None) -> int:
         """Determine number of workers for threading backend.
@@ -345,26 +351,29 @@ class ParallelBatchProcessor:
         
         # Create context manager for proper cleanup
         try:
-            # Increased timeout: 60 seconds per chunk is reasonable for large datasets
-            timeout_seconds = max(3600, len(chunk_params) * 60)  # At least 1 hour, or 60s per chunk
+            # Reduced timeout for better debugging
+            timeout_seconds = max(300, len(chunk_params) * 10)  # 5 min minimum, 10s per chunk
             logger.info(f"Using timeout of {timeout_seconds} seconds for {len(chunk_params)} chunks")
             
-            # Build parallel parameters optimized for threading
+            # Simplified parallel parameters for threading backend
+            # Note: timeout doesn't work with threading backend, will show warning
             parallel_params = {
                 'n_jobs': actual_workers,
                 'backend': backend,
                 'verbose': 0,
-                'timeout': timeout_seconds,
-                'batch_size': 50,  # Fixed optimal batch size for threading
-                'pre_dispatch': '1.5*n_jobs'  # Moderate pre-dispatch for threading
+                'batch_size': 'auto',  # Let joblib decide
+                'pre_dispatch': '2*n_jobs'  # Standard pre-dispatch
             }
             
+            # Create and execute parallel job
+            logger.info("Creating Parallel context...")
             with Parallel(**parallel_params) as parallel:
-                logger.info("Parallel context created, starting processing...")
-                results = parallel(
+                logger.info("Parallel context created, executing chunks...")
+                # Force list evaluation to catch any issues
+                results = list(parallel(
                     delayed(process_single_chunk)(*params) for params in chunk_params
-                )
-                logger.info(f"Parallel processing returned {len(results)} results")
+                ))
+                logger.info(f"Parallel processing completed: {len(results)} results")
         except Exception as e:
             import traceback
             logger.error(f"Parallel processing failed with {type(e).__name__}: {str(e)}")
