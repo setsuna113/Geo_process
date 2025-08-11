@@ -32,6 +32,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict, Any, List, Callable
 from dataclasses import dataclass
 import logging
+import threading
 from joblib import Parallel, delayed
 from multiprocessing import cpu_count
 try:
@@ -47,12 +48,16 @@ from ..utils.constants import (
 
 # Singleton distance calculator to avoid repeated initialization
 _DISTANCE_CALCULATOR = None
+_CALCULATOR_LOCK = threading.Lock()
 
 def get_distance_calculator():
-    """Get or create singleton distance calculator."""
+    """Get or create singleton distance calculator (thread-safe)."""
     global _DISTANCE_CALCULATOR
     if _DISTANCE_CALCULATOR is None:
-        _DISTANCE_CALCULATOR = OptimizedDistanceCalculator()
+        with _CALCULATOR_LOCK:
+            # Double-check pattern for thread safety
+            if _DISTANCE_CALCULATOR is None:
+                _DISTANCE_CALCULATOR = OptimizedDistanceCalculator()
     return _DISTANCE_CALCULATOR
 
 # NOTE: StreamlinedDistanceCalculator provides memory-efficient distance calculations.
@@ -269,6 +274,9 @@ class ParallelBatchProcessor:
         """
         n_samples = len(data)
         n_chunks = (n_samples + chunk_size - 1) // chunk_size
+        
+        # Initialize distance calculator before parallel execution to avoid race conditions
+        _ = get_distance_calculator()
         
         if n_chunks < 2:
             # Not enough chunks to benefit from parallelization
