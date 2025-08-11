@@ -1,4 +1,7 @@
-"""Statistical tests for model comparison and evaluation."""
+"""Statistical tests for model comparison and evaluation.
+
+Implements LRT and AIC comparisons as specified in regression_analysis_decisions.md.
+"""
 
 import numpy as np
 import pandas as pd
@@ -192,3 +195,158 @@ class ModelDiagnostics:
             'bic': bic,
             'log_likelihood': ll
         }
+
+
+class GLMComparison:
+    """Model comparison methods specifically for GLMs (Negative Binomial/Poisson).
+    
+    Implements the comparison methods from regression_analysis_decisions.md.
+    """
+    
+    @staticmethod
+    def likelihood_ratio_test_glm(model_null, model_full) -> Dict[str, Any]:
+        """Perform LRT for GLM models (equivalent to anova(..., test='Chisq') in R).
+        
+        Args:
+            model_null: Null GLM model (H2O or statsmodels)
+            model_full: Full GLM model with additional predictors
+            
+        Returns:
+            Dictionary with LRT results
+        """
+        # Get deviances or log-likelihoods
+        if hasattr(model_null, 'get_log_likelihood'):
+            ll_null = model_null.get_log_likelihood()
+            ll_full = model_full.get_log_likelihood()
+        elif hasattr(model_null, 'deviance'):
+            # For H2O models, use deviance
+            ll_null = -model_null.deviance() / 2
+            ll_full = -model_full.deviance() / 2
+        else:
+            raise ValueError("Models must have get_log_likelihood or deviance method")
+        
+        # LR statistic
+        lr_statistic = 2 * (ll_full - ll_null)
+        
+        # Get degrees of freedom
+        if hasattr(model_null, 'get_num_parameters'):
+            df_null = model_null.get_num_parameters()
+            df_full = model_full.get_num_parameters()
+        elif hasattr(model_null, 'dof'):
+            df_null = model_null.dof()
+            df_full = model_full.dof()
+        else:
+            # Fallback: count coefficients
+            df_null = len(model_null.coef())
+            df_full = len(model_full.coef())
+        
+        df_diff = df_full - df_null
+        
+        # P-value from chi-squared distribution
+        p_value = 1 - stats.chi2.cdf(lr_statistic, df_diff)
+        
+        logger.info(f"GLM LRT: χ² = {lr_statistic:.4f}, df = {df_diff}, p = {p_value:.6f}")
+        
+        return {
+            'lr_statistic': lr_statistic,
+            'df': df_diff,
+            'p_value': p_value,
+            'significant': p_value < 0.05,
+            'interpretation': (
+                "Biodiversity predictors significantly improve model" if p_value < 0.05
+                else "No significant improvement from biodiversity predictors"
+            )
+        }
+    
+    @staticmethod
+    def aic_comparison_glm(model_null, model_full) -> Dict[str, Any]:
+        """Compare GLMs using AIC.
+        
+        Decision rules from regression_analysis_decisions.md:
+        - ΔAIC > 2: Substantial support for full model
+        - ΔAIC > 4: Strong support
+        - ΔAIC > 10: Essentially no support for null model
+        
+        Args:
+            model_null: Null GLM model
+            model_full: Full GLM model
+            
+        Returns:
+            Dictionary with AIC comparison
+        """
+        # Get AIC values
+        if hasattr(model_null, 'get_aic'):
+            aic_null = model_null.get_aic()
+            aic_full = model_full.get_aic()
+        elif hasattr(model_null, 'aic'):
+            aic_null = model_null.aic()
+            aic_full = model_full.aic()
+        else:
+            raise ValueError("Models must have get_aic or aic method")
+        
+        # Calculate delta AIC
+        delta_aic = aic_null - aic_full
+        
+        # Interpret based on thresholds from decisions document
+        if delta_aic > 10:
+            interpretation = "Essentially no support for null model (H1 strongly supported)"
+        elif delta_aic > 4:
+            interpretation = "Strong support for full model (H1 supported)"
+        elif delta_aic > 2:
+            interpretation = "Substantial support for full model (H1 weakly supported)"
+        elif delta_aic > -2:
+            interpretation = "Models roughly equivalent"
+        else:
+            interpretation = "Support for null model (H0 supported)"
+        
+        logger.info(f"AIC: Null={aic_null:.2f}, Full={aic_full:.2f}, ΔAIC={delta_aic:.2f}")
+        
+        return {
+            'aic_null': aic_null,
+            'aic_full': aic_full,
+            'delta_aic': delta_aic,
+            'preferred_model': 'full' if delta_aic > 0 else 'null',
+            'h1_supported': delta_aic > 2,
+            'interpretation': interpretation
+        }
+    
+    @staticmethod
+    def comprehensive_glm_comparison(model_null, model_full) -> Dict[str, Any]:
+        """Perform both LRT and AIC comparison for GLMs.
+        
+        This is the main method to use for hypothesis testing.
+        
+        Args:
+            model_null: Null model (climate only)
+            model_full: Full model (climate + biodiversity)
+            
+        Returns:
+            Dictionary with all comparison results
+        """
+        results = {}
+        
+        # Perform LRT
+        try:
+            results['lrt'] = GLMComparison.likelihood_ratio_test_glm(model_null, model_full)
+        except Exception as e:
+            logger.warning(f"LRT failed: {e}")
+            results['lrt'] = {'error': str(e)}
+        
+        # Perform AIC comparison
+        try:
+            results['aic'] = GLMComparison.aic_comparison_glm(model_null, model_full)
+        except Exception as e:
+            logger.warning(f"AIC comparison failed: {e}")
+            results['aic'] = {'error': str(e)}
+        
+        # Overall H1 support determination
+        lrt_significant = results.get('lrt', {}).get('significant', False)
+        aic_support = results.get('aic', {}).get('h1_supported', False)
+        
+        results['h1_supported'] = lrt_significant and aic_support
+        results['summary'] = (
+            "H1 supported: Biodiversity begets biodiversity" if results['h1_supported']
+            else "H0 supported: No biodiversity effect beyond climate"
+        )
+        
+        return results

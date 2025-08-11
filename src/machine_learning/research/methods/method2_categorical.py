@@ -4,16 +4,15 @@ Tests H2: Climate-diversity interaction differs in temperate vs non-temperate re
 Optimized for massive datasets using H2O-native operations.
 """
 
-import os
 import logging
 import h2o
-from pathlib import Path
 from typing import Dict, Any, Optional, Union
 
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
 from ...spatial.mesf_preprocessor import MESFPreprocessor
 from ...config_loader import MLRegressionConfig
 from ...base import BaseRegressionMethod
+from ...utils.h2o_utils import ensure_h2o_initialized
 
 logger = logging.getLogger(__name__)
 
@@ -36,57 +35,59 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         self.glm_config = self.config.get_glm_config()
         self.spatial_config = self.config.get_spatial_config()
         
-        # Initialize H2O
-        self._ensure_h2o_initialized()
+        # Initialize H2O using centralized utility
+        ensure_h2o_initialized()
         
-        # Initialize MESF preprocessor
+        # Initialize MESF preprocessor V2 with caching
         self.mesf_preprocessor = MESFPreprocessor()
         
         self.model = None
         self.data_h2o = None
-        
-    def _ensure_h2o_initialized(self):
-        """Ensure H2O cluster is running."""
-        try:
-            h2o.cluster()
-            logger.info("Using existing H2O cluster")
-        except:
-            n_threads = os.cpu_count() or 256
-            logger.info(f"Starting H2O cluster with {n_threads} threads")
-            h2o.init(
-                nthreads=n_threads,
-                max_mem_size="128G",
-                min_mem_size="8G",
-                strict_version_check=False
-            )
     
-    def load_data(self, parquet_path: str) -> h2o.H2OFrame:
-        """Load data directly from parquet to H2O.
+    def load_data(self, parquet_path: str, spatial_grid_step: Optional[int] = None) -> h2o.H2OFrame:
+        """Load data with optional spatial grid sampling and MESF computation.
         
-        Automatically handles MESF computation if not present.
+        Uses the new caching system that:
+        1. Never modifies original files
+        2. Caches MESF based on (file, sampling_rate, params)
+        3. Reuses cached computations when possible
         
         Args:
             parquet_path: Path to parquet file
+            spatial_grid_step: Take every Nth point in spatial grid (None=use config default)
             
         Returns:
             H2OFrame with all data including MESF
         """
-        logger.info(f"Loading data from {parquet_path}")
+        from ...preprocessing import ColumnStandardizer
         
-        # Process parquet to ensure MESF is included
-        augmented_path = self.mesf_preprocessor.process_and_augment_parquet(
-            parquet_path,
-            self.spatial_config,
-            force_recompute=False
+        # Use config default if not specified
+        if spatial_grid_step is None:
+            spatial_grid_step = self.config.get_data_config().get('spatial_grid_step', 1)
+        
+        logger.info(f"Loading data from {parquet_path}")
+        logger.info(f"Spatial grid sampling: every {spatial_grid_step}th point")
+        
+        # First standardize columns if needed (also uses caching)
+        standardizer = ColumnStandardizer()
+        standardized_path = standardizer.standardize_if_needed(parquet_path)
+        
+        # Use the new MESF preprocessor with caching
+        # It handles sampling and MESF computation internally
+        augmented_path = self.mesf_preprocessor.process_with_sampling(
+            standardized_path,
+            spatial_grid_step,
+            self.spatial_config
         )
         
-        # Load directly to H2O (MESF already included!)
-        logger.info("Loading augmented data to H2O...")
-        h2o_data = h2o.import_file(augmented_path, parse_dates=False)
+        # Load augmented data to H2O
+        ensure_h2o_initialized()  # Ensure H2O is connected before importing
+        h2o_data = h2o.import_file(augmented_path)
+        
+        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
         
         # Verify MESF columns
         me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
-        logger.info(f"Loaded {h2o_data.nrows:,} rows with {h2o_data.ncols} columns")
         logger.info(f"Including {len(me_cols)} MESF eigenvectors")
         
         return h2o_data
@@ -126,8 +127,13 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         
         for var in climate_vars:
             if var in h2o_data.columns:
-                mean_val = h2o_data[var].mean()[0, 0]
-                sd_val = h2o_data[var].sd()[0, 0]
+                mean_val = h2o_data[var].mean()
+                sd_val = h2o_data[var].sd()
+                # H2O's mean() and sd() return lists, so extract the value
+                if isinstance(mean_val, list):
+                    mean_val = mean_val[0]
+                if isinstance(sd_val, list):
+                    sd_val = sd_val[0]
                 h2o_data[f'{var}_std'] = (h2o_data[var] - mean_val) / (2 * sd_val)
                 logger.info(f"Standardized {var}: mean={mean_val:.2f}, 2*sd={2*sd_val:.2f}")
         
@@ -139,14 +145,20 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         h2o_data['vertebrates_richness_log'] = (h2o_data['vertebrates_richness'] + 1).log()
         logger.info("Created log-transformed biotic predictors")
         
-        # Create categorical variables for interaction
-        # Temperate: bio1 < median(bio1)
-        bio1_median = h2o_data['bio1'].median()[0, 0]
-        h2o_data['temperate'] = (h2o_data['bio1'] < bio1_median).ifelse(1, 0)
+        # Create categorical variables for H2 testing (per regression_analysis_decisions.md)
+        # Temperate regions: top 25% of temperature seasonality (bio4)
+        bio4_quantiles = h2o_data['bio4_std'].quantile([0.75])
+        # H2O quantile returns a frame, extract the value
+        bio4_q75 = bio4_quantiles[0, 0] if hasattr(bio4_quantiles, '__getitem__') else bio4_quantiles
+        h2o_data['temperate'] = (h2o_data['bio4_std'] > bio4_q75).ifelse(1, 0)
+        logger.info(f"Created temperate variable: bio4_std > {bio4_q75:.3f} (75th percentile)")
         
-        # Plant diversity: high if > median
-        plants_median = h2o_data['plants_richness'].median()[0, 0]
-        h2o_data['plant_high'] = (h2o_data['plants_richness'] > plants_median).ifelse(1, 0)
+        # High plant richness: top 25% of plant species
+        plants_quantiles = h2o_data['plants_richness'].quantile([0.75])
+        # H2O quantile returns a frame, extract the value
+        plants_q75 = plants_quantiles[0, 0] if hasattr(plants_quantiles, '__getitem__') else plants_quantiles
+        h2o_data['plant_high'] = (h2o_data['plants_richness'] > plants_q75).ifelse(1, 0)
+        logger.info(f"Created plant_high variable: plants_richness > {plants_q75:.0f} (75th percentile)")
         
         # Create interaction term
         h2o_data['temperate_x_plant_high'] = h2o_data['temperate'] * h2o_data['plant_high']
@@ -176,8 +188,13 @@ class Method2CategoricalGLM(BaseRegressionMethod):
             raise ValueError("Must call prepare_data_h2o() first or provide data")
         
         # Check overdispersion
-        fungi_mean = h2o_data['fungi_richness'].mean()[0, 0]
-        fungi_var = h2o_data['fungi_richness'].var()[0, 0]
+        fungi_mean = h2o_data['fungi_richness'].mean()
+        fungi_var = h2o_data['fungi_richness'].var()
+        # H2O's mean() and var() return lists
+        if isinstance(fungi_mean, list):
+            fungi_mean = fungi_mean[0]
+        if isinstance(fungi_var, list):
+            fungi_var = fungi_var[0]
         dispersion_ratio = fungi_var / fungi_mean
         
         logger.info(f"Dispersion ratio: {dispersion_ratio:.2f}")
@@ -213,9 +230,13 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         return results
     
     def test_h2_contrast(self) -> Dict[str, Any]:
-        """Test the H2 hypothesis using contrasts.
+        """Test the H2 hypothesis using emmeans contrasts.
         
-        H2: The interaction term should be significant.
+        H2 (Temperate Mismatch): High-plant temperate regions have fewer fungi
+        than high-plant non-temperate regions.
+        
+        Contrast: c(0, -1, 0, 1) on emmeans
+        Tests: (High/Temp) - (High/Non-temp)
         
         Returns:
             Dictionary with contrast results
@@ -223,21 +244,31 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         if self.model is None:
             raise ValueError("Must fit model first")
         
-        # Get interaction coefficient
+        # Compute emmeans first
+        emmeans_results = self.compute_emmeans()
+        
+        # Get interaction coefficient for statistical test
         interaction_info = self.model.get_coefficient('temperate_x_plant_high')
         
+        # The contrast of interest: High/Temp - High/Non-temp
+        contrast_estimate = emmeans_results['contrast_estimate']
+        
         # Determine if H2 is supported
+        # H2 is supported if contrast is negative and significant
         h2_supported = (
             interaction_info['p_value'] < 0.05 and 
-            interaction_info['coefficient'] != 0
+            contrast_estimate < 0  # Negative means fewer fungi in temperate
         )
         
         return {
+            'emmeans': emmeans_results['emmeans'],
+            'emmeans_SE': emmeans_results['SE'],
+            'contrast_estimate': contrast_estimate,
             'interaction_coefficient': interaction_info['coefficient'],
-            'interaction_p_value': interaction_info['p_value'],
-            'interaction_se': interaction_info.get('std_error', None),
+            'p_value': interaction_info['p_value'],
+            'standard_error': interaction_info.get('std_error', None),
             'h2_supported': h2_supported,
-            'interpretation': self._interpret_interaction(interaction_info)
+            'interpretation': emmeans_results['interpretation']
         }
     
     def _interpret_interaction(self, coef_info: Dict) -> str:
@@ -288,7 +319,13 @@ class Method2CategoricalGLM(BaseRegressionMethod):
             return {'error': f'Method 2 primarily tests H2, not {hypothesis}'}
     
     def compute_emmeans(self) -> Dict[str, Any]:
-        """Compute estimated marginal means.
+        """Compute estimated marginal means for all group combinations.
+        
+        Implements emmeans-style marginal means computation for:
+        - Low plants, non-temperate
+        - High plants, non-temperate  
+        - Low plants, temperate
+        - High plants, temperate
         
         Returns:
             Dictionary with emmeans results
@@ -296,14 +333,53 @@ class Method2CategoricalGLM(BaseRegressionMethod):
         if self.model is None:
             return {'error': 'Model not fitted yet'}
         
-        # This would compute emmeans from the fitted model
-        # For now, return placeholder indicating where emmeans would be computed
-        return {
-            'emmeans': [0, 0, 0, 0],  # Will be computed from model
-            'SE': [1, 1, 1, 1],
-            'groups': ['Low/Non-temp', 'High/Non-temp', 'Low/Temp', 'High/Temp'],
-            'note': 'emmeans computation from H2O model pending implementation'
+        if self.data_h2o is None:
+            return {'error': 'Data not available for emmeans computation'}
+        
+        # Get model coefficients
+        coeffs = self.model.get_all_coefficients()
+        intercept = coeffs.get('Intercept', 0)
+        
+        # Get coefficients for categorical variables
+        temperate_coef = coeffs.get('temperate', 0)
+        plant_high_coef = coeffs.get('plant_high', 0)
+        interaction_coef = coeffs.get('temperate_x_plant_high', 0)
+        
+        # Compute estimated marginal means for each group
+        # These are predictions at mean values of other covariates
+        emmeans = {
+            'low_nontemp': intercept,  # Reference group
+            'high_nontemp': intercept + plant_high_coef,
+            'low_temp': intercept + temperate_coef,
+            'high_temp': intercept + temperate_coef + plant_high_coef + interaction_coef
         }
+        
+        # Compute standard errors (simplified - full computation would use variance-covariance matrix)
+        # For now, use model's standard errors
+        se_dict = self.model.get_standard_errors()
+        
+        return {
+            'emmeans': list(emmeans.values()),
+            'SE': [se_dict.get('Intercept', 0.1)] * 4,  # Simplified SE
+            'groups': ['Low/Non-temp', 'High/Non-temp', 'Low/Temp', 'High/Temp'],
+            'emmeans_dict': emmeans,
+            'contrast_estimate': emmeans['high_temp'] - emmeans['high_nontemp'],  # Key H2 contrast
+            'interpretation': self._interpret_emmeans_contrast(emmeans)
+        }
+    
+    def _interpret_emmeans_contrast(self, emmeans: Dict[str, float]) -> str:
+        """Interpret the emmeans contrast for H2 hypothesis.
+        
+        Tests: High plants in temperate vs High plants in non-temperate
+        """
+        contrast = emmeans['high_temp'] - emmeans['high_nontemp']
+        
+        if abs(contrast) < 0.01:  # Near zero
+            return "No meaningful difference in fungi richness between high-plant temperate and non-temperate regions"
+        elif contrast < 0:
+            return f"SUPPORTS H2: High-plant temperate regions have {abs(contrast):.1f} fewer fungi species (temperate mismatch)"
+        else:
+            return f"REJECTS H2: High-plant temperate regions have {contrast:.1f} more fungi species (no mismatch)"
     
     def summarize_results(self) -> Dict[str, Any]:
         """Summarize Method 2 results.

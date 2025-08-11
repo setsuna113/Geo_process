@@ -90,9 +90,7 @@ class SOMAnalyzer(IAnalyzer):
         """
         # Adapt the callback to match what GeoSOMAnalyzer expects
         def adapted_callback(message: str, progress: float):
-            # Convert progress (0-1) to current/total
-            total = 100
-            current = int(progress * total)
-            callback(current, total, message)
+            # Simply pass through - both use (message, progress) format
+            callback(message, progress)
         
         self._analyzer.set_progress_callback(adapted_callback)

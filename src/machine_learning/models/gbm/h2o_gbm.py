@@ -24,21 +24,33 @@ class H2OGBM:
     def __init__(self,
                  n_threads: int = -1,
                  max_mem_size: str = "32G",
+                 is_dml_nuisance: bool = False,
                  **kwargs):
         """Initialize H2O GBM.
         
         Args:
             n_threads: Number of threads (-1 for all available)
             max_mem_size: Maximum memory for H2O cluster
+            is_dml_nuisance: If True, applies DML-appropriate settings (no validation, no early stopping)
             **kwargs: GBM parameters (similar to LightGBM)
         """
         self.n_threads = n_threads if n_threads > 0 else os.cpu_count()
         self.max_mem_size = max_mem_size
+        self.is_dml_nuisance = is_dml_nuisance
         
         # Map LightGBM params to H2O params
         self.params = self._map_lightgbm_params(kwargs)
         
-        self._ensure_h2o_initialized()
+        # Apply DML-safe settings if needed
+        if self.is_dml_nuisance:
+            self._apply_dml_settings()
+        
+        # Initialize H2O using centralized utility
+        from ...utils.h2o_utils import ensure_h2o_initialized
+        ensure_h2o_initialized(
+            n_threads=self.n_threads,
+            max_mem_size=self.max_mem_size
+        )
         
         self.model = None
         self.feature_names = None
@@ -71,21 +83,29 @@ class H2OGBM:
         
         return h2o_params
     
-    def _ensure_h2o_initialized(self):
-        """Ensure H2O cluster is initialized."""
-        try:
-            # Check if H2O is already running
-            h2o.cluster()
-            logger.info("Using existing H2O cluster")
-        except:
-            # Initialize new H2O cluster
-            logger.info(f"Starting H2O cluster with {self.n_threads} threads, {self.max_mem_size} memory")
-            h2o.init(
-                nthreads=self.n_threads,
-                max_mem_size=self.max_mem_size,
-                min_mem_size="4G",
-                strict_version_check=False
-            )
+    def _apply_dml_settings(self):
+        """Apply DML-appropriate settings for nuisance function estimation.
+        
+        Based on DML theory, nuisance functions should:
+        - Use all available data (no validation split)
+        - Avoid early stopping based on validation performance
+        - Use fixed, conservative hyperparameters
+        """
+        logger.info("Applying DML-safe settings for nuisance function estimation")
+        
+        # Disable validation-based early stopping
+        self.params['stopping_rounds'] = 0  # No early stopping
+        self.params['score_each_iteration'] = False  # Save computation
+        
+        # Use conservative fixed parameters to prevent overfitting
+        self.params['ntrees'] = min(self.params.get('ntrees', 100), 100)  # Cap at 100 trees
+        self.params['max_depth'] = min(self.params.get('max_depth', 6), 6)  # Shallow trees
+        self.params['learn_rate'] = max(self.params.get('learn_rate', 0.1), 0.1)  # Not too small
+        
+        # Keep regularization parameters for stability
+        self.params['min_rows'] = max(self.params.get('min_rows', 20), 20)  # Prevent tiny leaves
+        
+        logger.debug(f"DML-safe parameters: {self.params}")
     
     def train(self,
              train_set: Union[Dict, h2o.H2OFrame],
@@ -136,13 +156,27 @@ class H2OGBM:
         
         # Train model
         logger.info(f"Training H2O GBM with {self.n_threads} threads...")
+        if self.is_dml_nuisance:
+            logger.info("DML mode: No validation frame will be used")
         logger.info(f"Parameters: {self.params}")
+        
+        # Prepare validation frame (None for DML)
+        validation_frame = None
+        if not self.is_dml_nuisance and valid_sets is not None:
+            # Only use validation for non-DML models
+            if isinstance(valid_sets, list) and len(valid_sets) > 0:
+                validation_frame = valid_sets[0]
+                if not isinstance(validation_frame, h2o.H2OFrame):
+                    # Convert to H2OFrame if needed
+                    validation_frame = h2o.H2OFrame(validation_frame)
+                logger.info(f"Using validation frame with {validation_frame.nrows} rows")
         
         self.model = H2OGradientBoostingEstimator(**self.params)
         self.model.train(
             x=predictors,
             y=response,
-            training_frame=train_h2o
+            training_frame=train_h2o,
+            validation_frame=validation_frame
         )
         
         self.feature_names = predictors

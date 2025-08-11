@@ -6,10 +6,12 @@ from .feature_engineering import (
     EcologicalFeatureBuilder
 )
 from .imputation.knn_imputer import SpatialKNNImputer
+from .column_standardizer import ColumnStandardizer
 
 __all__ = [
     'RichnessFeatureBuilder',
     'SpatialFeatureBuilder',
     'EcologicalFeatureBuilder',
-    'SpatialKNNImputer'
+    'SpatialKNNImputer',
+    'ColumnStandardizer'
 ]

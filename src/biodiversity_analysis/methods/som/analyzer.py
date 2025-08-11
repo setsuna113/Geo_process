@@ -123,8 +123,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Use standardized naming: coordinate_columns and feature_cols
         coord_cols = kwargs.get('coordinate_columns', data_config.get('coordinate_columns', ['longitude', 'latitude']))
         feature_cols = kwargs.get('feature_cols', data_config.get('feature_cols', None))
-        sample_size = kwargs.get('sample_size', None)  # Optional random sampling
-        random_seed = kwargs.get('random_seed', None)
         spatial_grid_step = kwargs.get('spatial_grid_step', data_config.get('spatial_grid_step', 1))
         
         logger.info(f"Data config: spatial_grid_step={spatial_grid_step}, feature_cols={feature_cols}, coord_cols={coord_cols}")
@@ -133,8 +131,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             data_path,
             coordinate_cols=coord_cols,
             feature_cols=feature_cols,
-            sample_size=sample_size,
-            random_seed=random_seed,
             spatial_grid_step=spatial_grid_step
         )
         
