@@ -3,3 +3,4 @@
 # Final test
 # Test with conda init
 # Test hook debug
+# Debug test
