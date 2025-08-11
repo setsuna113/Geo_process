@@ -46,19 +46,26 @@ from ..utils.constants import (
     INVALID_DISTANCE, DEFAULT_GEO_DISTANCE_NORM, DEFAULT_INTERNAL_CHUNK_SIZE
 )
 
-# Singleton distance calculator to avoid repeated initialization
-_DISTANCE_CALCULATOR = None
+# Thread-local storage for distance calculators to avoid global state issues
+# This ensures each thread/process gets its own calculator instance
+_CALCULATOR_STORAGE = threading.local()
 _CALCULATOR_LOCK = threading.Lock()
 
 def get_distance_calculator():
-    """Get or create singleton distance calculator (thread-safe)."""
-    global _DISTANCE_CALCULATOR
-    if _DISTANCE_CALCULATOR is None:
+    """Get or create thread-local distance calculator (thread-safe).
+    
+    Uses thread-local storage to ensure each thread has its own calculator,
+    avoiding concurrency issues in multi-process scenarios while still
+    preventing redundant initialization within a thread.
+    """
+    # Check if this thread already has a calculator
+    if not hasattr(_CALCULATOR_STORAGE, 'calculator'):
         with _CALCULATOR_LOCK:
-            # Double-check pattern for thread safety
-            if _DISTANCE_CALCULATOR is None:
-                _DISTANCE_CALCULATOR = OptimizedDistanceCalculator()
-    return _DISTANCE_CALCULATOR
+            # Double-check after acquiring lock
+            if not hasattr(_CALCULATOR_STORAGE, 'calculator'):
+                _CALCULATOR_STORAGE.calculator = OptimizedDistanceCalculator()
+                logger.debug(f"Created distance calculator for thread {threading.current_thread().name}")
+    return _CALCULATOR_STORAGE.calculator
 
 # NOTE: StreamlinedDistanceCalculator provides memory-efficient distance calculations.
 # Real mini-batch training is implemented in minibatch_trainer.py with MiniBatchTrainer.
@@ -387,4 +394,33 @@ class ParallelBatchProcessor:
         logger.info(f"Parallel processing complete. Processed {total_valid} valid samples")
         
         return accumulated_numerator, accumulated_denominator
+    
+    def cleanup(self):
+        """Explicitly clean up parallel processing resources.
+        
+        This ensures proper cleanup of thread-local storage and shared memory
+        to prevent resource leaks in long-running processes.
+        """
+        try:
+            # Clear shared data references
+            self._shared_weights = None
+            self._shared_grid_positions = None
+            
+            # Clear thread-local calculators
+            if hasattr(_CALCULATOR_STORAGE, 'calculator'):
+                delattr(_CALCULATOR_STORAGE, 'calculator')
+                logger.debug("Cleared thread-local distance calculator")
+            
+            # If using joblib backend, clear any cached data
+            if self._parallel_context is not None:
+                self._parallel_context = None
+                logger.debug("Cleared parallel context")
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            logger.debug("Parallel processor cleanup completed")
+            
+        except Exception as e:
+            logger.warning(f"Error during parallel processor cleanup: {e}")
     

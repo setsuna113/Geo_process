@@ -118,6 +118,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # First check kwargs, then fall back to config
         logger.info(f"self.config keys: {self.config.keys() if self.config else 'None'}")
         # Support both old ('data_config') and new ('data') config structure
+        # Add migration warning when using old format
+        if 'data_config' in self.config and 'data' not in self.config:
+            logger.warning("Configuration uses deprecated 'data_config' key. Please migrate to 'data' for future compatibility.")
         data_config = self.config.get('data', self.config.get('data_config', {}))
         logger.info(f"data_config from self.config: {data_config}")
         # Use standardized naming: coordinate_columns and feature_cols
@@ -168,6 +171,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         if config_grid_size is None:
             # Fallback to old architecture_config for compatibility
+            if 'architecture_config' in self.config:
+                logger.warning("Configuration uses deprecated 'architecture_config' key. Please migrate to 'grid' section for future compatibility.")
             arch_config = self.config.get('architecture_config', {})
             config_grid_size = arch_config.get('grid_size', 'auto')
         
@@ -197,6 +202,9 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         
         # Check if we should skip CV for exploratory analysis
         skip_cv = kwargs.get('skip_cv', False)
+        # Check for deprecated validation_config
+        if 'validation_config' in self.config:
+            logger.warning("Configuration uses deprecated 'validation_config' key. Please migrate settings to the main config for future compatibility.")
         cv_folds = kwargs.get('cv_folds', self.config.get('validation_config', {}).get('cv_folds', 5))
         
         # For exploratory analysis, set cv_folds=0 or skip_cv=True to skip cross-validation

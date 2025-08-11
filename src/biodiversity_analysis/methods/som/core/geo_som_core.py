@@ -1480,7 +1480,7 @@ class GeoSOMVLRSOM:
         return self.weights.reshape(self.grid_rows, self.grid_cols, self.input_dim)
     
     def save_checkpoint(self, checkpoint_dir: str, epoch: int, best_qe: float, patience_counter: int):
-        """Save training checkpoint to disk.
+        """Save training checkpoint to disk with integrity verification.
         
         Args:
             checkpoint_dir: Directory to save checkpoint
@@ -1495,7 +1495,11 @@ class GeoSOMVLRSOM:
         # Checkpoint filename with epoch
         checkpoint_file = checkpoint_path / f"som_checkpoint_epoch_{epoch}.npz"
         
-        # Prepare checkpoint data
+        # Calculate checksum for integrity verification
+        import hashlib
+        weights_checksum = hashlib.md5(self.weights.tobytes()).hexdigest()
+        
+        # Prepare checkpoint data with metadata for validation
         checkpoint_data = {
             'epoch': epoch,
             'weights': self.weights,
@@ -1506,12 +1510,29 @@ class GeoSOMVLRSOM:
             'grid_size': self.config.grid_size,
             'input_dim': self.input_dim,
             'spatial_weight': self.config.spatial_weight,
-            'training_history': json.dumps(self.training_history)  # JSON for nested dict
+            'training_history': json.dumps(self.training_history),  # JSON for nested dict
+            'weights_checksum': weights_checksum,
+            'checkpoint_version': '2.0',  # Version for compatibility checking
+            'timestamp': time.time()
         }
         
-        # Save numpy arrays and scalars
-        np.savez_compressed(checkpoint_file, **checkpoint_data)
-        logger.info(f"Saved checkpoint to {checkpoint_file}")
+        # Save numpy arrays and scalars with error handling
+        try:
+            np.savez_compressed(checkpoint_file, **checkpoint_data)
+            
+            # Verify the checkpoint was written correctly
+            test_load = np.load(checkpoint_file, allow_pickle=False)
+            test_checksum = hashlib.md5(test_load['weights'].tobytes()).hexdigest()
+            if test_checksum != weights_checksum:
+                raise ValueError(f"Checkpoint verification failed: checksum mismatch")
+            test_load.close()
+            
+            logger.info(f"Saved and verified checkpoint to {checkpoint_file}")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
+            if checkpoint_file.exists():
+                checkpoint_file.unlink()  # Remove corrupted file
+            raise
         
         # Also save a 'latest' symlink for easy access
         latest_link = checkpoint_path / "som_checkpoint_latest.npz"
@@ -1542,37 +1563,80 @@ class GeoSOMVLRSOM:
                 logger.debug(f"Removed old checkpoint: {old_checkpoint}")
     
     def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
-        """Load training checkpoint from disk.
+        """Load training checkpoint from disk with integrity verification.
         
         Args:
             checkpoint_path: Path to checkpoint file
             
         Returns:
             Dictionary with checkpoint data
+            
+        Raises:
+            FileNotFoundError: If checkpoint file doesn't exist
+            ValueError: If checkpoint is corrupted or incompatible
         """
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
-        # Load checkpoint safely without pickle
-        checkpoint = np.load(checkpoint_path, allow_pickle=False)
-        
-        # Extract data
-        checkpoint_data = {
-            'epoch': int(checkpoint['epoch']),
-            'weights': checkpoint['weights'],
-            'current_lr': float(checkpoint['current_lr']),
-            'current_radius': float(checkpoint['current_radius']),
-            'best_qe': float(checkpoint['best_qe']),
-            'patience_counter': int(checkpoint['patience_counter']),
-            'training_history': json.loads(str(checkpoint['training_history']))
-        }
-        
-        # Validate checkpoint compatibility (convert both to list for comparison)
-        checkpoint_grid = checkpoint['grid_size'].tolist() if hasattr(checkpoint['grid_size'], 'tolist') else list(checkpoint['grid_size'])
-        config_grid = list(self.config.grid_size)
-        if checkpoint_grid != config_grid:
-            raise ValueError(f"Grid size mismatch: checkpoint has {checkpoint_grid}, "
-                           f"config has {config_grid}")
+        try:
+            # Load checkpoint safely without pickle
+            checkpoint = np.load(checkpoint_path, allow_pickle=False)
+            
+            # Check version compatibility
+            version = checkpoint.get('checkpoint_version', '1.0')
+            if version != '2.0' and 'weights_checksum' not in checkpoint:
+                logger.warning(f"Loading legacy checkpoint (version {version}), no integrity check available")
+            
+            # Verify integrity if checksum is available
+            if 'weights_checksum' in checkpoint:
+                import hashlib
+                expected_checksum = str(checkpoint['weights_checksum'])
+                actual_checksum = hashlib.md5(checkpoint['weights'].tobytes()).hexdigest()
+                if actual_checksum != expected_checksum:
+                    raise ValueError(f"Checkpoint integrity check failed: checksum mismatch")
+                logger.info("Checkpoint integrity verified successfully")
+            
+            # Validate checkpoint structure
+            required_fields = ['epoch', 'weights', 'current_lr', 'current_radius', 'best_qe', 'patience_counter']
+            for field in required_fields:
+                if field not in checkpoint:
+                    raise ValueError(f"Corrupted checkpoint: missing required field '{field}'")
+            
+            # Validate dimensions
+            weights_shape = checkpoint['weights'].shape
+            if 'grid_size' in checkpoint:
+                expected_neurons = checkpoint['grid_size'][0] * checkpoint['grid_size'][1]
+                if weights_shape[0] != expected_neurons:
+                    raise ValueError(f"Checkpoint validation failed: weights shape {weights_shape} doesn't match grid size {checkpoint['grid_size']}")
+            
+            # Extract data with error handling
+            checkpoint_data = {
+                'epoch': int(checkpoint['epoch']),
+                'weights': checkpoint['weights'],
+                'current_lr': float(checkpoint['current_lr']),
+                'current_radius': float(checkpoint['current_radius']),
+                'best_qe': float(checkpoint['best_qe']),
+                'patience_counter': int(checkpoint['patience_counter']),
+                'training_history': json.loads(str(checkpoint['training_history']))
+            }
+            
+            # Validate checkpoint compatibility (convert both to list for comparison)
+            checkpoint_grid = checkpoint['grid_size'].tolist() if hasattr(checkpoint['grid_size'], 'tolist') else list(checkpoint['grid_size'])
+            config_grid = list(self.config.grid_size)
+            if checkpoint_grid != config_grid:
+                raise ValueError(f"Grid size mismatch: checkpoint has {checkpoint_grid}, "
+                               f"config has {config_grid}")
+                               
+        except KeyError as e:
+            raise ValueError(f"Corrupted checkpoint: missing data field {e}")
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Corrupted checkpoint: invalid data format - {e}")
+        except Exception as e:
+            raise ValueError(f"Failed to load checkpoint: {e}") from e
+        finally:
+            # Always close the npz file to prevent resource leaks
+            if 'checkpoint' in locals():
+                checkpoint.close()
         
         # Only check input_dim if already initialized
         if self.input_dim is not None and int(checkpoint['input_dim']) != self.input_dim:
@@ -1594,11 +1658,45 @@ class GeoSOMVLRSOM:
         return checkpoint_data
     
     def cleanup(self):
-        """Clean up resources used during training."""
-        # Note: Processor cleanup is now handled automatically
-        # Since we create a new processor per training run (not stored as instance variable),
-        # Python's garbage collector will clean it up when it goes out of scope.
-        # This is safer than manual cleanup and prevents memory leaks.
+        """Explicitly clean up resources used during training.
+        
+        This method ensures proper resource cleanup to prevent memory leaks
+        in long-running processes. Should be called when SOM is no longer needed.
+        """
+        try:
+            # Clean up processor if it exists
+            if hasattr(self, 'processor') and self.processor is not None:
+                if hasattr(self.processor, 'cleanup'):
+                    self.processor.cleanup()
+                    logger.debug("Cleaned up parallel processor resources")
+                self.processor = None
+            
+            # Clear large arrays to free memory
+            if hasattr(self, 'velocity') and self.velocity is not None:
+                self.velocity = None
+                logger.debug("Cleared velocity array")
+            
+            # Clear training history if it's very large
+            if hasattr(self, 'training_history') and self.training_history:
+                history_size = sum(len(v) if isinstance(v, list) else 1 
+                                 for v in self.training_history.values())
+                if history_size > 10000:  # Clear if history is very large
+                    self.training_history = {
+                        'quantization_errors': [],
+                        'topographic_errors': [],
+                        'geographic_coherences': [],
+                        'learning_rates': [],
+                        'radii': []
+                    }
+                    logger.debug(f"Cleared large training history ({history_size} entries)")
+            
+            # Force garbage collection for large objects
+            import gc
+            gc.collect()
+            logger.debug("Forced garbage collection completed")
+            
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
     
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
         """Predict BMU indices for data using vectorized operations."""
