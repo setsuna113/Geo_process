@@ -288,7 +288,7 @@ class ParallelBatchProcessor:
             # Increased timeout: 60 seconds per chunk is reasonable for large datasets
             timeout_seconds = max(3600, len(chunk_params) * 60)  # At least 1 hour, or 60s per chunk
             logger.info(f"Using timeout of {timeout_seconds} seconds for {len(chunk_params)} chunks")
-            with Parallel(n_jobs=actual_workers, backend=backend, verbose=10, timeout=timeout_seconds) as parallel:
+            with Parallel(n_jobs=actual_workers, backend=backend, verbose=0, timeout=timeout_seconds) as parallel:
                 logger.info("Parallel context created, starting processing...")
                 results = parallel(
                     delayed(process_single_chunk)(*params) for params in chunk_params
