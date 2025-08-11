@@ -1,9 +1,0 @@
-# Test auto-update
-# Test 2
-# Final test
-# Test with conda init
-# Test hook debug
-# Debug test
-# Debug test 2
-# After new package
-# Test full export
