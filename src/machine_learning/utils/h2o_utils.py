@@ -22,6 +22,61 @@ class H2OManager:
             cls._instance = super().__new__(cls)
         return cls._instance
     
+    def _validate_memory_setting(self, mem_str: str, mem_type: str, max_limit: Optional[str] = None) -> str:
+        """Validate and adjust memory settings based on system resources.
+        
+        Args:
+            mem_str: Memory string like "4G", "256G"
+            mem_type: "max" or "min"
+            max_limit: For min validation, the max memory setting
+            
+        Returns:
+            Validated memory string
+        """
+        import psutil
+        
+        # Parse memory string
+        import re
+        match = re.match(r'^(\d+)([GM])$', mem_str.upper())
+        if not match:
+            logger.warning(f"Invalid memory format: {mem_str}, using default 4G")
+            return "4G"
+        
+        requested_val = int(match.group(1))
+        unit = match.group(2)
+        
+        # Convert to bytes
+        requested_bytes = requested_val * (1024**3 if unit == 'G' else 1024**2)
+        
+        # Get available system memory
+        available_mem = psutil.virtual_memory().available
+        total_mem = psutil.virtual_memory().total
+        
+        # For H2O, we should use at most 75% of available memory
+        safe_available = int(available_mem * 0.75)
+        
+        # Validate based on type
+        if mem_type == "max":
+            if requested_bytes > safe_available:
+                # Adjust to safe available
+                adjusted_gb = safe_available // (1024**3)
+                adjusted_gb = max(1, adjusted_gb)  # At least 1GB
+                logger.warning(f"Requested {mem_str} exceeds safe available memory ({safe_available/(1024**3):.1f}G). "
+                             f"Adjusting to {adjusted_gb}G")
+                return f"{adjusted_gb}G"
+        else:  # min
+            # Min should be at most 25% of max
+            if max_limit:
+                max_match = re.match(r'^(\d+)([GM])$', max_limit.upper())
+                if max_match:
+                    max_bytes = int(max_match.group(1)) * (1024**3 if max_match.group(2) == 'G' else 1024**2)
+                    if requested_bytes > max_bytes * 0.25:
+                        adjusted_gb = max(1, int(max_bytes * 0.25 / (1024**3)))
+                        logger.info(f"Adjusting min memory from {mem_str} to {adjusted_gb}G")
+                        return f"{adjusted_gb}G"
+        
+        return mem_str
+    
     def ensure_initialized(self, 
                          n_threads: Optional[int] = None,
                          max_mem_size: str = "4G",
@@ -35,6 +90,9 @@ class H2OManager:
             max_mem_size: Maximum memory allocation
             min_mem_size: Minimum memory allocation
         """
+        # Validate and adjust memory settings based on system resources
+        max_mem_size = self._validate_memory_setting(max_mem_size, "max")
+        min_mem_size = self._validate_memory_setting(min_mem_size, "min", max_mem_size)
         # Robust cluster health check
         def is_cluster_healthy() -> bool:
             """Check if H2O cluster is healthy and responsive."""
@@ -43,14 +101,13 @@ class H2OManager:
                 if cluster_info is None:
                     return False
                 
-                # Verify cluster is actually responsive
-                # Try a simple operation to ensure it's not hanging
-                test_frame = h2o.H2OFrame([[1, 2, 3]])
-                test_sum = test_frame.sum().as_data_frame().values[0][0]
-                h2o.remove(test_frame)
-                
-                # If we got here, cluster is healthy
-                return test_sum == 6
+                # Verify cluster is actually responsive with minimal operation
+                # Simply check if we can list frames (lightweight operation)
+                try:
+                    _ = h2o.ls()  # List frames - minimal overhead
+                    return True
+                except:
+                    return False
             except Exception as e:
                 logger.debug(f"Cluster health check failed: {e}")
                 return False
