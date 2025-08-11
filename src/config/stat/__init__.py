@@ -1,10 +1,7 @@
 """
 Statistical Analysis Configuration Module
 
-Provides centralized configuration for biodiversity statistical analyses.
+YAML-based configuration only. No fallbacks, no magic paths.
 """
 
-from .paths_config import StatisticalDataPaths
-from .analysis_config import StatisticalAnalysisConfig
-
-__all__ = ['StatisticalDataPaths', 'StatisticalAnalysisConfig']
+# Empty - configuration loaded directly from YAML

@@ -24,8 +24,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 warnings.filterwarnings('ignore', category=UserWarning, module='cartopy')
 warnings.filterwarnings('ignore', category=FutureWarning, module='pandas')
 
-# Import configuration
-from src.config.stat.paths_config import StatisticalDataPaths
+# No config imports - paths passed as parameters
 
 # Import unified data utilities
 from src.biodiversity_analysis.data_utils import RasterDataLoader
