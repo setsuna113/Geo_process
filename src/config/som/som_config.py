@@ -141,6 +141,7 @@ class SOMConfig(IMethodConfig):
                     raise SOMConfigError(f"Missing required configuration sections: {missing_sections}")
             
             self._config = config
+            self._apply_env_overrides()  # Apply environment overrides immediately
             self._validate_config()
             
         except yaml.YAMLError as e:
@@ -587,6 +588,39 @@ class SOMConfig(IMethodConfig):
             raise ValueError(str(e))
         finally:
             self._config = old_config
+    
+    def _apply_env_overrides(self):
+        """Apply environment variable overrides to the loaded config."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        env_overrides = {
+            'SOM_MAX_EPOCHS': ('training', 'max_epochs', int),
+            'SOM_MAX_WORKERS': ('training', 'n_workers', int),
+            'SOM_CHUNK_SIZE': ('training.memory', 'chunk_size', int),
+            'SOM_SPATIAL_GRID_STEP': ('data', 'spatial_grid_step', int),
+            'SOM_GRID_SIZE': ('grid', 'size', lambda x: [int(v) for v in x.split(',')]),
+            'SOM_INITIAL_LR': ('training.learning_rate', 'initial', float),
+        }
+        
+        for env_var, (section_path, key, converter) in env_overrides.items():
+            if env_var in os.environ:
+                try:
+                    value = converter(os.environ[env_var])
+                    # Handle nested paths like 'training.memory'
+                    sections = section_path.split('.')
+                    target = self._config
+                    for section in sections[:-1]:
+                        if section not in target:
+                            target[section] = {}
+                        target = target[section]
+                    # Set the final value
+                    if sections[-1] not in target:
+                        target[sections[-1]] = {}
+                    target[sections[-1]][key] = value
+                    logger.info(f"Applied environment override: {env_var}={value}")
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse {env_var}: {e}")
     
     def get_default_config(self) -> Dict[str, Any]:
         """Get default configuration without any overrides.
