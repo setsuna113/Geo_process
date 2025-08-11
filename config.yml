@@ -627,3 +627,36 @@ spatial_analysis:
 # - MAXP: src/config/maxp/maxp_config.yml (when implemented)
 
 # K-means configuration moved to src/config/kmeans/kmeans_config.yml
+
+# ML Regression Analysis Configuration
+regression_analysis:
+  preprocessing:
+    missing_data:
+      strategy: "complete_case"
+    standardization:
+      method: "gelman"
+      scale_factor: 2
+    spatial_grid_step: 100
+  
+  glm:
+    distribution: "negative_binomial"
+    family: "negative_binomial"
+    link: "log"
+    max_iterations: 100
+    
+  dml:
+    n_folds: 5
+    n_bootstrap: 100
+    gbm_params:
+      ntrees: 100
+      max_depth: 6
+      learn_rate: 0.1
+      
+  compute:
+    h2o_max_memory: "32G"
+    h2o_min_memory: "8G"
+    
+  spatial:
+    mesf_eigenvectors: 10
+    mesf_threshold: 0.25
+    distance_threshold: 100000

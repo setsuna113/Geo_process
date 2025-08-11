@@ -46,6 +46,7 @@ training:
   # Basic settings
   max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
   n_workers: 240          # Parallel workers (optimized for 256-core system)
+  use_parallel: true      # Use ParallelBatchProcessor for true multi-worker parallelization
   
   # Learning rate
   learning_rate:

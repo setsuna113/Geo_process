@@ -1,249 +1,275 @@
-"""
-MESF Preprocessor - Separate workflow for computing and caching MESF features.
+"""MESF Preprocessor V2 with proper caching that never modifies original files.
 
-This module handles MESF computation separately from the main pipeline to enable:
-1. One-time computation for large datasets
-2. Direct H2O loading without pandas conversion
-3. Memory-efficient processing for 180M+ points
+This version:
+1. Never modifies original data files
+2. Caches MESF based on (file, spatial_sampling, params)
+3. Returns path to cached augmented file
 """
 
-import os
 import logging
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pathlib import Path
-from typing import Optional, Tuple, Union
-from sklearn.neighbors import NearestNeighbors
+from typing import Optional, Dict, Any, Tuple
 
+from .mesf_cache_manager import MESFCacheManager
 from .mesf import StandardMESF as MESF
 
 logger = logging.getLogger(__name__)
 
 
 class MESFPreprocessor:
-    """Handles MESF computation and caching for large-scale datasets."""
+    """MESF preprocessor with proper caching support."""
     
     def __init__(self, 
-                 cache_dir: str = "cache/mesf",
-                 max_exact_points: int = 500000,
-                 grid_resolution_km: float = 10.0):
-        """
-        Initialize MESF preprocessor.
+                 max_exact_points: int = 10000,
+                 grid_resolution_km: float = 10.0,
+                 cache_dir: Optional[str] = None):
+        """Initialize MESF preprocessor.
         
         Args:
-            cache_dir: Directory for caching MESF features
             max_exact_points: Maximum points for exact MESF computation
             grid_resolution_km: Grid resolution for approximate MESF
+            cache_dir: Directory for caching MESF results
         """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.max_exact_points = max_exact_points
         self.grid_resolution_km = grid_resolution_km
+        self.cache_manager = MESFCacheManager(cache_dir)
         
-    def get_mesf_path(self, input_path: str) -> Path:
-        """Get the path for cached MESF features."""
-        input_name = Path(input_path).stem
-        return self.cache_dir / f"{input_name}_mesf.parquet"
+        logger.info(f"Initialized MESFPreprocessor with cache at {self.cache_manager.cache_dir}")
     
-    def check_mesf_exists(self, input_path: str) -> bool:
-        """Check if MESF features already computed for this dataset."""
-        mesf_path = self.get_mesf_path(input_path)
-        exists = mesf_path.exists()
+    def process_with_sampling(self,
+                             input_parquet: str,
+                             spatial_grid_step: int,
+                             spatial_config: Dict[str, Any]) -> str:
+        """Process parquet with spatial sampling and MESF computation.
         
-        if exists:
-            logger.info(f"MESF features found in cache: {mesf_path}")
-        else:
-            logger.info(f"MESF features not found, need to compute: {mesf_path}")
+        This is the main entry point that:
+        1. Checks cache for existing MESF with these parameters
+        2. If not cached, loads data with sampling and computes MESF
+        3. Returns path to cached file with MESF columns
+        
+        Args:
+            input_parquet: Path to input parquet file
+            spatial_grid_step: Spatial sampling rate (1 = no sampling)
+            spatial_config: MESF computation parameters
             
-        return exists
+        Returns:
+            Path to cached parquet file with MESF columns
+        """
+        # Extract MESF parameters
+        mesf_params = spatial_config.get('mesf', {
+            'variance_threshold': 0.75,
+            'max_eigenvectors': 10,
+            'min_eigenvectors': 5,
+            'distance_threshold': 100
+        })
+        
+        # Define compute function for cache manager
+        def compute_mesf_with_sampling(file_path: str, 
+                                      sampling: int, 
+                                      params: Dict[str, Any]) -> Tuple[pa.Table, Dict]:
+            """Compute MESF on sampled data."""
+            # Load and sample data
+            if sampling > 1:
+                logger.info(f"Loading data with spatial sampling: every {sampling}th point")
+                table = self._load_with_spatial_sampling(file_path, sampling)
+            else:
+                logger.info("Loading full data (no sampling)")
+                table = pq.read_table(file_path)
+            
+            # Extract coordinates
+            coords_df = table.select(['longitude', 'latitude']).to_pandas()
+            n_points = len(coords_df)
+            
+            logger.info(f"Computing MESF for {n_points:,} points")
+            
+            # Compute MESF
+            if n_points <= self.max_exact_points:
+                mesf_features = self._compute_exact_mesf(coords_df, params)
+            else:
+                mesf_features = self._compute_approximate_mesf(coords_df, params)
+            
+            # Add MESF columns to table
+            mesf_cols = [f'ME{i+1}' for i in range(mesf_features.shape[1])]
+            for i, col_name in enumerate(mesf_cols):
+                table = table.append_column(col_name, pa.array(mesf_features[:, i]))
+            
+            # Create metadata
+            metadata = {
+                'n_samples': n_points,
+                'spatial_grid_step': sampling,
+                'n_mesf_components': mesf_features.shape[1],
+                'mesf_params': params,
+                'original_file': file_path
+            }
+            
+            return table, metadata
+        
+        # Use cache manager to get or compute
+        cached_path = self.cache_manager.get_or_compute_mesf(
+            input_parquet,
+            spatial_grid_step,
+            mesf_params,
+            compute_mesf_with_sampling
+        )
+        
+        return cached_path
     
-    def check_mesf_in_parquet(self, parquet_path: str) -> bool:
-        """Check if MESF columns already exist in the parquet file.
+    def _load_with_spatial_sampling(self, 
+                                   parquet_path: str, 
+                                   spatial_grid_step: int) -> pa.Table:
+        """Load parquet with spatial grid sampling.
         
         Args:
             parquet_path: Path to parquet file
+            spatial_grid_step: Take every Nth point in spatial grid
             
         Returns:
-            True if MESF columns (ME1, ME2, ...) exist
+            PyArrow table with sampled data
         """
         import pyarrow.parquet as pq
         
-        # Read just the schema
+        # Open parquet file for metadata
         parquet_file = pq.ParquetFile(parquet_path)
-        columns = parquet_file.schema.names
         
-        # Check for ME columns
-        me_columns = [col for col in columns if col.startswith('ME')]
-        
-        if me_columns:
-            logger.info(f"Found {len(me_columns)} MESF columns in parquet: {me_columns[:5]}...")
-            return True
+        # Get coordinate columns
+        all_columns = parquet_file.schema.names
+        if 'longitude' in all_columns and 'latitude' in all_columns:
+            x_col, y_col = 'longitude', 'latitude'
+        elif 'x' in all_columns and 'y' in all_columns:
+            x_col, y_col = 'x', 'y'
         else:
-            logger.info("No MESF columns found in parquet")
-            return False
-    
-    def process_and_augment_parquet(self,
-                                   input_parquet: str,
-                                   spatial_config: dict,
-                                   force_recompute: bool = False) -> str:
-        """
-        Process parquet file and add MESF columns if not present.
+            raise ValueError(f"No coordinate columns found in {all_columns[:10]}")
         
-        This is the main entry point that:
-        1. Checks if MESF already exists in parquet
-        2. If not, computes MESF
-        3. Writes MESF back to the original parquet
+        # Read coordinates to find unique values
+        logger.info("Scanning coordinates for spatial grid...")
+        unique_x = set()
+        unique_y = set()
         
-        Args:
-            input_parquet: Path to input parquet file
-            spatial_config: Spatial configuration for MESF
-            force_recompute: Force recomputation even if MESF exists
-            
-        Returns:
-            Path to augmented parquet file (same as input)
-        """
-        # Check if MESF already in parquet
-        if not force_recompute and self.check_mesf_in_parquet(input_parquet):
-            logger.info(f"MESF already present in {input_parquet}, skipping computation")
-            return input_parquet
+        for batch in parquet_file.iter_batches(columns=[x_col, y_col], batch_size=1000000):
+            batch_df = batch.to_pandas()
+            unique_x.update(batch_df[x_col].unique())
+            unique_y.update(batch_df[y_col].unique())
         
-        logger.info(f"Computing MESF and augmenting {input_parquet}")
+        # Select every Nth value
+        unique_x = sorted(unique_x)
+        unique_y = sorted(unique_y)
+        selected_x = unique_x[::spatial_grid_step]
+        selected_y = unique_y[::spatial_grid_step]
         
-        # Compute MESF
-        mesf_features = self._compute_mesf_for_parquet(input_parquet, spatial_config)
+        logger.info(f"Spatial grid: {len(unique_x)}x{len(unique_y)} -> "
+                   f"{len(selected_x)}x{len(selected_y)} points")
         
-        # Write back to parquet
-        self._augment_parquet_with_mesf(input_parquet, mesf_features)
-        
-        logger.info(f"✅ Successfully augmented {input_parquet} with MESF columns")
-        return input_parquet
-    
-    def _compute_mesf_for_parquet(self,
-                                  input_parquet: str,
-                                  spatial_config: dict) -> np.ndarray:
-        """Compute MESF features for the parquet file.
-        
-        Args:
-            input_parquet: Path to input parquet file
-            spatial_config: Spatial configuration for MESF
-            
-        Returns:
-            MESF features as numpy array
-        """
-        
-        logger.info("Computing MESF features...")
-        
-        # Load coordinates and ID
-        logger.info(f"Loading coordinates from {input_parquet}")
-        coords_df = pd.read_parquet(
-            input_parquet, 
-            columns=['longitude', 'latitude']
+        # Use PyArrow predicate pushdown for efficient filtering
+        filtered_table = pq.read_table(
+            parquet_path,
+            filters=[
+                (x_col, 'in', selected_x),
+                (y_col, 'in', selected_y)
+            ]
         )
         
-        n_points = len(coords_df)
-        logger.info(f"Loaded {n_points:,} coordinate pairs")
+        logger.info(f"Loaded {filtered_table.num_rows:,} rows after sampling")
         
-        # Decide computation strategy
-        if n_points <= self.max_exact_points:
-            logger.info(f"Using exact MESF computation ({n_points:,} points)")
-            mesf_features = self._compute_exact_mesf(coords_df, spatial_config)
-        else:
-            logger.info(f"Using approximate MESF for {n_points:,} points")
-            logger.info(f"Grid resolution: {self.grid_resolution_km} km")
-            mesf_features = self._compute_approximate_mesf(coords_df, spatial_config)
+        # Rename x,y to longitude,latitude if needed
+        if x_col == 'x' and y_col == 'y':
+            filtered_table = filtered_table.rename_columns({
+                'x': 'longitude',
+                'y': 'latitude'
+            })
         
-        # Create DataFrame with MESF features
-        mesf_df = pd.DataFrame(
-            mesf_features,
-            columns=[f'ME{i+1}' for i in range(mesf_features.shape[1])],
-            index=coords_df.index
-        )
-        
-        # Add index for joining
-        mesf_df['row_id'] = np.arange(len(mesf_df))
-        
-        # Save to parquet
-        logger.info(f"Saving MESF features to {mesf_path}")
-        mesf_df.to_parquet(mesf_path, compression='snappy')
-        
-        logger.info(f"MESF computation complete: {mesf_features.shape}")
-        return str(mesf_path)
+        return filtered_table
     
     def _compute_exact_mesf(self, 
-                           coords_df: pd.DataFrame, 
-                           spatial_config: dict) -> np.ndarray:
-        """Compute exact MESF for manageable number of points."""
+                           coords_df: pd.DataFrame,
+                           mesf_params: Dict[str, Any]) -> np.ndarray:
+        """Compute exact MESF for manageable number of points.
+        
+        Args:
+            coords_df: DataFrame with longitude, latitude columns
+            mesf_params: MESF computation parameters
+            
+        Returns:
+            MESF eigenvectors as numpy array
+        """
         coords = coords_df[['longitude', 'latitude']].values
         
         # Initialize MESF
-        mesf_computer = MESF(spatial_config)
+        mesf_computer = MESF(
+            variance_threshold=mesf_params.get('variance_threshold', 0.75),
+            max_eigenvectors=mesf_params.get('max_eigenvectors', 10),
+            min_eigenvectors=mesf_params.get('min_eigenvectors', 5),
+            distance_threshold=mesf_params.get('distance_threshold', 100)
+        )
         
         # Compute eigenvectors
         eigenvectors = mesf_computer.fit_transform(coords)
         
+        logger.info(f"Computed {eigenvectors.shape[1]} MESF eigenvectors")
+        
         return eigenvectors
     
-    def _compute_approximate_mesf(self, 
-                                  coords_df: pd.DataFrame,
-                                  spatial_config: dict) -> np.ndarray:
-        """
-        Compute approximate MESF using grid aggregation.
+    def _compute_approximate_mesf(self,
+                                 coords_df: pd.DataFrame,
+                                 mesf_params: Dict[str, Any]) -> np.ndarray:
+        """Compute approximate MESF using grid aggregation.
         
-        For 180M points:
-        1. Aggregate to grid cells (~500K cells)
-        2. Compute MESF on grid centers
-        3. Interpolate back to original points
+        Args:
+            coords_df: DataFrame with longitude, latitude columns
+            mesf_params: MESF computation parameters
+            
+        Returns:
+            MESF eigenvectors as numpy array
         """
-        logger.info("Starting approximate MESF computation")
+        logger.info("Using approximate MESF computation")
         
-        # Step 1: Create grid
         coords = coords_df[['longitude', 'latitude']].values
-        grid_coords, point_to_grid = self._create_spatial_grid(coords)
         
+        # Create spatial grid
+        grid_coords, point_to_grid = self._create_spatial_grid(coords)
         logger.info(f"Created grid with {len(grid_coords):,} cells")
         
-        # Step 2: Compute MESF on grid
-        logger.info("Computing MESF on grid centers...")
-        mesf_computer = MESF(spatial_config)
-        grid_mesf = mesf_computer.fit_transform(grid_coords)
+        # Compute MESF on grid
+        mesf_computer = MESF(
+            variance_threshold=mesf_params.get('variance_threshold', 0.75),
+            max_eigenvectors=mesf_params.get('max_eigenvectors', 10),
+            min_eigenvectors=mesf_params.get('min_eigenvectors', 5),
+            distance_threshold=mesf_params.get('distance_threshold', 100)
+        )
         
+        grid_mesf = mesf_computer.fit_transform(grid_coords)
         logger.info(f"Computed {grid_mesf.shape[1]} eigenvectors on grid")
         
-        # Step 3: Interpolate to full points
-        logger.info("Interpolating MESF to full dataset...")
-        full_mesf = self._interpolate_mesf(
-            grid_coords, 
-            grid_mesf, 
-            coords, 
-            point_to_grid
-        )
+        # Interpolate to full points
+        full_mesf = self._interpolate_mesf(grid_coords, grid_mesf, coords, point_to_grid)
         
         return full_mesf
     
-    def _create_spatial_grid(self, 
-                            coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Create spatial grid for approximate MESF.
+    def _create_spatial_grid(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Create spatial grid for approximate MESF.
         
+        Args:
+            coords: Coordinate array (longitude, latitude)
+            
         Returns:
-            grid_coords: Unique grid cell centers
-            point_to_grid: Mapping from points to grid cells
+            Tuple of (grid_centers, point_to_grid_mapping)
         """
-        # Convert km to degrees (approximate)
-        lat_resolution = self.grid_resolution_km / 111.0  # 1 degree ~ 111km
-        lon_resolution = self.grid_resolution_km / 111.0  # Simplified
+        # Convert km to degrees
+        lat_resolution = self.grid_resolution_km / 111.0
+        lon_resolution = self.grid_resolution_km / 111.0
         
-        # Discretize coordinates to grid
+        # Discretize to grid
         grid_lat = np.round(coords[:, 1] / lat_resolution) * lat_resolution
         grid_lon = np.round(coords[:, 0] / lon_resolution) * lon_resolution
         
         # Get unique grid cells
         grid_points = np.column_stack([grid_lon, grid_lat])
         unique_grids, point_to_grid = np.unique(
-            grid_points, 
-            axis=0, 
+            grid_points,
+            axis=0,
             return_inverse=True
         )
         
@@ -254,11 +280,16 @@ class MESFPreprocessor:
                          grid_mesf: np.ndarray,
                          full_coords: np.ndarray,
                          point_to_grid: np.ndarray) -> np.ndarray:
-        """
-        Interpolate MESF from grid to full points.
+        """Interpolate MESF from grid to full points.
         
-        Simple approach: Assign grid MESF to all points in that grid cell.
-        Advanced approach: Use KNN interpolation for smoother transitions.
+        Args:
+            grid_coords: Grid center coordinates
+            grid_mesf: MESF values at grid centers
+            full_coords: Full point coordinates
+            point_to_grid: Mapping from points to grid cells
+            
+        Returns:
+            Interpolated MESF values for all points
         """
         n_points = len(full_coords)
         n_components = grid_mesf.shape[1]
@@ -269,79 +300,20 @@ class MESFPreprocessor:
             grid_idx = point_to_grid[i]
             full_mesf[i] = grid_mesf[grid_idx]
         
-        # Optional: Smooth with KNN (commented out for speed)
-        # logger.info("Smoothing with KNN interpolation...")
-        # nbrs = NearestNeighbors(n_neighbors=5, metric='haversine')
-        # nbrs.fit(np.radians(grid_coords[:, [1, 0]]))
-        # distances, indices = nbrs.kneighbors(np.radians(full_coords[:, [1, 0]]))
-        # weights = 1.0 / (distances + 1e-10)
-        # weights /= weights.sum(axis=1, keepdims=True)
-        # for i in range(n_points):
-        #     full_mesf[i] = np.average(grid_mesf[indices[i]], weights=weights[i], axis=0)
-        
         return full_mesf
     
-    def _augment_parquet_with_mesf(self,
-                                   input_parquet: str,
-                                   mesf_features: np.ndarray) -> None:
-        """
-        Augment the original parquet file with MESF columns.
+    def get_cache_info(self) -> Dict[str, Any]:
+        """Get information about MESF cache.
         
-        This creates a temporary file and then replaces the original.
-        Memory-efficient chunked processing for large files.
+        Returns:
+            Dictionary with cache statistics
+        """
+        return self.cache_manager.get_cache_info()
+    
+    def clear_cache(self, older_than_days: Optional[int] = None):
+        """Clear MESF cache.
         
         Args:
-            input_parquet: Path to input parquet file
-            mesf_features: MESF features array
+            older_than_days: Only clear files older than this many days
         """
-        import tempfile
-        import shutil
-        
-        logger.info(f"Augmenting {input_parquet} with {mesf_features.shape[1]} MESF columns")
-        
-        # Create MESF column names
-        mesf_cols = [f'ME{i+1}' for i in range(mesf_features.shape[1])]
-        
-        # Create temporary output file
-        temp_output = input_parquet + '.tmp'
-        
-        try:
-            # Read original parquet in chunks
-            original = pq.ParquetFile(input_parquet)
-            
-            # Create new schema with MESF columns
-            original_schema = original.schema
-            mesf_fields = [pa.field(col, pa.float32()) for col in mesf_cols]
-            
-            # Combine schemas
-            new_fields = list(original_schema) + mesf_fields
-            new_schema = pa.schema(new_fields)
-            
-            # Write augmented parquet
-            chunk_size = 100000
-            row_offset = 0
-            
-            with pq.ParquetWriter(temp_output, new_schema, compression='snappy') as writer:
-                for batch in original.iter_batches(batch_size=chunk_size):
-                    batch_df = batch.to_pandas()
-                    
-                    # Add MESF features for this batch
-                    batch_size_actual = len(batch_df)
-                    for i, col in enumerate(mesf_cols):
-                        batch_df[col] = mesf_features[row_offset:row_offset+batch_size_actual, i]
-                    
-                    # Write augmented batch
-                    table = pa.Table.from_pandas(batch_df, schema=new_schema)
-                    writer.write_table(table)
-                    
-                    row_offset += batch_size_actual
-            
-            # Replace original file with augmented version
-            shutil.move(temp_output, input_parquet)
-            logger.info(f"✅ Successfully replaced {input_parquet} with MESF-augmented version")
-            
-        except Exception as e:
-            # Clean up temp file on error
-            if os.path.exists(temp_output):
-                os.remove(temp_output)
-            raise e
+        self.cache_manager.clear_cache(older_than_days)
