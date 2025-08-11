@@ -1,6 +1,10 @@
-"""Method 1: Continuous interaction model (REFACTORED).
+"""Method 1: H0-H1 Testing with GLM (REFACTORED).
 
-Tests H2: Climate-diversity interaction differs in temperate vs non-temperate regions.
+Tests:
+- H0: Fungi richness is independent of plant/vertebrate richness
+- H1: Biodiversity begets biodiversity (positive correlation exists)
+
+Compares Model 1 (climate only) vs Model 2 (climate + biodiversity).
 This refactored version assumes data is already preprocessed by the pipeline.
 """
 
@@ -14,13 +18,17 @@ from src.base.ml import BaseRegressionMethod
 from src.abstractions.types.ml_types import ModelType, ModelMetadata
 from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
 from ...config_loader import MLRegressionConfig
-from ...preprocessing import add_plants_bio4_interaction
+from ...hypothesis import WaldTest, LikelihoodRatioTest, ScoreTest
+from ...evaluation import GLMComparison
 
 logger = logging.getLogger(__name__)
 
 
-class Method1ContinuousGLM(BaseRegressionMethod):
-    """Refactored Method 1 - expects preprocessed data from pipeline.
+class Method1H0H1GLM(BaseRegressionMethod):
+    """Method 1: Tests H0 vs H1 using nested GLM models.
+    
+    Model 1 (H0): Climate + spatial only
+    Model 2 (H1): Climate + spatial + biodiversity
     
     Expected preprocessed features:
     - Climate variables: bio1_std, bio4_std, bio12_std, bio15_std
@@ -39,9 +47,8 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         super().__init__(config)
         self.glm_config = self.config.get_glm_config()
         
-        self.model_null = None
-        self.model_full = None
-        self.model_interaction = None
+        self.model_null = None  # Model 1: Climate only
+        self.model_full = None  # Model 2: Climate + biodiversity
         self.data_h2o = None
     
     def fit_models(self, h2o_data: h2o.H2OFrame) -> Dict[str, Any]:
@@ -97,84 +104,105 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         self.model_full = GLMClass(self.config.config)
         self.model_full.fit(full_data, y='fungi_richness')
         
-        # Model 3: With interaction (METHOD-SPECIFIC FEATURE)
-        logger.info("Fitting Model 3: With interaction")
+        # Use hypothesis testing classes for proper statistical tests
+        results = {}
         
-        # Add Method1-specific interaction term
-        h2o_data = add_plants_bio4_interaction(
-            h2o_data, 
-            'plants_richness_log', 
-            'bio4_std',
-            'plants_bio4_interaction'
+        # 1. Likelihood Ratio Test for H0 vs H1
+        lrt_results = LikelihoodRatioTest.test_nested_models(
+            null_model=self.model_null,
+            full_model=self.model_full,
+            df_difference=len(biotic_cols)  # Number of biodiversity predictors
+        )
+        results['likelihood_ratio_test'] = lrt_results
+        
+        # 2. Score Test (approximate from deviance if H2O doesn't provide score)
+        # Using the approximate version since H2O may not expose score/information directly
+        if hasattr(self.model_null, 'get_null_deviance') and hasattr(self.model_null, 'get_deviance'):
+            score_results = ScoreTest.test_from_model_statistics(
+                deviance_null=self.model_null.get_null_deviance(),
+                deviance_residual=self.model_null.get_deviance(),
+                df_null=self.model_null.get_null_degrees_of_freedom(),
+                df_residual=self.model_null.get_residual_degrees_of_freedom(),
+                n_obs=len(null_data)
+            )
+        else:
+            # Fallback: approximate from deviance difference
+            score_results = ScoreTest.test_from_model_statistics(
+                deviance_null=self.model_null.get_deviance(),
+                deviance_residual=self.model_full.get_deviance(),
+                df_null=len(feature_cols_null),
+                df_residual=len(feature_cols_full),
+                n_obs=len(null_data)
+            )
+        results['score_test'] = score_results
+        
+        # 3. Model comparison using AIC/BIC
+        model_comparison = GLMComparison.compare_models(
+            models={'null_model': self.model_null, 'full_model': self.model_full},
+            criteria=['aic', 'bic', 'deviance']
+        )
+        results['model_comparison'] = model_comparison
+        
+        # 4. Wald test for biodiversity coefficients
+        wald_results = {}
+        for coef_name in biotic_cols:
+            wald_test = WaldTest.test_coefficients_from_model(
+                model=self.model_full,
+                coefficient_names=coef_name,
+                null_values=0.0
+            )
+            wald_results[coef_name] = wald_test
+        results['wald_tests'] = wald_results
+        
+        # Overall H0 vs H1 conclusion
+        h1_supported = (
+            lrt_results['significant_at_0.05'] or
+            model_comparison['best_models'].get('aic') == 'full_model' or
+            any(w.get('significant_at_0.05', False) for w in wald_results.values())
         )
         
-        feature_cols_interaction = feature_cols_full + ['plants_bio4_interaction']
-        interaction_data = h2o_data[feature_cols_interaction + ['fungi_richness']]
-        
-        self.model_interaction = GLMClass(self.config.config)
-        self.model_interaction.fit(interaction_data, y='fungi_richness')
-        
-        # Compare models
-        results = {
-            'null_model': {
-                'aic': self.model_null.get_aic(),
-                'bic': self.model_null.get_bic(),
-                'deviance': self.model_null.get_deviance()
-            },
-            'full_model': {
-                'aic': self.model_full.get_aic(),
-                'bic': self.model_full.get_bic(),
-                'deviance': self.model_full.get_deviance()
-            },
-            'interaction_model': {
-                'aic': self.model_interaction.get_aic(),
-                'bic': self.model_interaction.get_bic(),
-                'deviance': self.model_interaction.get_deviance()
-            }
-        }
-        
-        # Likelihood ratio tests
-        lr_full_vs_null = 2 * (
-            self.model_null.get_deviance() - self.model_full.get_deviance()
-        )
-        lr_interaction_vs_full = 2 * (
-            self.model_full.get_deviance() - self.model_interaction.get_deviance()
-        )
-        
-        results['lr_tests'] = {
-            'full_vs_null': {
-                'statistic': lr_full_vs_null,
-                'df': len(biotic_cols),
-                'significant': lr_full_vs_null > 5.99  # chi2 critical value
-            },
-            'interaction_vs_full': {
-                'statistic': lr_interaction_vs_full,
-                'df': 1,
-                'significant': lr_interaction_vs_full > 3.84
-            }
+        results['h0_h1_conclusion'] = {
+            'h1_supported': h1_supported,
+            'interpretation': 'Biodiversity begets biodiversity (H1)' if h1_supported else 'No biodiversity effect (H0)'
         }
         
         logger.info("Model fitting complete")
         return results
     
-    def get_interaction_coefficient(self) -> Dict[str, Any]:
-        """Get interaction coefficient for H2 hypothesis test.
+    def get_biodiversity_coefficients(self) -> Dict[str, Any]:
+        """Get biodiversity coefficients for H1 hypothesis test.
         
         Returns:
-            Dictionary with coefficient info
+            Dictionary with coefficient info for plants and vertebrates
         """
-        if self.model_interaction is None:
+        if self.model_full is None:
             raise ValueError("Must fit models first")
         
-        # Get coefficient for plants_bio4_interaction
-        coef_info = self.model_interaction.get_coefficient('plants_bio4_interaction')
+        # Get coefficients for biodiversity predictors
+        plants_coef = self.model_full.get_coefficient('plants_richness_log')
+        vertebrates_coef = self.model_full.get_coefficient('vertebrates_richness_log')
+        
+        # H1 is supported if either biodiversity predictor is significant
+        supports_h1 = (
+            (plants_coef.get('p_value') is not None and plants_coef['p_value'] < 0.05) or
+            (vertebrates_coef.get('p_value') is not None and vertebrates_coef['p_value'] < 0.05)
+        )
         
         return {
-            'interaction_coefficient': coef_info['coefficient'],
-            'interaction_p_value': coef_info['p_value'],
-            'supports_h2': coef_info['p_value'] < 0.05 and coef_info['coefficient'] != 0,
-            'coefficient': coef_info['coefficient'],
-            'p_value': coef_info['p_value']
+            'plants': {
+                'coefficient': plants_coef['coefficient'],
+                'std_error': plants_coef.get('std_error'),
+                'z_value': plants_coef.get('z_value'),
+                'p_value': plants_coef.get('p_value')
+            },
+            'vertebrates': {
+                'coefficient': vertebrates_coef['coefficient'],
+                'std_error': vertebrates_coef.get('std_error'),
+                'z_value': vertebrates_coef.get('z_value'),
+                'p_value': vertebrates_coef.get('p_value')
+            },
+            'supports_h1': supports_h1,
+            'interpretation': 'Biodiversity begets biodiversity' if supports_h1 else 'No biodiversity effect'
         }
     
     def fit_model(self, data: h2o.H2OFrame) -> Dict[str, Any]:
@@ -212,7 +240,7 @@ class Method1ContinuousGLM(BaseRegressionMethod):
         Returns:
             Predicted values
         """
-        if self.model_interaction is None:
+        if self.model_full is None:
             raise ValueError("Must fit models first")
         
-        return self.model_interaction.predict(data)
+        return self.model_full.predict(data)
