@@ -4,6 +4,8 @@ This manager ensures:
 1. Original data files are never modified
 2. MESF is cached per (file, sampling_rate, params) combination
 3. Efficient reuse of computed MESF values
+4. Thread-safe atomic operations
+5. Comprehensive error handling
 """
 
 import os
@@ -17,6 +19,9 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+import tempfile
+import fcntl
+import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from contextlib import contextmanager
@@ -27,41 +32,60 @@ logger = logging.getLogger(__name__)
 class MESFCacheManager:
     """Manages MESF computation caching with spatial sampling awareness."""
     
+    # Class-level lock for thread safety
+    _lock = threading.Lock()
+    
     def __init__(self, cache_dir: Optional[str] = None):
-        """Initialize the cache manager.
+        """Initialize the cache manager with configurable and secure cache directory.
         
         Args:
-            cache_dir: Directory for cache storage (default: system temp dir)
+            cache_dir: Directory for cache storage (default from env or system temp dir)
         """
         if cache_dir is None:
-            # Use system temp directory with proper user isolation
+            # Allow configuration via environment variable, with user-isolated fallback
             base_temp = os.environ.get('ML_CACHE_DIR', tempfile.gettempdir())
             user_id = os.getuid() if hasattr(os, 'getuid') else 'user'
             cache_dir = os.path.join(base_temp, f'ml_cache_{user_id}', 'mesf')
         
-        self.cache_dir = Path(cache_dir)
-        
+        # Validate and sanitize the cache directory path
         try:
-            # Create directory with restricted permissions
+            self.cache_dir = Path(cache_dir).resolve()
+            
+            # Ensure cache directory is not in a dangerous location
+            dangerous_paths = ['/', '/etc', '/usr', '/bin', '/sbin', '/boot', '/dev', '/proc', '/sys']
+            if str(self.cache_dir) in dangerous_paths or any(str(self.cache_dir).startswith(p + '/') for p in dangerous_paths[:4]):
+                raise ValueError(f"Cache directory cannot be in system-critical location: {self.cache_dir}")
+            
+            # Create directory with proper error handling
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            
             # Set restrictive permissions (owner only)
             os.chmod(self.cache_dir, 0o700)
-        except (OSError, PermissionError) as e:
-            # Fall back to user's home directory if temp fails
+            
+            # Verify we can write to the directory
+            test_file = self.cache_dir / '.write_test'
+            try:
+                test_file.touch()
+                test_file.unlink()
+            except (OSError, PermissionError) as e:
+                raise PermissionError(f"Cannot write to cache directory {self.cache_dir}: {e}")
+                
+        except (OSError, PermissionError, ValueError) as e:
+            # Fall back to user's home directory if primary fails
             fallback_dir = Path.home() / '.cache' / 'ml_cache' / 'mesf'
-            logger.warning(f"Failed to create cache at {self.cache_dir}: {e}")
+            logger.warning(f"Failed to create cache at {cache_dir}: {e}")
             logger.info(f"Using fallback cache directory: {fallback_dir}")
             self.cache_dir = fallback_dir
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             os.chmod(self.cache_dir, 0o700)
         
-        logger.info(f"MESF cache directory: {self.cache_dir}")
+        logger.info(f"MESF cache directory initialized: {self.cache_dir}")
     
     def get_cache_key(self, 
                       file_path: str,
                       spatial_grid_step: int,
                       mesf_params: Dict[str, Any]) -> str:
-        """Generate unique cache key based on inputs.
+        """Generate unique cache key based on inputs with validation.
         
         Args:
             file_path: Path to original data file
@@ -72,24 +96,30 @@ class MESFCacheManager:
             Unique cache key string
             
         Raises:
-            ValueError: If file_path is invalid or contains path traversal
+            ValueError: If inputs are invalid or contain path traversal
             FileNotFoundError: If file doesn't exist
         """
-        # Validate and sanitize file path
+        # Input validation
         if not file_path:
             raise ValueError("file_path cannot be empty")
         
-        # Resolve to absolute path and check for path traversal
+        # Resolve and validate file path to prevent path traversal
         try:
             abs_path = Path(file_path).resolve()
+            
+            # Check file exists and is a regular file
+            if not abs_path.exists():
+                raise FileNotFoundError(f"File not found: {abs_path}")
+            if not abs_path.is_file():
+                raise ValueError(f"Path is not a regular file: {abs_path}")
+                
+            # Ensure path is not in a dangerous location
+            dangerous_prefixes = ['/dev', '/proc', '/sys']
+            if any(str(abs_path).startswith(prefix) for prefix in dangerous_prefixes):
+                raise ValueError(f"File path in restricted location: {abs_path}")
+                
         except (RuntimeError, OSError) as e:
             raise ValueError(f"Invalid file path: {file_path}") from e
-        
-        # Check file existence separately to preserve FileNotFoundError
-        if not abs_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-        if not abs_path.is_file():
-            raise ValueError(f"Path is not a file: {file_path}")
         
         # Validate spatial_grid_step
         if not isinstance(spatial_grid_step, int) or spatial_grid_step < 1:
@@ -99,7 +129,7 @@ class MESFCacheManager:
         try:
             file_stat = abs_path.stat()
         except OSError as e:
-            raise OSError(f"Cannot access file: {abs_path}") from e
+            raise FileNotFoundError(f"Cannot access file {abs_path}: {e}") from e
         
         # Create cache key components using sanitized path
         key_data = {
@@ -196,6 +226,8 @@ class MESFCacheManager:
                       data_table: pa.Table,
                       metadata: Dict[str, Any]) -> str:
         """Save MESF-augmented data to cache atomically.
+        
+        Uses atomic file operations to prevent race conditions.
         
         Args:
             cache_key: Unique cache key
@@ -315,12 +347,6 @@ class MESFCacheManager:
                     logger.error(f"Failed to verify cache data: {e}")
                     self._cleanup_cache(cache_key)
                     raise OSError(f"Corrupted cache data for key: {cache_key}") from e
-                
-                logger.info(f"Loaded MESF data from cache: {cached_path}")
-                logger.info(f"Cache metadata: {metadata}")
-                
-                return str(cached_path), metadata
-                
         except TimeoutError:
             logger.warning(f"Timeout waiting for cache lock, proceeding without lock")
             # Fall back to reading without lock with validation
@@ -404,30 +430,72 @@ class MESFCacheManager:
         return cached_path
     
     def clear_cache(self, older_than_days: Optional[int] = None):
-        """Clear cache files.
+        """Clear cache files safely with proper locking.
         
         Args:
             older_than_days: Only clear files older than this many days
                            None = clear all
         """
         import time
+        import shutil
         
-        count = 0
-        for cache_file in self.cache_dir.glob("mesf_*.parquet"):
-            if older_than_days is not None:
-                file_age_days = (time.time() - cache_file.stat().st_mtime) / 86400
-                if file_age_days < older_than_days:
-                    continue
+        with self._lock:
+            count = 0
+            errors = 0
             
-            cache_file.unlink()
-            # Also remove metadata
-            metadata_file = Path(str(cache_file.with_suffix('')) + '_metadata.json')
-            if metadata_file.exists():
-                metadata_file.unlink()
+            # First, check available disk space
+            total, used, free = shutil.disk_usage(self.cache_dir)
+            logger.info(f"Cache directory disk usage: {used / 1024 / 1024 / 1024:.1f}GB used, "
+                       f"{free / 1024 / 1024 / 1024:.1f}GB free")
             
-            count += 1
-        
-        logger.info(f"Cleared {count} cache files")
+            try:
+                for cache_file in self.cache_dir.glob("mesf_*.parquet"):
+                    try:
+                        if older_than_days is not None:
+                            file_age_days = (time.time() - cache_file.stat().st_mtime) / 86400
+                            if file_age_days < older_than_days:
+                                continue
+                        
+                        # Remove cache file
+                        cache_file.unlink()
+                        
+                        # Also remove metadata
+                        metadata_file = Path(str(cache_file.with_suffix('')) + '_metadata.json')
+                        if metadata_file.exists():
+                            metadata_file.unlink()
+                        
+                        count += 1
+                        
+                    except (OSError, PermissionError) as e:
+                        logger.warning(f"Failed to remove cache file {cache_file}: {e}")
+                        errors += 1
+                        continue
+                
+                # Also clean up any orphaned temp files
+                for temp_file in self.cache_dir.glob("temp_*.parquet"):
+                    try:
+                        # Only remove if older than 1 hour
+                        if (time.time() - temp_file.stat().st_mtime) > 3600:
+                            temp_file.unlink()
+                            logger.debug(f"Removed orphaned temp file: {temp_file}")
+                    except:
+                        pass
+                
+                for temp_file in self.cache_dir.glob("temp_*.json"):
+                    try:
+                        if (time.time() - temp_file.stat().st_mtime) > 3600:
+                            temp_file.unlink()
+                            logger.debug(f"Removed orphaned temp file: {temp_file}")
+                    except:
+                        pass
+                        
+            except Exception as e:
+                logger.error(f"Error during cache clearing: {e}")
+                
+            if errors > 0:
+                logger.warning(f"Failed to remove {errors} cache files")
+            
+            logger.info(f"Cleared {count} cache files")
     
     def get_cache_info(self) -> Dict[str, Any]:
         """Get information about cache usage.

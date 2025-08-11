@@ -6,6 +6,7 @@ Centralized utilities for H2O initialization and management to avoid code duplic
 import os
 import logging
 import h2o
+import time
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -80,8 +81,9 @@ class H2OManager:
     def ensure_initialized(self, 
                          n_threads: Optional[int] = None,
                          max_mem_size: str = "4G",
-                         min_mem_size: str = "1G") -> None:
-        """Ensure H2O cluster is initialized.
+                         min_mem_size: str = "1G",
+                         max_retries: int = 3) -> None:
+        """Ensure H2O cluster is initialized with robust health checking.
         
         This method is idempotent - safe to call multiple times.
         
@@ -89,10 +91,12 @@ class H2OManager:
             n_threads: Number of threads (None for all available)
             max_mem_size: Maximum memory allocation
             min_mem_size: Minimum memory allocation
+            max_retries: Maximum number of connection attempts
         """
         # Validate and adjust memory settings based on system resources
         max_mem_size = self._validate_memory_setting(max_mem_size, "max")
         min_mem_size = self._validate_memory_setting(min_mem_size, "min", max_mem_size)
+        
         # Robust cluster health check
         def is_cluster_healthy() -> bool:
             """Check if H2O cluster is healthy and responsive."""
@@ -112,30 +116,34 @@ class H2OManager:
                 logger.debug(f"Cluster health check failed: {e}")
                 return False
         
-        # Check existing cluster if we think it's initialized
-        if self._initialized:
-            if is_cluster_healthy():
-                logger.info("Using existing healthy H2O cluster")
+        # Robust cluster health check with retries
+        for attempt in range(max_retries):
+            # Check existing cluster if we think it's initialized
+            if self._initialized:
+                if is_cluster_healthy():
+                    logger.info("Using existing healthy H2O cluster")
+                    return
+                else:
+                    logger.warning(f"Existing H2O cluster is unhealthy (attempt {attempt + 1}/{max_retries}), reinitializing...")
+                    self._initialized = False
+                    try:
+                        h2o.cluster().shutdown()
+                    except:
+                        pass  # Cluster might already be dead
+            
+            # Check if there's a cluster we don't know about
+            if not self._initialized and is_cluster_healthy():
+                logger.info("Found existing healthy H2O cluster")
+                self._initialized = True
                 return
-            else:
-                logger.warning("Existing H2O cluster is unhealthy, reinitializing...")
-                self._initialized = False
-                try:
-                    h2o.cluster().shutdown()
-                except:
-                    pass  # Cluster might already be dead
-        
-        # Check if there's a cluster we don't know about
-        if not self._initialized and is_cluster_healthy():
-            logger.info("Found existing healthy H2O cluster")
-            self._initialized = True
-            return
+            
+            if attempt < max_retries - 1:
+                time.sleep(2)  # Wait before retry
         
         # Initialize new H2O cluster with retries
         if n_threads is None:
             n_threads = os.cpu_count() or 256
         
-        max_retries = 3
         for attempt in range(max_retries):
             try:
                 logger.info(f"Starting H2O cluster (attempt {attempt + 1}/{max_retries}) "
@@ -207,15 +215,17 @@ h2o_manager = H2OManager()
 
 def ensure_h2o_initialized(n_threads: Optional[int] = None,
                           max_mem_size: str = "4G",
-                          min_mem_size: str = "1G") -> None:
+                          min_mem_size: str = "1G",
+                          max_retries: int = 3) -> None:
     """Convenience function to ensure H2O is initialized.
     
     Args:
         n_threads: Number of threads (None for all available)
         max_mem_size: Maximum memory allocation
         min_mem_size: Minimum memory allocation
+        max_retries: Maximum number of connection attempts
     """
-    h2o_manager.ensure_initialized(n_threads, max_mem_size, min_mem_size)
+    h2o_manager.ensure_initialized(n_threads, max_mem_size, min_mem_size, max_retries)
 
 
 def get_h2o_status() -> Dict[str, Any]:
