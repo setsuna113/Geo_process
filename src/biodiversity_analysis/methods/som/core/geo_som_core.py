@@ -26,7 +26,6 @@ from ..utils.constants import (
 )
 from ..calculators.partial_metrics import validate_missing_data_handling
 from src.biodiversity_analysis.shared.metrics.distance_calculator import SharedDistanceCalculator
-from ..trainers.batch_som_trainer import OptimizedBatchTrainer, OptimizedBatchConfig
 from ..trainers.parallel_batch_processor import ParallelBatchProcessor
 
 logger = logging.getLogger(__name__)
@@ -91,7 +90,6 @@ class GeoSOMConfig:
     # Performance settings
     chunk_size: int = 50000  # Default chunk size for batch processing (override with config)
     qe_sample_size: int = 100000  # Sample size for QE calculation
-    use_parallel: bool = True  # Enable parallel chunk processing
     n_workers: Optional[int] = None  # Number of parallel workers (None=auto)
 
 
@@ -203,41 +201,10 @@ class GeoSOMVLRSOM:
             min_valid_features=self.min_valid_features
         )
         
-        # Initialize fully optimized batch SOM trainer with momentum
-        # All optimizations are built-in with no configuration redundancy
-        optimized_config = OptimizedBatchConfig(
-            batch_size=self._get_config('size', 5000, 'training.batch'),
-            learning_schedule=self._get_config('learning_schedule', 'exponential', 'batch_training'),
-            initial_learning_rate=config.initial_learning_rate,
-            final_learning_rate=config.min_learning_rate,
-            # Momentum settings - read from correct location
-            initial_momentum=self._get_config('initial', 0.9, 'training.momentum'),
-            final_momentum=self._get_config('final', 0.1, 'training.momentum'),
-            momentum_schedule=self._get_config('schedule', 'linear', 'training.momentum'),
-            # Distance metric settings - use config value
-            distance_metric=distance_metric,
-            min_valid_features=self._get_config('min_valid_features', 2, 'data'),
-        )
-        
-        # Initialize parallel batch processor if enabled
-        if config.use_parallel:
-            # Use ParallelBatchProcessor for true parallel batch SOM
-            self.parallel_processor = ParallelBatchProcessor(n_workers=config.n_workers)
-            self.batch_trainer = None  # Not used in parallel mode
-            logger.info(f"Initialized ParallelBatchProcessor with {self.parallel_processor.n_workers} workers")
-            logger.info("Using BATCH SOM with parallel processing - weight updates once per epoch")
-        else:
-            # Fall back to sequential mini-batch trainer
-            self.parallel_processor = None
-            self.batch_trainer = OptimizedBatchTrainer(
-                grid_width=self.grid_cols,
-                grid_height=self.grid_rows,
-                n_features=1,  # Placeholder, will be updated when weights are initialized
-                config=optimized_config
-            )
-            logger.info(f"Initialized sequential mini-batch trainer with batch_size={optimized_config.batch_size}, "
-                       f"momentum={optimized_config.initial_momentum}->{optimized_config.final_momentum}, "
-                       f"learning_schedule={optimized_config.learning_schedule}")
+        # Always use ParallelBatchProcessor (n_workers=1 for sequential behavior)
+        self.parallel_processor = ParallelBatchProcessor(n_workers=config.n_workers, config=config)
+        logger.info(f"Initialized ParallelBatchProcessor with {self.parallel_processor.n_workers} workers")
+        logger.info("Using BATCH SOM - weight updates once per epoch")
         
         # Training state
         self.current_lr = config.initial_learning_rate
@@ -448,15 +415,6 @@ class GeoSOMVLRSOM:
         """
         self.input_dim = data.shape[1]
         
-        # Update mini-batch trainer with correct n_features
-        self.batch_trainer.n_features = self.input_dim
-        
-        # WeightUpdater is only needed for standard trainer (fast trainer has internal accumulation)
-        if hasattr(self.batch_trainer, 'weight_updater'):
-            self.batch_trainer.weight_updater = WeightUpdater(
-                self.batch_trainer.n_neurons, self.input_dim
-            )
-        
         # Validate coordinates if provided
         if coordinates is not None:
             self._validate_coordinates(coordinates, data.shape[0])
@@ -602,6 +560,14 @@ class GeoSOMVLRSOM:
         # Initialize training state
         training_state = self._initialize_training_state(data, coordinates)
         
+        # Prepare shared data for parallel processing to avoid repeated serialization
+        if self.parallel_processor:
+            self.parallel_processor.prepare_shared_data(
+                self.weights, 
+                self._grid_positions
+            )
+            logger.info("Prepared shared data for parallel batch training")
+        
         # Main training loop
         for epoch in range(training_state['start_epoch'], self.max_epochs):
             epoch_result = self._train_single_epoch(
@@ -707,82 +673,80 @@ class GeoSOMVLRSOM:
         }
     
     def _execute_minibatch_training(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray]) -> float:
-        """Execute training for one epoch - either parallel batch or sequential mini-batch."""
+        """Execute training for one epoch using parallel batch SOM."""
         
-        if self.config.use_parallel and self.parallel_processor is not None:
-            # PARALLEL BATCH SOM - process all data in parallel, update weights once
-            logger.info(f"Starting parallel batch SOM training for epoch {epoch+1} with {self.parallel_processor.n_workers} workers")
-            
-            # Calculate current learning rate and radius using decay schedules
-            progress = epoch / self.config.max_epochs
-            self.current_lr = self._calculate_learning_rate(epoch, self.config.max_epochs)
-            self.current_radius = self._calculate_radius(epoch, self.config.max_epochs)
-            
-            # Create config object for parallel processor
-            from types import SimpleNamespace
-            proc_config = SimpleNamespace(
-                min_valid_features=self.config.min_valid_features,
-                spatial_weight=self.config.spatial_weight
-            )
-            
-            # Get neuron coordinates if using spatial distance
-            neuron_coords = self.neuron_coordinates if coordinates is not None else None
-            
-            # Process all data in parallel to get numerator and denominator for batch update
-            numerator, denominator = self.parallel_processor.process_chunks_parallel(
-                data=data,
-                coordinates=coordinates,
-                weights=self.weights,
-                neuron_coords=neuron_coords,
-                config=proc_config,
-                grid_positions=self.grid_positions,
-                current_radius=self.current_radius,
-                chunk_size=self.config.chunk_size
-            )
-            
-            # Apply batch SOM weight update: w_k = Σ(h_k * x) / Σ(h_k)
-            # Add small epsilon to avoid division by zero
-            epsilon = 1e-10
+        # Always use parallel batch SOM (n_workers=1 for sequential behavior)
+        if self.parallel_processor is None:
+            raise ValueError("ParallelBatchProcessor not initialized. Cannot train SOM.")
+        
+        logger.info(f"Starting batch SOM training for epoch {epoch+1} with {self.parallel_processor.n_workers} workers")
+        
+        # Calculate current learning rate and radius using decay schedules
+        progress = epoch / self.config.max_epochs
+        self.current_lr = self._calculate_learning_rate(epoch, self.config.max_epochs)
+        self.current_radius = self._calculate_radius(epoch, self.config.max_epochs)
+        
+        # Create config object for parallel processor
+        from types import SimpleNamespace
+        proc_config = SimpleNamespace(
+            min_valid_features=self.config.min_valid_features,
+            spatial_weight=self.config.spatial_weight
+        )
+        
+        # Get neuron coordinates if using spatial distance
+        neuron_coords = self.neuron_coords if coordinates is not None and hasattr(self, 'neuron_coords') else None
+        
+        # Process all data in parallel to get numerator and denominator for batch update
+        numerator, denominator = self.parallel_processor.process_chunks_parallel(
+            data=data,
+            coordinates=coordinates,
+            weights=self.weights,
+            neuron_coords=neuron_coords,
+            config=proc_config,
+            grid_positions=self._grid_positions,
+            current_radius=self.current_radius,
+            chunk_size=self.config.chunk_size
+        )
+        
+        # Apply batch SOM weight update: w_k = Σ(h_k * x) / Σ(h_k)
+        # Add small epsilon to avoid division by zero
+        epsilon = 1e-10
+        
+        # VECTORIZED weight update (from batch_som_trainer.py)
+        updated_mask = denominator > epsilon
+        
+        if updated_mask.any():
+            # Calculate target weights efficiently
             denominator_safe = np.where(denominator > epsilon, denominator, epsilon)
+            target_weights = numerator / denominator_safe[:, np.newaxis]
             
-            # Update weights with learning rate
-            for k in range(len(self.weights)):
-                if denominator[k] > epsilon:
-                    target_weight = numerator[k] / denominator_safe[k]
-                    # Apply learning rate to the update
-                    self.weights[k] = (1 - self.current_lr) * self.weights[k] + self.current_lr * target_weight
+            # Initialize momentum velocity if not exists
+            if not hasattr(self, 'velocity') or self.velocity is None:
+                self.velocity = np.zeros_like(self.weights, dtype=np.float32)
             
-            # Calculate QE after weight update
-            qe = self.calculate_quantization_error(data, coordinates)
+            # Get momentum value (decay from initial to final)
+            progress = epoch / self.config.max_epochs
+            momentum = self._get_config('initial_momentum', 0.9, 'training.momentum') * (1 - progress) + \
+                      self._get_config('final_momentum', 0.1, 'training.momentum') * progress
             
-            logger.info(f"Completed parallel batch training for epoch {epoch+1}: "
-                       f"QE={qe:.6f}, LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
+            # Calculate gradient (target - current) only for updated neurons
+            gradient = np.zeros_like(self.weights, dtype=np.float32)
+            gradient[updated_mask] = target_weights[updated_mask] - self.weights[updated_mask]
             
-        else:
-            # SEQUENTIAL MINI-BATCH - original implementation
-            logger.info(f"Starting sequential mini-batch training for epoch {epoch+1}")
+            # Apply momentum update: v = momentum * v + lr * gradient
+            self.velocity = momentum * self.velocity + self.current_lr * gradient
             
-            # Use the minibatch trainer's train_epoch method
-            training_stats = self.batch_trainer.train_epoch(
-                data=data, 
-                weights=self.weights,
-                epoch=epoch,
-                max_epochs=self.config.max_epochs
-            )
+            # Update weights: w = w + v
+            self.weights += self.velocity
             
-            # Update learning rate from trainer (uses standard schedule)
-            self.current_lr = training_stats['learning_rate']
-            self.current_radius = training_stats['radius']
-            
-            # Get QE from training stats (calculated after weight updates)
-            qe = training_stats.get('qe', 0.0)
-            if qe == 0.0 or qe is None:
-                # If QE wasn't calculated this epoch, calculate it now
-                qe = self.calculate_quantization_error(data, coordinates)
-            
-            converged = training_stats.get('converged', False)
-            logger.info(f"Completed sequential mini-batch training for epoch {epoch+1}: "
-                       f"QE={qe:.6f}, LR={self.current_lr:.4f}, converged={converged}")
+            logger.debug(f"Updated {np.sum(updated_mask)} neurons with momentum={momentum:.3f}")
+        
+        # Calculate QE after weight update - WITH SAMPLING (from batch_som_trainer.py)
+        qe_sample_size = self._get_config('qe_sample_size', 10000, 'monitoring.sampling')
+        qe = self.calculate_quantization_error(data, coordinates, sample_size=qe_sample_size)
+        
+        logger.info(f"Completed batch training for epoch {epoch+1}: "
+                   f"QE={qe:.6f}, LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
         
         return qe
     
@@ -1516,7 +1480,7 @@ class GeoSOMVLRSOM:
         return self.weights.reshape(self.grid_rows, self.grid_cols, self.input_dim)
     
     def save_checkpoint(self, checkpoint_dir: str, epoch: int, best_qe: float, patience_counter: int):
-        """Save training checkpoint to disk.
+        """Save training checkpoint to disk with integrity verification.
         
         Args:
             checkpoint_dir: Directory to save checkpoint
@@ -1531,7 +1495,11 @@ class GeoSOMVLRSOM:
         # Checkpoint filename with epoch
         checkpoint_file = checkpoint_path / f"som_checkpoint_epoch_{epoch}.npz"
         
-        # Prepare checkpoint data
+        # Calculate checksum for integrity verification
+        import hashlib
+        weights_checksum = hashlib.md5(self.weights.tobytes()).hexdigest()
+        
+        # Prepare checkpoint data with metadata for validation
         checkpoint_data = {
             'epoch': epoch,
             'weights': self.weights,
@@ -1542,12 +1510,29 @@ class GeoSOMVLRSOM:
             'grid_size': self.config.grid_size,
             'input_dim': self.input_dim,
             'spatial_weight': self.config.spatial_weight,
-            'training_history': json.dumps(self.training_history)  # JSON for nested dict
+            'training_history': json.dumps(self.training_history),  # JSON for nested dict
+            'weights_checksum': weights_checksum,
+            'checkpoint_version': '2.0',  # Version for compatibility checking
+            'timestamp': time.time()
         }
         
-        # Save numpy arrays and scalars
-        np.savez_compressed(checkpoint_file, **checkpoint_data)
-        logger.info(f"Saved checkpoint to {checkpoint_file}")
+        # Save numpy arrays and scalars with error handling
+        try:
+            np.savez_compressed(checkpoint_file, **checkpoint_data)
+            
+            # Verify the checkpoint was written correctly
+            test_load = np.load(checkpoint_file, allow_pickle=False)
+            test_checksum = hashlib.md5(test_load['weights'].tobytes()).hexdigest()
+            if test_checksum != weights_checksum:
+                raise ValueError(f"Checkpoint verification failed: checksum mismatch")
+            test_load.close()
+            
+            logger.info(f"Saved and verified checkpoint to {checkpoint_file}")
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint: {e}")
+            if checkpoint_file.exists():
+                checkpoint_file.unlink()  # Remove corrupted file
+            raise
         
         # Also save a 'latest' symlink for easy access
         latest_link = checkpoint_path / "som_checkpoint_latest.npz"
@@ -1578,37 +1563,80 @@ class GeoSOMVLRSOM:
                 logger.debug(f"Removed old checkpoint: {old_checkpoint}")
     
     def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
-        """Load training checkpoint from disk.
+        """Load training checkpoint from disk with integrity verification.
         
         Args:
             checkpoint_path: Path to checkpoint file
             
         Returns:
             Dictionary with checkpoint data
+            
+        Raises:
+            FileNotFoundError: If checkpoint file doesn't exist
+            ValueError: If checkpoint is corrupted or incompatible
         """
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         
-        # Load checkpoint safely without pickle
-        checkpoint = np.load(checkpoint_path, allow_pickle=False)
-        
-        # Extract data
-        checkpoint_data = {
-            'epoch': int(checkpoint['epoch']),
-            'weights': checkpoint['weights'],
-            'current_lr': float(checkpoint['current_lr']),
-            'current_radius': float(checkpoint['current_radius']),
-            'best_qe': float(checkpoint['best_qe']),
-            'patience_counter': int(checkpoint['patience_counter']),
-            'training_history': json.loads(str(checkpoint['training_history']))
-        }
-        
-        # Validate checkpoint compatibility (convert both to list for comparison)
-        checkpoint_grid = checkpoint['grid_size'].tolist() if hasattr(checkpoint['grid_size'], 'tolist') else list(checkpoint['grid_size'])
-        config_grid = list(self.config.grid_size)
-        if checkpoint_grid != config_grid:
-            raise ValueError(f"Grid size mismatch: checkpoint has {checkpoint_grid}, "
-                           f"config has {config_grid}")
+        try:
+            # Load checkpoint safely without pickle
+            checkpoint = np.load(checkpoint_path, allow_pickle=False)
+            
+            # Check version compatibility
+            version = checkpoint.get('checkpoint_version', '1.0')
+            if version != '2.0' and 'weights_checksum' not in checkpoint:
+                logger.warning(f"Loading legacy checkpoint (version {version}), no integrity check available")
+            
+            # Verify integrity if checksum is available
+            if 'weights_checksum' in checkpoint:
+                import hashlib
+                expected_checksum = str(checkpoint['weights_checksum'])
+                actual_checksum = hashlib.md5(checkpoint['weights'].tobytes()).hexdigest()
+                if actual_checksum != expected_checksum:
+                    raise ValueError(f"Checkpoint integrity check failed: checksum mismatch")
+                logger.info("Checkpoint integrity verified successfully")
+            
+            # Validate checkpoint structure
+            required_fields = ['epoch', 'weights', 'current_lr', 'current_radius', 'best_qe', 'patience_counter']
+            for field in required_fields:
+                if field not in checkpoint:
+                    raise ValueError(f"Corrupted checkpoint: missing required field '{field}'")
+            
+            # Validate dimensions
+            weights_shape = checkpoint['weights'].shape
+            if 'grid_size' in checkpoint:
+                expected_neurons = checkpoint['grid_size'][0] * checkpoint['grid_size'][1]
+                if weights_shape[0] != expected_neurons:
+                    raise ValueError(f"Checkpoint validation failed: weights shape {weights_shape} doesn't match grid size {checkpoint['grid_size']}")
+            
+            # Extract data with error handling
+            checkpoint_data = {
+                'epoch': int(checkpoint['epoch']),
+                'weights': checkpoint['weights'],
+                'current_lr': float(checkpoint['current_lr']),
+                'current_radius': float(checkpoint['current_radius']),
+                'best_qe': float(checkpoint['best_qe']),
+                'patience_counter': int(checkpoint['patience_counter']),
+                'training_history': json.loads(str(checkpoint['training_history']))
+            }
+            
+            # Validate checkpoint compatibility (convert both to list for comparison)
+            checkpoint_grid = checkpoint['grid_size'].tolist() if hasattr(checkpoint['grid_size'], 'tolist') else list(checkpoint['grid_size'])
+            config_grid = list(self.config.grid_size)
+            if checkpoint_grid != config_grid:
+                raise ValueError(f"Grid size mismatch: checkpoint has {checkpoint_grid}, "
+                               f"config has {config_grid}")
+                               
+        except KeyError as e:
+            raise ValueError(f"Corrupted checkpoint: missing data field {e}")
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Corrupted checkpoint: invalid data format - {e}")
+        except Exception as e:
+            raise ValueError(f"Failed to load checkpoint: {e}") from e
+        finally:
+            # Always close the npz file to prevent resource leaks
+            if 'checkpoint' in locals():
+                checkpoint.close()
         
         # Only check input_dim if already initialized
         if self.input_dim is not None and int(checkpoint['input_dim']) != self.input_dim:
@@ -1630,11 +1658,45 @@ class GeoSOMVLRSOM:
         return checkpoint_data
     
     def cleanup(self):
-        """Clean up resources used during training."""
-        # Note: Processor cleanup is now handled automatically
-        # Since we create a new processor per training run (not stored as instance variable),
-        # Python's garbage collector will clean it up when it goes out of scope.
-        # This is safer than manual cleanup and prevents memory leaks.
+        """Explicitly clean up resources used during training.
+        
+        This method ensures proper resource cleanup to prevent memory leaks
+        in long-running processes. Should be called when SOM is no longer needed.
+        """
+        try:
+            # Clean up processor if it exists
+            if hasattr(self, 'processor') and self.processor is not None:
+                if hasattr(self.processor, 'cleanup'):
+                    self.processor.cleanup()
+                    logger.debug("Cleaned up parallel processor resources")
+                self.processor = None
+            
+            # Clear large arrays to free memory
+            if hasattr(self, 'velocity') and self.velocity is not None:
+                self.velocity = None
+                logger.debug("Cleared velocity array")
+            
+            # Clear training history if it's very large
+            if hasattr(self, 'training_history') and self.training_history:
+                history_size = sum(len(v) if isinstance(v, list) else 1 
+                                 for v in self.training_history.values())
+                if history_size > 10000:  # Clear if history is very large
+                    self.training_history = {
+                        'quantization_errors': [],
+                        'topographic_errors': [],
+                        'geographic_coherences': [],
+                        'learning_rates': [],
+                        'radii': []
+                    }
+                    logger.debug(f"Cleared large training history ({history_size} entries)")
+            
+            # Force garbage collection for large objects
+            import gc
+            gc.collect()
+            logger.debug("Forced garbage collection completed")
+            
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
     
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
         """Predict BMU indices for data using vectorized operations."""
