@@ -24,7 +24,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 try:
-    from src.machine_learning.pipelines.regression_pipeline import RegressionPipeline
+    from ml_orchestrator import MLOrchestrator
     from src.machine_learning.config_loader import MLRegressionConfig
 except ImportError as e:
     # For help display, we don't need actual imports
@@ -135,32 +135,20 @@ def run_ml_pipeline(
         logger.info("Using default configuration")
         config = MLRegressionConfig(validate=True)
     
-    # Initialize pipeline
-    logger.info("Initializing regression pipeline...")
-    pipeline = RegressionPipeline(config)
+    # Initialize orchestrator
+    logger.info("Initializing ML Orchestrator...")
+    orchestrator = MLOrchestrator(config_path)
     
     # Set output directory
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Output directory: {output_dir}")
     
-    # Load and preprocess data
-    logger.info(f"Loading data from: {data_path}")
-    logger.info(f"Spatial grid step: {spatial_grid_step or 1} (1=no sampling)")
-    
-    preprocessed_data = pipeline.load_and_preprocess_data(
-        str(data_path),
-        spatial_grid_step=spatial_grid_step,
-        use_h2o=True
-    )
-    
-    logger.info(f"Data shape after preprocessing: {preprocessed_data.shape}")
-    
-    # Map method names
+    # Map method names for backward compatibility
     method_map = {
-        "glm-continuous": "method1",
-        "glm-categorical": "method2", 
-        "dml": "method3"
+        "glm-continuous": "method1",  # H0-H1 testing
+        "glm-categorical": "method2",  # H2 testing
+        "dml": "method3"  # H0-H1 causal
     }
     
     method = method_map.get(method, method)
@@ -169,19 +157,37 @@ def run_ml_pipeline(
     logger.info(f"Running method: {method}")
     
     if method == "all":
-        logger.info("Testing all three hypotheses...")
-        results = pipeline.hypothesis_tester.run_all_tests(preprocessed_data)
-    elif method == "method1":
-        logger.info("Running Method 1: Continuous GLM...")
-        results = pipeline.hypothesis_tester.test_method1(preprocessed_data)
-    elif method == "method2":
-        logger.info("Running Method 2: Categorical GLM...")
-        results = pipeline.hypothesis_tester.test_method2(preprocessed_data)
-    elif method == "method3":
-        logger.info("Running Method 3: Double Machine Learning...")
-        results = pipeline.hypothesis_tester.test_method3(preprocessed_data)
+        logger.info("Running complete analysis (all methods)...")
+        results = orchestrator.run_complete_analysis(
+            data_path=data_path,
+            spatial_grid_step=spatial_grid_step,
+            output_dir=output_dir
+        )
     else:
-        raise ValueError(f"Unknown method: {method}")
+        # First load and preprocess data
+        logger.info(f"Loading and preprocessing data from: {data_path}")
+        orchestrator.load_and_preprocess_data(
+            data_path=data_path,
+            spatial_grid_step=spatial_grid_step
+        )
+        
+        # Run specific method
+        if method == "method1":
+            logger.info("Running Method 1: H0-H1 Testing (GLM)...")
+            results = orchestrator.run_method1_h0_h1()
+        elif method == "method2":
+            logger.info("Running Method 2: H2 Testing (Continuous & Categorical)...")
+            results = orchestrator.run_method2_h2()
+        elif method == "method3":
+            logger.info("Running Method 3: H0-H1 Causal Testing (DML)...")
+            results = orchestrator.run_method3_dml()
+        else:
+            raise ValueError(f"Unknown method: {method}")
+        
+        # Save results if output directory specified
+        if output_dir:
+            orchestrator.save_results(output_dir)
+            orchestrator.generate_reports(output_dir)
     
     # Save results if output directory specified
     if output_dir:

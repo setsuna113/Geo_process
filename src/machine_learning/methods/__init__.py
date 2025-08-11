@@ -1,27 +1,27 @@
 """Machine learning methods for biodiversity hypothesis testing.
 
 Provides three methods for testing biodiversity hypotheses:
-- Method 1: Continuous interaction GLM
-- Method 2: Categorical interaction GLM
-- Method 3: Double Machine Learning (DML)
+- Method 1: H0-H1 testing (Model 1 vs Model 2)
+- Method 2: H2 testing (Model 3a continuous, Model 3b categorical)
+- Method 3: H0-H1 causal testing (Double Machine Learning)
 
-REFACTORED VERSION 2.0:
-- All methods now expect preprocessed data from the pipeline
-- Data loading and common preprocessing moved to pipeline
-- Methods only handle their specific feature engineering
-- Massive performance improvement (4x memory, 3x computation savings)
+REFACTORED VERSION 3.0:
+- Method 1: Tests H0-H1 only (no interaction)
+- Method 2: Tests H2 with both continuous and categorical approaches
+- Method 3: Provides causal inference for H0-H1
+- Correct separation of hypothesis testing concerns
 """
 
 # Import refactored versions
-from .method1_continuous_refactored import Method1ContinuousGLM
-from .method2_categorical_refactored import Method2CategoricalGLM
+from .method1_continuous_refactored import Method1H0H1GLM
+from .method2_categorical_refactored import Method2H2Testing
 from .method3_dml_refactored import Method3DML
 
 __all__ = [
-    'Method1ContinuousGLM',
-    'Method2CategoricalGLM',
+    'Method1H0H1GLM',
+    'Method2H2Testing',
     'Method3DML'
 ]
 
 # Version info
-__version__ = '2.0.0'  # Major refactoring - removed redundant preprocessing
+__version__ = '3.0.0'  # Correct hypothesis testing structure
