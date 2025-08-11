@@ -6,8 +6,18 @@ This is a standalone runner that doesn't depend on the main pipeline infrastruct
 It reads parquet files and runs spatial analysis experiments (SOM, GWPCA, MaxP).
 """
 
-import sys
+# CRITICAL: Set thread limits BEFORE any imports!
+# This prevents thread explosion when using joblib threading backend.
+# Must be done before NumPy/scipy/sklearn imports.
 import os
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+os.environ.setdefault('VECLIB_MAXIMUM_THREADS', '1')
+os.environ.setdefault('BLIS_NUM_THREADS', '1')
+
+import sys
 import argparse
 import logging
 from pathlib import Path
