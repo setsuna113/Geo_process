@@ -14,8 +14,8 @@ import pyarrow.parquet as pq
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 
-from .mesf_cache_manager import MESFCacheManager
-from .mesf import StandardMESF as MESF
+from ..spatial.mesf_cache_manager import MESFCacheManager
+from ..spatial.mesf import StandardMESF as MESF, NystromMESF
 
 logger = logging.getLogger(__name__)
 
@@ -25,17 +25,15 @@ class MESFPreprocessor:
     
     def __init__(self, 
                  max_exact_points: int = 10000,
-                 grid_resolution_km: float = 10.0,
                  cache_dir: Optional[str] = None):
         """Initialize MESF preprocessor.
         
         Args:
             max_exact_points: Maximum points for exact MESF computation
-            grid_resolution_km: Grid resolution for approximate MESF
+                            Above this, uses Nystrom approximation
             cache_dir: Directory for caching MESF results
         """
         self.max_exact_points = max_exact_points
-        self.grid_resolution_km = grid_resolution_km
         self.cache_manager = MESFCacheManager(cache_dir)
         
         logger.info(f"Initialized MESFPreprocessor with cache at {self.cache_manager.cache_dir}")
@@ -215,7 +213,10 @@ class MESFPreprocessor:
     def _compute_approximate_mesf(self,
                                  coords_df: pd.DataFrame,
                                  mesf_params: Dict[str, Any]) -> np.ndarray:
-        """Compute approximate MESF using grid aggregation.
+        """Compute approximate MESF using Nystrom approximation.
+        
+        Uses Nystrom method as specified in regression_analysis_decisions.md.
+        Suitable for large datasets (>100k points).
         
         Args:
             coords_df: DataFrame with longitude, latitude columns
@@ -224,83 +225,26 @@ class MESFPreprocessor:
         Returns:
             MESF eigenvectors as numpy array
         """
-        logger.info("Using approximate MESF computation")
+        logger.info("Using Nystrom MESF approximation for large dataset")
         
         coords = coords_df[['longitude', 'latitude']].values
+        n_points = len(coords)
         
-        # Create spatial grid
-        grid_coords, point_to_grid = self._create_spatial_grid(coords)
-        logger.info(f"Created grid with {len(grid_coords):,} cells")
-        
-        # Compute MESF on grid
-        mesf_computer = MESF(
+        # Use Nystrom approximation for large datasets
+        mesf_computer = NystromMESF(
+            n_landmark=mesf_params.get('n_landmark', 5000),
+            n_sample=mesf_params.get('n_sample', 25000),
             variance_threshold=mesf_params.get('variance_threshold', 0.75),
             max_eigenvectors=mesf_params.get('max_eigenvectors', 10),
             min_eigenvectors=mesf_params.get('min_eigenvectors', 5),
             distance_threshold=mesf_params.get('distance_threshold', 100)
         )
         
-        grid_mesf = mesf_computer.fit_transform(grid_coords)
-        logger.info(f"Computed {grid_mesf.shape[1]} eigenvectors on grid")
+        logger.info(f"Computing Nystrom MESF for {n_points:,} points")
+        eigenvectors = mesf_computer.fit_transform(coords)
+        logger.info(f"Computed {eigenvectors.shape[1]} MESF eigenvectors using Nystrom")
         
-        # Interpolate to full points
-        full_mesf = self._interpolate_mesf(grid_coords, grid_mesf, coords, point_to_grid)
-        
-        return full_mesf
-    
-    def _create_spatial_grid(self, coords: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Create spatial grid for approximate MESF.
-        
-        Args:
-            coords: Coordinate array (longitude, latitude)
-            
-        Returns:
-            Tuple of (grid_centers, point_to_grid_mapping)
-        """
-        # Convert km to degrees
-        lat_resolution = self.grid_resolution_km / 111.0
-        lon_resolution = self.grid_resolution_km / 111.0
-        
-        # Discretize to grid
-        grid_lat = np.round(coords[:, 1] / lat_resolution) * lat_resolution
-        grid_lon = np.round(coords[:, 0] / lon_resolution) * lon_resolution
-        
-        # Get unique grid cells
-        grid_points = np.column_stack([grid_lon, grid_lat])
-        unique_grids, point_to_grid = np.unique(
-            grid_points,
-            axis=0,
-            return_inverse=True
-        )
-        
-        return unique_grids, point_to_grid
-    
-    def _interpolate_mesf(self,
-                         grid_coords: np.ndarray,
-                         grid_mesf: np.ndarray,
-                         full_coords: np.ndarray,
-                         point_to_grid: np.ndarray) -> np.ndarray:
-        """Interpolate MESF from grid to full points.
-        
-        Args:
-            grid_coords: Grid center coordinates
-            grid_mesf: MESF values at grid centers
-            full_coords: Full point coordinates
-            point_to_grid: Mapping from points to grid cells
-            
-        Returns:
-            Interpolated MESF values for all points
-        """
-        n_points = len(full_coords)
-        n_components = grid_mesf.shape[1]
-        
-        # Simple assignment (fast)
-        full_mesf = np.zeros((n_points, n_components))
-        for i in range(n_points):
-            grid_idx = point_to_grid[i]
-            full_mesf[i] = grid_mesf[grid_idx]
-        
-        return full_mesf
+        return eigenvectors
     
     def get_cache_info(self) -> Dict[str, Any]:
         """Get information about MESF cache.

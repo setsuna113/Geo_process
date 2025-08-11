@@ -1,12 +1,38 @@
-"""Type definitions for machine learning components."""
+"""Type definitions for machine learning components.
+
+This module consolidates all ML-related type definitions for the system.
+"""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Tuple, Set, Union
+from typing import Dict, Any, List, Optional, Tuple, Set, Union, Literal
 from enum import Enum
 import numpy as np
+import pandas as pd
 from datetime import datetime
+from pathlib import Path
 
 from ..interfaces.analyzer import AnalysisResult, AnalysisMetadata
+
+
+class ModelType(Enum):
+    """Types of machine learning models."""
+    REGRESSION = "regression"
+    CLASSIFICATION = "classification"
+    CLUSTERING = "clustering"
+    DIMENSIONALITY_REDUCTION = "dimensionality_reduction"
+    GLM = "glm"
+    GBM = "gbm"
+    DML = "double_ml"
+
+
+class DataSplitStrategy(Enum):
+    """Data splitting strategies for cross-validation."""
+    RANDOM = "random"
+    STRATIFIED = "stratified"
+    TIME_SERIES = "time_series"
+    SPATIAL_BLOCK = "spatial_block"
+    SPATIAL_BUFFER = "spatial_buffer"
+    ENVIRONMENTAL_BLOCK = "environmental_block"
 
 
 @dataclass
