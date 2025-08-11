@@ -23,7 +23,7 @@ grid:
 # Data configuration
 data:
   # Input data sampling
-  spatial_grid_step: 2  # Sample every Nth spatial point (100 = fast testing)
+  spatial_grid_step: 100  # Sample every Nth spatial point (100 = fast testing)
   
   # Feature columns (standardized naming)
   feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
@@ -44,7 +44,7 @@ distance:
 
 training:
   # Basic settings
-  max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
+  max_epochs: 11          # Number of training epochs (15 for testing, 200-1000 for production)
   n_workers: 200          # Number of workers (1 for sequential, >1 for parallel)
   
   # Learning rate
