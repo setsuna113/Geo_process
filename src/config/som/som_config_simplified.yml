@@ -45,8 +45,7 @@ distance:
 training:
   # Basic settings
   max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 200          # Parallel workers (optimized to use all workers efficiently)
-  use_parallel: true      # Use ParallelBatchProcessor for true multi-worker parallelization
+  n_workers: 200          # Number of workers (1 for sequential, >1 for parallel)
   
   # Learning rate
   learning_rate:
@@ -137,6 +136,7 @@ monitoring:
   # Sampling for metrics
   sampling:
     large_sample: 50000              # Sample size for accurate metrics
+    qe_sample_size: 10000            # Sample size for QE calculation each epoch
 
 # ============================================================================
 # VALIDATION - Cross-validation settings

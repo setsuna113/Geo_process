@@ -365,9 +365,9 @@ class SOMConfig(IMethodConfig):
         }
     
     def is_parallel_enabled(self) -> bool:
-        """Check if parallel processing is enabled."""
-        parallel_config = self.get_parallel_config()
-        return parallel_config.get('enabled', True)
+        """Check if parallel processing is enabled (always true now)."""
+        # Always use ParallelBatchProcessor (n_workers=1 for sequential)
+        return True
     
     def get_n_workers(self) -> Optional[int]:
         """Get number of parallel workers."""
