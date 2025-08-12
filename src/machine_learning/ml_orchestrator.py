@@ -85,6 +85,20 @@ class MLOrchestrator:
         self.fungi_cache_manager = FungiRichnessCacheManager()
         self.mesf_cache_manager = MESFCacheManager()
         
+        # Run cache cleanup on initialization
+        try:
+            cleanup_stats = self.mesf_cache_manager.cleanup_old_entries()
+            if cleanup_stats['removed_by_age'] + cleanup_stats['removed_by_size'] > 0:
+                logger.info(f"Cache cleanup performed: freed {cleanup_stats['space_freed_mb']:.1f}MB")
+            
+            # Log cache statistics
+            cache_stats = self.mesf_cache_manager.get_cache_stats()
+            logger.info(f"Cache status: {cache_stats['total_files']} files, "
+                       f"{cache_stats['total_size_mb']:.1f}MB used, "
+                       f"{cache_stats['disk_free_gb']:.1f}GB free")
+        except Exception as e:
+            logger.warning(f"Cache maintenance failed: {e}")
+        
         # Initialize H2O if needed
         config_dict = self.config.config if hasattr(self.config, 'config') else {}
         self.h2o_initialized = False
@@ -255,23 +269,37 @@ class MLOrchestrator:
         # Check if MESF is already cached
         cached_mesf_loaded = False
         if self.mesf_cache_manager.is_cached(cache_key):
-            logger.info(f"Loading cached MESF eigenvectors from cache")
-            try:
-                cached_path, metadata = self.mesf_cache_manager.load_from_cache(cache_key)
-                
-                # Load MESF columns from cache
-                cached_df = pd.read_parquet(cached_path)
-                mesf_cols = [col for col in cached_df.columns if col.startswith('ME')]
-                
-                # Add MESF columns to current data
-                for col in mesf_cols:
-                    if col in cached_df.columns:
-                        data[col] = cached_df.loc[data.index, col].values
-                
-                logger.info(f"Loaded {len(mesf_cols)} MESF eigenvectors from cache")
-                cached_mesf_loaded = True
-            except Exception as e:
-                logger.warning(f"Failed to load MESF from cache: {e}. Recomputing...")
+            # Validate cache integrity first
+            if self.mesf_cache_manager.validate_cache_integrity(cache_key):
+                logger.info(f"Loading cached MESF eigenvectors from cache")
+                try:
+                    cached_path, metadata = self.mesf_cache_manager.load_from_cache(cache_key)
+                    
+                    # Load MESF columns from cache
+                    cached_df = pd.read_parquet(cached_path)
+                    mesf_cols = [col for col in cached_df.columns if col.startswith('ME')]
+                    
+                    # Verify index compatibility
+                    if not cached_df.index.equals(data.index):
+                        logger.warning("Cache index mismatch, recomputing MESF")
+                        raise ValueError("Index mismatch")
+                    
+                    # Add MESF columns to current data
+                    for col in mesf_cols:
+                        if col in cached_df.columns:
+                            data[col] = cached_df.loc[data.index, col].values
+                    
+                    logger.info(f"Loaded {len(mesf_cols)} MESF eigenvectors from cache")
+                    cached_mesf_loaded = True
+                except Exception as e:
+                    logger.warning(f"Failed to load MESF from cache: {e}. Recomputing...")
+                    # Clean up corrupted cache
+                    self.mesf_cache_manager._cleanup_cache(cache_key)
+                    cached_mesf_loaded = False
+            else:
+                logger.warning("Cache validation failed, recomputing MESF")
+                # Clean up invalid cache
+                self.mesf_cache_manager._cleanup_cache(cache_key)
                 cached_mesf_loaded = False
         
         if not cached_mesf_loaded:
@@ -304,15 +332,26 @@ class MLOrchestrator:
                 
             except Exception as e:
                 logger.error(f"MESF computation failed: {e}")
-                logger.warning("Continuing without spatial components. This may impact model quality.")
-                # Add flag to results metadata
+                logger.warning("Continuing without spatial components. This may significantly impact model quality.")
+                
+                # Add detailed warning to results metadata
                 if not hasattr(self, 'processing_warnings'):
                     self.processing_warnings = []
+                    
                 self.processing_warnings.append({
                     'type': 'MESF_FAILURE',
                     'message': str(e),
-                    'impact': 'Models will not account for spatial autocorrelation'
+                    'impact': 'Models will not account for spatial autocorrelation',
+                    'severity': 'HIGH',
+                    'recommendations': [
+                        'Consider reducing spatial_grid_step for smaller dataset',
+                        'Check memory availability',
+                        'Verify coordinate columns (x, y) are valid'
+                    ]
                 })
+                
+                # Set flag to indicate MESF is not available
+                self.mesf_available = False
         
         # Save the fully preprocessed data with fungi_richness to cache if it wasn't cached before
         cache_key = self.fungi_cache_manager.get_cache_key(str(data_path))
@@ -816,13 +855,58 @@ class MLOrchestrator:
         logger.info(f"Synthesis summary saved to {synthesis_path}")
     
     def cleanup(self) -> None:
-        """Clean up resources (H2O cluster, etc.)."""
+        """Clean up resources (H2O cluster, cache monitoring, etc.)."""
         try:
+            # Log final cache statistics
+            try:
+                cache_stats = self.mesf_cache_manager.get_cache_stats()
+                logger.info(f"Final cache status: {cache_stats['total_files']} files, "
+                           f"{cache_stats['total_size_mb']:.1f}MB used")
+            except:
+                pass
+            
+            # Shutdown H2O cluster if initialized
             if self.h2o_initialized and self.h2o:
                 logger.info("Shutting down H2O cluster...")
                 import h2o
                 h2o.cluster().shutdown(prompt=False)
                 self.h2o_initialized = False
                 logger.info("H2O cluster shutdown complete")
+                
         except Exception as e:
             logger.warning(f"Error during cleanup: {e}")
+    
+    def _reinitialize_h2o(self) -> bool:
+        """Attempt to reinitialize H2O cluster after failure.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info("Attempting to reinitialize H2O cluster...")
+            
+            # First try to shutdown any existing cluster
+            try:
+                import h2o
+                h2o.cluster().shutdown(prompt=False)
+            except:
+                pass
+            
+            # Wait a moment for cleanup
+            import time
+            time.sleep(2)
+            
+            # Try to initialize with reduced memory
+            config_dict = self.config.config if hasattr(self.config, 'config') else {}
+            self.h2o = H2OManager.get_or_init(
+                max_mem_size='4G',  # Reduced memory
+                nthreads=4  # Reduced threads
+            )
+            self.h2o_initialized = True
+            logger.info("H2O cluster reinitialized successfully with reduced resources")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to reinitialize H2O: {e}")
+            self.h2o_initialized = False
+            return False
