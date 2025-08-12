@@ -11,8 +11,8 @@ from .preprocessing.feature_engineering import (
     CompositeFeatureBuilder
 )
 
-# Import imputation
-from .preprocessing.imputation.knn_imputer import SpatialKNNImputer
+# Import imputation (module not yet implemented)
+# from .preprocessing.imputation.knn_imputer import SpatialKNNImputer
 
 # Import CV strategies
 from .validation.spatial_cv import (
@@ -28,7 +28,7 @@ __all__ = [
     'SpatialFeatureBuilder',
     'EcologicalFeatureBuilder',
     'CompositeFeatureBuilder',
-    'SpatialKNNImputer',
+    # 'SpatialKNNImputer',  # Not yet implemented
     'SpatialBlockCV',
     'SpatialBufferCV',
     'EnvironmentalBlockCV'

@@ -50,9 +50,8 @@ from src.machine_learning.preprocessing import (
 )
 from src.machine_learning.preprocessing.mesf_preprocessor import MESFPreprocessor
 
-# Evaluation and reporting
-from src.machine_learning.visualization import create_regression_synthesis_plot
-from src.machine_learning.reporting import RegressionReportGenerator
+# Diagnostics
+from src.machine_learning.diagnostics import DHARMaDiagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +83,12 @@ class MLOrchestrator:
         self.data_loader = DataLoader(self.path_validator)
         
         # Initialize H2O if needed
-        if self.config.config.get('use_h2o', True):
+        config_dict = self.config.config if hasattr(self.config, 'config') else {}
+        if config_dict.get('use_h2o', True):
             # Initialize H2O using manager
             self.h2o = H2OManager.get_or_init(
-                max_mem_size=self.config.config.get('h2o_memory', '32G'),
-                nthreads=self.config.config.get('h2o_threads', -1)
+                max_mem_size=config_dict.get('h2o_memory', '32G'),
+                nthreads=config_dict.get('h2o_threads', -1)
             )
         
         # Initialize methods
@@ -428,10 +428,16 @@ class MLOrchestrator:
                 'config': self.config.config
             }
             
-            # 5. Save results if output directory provided
+            # 5. Run diagnostics for each method
+            self.run_diagnostics()
+            
+            # 6. Generate reports from each method
+            if output_dir:
+                self.generate_method_reports(output_dir)
+                
+            # 7. Save raw results if output directory provided
             if output_dir:
                 self.save_results(output_dir)
-                self.generate_reports(output_dir)
             
             logger.info("\n" + "="*80)
             logger.info("ANALYSIS COMPLETE")
@@ -475,8 +481,51 @@ class MLOrchestrator:
         
         logger.info(f"Results saved to {output_path}")
     
-    def generate_reports(self, output_dir: Path) -> None:
-        """Generate visualization and reports.
+    def run_diagnostics(self) -> None:
+        """Run diagnostics for each method's models.
+        
+        Diagnostics are method-specific and stored in results.
+        """
+        logger.info("\n" + "-"*60)
+        logger.info("RUNNING MODEL DIAGNOSTICS")
+        logger.info("-"*60)
+        
+        # Method 1 diagnostics
+        if self.results.get('method1'):
+            try:
+                logger.info("Running diagnostics for Method 1...")
+                dharma = DHARMaDiagnostics()
+                method1_diag = dharma.run_diagnostics(
+                    self.method1.model_1a,
+                    self.preprocessed_data
+                )
+                self.results['method1']['diagnostics'] = method1_diag
+                logger.info(f"Method 1 diagnostics: {'PASSED' if method1_diag.get('model_adequate') else 'ISSUES FOUND'}")
+            except Exception as e:
+                logger.warning(f"Method 1 diagnostics failed: {e}")
+        
+        # Method 2 diagnostics  
+        if self.results.get('method2'):
+            try:
+                logger.info("Running diagnostics for Method 2...")
+                dharma = DHARMaDiagnostics()
+                method2_diag = dharma.run_diagnostics(
+                    self.method2.model_3b_categorical,
+                    self.preprocessed_data
+                )
+                self.results['method2']['diagnostics'] = method2_diag
+                logger.info(f"Method 2 diagnostics: {'PASSED' if method2_diag.get('model_adequate') else 'ISSUES FOUND'}")
+            except Exception as e:
+                logger.warning(f"Method 2 diagnostics failed: {e}")
+        
+        # Method 3 uses DML - different diagnostic approach
+        if self.results.get('method3'):
+            logger.info("Method 3 (DML) has built-in diagnostic checks")
+    
+    def generate_method_reports(self, output_dir: Path) -> None:
+        """Generate reports from each method using their internal reporters.
+        
+        Each method controls its own reporting through hypothesis/evaluation modules.
         
         Args:
             output_dir: Directory to save reports
@@ -484,18 +533,116 @@ class MLOrchestrator:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        try:
-            # Generate synthesis plot
-            viz_path = output_dir / "synthesis_plot.png"
-            create_regression_synthesis_plot(self.results, save_path=str(viz_path))
-            logger.info(f"Visualization saved to {viz_path}")
-        except Exception as e:
-            logger.error(f"Failed to create visualization: {e}")
+        logger.info("\n" + "-"*60)
+        logger.info("GENERATING METHOD REPORTS")
+        logger.info("-"*60)
         
-        try:
-            # Generate report
-            report_gen = RegressionReportGenerator(self.results, {})
-            report_gen.generate_full_report(str(output_dir))
-            logger.info(f"Report generated in {output_dir}")
-        except Exception as e:
-            logger.error(f"Failed to generate report: {e}")
+        # Method 1 report generation
+        if self.results.get('method1'):
+            try:
+                logger.info("Generating Method 1 report...")
+                method1_dir = output_dir / "method1"
+                method1_dir.mkdir(exist_ok=True)
+                
+                method1_report = self.method1.generate_report(method1_dir)
+                self.results['method1']['report'] = method1_report
+                logger.info(f"Method 1 report generated with {len(method1_report.get('visualizations', []))} visualizations")
+            except Exception as e:
+                logger.warning(f"Method 1 report generation failed: {e}")
+        
+        # Method 2 report generation  
+        if self.results.get('method2'):
+            try:
+                logger.info("Generating Method 2 report...")
+                method2_dir = output_dir / "method2"
+                method2_dir.mkdir(exist_ok=True)
+                
+                method2_report = self.method2.generate_report(method2_dir)
+                self.results['method2']['report'] = method2_report
+                logger.info(f"Method 2 report generated with {len(method2_report.get('visualizations', []))} visualizations")
+            except Exception as e:
+                logger.warning(f"Method 2 report generation failed: {e}")
+        
+        # Method 3 report generation
+        if self.results.get('method3'):
+            try:
+                logger.info("Generating Method 3 report...")
+                method3_dir = output_dir / "method3"
+                method3_dir.mkdir(exist_ok=True)
+                
+                method3_report = self.method3.generate_report(method3_dir)
+                self.results['method3']['report'] = method3_report
+                logger.info(f"Method 3 report generated with {len(method3_report.get('visualizations', []))} visualizations")
+            except Exception as e:
+                logger.warning(f"Method 3 report generation failed: {e}")
+        
+        # Generate synthesis summary
+        self.generate_synthesis_summary(output_dir)
+    
+    def generate_synthesis_summary(self, output_dir: Path) -> None:
+        """Generate a synthesis summary across all methods.
+        
+        Args:
+            output_dir: Directory to save summary
+        """
+        summary = {
+            'title': 'Biodiversity Hypothesis Testing - Synthesis',
+            'methods_completed': [],
+            'hypotheses_tested': {},
+            'overall_conclusions': {}
+        }
+        
+        # Method 1 conclusions
+        if self.results.get('method1', {}).get('report'):
+            summary['methods_completed'].append('Method 1: GLM H0-H1')
+            summary['hypotheses_tested']['H0_H1'] = {
+                'method': 'Method 1',
+                'conclusion': self.results['method1']['report'].get('conclusion', {})
+            }
+        
+        # Method 2 conclusions
+        if self.results.get('method2', {}).get('report'):
+            summary['methods_completed'].append('Method 2: H2 Testing')
+            summary['hypotheses_tested']['H2'] = {
+                'method': 'Method 2',
+                'conclusion': self.results['method2']['report'].get('conclusion', {})
+            }
+        
+        # Method 3 conclusions
+        if self.results.get('method3', {}).get('report'):
+            summary['methods_completed'].append('Method 3: DML Causal')
+            summary['hypotheses_tested']['H0_H1_causal'] = {
+                'method': 'Method 3',
+                'conclusion': self.results['method3']['report'].get('conclusion', {})
+            }
+        
+        # Overall synthesis
+        h1_support = 0
+        if self.results.get('method1', {}).get('supports_h1'):
+            h1_support += 1
+        if self.results.get('method3', {}).get('hypothesis_tests', {}).get('classical', {}).get('h1_supported'):
+            h1_support += 1
+        
+        h2_support = self.results.get('method2', {}).get('h2_results', {}).get('overall_conclusion', {}).get('h2_supported', False)
+        
+        if h1_support >= 1 and h2_support:
+            overall = "Evidence supports both biodiversity-begets-biodiversity (H1) and temperate mismatch (H2)"
+        elif h1_support >= 1:
+            overall = "Evidence supports biodiversity-begets-biodiversity (H1) but not temperate mismatch (H2)"
+        elif h2_support:
+            overall = "Evidence supports temperate mismatch (H2) but mixed on biodiversity effects (H1)"
+        else:
+            overall = "Limited evidence for either hypothesis"
+        
+        summary['overall_conclusions'] = {
+            'synthesis': overall,
+            'h1_support_count': h1_support,
+            'h2_supported': h2_support
+        }
+        
+        # Save synthesis summary
+        import json
+        synthesis_path = output_dir / "synthesis_summary.json"
+        with open(synthesis_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+        logger.info(f"Synthesis summary saved to {synthesis_path}")
