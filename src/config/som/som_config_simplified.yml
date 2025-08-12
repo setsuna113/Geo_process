@@ -45,7 +45,7 @@ distance:
 training:
   # Basic settings
   max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 60          # Number of workers (1 for sequential, >1 for parallel)
+  n_workers: 100         # Number of workers (1 for sequential, >1 for parallel) - optimized for better load balancing
   
   # Learning rate
   learning_rate:
@@ -72,12 +72,12 @@ training:
     
   # Memory optimization
   memory:
-    chunk_size: 50000     # Process data in chunks (200 chunks for 200 workers)
+    chunk_size: 43386     # Process data in chunks (299 chunks for better load balancing)
     max_memory_gb: 600    # Maximum memory to use (conservative with 682GB available)
   
   # Parallel optimization settings (threading backend only)
   parallel_optimization:
-    optimal_workers: 60        # Number of threading workers (balanced for NumPy operations)
+    optimal_workers: 100       # Number of threading workers (balanced for NumPy operations) - optimized for 300 chunks
 
 # ============================================================================
 # CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training

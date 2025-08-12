@@ -156,7 +156,8 @@ class OptimizedDistanceCalculator:
         else:
             self.distance_func = self._euclidean_distances
             
-        logger.info(f"OptimizedDistanceCalculator initialized with {distance_metric} metric")
+        # Removed logging - causes GIL contention with many threads
+        # logger.info(f"OptimizedDistanceCalculator initialized with {distance_metric} metric")
         
     def _bray_curtis_distances(self, data: np.ndarray, weights: np.ndarray) -> np.ndarray:
         """Wrapper for Numba-optimized Bray-Curtis calculation."""
