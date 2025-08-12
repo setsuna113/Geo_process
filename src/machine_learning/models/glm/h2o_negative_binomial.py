@@ -11,8 +11,8 @@ from typing import Dict, Any, Optional, Union, Tuple
 import h2o
 from h2o.estimators.glm import H2OGeneralizedLinearEstimator
 
-from ...base.ml_analyzer import BaseMLAnalyzer
-from ...abstractions.types.ml_types import ModelType
+from src.base.ml_analyzer import BaseMLAnalyzer
+from src.abstractions.types.ml_types import ModelType
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
             nlambdas=100 if lambda_search else 1,
             alpha=0.5,  # Elastic net mixing (0.5 = equal L1 and L2)
             solver='IRLSM',  # Or 'COORDINATE_DESCENT' for wide data
-            compute_p_values=False,  # Set True if needed
+            compute_p_values=True,  # Enable to get std errors and p-values
             remove_collinear_columns=True,
             intercept=self.fit_intercept,
             seed=42
@@ -218,26 +218,50 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
             coef_name: Name of the coefficient to retrieve
             
         Returns:
-            Dictionary with coefficient value and p-value
+            Dictionary with coefficient value, std error, z-value and p-value
         """
         if not self.is_fitted:
             raise ValueError("Model must be fitted first")
         
-        # Get coefficients from H2O model
-        coefficients = self.model.coef()
+        # Get coefficients table with p-values when compute_p_values=True
+        # This returns a table with: names, coefficients, std_error, z_value, p_value
+        coef_table = self.model._model_json['output']['coefficients_table']
         
-        if coef_name in coefficients:
-            coef_value = coefficients[coef_name]
-            # H2O doesn't easily provide p-values for individual coefficients
-            # We'll need to extract from the summary or use a placeholder
-            return {
-                'coefficient': coef_value,
-                'p_value': 0.05,  # Placeholder - would need more work to get actual p-value
-                'significant': abs(coef_value) > 0,
-                'std_error': 0.1  # Placeholder for standard error
-            }
+        if coef_table is not None:
+            # Extract table as dict
+            names = coef_table['data'][0]  # First row is names
+            coefficients = coef_table['data'][1]  # Second row is coefficients
+            std_errors = coef_table['data'][2] if len(coef_table['data']) > 2 else None
+            z_values = coef_table['data'][3] if len(coef_table['data']) > 3 else None
+            p_values = coef_table['data'][4] if len(coef_table['data']) > 4 else None
+            
+            # Find the index of the coefficient
+            if coef_name in names:
+                idx = names.index(coef_name)
+                result = {
+                    'coefficient': coefficients[idx],
+                    'std_error': std_errors[idx] if std_errors else None,
+                    'z_value': z_values[idx] if z_values else None,
+                    'p_value': p_values[idx] if p_values else None,
+                    'significant': p_values[idx] < 0.05 if p_values else None
+                }
+                return result
+            else:
+                raise ValueError(f"Coefficient {coef_name} not found in model")
         else:
-            raise ValueError(f"Coefficient {coef_name} not found in model")
+            # Fallback to basic coefficients if p-values not computed
+            coefficients = self.model.coef()
+            if coef_name in coefficients:
+                logger.warning("P-values not available. Set compute_p_values=True when fitting.")
+                return {
+                    'coefficient': coefficients[coef_name],
+                    'std_error': None,
+                    'z_value': None,
+                    'p_value': None,
+                    'significant': None
+                }
+            else:
+                raise ValueError(f"Coefficient {coef_name} not found in model")
     
     def get_all_coefficients(self) -> Dict[str, float]:
         """Get all model coefficients.
@@ -259,10 +283,17 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         if not self.is_fitted:
             raise ValueError("Model must be fitted first")
         
-        # H2O doesn't provide easy access to standard errors
-        # Return placeholder values for now
-        coeffs = self.model.coef()
-        return {name: 0.1 for name in coeffs.keys()}
+        # Get coefficients table with std errors when compute_p_values=True
+        coef_table = self.model._model_json['output']['coefficients_table']
+        
+        if coef_table is not None and len(coef_table['data']) > 2:
+            names = coef_table['data'][0]  # First row is names
+            std_errors = coef_table['data'][2]  # Third row is std_errors
+            return dict(zip(names, std_errors))
+        else:
+            logger.warning("Standard errors not available. Set compute_p_values=True when fitting.")
+            coeffs = self.model.coef()
+            return {name: None for name in coeffs.keys()}
     
     def predict(self, X: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
         """Make predictions using the fitted model.
@@ -359,3 +390,57 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         # Note: In production, you might want to keep H2O running
         # across multiple model fits for efficiency
         pass  # Don't auto-shutdown to allow reuse
+    
+    def evaluate(self, X: Union[np.ndarray, pd.DataFrame], y: np.ndarray) -> Dict[str, float]:
+        """Evaluate model performance on test data.
+        
+        Args:
+            X: Features
+            y: Target values
+            
+        Returns:
+            Dictionary with evaluation metrics
+        """
+        predictions = self.predict(X)
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        
+        return {
+            'rmse': np.sqrt(mean_squared_error(y, predictions)),
+            'mae': mean_absolute_error(y, predictions),
+            'r2': r2_score(y, predictions)
+        }
+    
+    def get_feature_importance(self) -> pd.DataFrame:
+        """Get feature importance scores.
+        
+        Returns:
+            DataFrame with feature names and importance scores
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted first")
+        
+        # For GLM, use absolute coefficient values as importance
+        coeffs = self.get_all_coefficients()
+        importance_df = pd.DataFrame({
+            'feature': list(coeffs.keys()),
+            'importance': [abs(v) if v is not None else 0 for v in coeffs.values()]
+        })
+        return importance_df.sort_values('importance', ascending=False)
+    
+    def get_model_params(self) -> Dict[str, Any]:
+        """Get model parameters.
+        
+        Returns:
+            Dictionary of model parameters
+        """
+        if not self.is_fitted:
+            return self.params
+        return self.model.actual_params
+    
+    def set_model_params(self, **params) -> None:
+        """Set model parameters.
+        
+        Args:
+            **params: Model parameters to set
+        """
+        self.params.update(params)

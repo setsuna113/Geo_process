@@ -4,7 +4,7 @@
 regression_analysis:
   # Data loading and sampling
   data:
-    spatial_grid_step: 100  # Take every 100th point in spatial grid for testing
+    spatial_grid_step: 1000  # Take every 100th point in spatial grid for testing
     log_message: "Loading data with spatial grid sampling"
   
   # Data preprocessing (lines 199-277 from regression_analysis_decisions.md)

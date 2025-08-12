@@ -78,36 +78,84 @@ class MarginalEffects:
     def _compute_average_marginal_effect(self, data, variable: str) -> Dict[str, float]:
         """Compute average marginal effect for a variable.
         
-        For count models (Negative Binomial), this is the expected change in count.
+        For Negative Binomial GLM with log link:
+        - Marginal effect = ∂E[Y|X]/∂X_j = β_j * E[Y|X]
+        - At mean: ME = β_j * mean(predicted values)
         """
         # Get coefficient
         if hasattr(self.model, 'get_coefficient'):
             coef_info = self.model.get_coefficient(variable)
             coef = coef_info.get('coefficient', 0)
             se = coef_info.get('std_error', None)
+        elif hasattr(self.model, 'coef'):
+            # For H2O models
+            coef = self.model.coef().get(variable, 0)
+            se = self.model.std_coef_names().get(variable, None) if hasattr(self.model, 'std_coef_names') else None
         else:
-            # Fallback
             coef = 0
             se = None
         
-        # For log-link models (NB GLM), marginal effect depends on predicted values
-        # Average marginal effect = β * mean(exp(Xβ))
-        # Simplified: use coefficient directly for interpretation
+        # For NB GLM with log link, compute proper marginal effect
+        if hasattr(self.model, 'predict'):
+            # Get predictions on response scale (counts)
+            predictions = self.model.predict(data)
+            if hasattr(predictions, 'as_data_frame'):
+                predictions = predictions.as_data_frame().values.flatten()
+            mean_prediction = np.mean(predictions)
+            
+            # Marginal effect = β * mean(Y_hat)
+            marginal_effect = coef * mean_prediction
+            
+            # Standard error via delta method: SE(ME) = |mean(Y_hat)| * SE(β)
+            se_marginal = abs(mean_prediction) * se if se is not None else None
+        else:
+            # Fallback to multiplicative interpretation
+            marginal_effect = np.exp(coef) - 1  # Percentage change
+            se_marginal = se
         
         return {
-            'effect': coef,
-            'se': se,
-            'interpretation': f"1-unit increase in {variable} → {coef:.3f} change in fungi richness"
+            'effect': marginal_effect,
+            'se': se_marginal,
+            'coefficient': coef,
+            'multiplicative_effect': np.exp(coef),
+            'interpretation': f"1-unit increase in {variable} → {marginal_effect:.3f} change in fungi count (multiplicative: {np.exp(coef):.3f}x)"
         }
     
     def _compute_effect_at_value(self, data, variable: str, value: float) -> Dict[str, float]:
-        """Compute marginal effect at specific value of variable."""
-        # This would compute the effect at a specific value
-        # For now, return simplified version
-        coef_info = self.model.get_coefficient(variable) if hasattr(self.model, 'get_coefficient') else {}
+        """Compute marginal effect at specific value of variable.
+        
+        For NB GLM: ME(x) = β * E[Y|X=x]
+        """
+        # Create data with variable set to specific value
+        data_at_value = data.copy()
+        if hasattr(data_at_value, 'as_data_frame'):
+            data_at_value = data_at_value.as_data_frame()
+        data_at_value[variable] = value
+        
+        # Get coefficient
+        if hasattr(self.model, 'coef'):
+            coef = self.model.coef().get(variable, 0)
+            se = None  # Would need more info for SE at specific value
+        else:
+            coef = 0
+            se = None
+        
+        # Get prediction at this value
+        if hasattr(self.model, 'predict'):
+            predictions = self.model.predict(data_at_value)
+            if hasattr(predictions, 'as_data_frame'):
+                predictions = predictions.as_data_frame().values.flatten()
+            mean_prediction = np.mean(predictions)
+            
+            # Marginal effect at this value
+            effect = coef * mean_prediction
+        else:
+            effect = coef
+        
         return {
-            'effect': coef_info.get('coefficient', 0),
-            'se': coef_info.get('std_error', None)
+            'effect': effect,
+            'se': se,
+            'at_value': value
         }
     
     def _interpret_effects(self, effects: Dict) -> str:
