@@ -34,6 +34,7 @@ from src.biodiversity_analysis.shared.metrics.som_metrics import (
     predict_batch_numba
 )
 from ..trainers.pure_numba_som import PureNumbaSOM
+from ..utils.numba_thread_control import get_thread_controller, setup_numba_threads
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +198,20 @@ class GeoSOM:
         # Use shared distance calculator for consistency across methods
         # Distance metric for future extension (euclidean, etc.)
         self.distance_metric = self._get_config('feature_metric', 'bray_curtis', 'distance')
+        
+        # Initialize thread controller with n_workers from config
+        thread_controller = get_thread_controller()
+        # Get n_workers from the raw config dict if available
+        n_workers = None
+        if hasattr(config, '_config') and config._config:
+            n_workers = config._config.get('training', {}).get('n_workers')
+        if n_workers:
+            actual_threads = thread_controller.set_num_threads(n_workers)
+            logger.info(f"Set Numba threads to {actual_threads} (requested: {n_workers})")
+        else:
+            # Use default or optimize based on data size
+            current_threads = thread_controller.get_num_threads()
+            logger.info(f"Using Numba threads: {current_threads}")
         
         # Use pure Numba implementation for 48x speedup
         self.som_trainer = PureNumbaSOM(config=config)
@@ -492,6 +507,14 @@ class GeoSOM:
             Training result with history and final state
         """
         self._validate_training_inputs(data, coordinates)
+        
+        # Optimize thread count based on data size if not explicitly set
+        thread_controller = get_thread_controller()
+        if not hasattr(self, '_threads_optimized'):
+            from ..utils.numba_thread_control import optimize_threads_for_som
+            optimal_threads = optimize_threads_for_som(data.shape, self.n_neurons)
+            logger.info(f"Optimized Numba threads for data shape {data.shape}: {optimal_threads}")
+            self._threads_optimized = True
         
         if self.weights is None:
             self.initialize_weights(data, coordinates)

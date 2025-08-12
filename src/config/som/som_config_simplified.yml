@@ -147,6 +147,11 @@ spatial_metrics:
 # ============================================================================
 
 numba:
+  # Thread control - uniformly controls ALL Numba parallel operations
+  # Note: Can also be set via NUMBA_NUM_THREADS environment variable
+  # If not set, uses all CPU cores by default
+  # max_threads: 100  # Uncomment to limit Numba threads (overrides n_workers)
+  
   # Sparse update threshold - skip neurons with influence below this
   sparse_influence_threshold: 0.001
   
