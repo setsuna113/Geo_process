@@ -14,23 +14,23 @@ from src.base.ml import BaseRegressionMethod
 from src.abstractions.types.ml_types import ModelType, ModelMetadata
 from ...models.gbm.h2o_gbm import H2OGBM
 from ...config_loader import MLRegressionConfig
-from ...preprocessing import (
-    add_plants_bio4_interaction,
-    create_temperate_categories,
-    create_biodiversity_categories,
-    add_categorical_interactions
+from ...evaluation.dml import DMLParameterCalculator
+from ...evaluation.dml_comparison import DMLModelComparison
+from ...hypothesis import (
+    DMLClassicalTest,
+    DMLEffectSize,
+    DMLBayesian
 )
 
 logger = logging.getLogger(__name__)
 
 
 class Method3DML(BaseRegressionMethod):
-    """Refactored Method 3 - Double Machine Learning for causal inference.
+    """Method 3 - Double Machine Learning for causal inference.
     
-    Tests three hypotheses:
-    - H0: No effect (independence)
-    - H1: Biodiversity begets biodiversity
-    - H2: Temperate mismatch
+    Tests H0 vs H1 (biodiversity begets biodiversity) using DML.
+    Note: H2 (temperate mismatch) requires heterogeneous treatment effects,
+    which standard DML cannot test. Use Method 2 GLM for H2.
     
     Expected preprocessed features:
     - Climate variables: bio1_std, bio4_std, bio12_std, bio15_std
@@ -58,150 +58,26 @@ class Method3DML(BaseRegressionMethod):
         self.results = {}
         self.models = {}
     
-    def add_dml_features(self, h2o_data: h2o.H2OFrame) -> h2o.H2OFrame:
-        """Add Method3-specific features for DML.
-        
-        Args:
-            h2o_data: Preprocessed data from pipeline
-            
-        Returns:
-            Data with DML-specific features added
-        """
-        logger.info("Adding Method3-specific DML features")
-        
-        # H1: Continuous interaction (plants × bio4)
-        h2o_data = add_plants_bio4_interaction(
-            h2o_data,
-            'plants_richness_log',
-            'bio4_std',
-            'plants_bio4_interaction'
-        )
-        
-        # H2: Categorical interaction (temperate × high plant diversity)
-        # Create temperate category
-        h2o_data = create_temperate_categories(
-            h2o_data,
-            bio1_col='bio1',
-            output_col='temperate',
-            method='median'
-        )
-        
-        # Create plant diversity category
-        h2o_data = create_biodiversity_categories(
-            h2o_data,
-            richness_col='plants_richness',
-            output_col='plant_high',
-            method='median'
-        )
-        
-        # Create categorical interaction
-        h2o_data = add_categorical_interactions(
-            h2o_data,
-            cat1='temperate',
-            cat2='plant_high',
-            output_col='temperate_x_plant_high'
-        )
-        
-        logger.info("DML features created")
-        return h2o_data
     
-    def _get_treatment_confounders_outcome(
-        self, 
-        hypothesis: str,
-        h2o_data: h2o.H2OFrame
-    ) -> Tuple[str, List[str], str]:
-        """Get treatment, confounders, and outcome for each hypothesis.
-        
-        Args:
-            hypothesis: 'h0', 'h1', or 'h2'
-            h2o_data: Data with features
-            
-        Returns:
-            Tuple of (treatment_col, confounder_cols, outcome_col)
-        """
-        # Get MESF columns
-        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
-        
-        # Base confounders (climate + spatial)
-        base_confounders = [
-            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
-            'elevation_std', 'elevation_std_sq',
-            'vertebrates_richness_log'
-        ] + me_cols
-        
-        if hypothesis == 'h0':
-            # H0: No interaction
-            treatment = 'plants_richness_log'
-            confounders = base_confounders
-            
-        elif hypothesis == 'h1':
-            # H1: Continuous interaction
-            treatment = 'plants_bio4_interaction'
-            confounders = base_confounders + ['plants_richness_log']
-            
-        elif hypothesis == 'h2':
-            # H2: Categorical interaction
-            treatment = 'temperate_x_plant_high'
-            confounders = base_confounders + ['temperate', 'plant_high']
-            
-        else:
-            raise ValueError(f"Unknown hypothesis: {hypothesis}")
-        
-        outcome = 'fungi_richness'
-        return treatment, confounders, outcome
     
-    def _fit_nuisance_models(
-        self,
-        h2o_data: h2o.H2OFrame,
-        treatment: str,
-        confounders: List[str],
-        outcome: str,
-        fold: int
-    ) -> Tuple[Any, Any]:
-        """Fit nuisance models for DML.
-        
-        Args:
-            h2o_data: Training data
-            treatment: Treatment variable
-            confounders: Confounder variables
-            outcome: Outcome variable
-            fold: Fold number for naming
-            
-        Returns:
-            Tuple of (g_model, m_model)
-        """
-        # Model for E[Y|X] (outcome model)
-        logger.debug(f"Fitting g-model (outcome) for fold {fold}")
-        g_model = H2OGBM(self.config.config)
-        g_features = confounders + [treatment]
-        g_data = h2o_data[g_features + [outcome]]
-        g_model.fit(g_data, y=outcome)
-        
-        # Model for E[D|X] (treatment model)
-        logger.debug(f"Fitting m-model (treatment) for fold {fold}")
-        m_model = H2OGBM(self.config.config)
-        m_data = h2o_data[confounders + [treatment]]
-        m_model.fit(m_data, y=treatment)
-        
-        return g_model, m_model
     
     def _compute_dml_estimate(
         self,
         h2o_data: h2o.H2OFrame,
-        treatment: str,
+        treatments: List[str],  # Changed to handle multiple treatments
         confounders: List[str],
         outcome: str
-    ) -> Dict[str, float]:
+    ) -> Dict[str, Any]:
         """Compute DML estimate using cross-fitting.
         
         Args:
             h2o_data: Full dataset
-            treatment: Treatment variable
+            treatments: Treatment variables (plants, vertebrates)
             confounders: Confounder variables
             outcome: Outcome variable
             
         Returns:
-            Dictionary with DML estimates
+            Dictionary with raw DML outputs for hypothesis testing
         """
         n = h2o_data.nrows
         
@@ -211,7 +87,7 @@ class Method3DML(BaseRegressionMethod):
         
         # Storage for residuals
         residuals_y = []
-        residuals_d = []
+        residuals_treatments = {t: [] for t in treatments}
         
         # Cross-fitting
         for k in range(self.n_folds):
@@ -221,203 +97,234 @@ class Method3DML(BaseRegressionMethod):
             train = h2o_data[h2o_data['fold'] != k]
             test = h2o_data[h2o_data['fold'] == k]
             
-            # Fit nuisance models on training
-            g_model, m_model = self._fit_nuisance_models(
-                train, treatment, confounders, outcome, k
-            )
+            # Fit outcome nuisance model
+            g_model = H2OGBM(self.config.config)
+            g_features = confounders + treatments
+            g_data = train[g_features + [outcome]]
+            g_model.fit(g_data, y=outcome)
+            
+            # Fit treatment nuisance models
+            m_models = {}
+            for treatment in treatments:
+                m_model = H2OGBM(self.config.config)
+                m_data = train[confounders + [treatment]]
+                m_model.fit(m_data, y=treatment)
+                m_models[treatment] = m_model
             
             # Predict on test
             g_pred = g_model.predict(test)
-            m_pred = m_model.predict(test)
             
             # Compute residuals
             y_resid = test[outcome] - g_pred
-            d_resid = test[treatment] - m_pred
-            
-            # Convert to numpy if needed
             if hasattr(y_resid, 'as_data_frame'):
                 y_resid = y_resid.as_data_frame().values.flatten()
-                d_resid = d_resid.as_data_frame().values.flatten()
-            
             residuals_y.extend(y_resid)
-            residuals_d.extend(d_resid)
+            
+            # Treatment residuals
+            for treatment in treatments:
+                m_pred = m_models[treatment].predict(test)
+                d_resid = test[treatment] - m_pred
+                if hasattr(d_resid, 'as_data_frame'):
+                    d_resid = d_resid.as_data_frame().values.flatten()
+                residuals_treatments[treatment].extend(d_resid)
         
         # Convert to arrays
         residuals_y = np.array(residuals_y)
-        residuals_d = np.array(residuals_d)
+        residuals_a1 = np.array(residuals_treatments[treatments[0]])
+        residuals_a2 = np.array(residuals_treatments[treatments[1]]) if len(treatments) > 1 else None
         
-        # DML estimator (simple version)
-        theta_dml = np.mean(residuals_y * residuals_d) / np.mean(residuals_d ** 2)
+        # Simple OLS on residuals for causal effects
+        theta1 = np.dot(residuals_a1, residuals_y) / np.dot(residuals_a1, residuals_a1)
+        theta2 = None
+        if residuals_a2 is not None:
+            theta2 = np.dot(residuals_a2, residuals_y) / np.dot(residuals_a2, residuals_a2)
         
-        # Standard error
-        n = len(residuals_y)
-        score = residuals_y - theta_dml * residuals_d
-        variance = np.mean(score ** 2) / (np.mean(residuals_d ** 2) ** 2)
-        se_dml = np.sqrt(variance / n)
-        
-        # Confidence interval
-        ci_lower = theta_dml - 1.96 * se_dml
-        ci_upper = theta_dml + 1.96 * se_dml
-        
-        # P-value (two-sided)
-        z_stat = theta_dml / se_dml if se_dml > 0 else 0
-        from scipy import stats
-        p_value = 2 * (1 - stats.norm.cdf(abs(z_stat)))
-        
+        # Return raw outputs for hypothesis testing
         return {
-            'causal_effect': theta_dml,
-            'std_error': se_dml,
-            'ci_lower': ci_lower,
-            'ci_upper': ci_upper,
-            'z_statistic': z_stat,
-            'p_value': p_value,
+            'residuals_Y': residuals_y,
+            'residuals_A1': residuals_a1,
+            'residuals_A2': residuals_a2,
+            'theta1': theta1,
+            'theta2': theta2,
             'n_obs': n
         }
     
-    def test_hypothesis(
-        self, 
-        hypothesis: str,
-        h2o_data: Optional[h2o.H2OFrame] = None
+    def test_biodiversity_hypothesis(
+        self,
+        h2o_data: Optional[h2o.H2OFrame] = None,
+        hypothesis_tests: List[str] = ['classical', 'effect_size', 'bayesian']
     ) -> Dict[str, Any]:
-        """Test a specific hypothesis using DML.
+        """Test biodiversity begets biodiversity hypothesis using DML.
+        
+        Note: DML can only test H0 vs H1 (causal effects).
+        H2 (temperate mismatch) requires heterogeneous treatment effects or GLM.
         
         Args:
-            hypothesis: 'h0', 'h1', or 'h2'
-            h2o_data: Preprocessed data (uses self.data_h2o if None)
+            h2o_data: Preprocessed data
+            hypothesis_tests: Which tests to run
             
         Returns:
-            DML results for the hypothesis
+            Comprehensive hypothesis testing results
         """
         if h2o_data is None:
             h2o_data = self.data_h2o
         
         if h2o_data is None:
-            raise ValueError("Must provide data or call with preprocessed data")
+            raise ValueError("Must provide data")
         
-        logger.info(f"Testing hypothesis {hypothesis.upper()} using DML")
+        logger.info("Testing H0 vs H1 using DML")
         
-        # Add DML-specific features if not already present
-        if 'plants_bio4_interaction' not in h2o_data.columns:
-            h2o_data = self.add_dml_features(h2o_data)
-            self.data_h2o = h2o_data
+        # Get MESF columns
+        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
         
-        # Get treatment, confounders, outcome
-        treatment, confounders, outcome = self._get_treatment_confounders_outcome(
-            hypothesis, h2o_data
-        )
+        # Define treatments and confounders for H0/H1 test
+        treatments = ['plants_richness_log', 'vertebrates_richness_log']
+        confounders = [
+            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
+            'elevation_std', 'elevation_std_sq'
+        ] + me_cols
+        outcome = 'fungi_richness'
         
-        logger.info(f"Treatment: {treatment}")
+        logger.info(f"Treatments: {treatments}")
         logger.info(f"Confounders: {len(confounders)} variables")
         logger.info(f"Outcome: {outcome}")
         
-        # Compute DML estimate
-        results = self._compute_dml_estimate(
-            h2o_data, treatment, confounders, outcome
+        # Store data for model comparison
+        self.data_h2o = h2o_data
+        
+        # Compute raw DML outputs
+        dml_outputs = self._compute_dml_estimate(
+            h2o_data, treatments, confounders, outcome
         )
         
-        # Add interpretation
-        results['significant'] = results['p_value'] < 0.05
-        results['interpretation'] = self._interpret_results(
-            hypothesis, 
-            results['causal_effect'],
-            results['p_value'],
-            results['ci_lower'],
-            results['ci_upper']
+        # Calculate parameters for hypothesis testing
+        params = DMLParameterCalculator.compute_all_parameters(
+            residuals_Y=dml_outputs['residuals_Y'],
+            residuals_A1=dml_outputs['residuals_A1'],
+            residuals_A2=dml_outputs['residuals_A2'],
+            theta1=dml_outputs['theta1'],
+            theta2=dml_outputs['theta2'],
+            robust_se=True
         )
+        
+        # Run selected hypothesis tests
+        results = {
+            'raw_outputs': dml_outputs,
+            'parameters': params,
+            'hypothesis_tests': {}
+        }
+        
+        if 'classical' in hypothesis_tests:
+            results['hypothesis_tests']['classical'] = DMLClassicalTest.test_biodiversity_hypothesis(
+                theta_plants=params['theta1']['estimate'],
+                se_plants=params['theta1']['standard_error'],
+                theta_vertebrates=params['theta2']['estimate'],
+                se_vertebrates=params['theta2']['standard_error']
+            )
+        
+        if 'effect_size' in hypothesis_tests:
+            results['hypothesis_tests']['effect_size'] = DMLEffectSize.evaluate_biodiversity_effects(
+                theta_plants=params['theta1']['estimate'],
+                se_plants=params['theta1']['standard_error'],
+                theta_vertebrates=params['theta2']['estimate'],
+                se_vertebrates=params['theta2']['standard_error']
+            )
+        
+        if 'bayesian' in hypothesis_tests:
+            results['hypothesis_tests']['bayesian'] = DMLBayesian.test_biodiversity_hypothesis_bayesian(
+                theta_plants=params['theta1']['estimate'],
+                se_plants=params['theta1']['standard_error'],
+                theta_vertebrates=params['theta2']['estimate'],
+                se_vertebrates=params['theta2']['standard_error']
+            )
         
         # Store results
-        self.results[hypothesis] = results
+        self.results = results
         
-        logger.info(f"{hypothesis.upper()} Results:")
-        logger.info(f"  Causal effect: {results['causal_effect']:.4f}")
-        logger.info(f"  P-value: {results['p_value']:.4f}")
-        logger.info(f"  Significant: {results['significant']}")
+        # Log summary
+        logger.info("DML Results Summary:")
+        logger.info(f"  θ_plants: {params['theta1']['estimate']:.4f} (SE: {params['theta1']['standard_error']:.4f})")
+        logger.info(f"  θ_vertebrates: {params['theta2']['estimate']:.4f} (SE: {params['theta2']['standard_error']:.4f})")
+        logger.info(f"  P-values: plants={params['theta1']['p_value']:.4f}, vertebrates={params['theta2']['p_value']:.4f}")
         
         return results
     
-    def test_all_hypotheses(
+    def compare_models_with_without_biodiversity(
         self,
         h2o_data: Optional[h2o.H2OFrame] = None
-    ) -> Dict[str, Dict[str, Any]]:
-        """Test all three hypotheses.
+    ) -> Dict[str, Any]:
+        """Compare DML models with and without biodiversity predictors.
         
         Args:
             h2o_data: Preprocessed data
             
         Returns:
-            Dictionary with results for all hypotheses
+            Model comparison results
         """
-        results = {}
+        if h2o_data is None:
+            h2o_data = self.data_h2o
         
-        for hypothesis in ['h0', 'h1', 'h2']:
-            results[hypothesis] = self.test_hypothesis(hypothesis, h2o_data)
+        if h2o_data is None:
+            raise ValueError("Must provide data")
         
-        return results
-    
-    def _interpret_results(
-        self,
-        hypothesis: str,
-        effect: float,
-        p_value: float,
-        ci_lower: float,
-        ci_upper: float
-    ) -> str:
-        """Interpret DML results.
+        logger.info("Comparing models with/without biodiversity")
         
-        Args:
-            hypothesis: Hypothesis being tested
-            effect: Causal effect estimate
-            p_value: P-value
-            ci_lower: Lower CI bound
-            ci_upper: Upper CI bound
+        # Get MESF columns
+        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
+        
+        # Confounders only (no biodiversity)
+        confounders = [
+            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
+            'elevation_std', 'elevation_std_sq'
+        ] + me_cols
+        outcome = 'fungi_richness'
+        
+        # For null model, fit only outcome nuisance model
+        logger.info("Fitting model without biodiversity predictors")
+        
+        # Create fold column
+        h2o_data['fold'] = h2o_data.runif(seed=42)
+        h2o_data['fold'] = (h2o_data['fold'] * self.n_folds).floor()
+        
+        residuals_y_null = []
+        
+        for k in range(self.n_folds):
+            train = h2o_data[h2o_data['fold'] != k]
+            test = h2o_data[h2o_data['fold'] == k]
             
-        Returns:
-            Interpretation string
-        """
-        if p_value < 0.05:
-            if hypothesis == 'h0':
-                if effect > 0:
-                    return f"Significant positive effect (β={effect:.4f}): Plant diversity increases fungi richness"
-                else:
-                    return f"Significant negative effect (β={effect:.4f}): Plant diversity decreases fungi richness"
-                    
-            elif hypothesis == 'h1':
-                if effect > 0:
-                    return f"Significant positive interaction (β={effect:.4f}): Biodiversity begets biodiversity effect is stronger in seasonal climates"
-                else:
-                    return f"Significant negative interaction (β={effect:.4f}): Biodiversity begets biodiversity effect is weaker in seasonal climates"
-                    
-            elif hypothesis == 'h2':
-                if effect > 0:
-                    return f"Significant interaction (β={effect:.4f}): Plant-fungi relationship is stronger in temperate regions with high plant diversity"
-                else:
-                    return f"Significant interaction (β={effect:.4f}): Plant-fungi relationship is weaker in temperate regions with high plant diversity"
-        else:
-            return f"No significant effect detected (CI includes 0: [{ci_lower:.4f}, {ci_upper:.4f}])"
+            # Fit outcome model without treatments
+            g_model = H2OGBM(self.config.config)
+            g_data = train[confounders + [outcome]]
+            g_model.fit(g_data, y=outcome)
+            
+            # Predict and compute residuals
+            g_pred = g_model.predict(test)
+            y_resid = test[outcome] - g_pred
+            if hasattr(y_resid, 'as_data_frame'):
+                y_resid = y_resid.as_data_frame().values.flatten()
+            residuals_y_null.extend(y_resid)
+        
+        dml_without = {'residuals_Y': np.array(residuals_y_null)}
+        
+        # Model with biodiversity
+        logger.info("Fitting model with biodiversity predictors")
+        treatments = ['plants_richness_log', 'vertebrates_richness_log']
+        dml_with = self._compute_dml_estimate(
+            h2o_data, treatments, confounders, outcome
+        )
+        
+        # Compare models
+        comparison = DMLModelComparison.compare_models(
+            residuals_with_biodiv=dml_with['residuals_Y'],
+            residuals_without_biodiv=dml_without['residuals_Y'],
+            residuals_A1=dml_with['residuals_A1'],
+            residuals_A2=dml_with['residuals_A2'],
+            Y_observed=h2o_data[outcome].as_data_frame().values.flatten()
+        )
+        
+        return comparison
     
-    def run_robustness_checks(self) -> Dict[str, Any]:
-        """Run robustness checks for DML estimates.
-        
-        Returns:
-            Dictionary with robustness check results
-        """
-        if not self.results:
-            raise ValueError("Must run hypothesis tests first")
-        
-        robustness = {}
-        
-        # Check consistency across hypotheses
-        if 'h0' in self.results and 'h1' in self.results:
-            # H1 should show interaction if H0 shows main effect
-            h0_sig = self.results['h0']['significant']
-            h1_sig = self.results['h1']['significant']
-            robustness['consistency_h0_h1'] = {
-                'consistent': (h0_sig and h1_sig) or (not h0_sig and not h1_sig),
-                'h0_significant': h0_sig,
-                'h1_significant': h1_sig
-            }
-        
-        return robustness
+    
     
     def fit_model(self, data: h2o.H2OFrame) -> Dict[str, Any]:
         """Fit the model - implements abstract method from base class.
@@ -426,9 +333,21 @@ class Method3DML(BaseRegressionMethod):
             data: Preprocessed H2O Frame
             
         Returns:
-            Model fitting results
+            Model fitting results with comprehensive hypothesis testing
         """
-        return self.test_all_hypotheses(data)
+        self.data_h2o = data
+        
+        # Test H0 vs H1 with all hypothesis testing approaches
+        results = self.test_biodiversity_hypothesis(
+            data, 
+            hypothesis_tests=['classical', 'effect_size', 'bayesian']
+        )
+        
+        # Add model comparison if configured
+        if self.config.get('include_model_comparison', True):
+            results['model_comparison'] = self.compare_models_with_without_biodiversity(data)
+        
+        return results
     
     def load_data(self, *args, **kwargs):
         """REMOVED - Data loading is now handled by pipeline."""
@@ -447,22 +366,22 @@ class Method3DML(BaseRegressionMethod):
     def predict(self, data: h2o.H2OFrame, **kwargs) -> np.ndarray:
         """Make predictions using fitted model.
         
-        Note: DML doesn't directly predict, it estimates causal effects.
-        This returns the treatment effect for compatibility.
+        Note: DML estimates causal effects, not predictions.
+        Returns average treatment effects for compatibility.
         
         Args:
-            data: Input data for prediction
-            **kwargs: Additional prediction parameters
+            data: Input data
+            **kwargs: Additional parameters
             
         Returns:
-            Treatment effects
+            Average treatment effects
         """
         if not self.results:
             raise ValueError("Must run hypothesis tests first")
         
-        # Return the main effect (H0) as "predictions"
-        if 'h0' in self.results:
-            effect = self.results['h0']['causal_effect']
-            return np.full(data.nrows, effect)
+        # Return average treatment effect
+        if 'parameters' in self.results:
+            theta1 = self.results['parameters']['theta1']['estimate']
+            return np.full(data.nrows, theta1)
         else:
-            raise ValueError("No H0 results available")
+            raise ValueError("No treatment effects estimated")
