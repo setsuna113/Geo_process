@@ -5,14 +5,14 @@ All optimizations are built-in with no configuration options to avoid redundancy
 """
 
 import numpy as np
-from numba import jit, prange
+from numba import jit  # Removed prange to prevent thread explosion
 import logging
 from ..utils.spatial_utils import haversine_distance_numba
 
 logger = logging.getLogger(__name__)
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, parallel=False, cache=True, fastmath=True)  # parallel=False to prevent thread explosion with joblib
 def bray_curtis_distances_numba(data: np.ndarray, weights: np.ndarray, 
                                 min_valid_features: int = 2) -> np.ndarray:
     """Numba-optimized partial Bray-Curtis distance calculation.
@@ -35,7 +35,7 @@ def bray_curtis_distances_numba(data: np.ndarray, weights: np.ndarray,
     n_features = data.shape[1]
     distances = np.zeros((n_samples, n_neurons), dtype=np.float32)
     
-    for i in prange(n_samples):
+    for i in range(n_samples):  # Changed from prange to prevent thread creation
         for j in range(n_neurons):
             numerator = 0.0
             denominator = 0.0
@@ -64,7 +64,7 @@ def bray_curtis_distances_numba(data: np.ndarray, weights: np.ndarray,
     return distances
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, parallel=False, cache=True, fastmath=True)  # parallel=False to prevent thread explosion
 def euclidean_distances_numba(data: np.ndarray, weights: np.ndarray) -> np.ndarray:
     """Numba-optimized Euclidean distance calculation.
     
@@ -83,7 +83,7 @@ def euclidean_distances_numba(data: np.ndarray, weights: np.ndarray) -> np.ndarr
     n_features = data.shape[1]
     distances = np.zeros((n_samples, n_neurons), dtype=np.float32)
     
-    for i in prange(n_samples):
+    for i in range(n_samples):  # Changed from prange to prevent thread creation
         for j in range(n_neurons):
             dist = 0.0
             valid_count = 0
