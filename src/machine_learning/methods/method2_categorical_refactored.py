@@ -143,7 +143,7 @@ class Method2H2Testing(BaseRegressionMethod):
             # Biodiversity
             'plants_richness_log', 'vertebrates_richness_log',
             # Continuous interaction
-            'bio1_x_plants'
+            'bio01_x_plants'  # Fixed: was 'bio1_x_plants', must match line 136
         ] + me_cols
         
         model_3a_data = h2o_data[feature_cols_3a + ['fungi_richness']]

@@ -87,12 +87,20 @@ class MLOrchestrator:
         
         # Initialize H2O if needed
         config_dict = self.config.config if hasattr(self.config, 'config') else {}
+        self.h2o_initialized = False
         if config_dict.get('use_h2o', True):
-            # Initialize H2O using manager
-            self.h2o = H2OManager.get_or_init(
-                max_mem_size=config_dict.get('h2o_memory', '32G'),
-                nthreads=config_dict.get('h2o_threads', -1)
-            )
+            try:
+                # Initialize H2O using manager with error handling
+                self.h2o = H2OManager.get_or_init(
+                    max_mem_size=config_dict.get('h2o_memory', '32G'),
+                    nthreads=config_dict.get('h2o_threads', -1)
+                )
+                self.h2o_initialized = True
+                logger.info("H2O cluster initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize H2O cluster: {e}. Will fall back to non-H2O methods if needed.")
+                self.h2o = None
+                self.h2o_initialized = False
         
         # Initialize methods
         self.method1 = Method1H0H1GLM(self.config)  # H0-H1 testing
@@ -175,11 +183,28 @@ class MLOrchestrator:
             
             if self.fungi_cache_manager.is_cached(cache_key):
                 logger.info(f"Loading cached fungi_richness from {cached_path}")
-                # Load the cached data with fungi_richness
-                cached_df = pd.read_parquet(cached_path)
-                # Only take the fungi_richness column from cache
-                data['fungi_richness'] = cached_df.loc[data.index, 'fungi_richness']
-                logger.info(f"Loaded cached fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
+                try:
+                    # Load the cached data with fungi_richness
+                    cached_df = pd.read_parquet(cached_path)
+                    
+                    # Validate cache schema
+                    if 'fungi_richness' not in cached_df.columns:
+                        logger.warning("Cache validation failed: 'fungi_richness' column missing. Recomputing...")
+                        raise ValueError("Invalid cache schema")
+                    
+                    # Validate indices match
+                    if not cached_df.index.equals(data.index):
+                        logger.warning("Cache validation failed: Index mismatch. Recomputing...")
+                        raise ValueError("Cache index mismatch")
+                    
+                    # Only take the fungi_richness column from cache
+                    data['fungi_richness'] = cached_df.loc[data.index, 'fungi_richness']
+                    logger.info(f"Loaded cached fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to load cache: {e}. Computing fungi_richness...")
+                    data['fungi_richness'] = data['am_fungi_richness'] + data['ecm_fungi_richness']
+                    logger.info(f"Created fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
             else:
                 logger.info("Computing fungi_richness (not cached)...")
                 data['fungi_richness'] = data['am_fungi_richness'] + data['ecm_fungi_richness']
@@ -278,8 +303,16 @@ class MLOrchestrator:
                 logger.info(f"Saved MESF results to cache: {cached_path}")
                 
             except Exception as e:
-                logger.warning(f"MESF computation failed: {e}. Continuing without MESF.")
-                # Continue without MESF if it fails
+                logger.error(f"MESF computation failed: {e}")
+                logger.warning("Continuing without spatial components. This may impact model quality.")
+                # Add flag to results metadata
+                if not hasattr(self, 'processing_warnings'):
+                    self.processing_warnings = []
+                self.processing_warnings.append({
+                    'type': 'MESF_FAILURE',
+                    'message': str(e),
+                    'impact': 'Models will not account for spatial autocorrelation'
+                })
         
         # Save the fully preprocessed data with fungi_richness to cache if it wasn't cached before
         cache_key = self.fungi_cache_manager.get_cache_key(str(data_path))
@@ -553,7 +586,9 @@ class MLOrchestrator:
                 'n_samples': self.preprocessed_data.nrows if hasattr(self.preprocessed_data, 'nrows') else len(self.preprocessed_data),
                 'spatial_grid_step': spatial_grid_step,
                 'execution_time': time.time() - start_time,
-                'config': self.config.config
+                'config': self.config.config,
+                'h2o_initialized': self.h2o_initialized,
+                'warnings': getattr(self, 'processing_warnings', [])
             }
             
             # 5. Run diagnostics for each method
@@ -574,7 +609,12 @@ class MLOrchestrator:
             
         except Exception as e:
             logger.error(f"Analysis failed: {e}")
+            # Clean up resources on error
+            self.cleanup()
             raise
+        finally:
+            # Always clean up resources
+            self.cleanup()
         
         return self.results
     
@@ -774,3 +814,15 @@ class MLOrchestrator:
         with open(synthesis_path, 'w') as f:
             json.dump(summary, f, indent=2)
         logger.info(f"Synthesis summary saved to {synthesis_path}")
+    
+    def cleanup(self) -> None:
+        """Clean up resources (H2O cluster, etc.)."""
+        try:
+            if self.h2o_initialized and self.h2o:
+                logger.info("Shutting down H2O cluster...")
+                import h2o
+                h2o.cluster().shutdown(prompt=False)
+                self.h2o_initialized = False
+                logger.info("H2O cluster shutdown complete")
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
