@@ -30,7 +30,7 @@ import h2o
 # Configuration and utilities
 from src.machine_learning.config_loader import MLRegressionConfig
 from src.machine_learning.utils.security_utils import PathValidator, DataLoader
-from src.machine_learning.utils.h2o_utils import ensure_h2o_initialized
+from src.machine_learning.utils import H2OManager
 
 # Methods for hypothesis testing
 from src.machine_learning.methods import (
@@ -85,7 +85,11 @@ class MLOrchestrator:
         
         # Initialize H2O if needed
         if self.config.config.get('use_h2o', True):
-            ensure_h2o_initialized()
+            # Initialize H2O using manager
+            self.h2o = H2OManager.get_or_init(
+                max_mem_size=self.config.config.get('h2o_memory', '32G'),
+                nthreads=self.config.config.get('h2o_threads', -1)
+            )
         
         # Initialize methods
         self.method1 = Method1H0H1GLM(self.config)  # H0-H1 testing
@@ -161,7 +165,8 @@ class MLOrchestrator:
         # Convert to H2O if requested
         if use_h2o:
             logger.info("Converting to H2O frame...")
-            h2o.init()
+            # Ensure H2O is initialized using manager
+            self.h2o = H2OManager.get_or_init()
             data = h2o.H2OFrame(data)
             logger.info(f"Final H2O frame: {data.nrows:,} rows × {data.ncols} columns")
         else:

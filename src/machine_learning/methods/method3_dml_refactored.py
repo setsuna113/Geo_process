@@ -5,6 +5,7 @@ This refactored version assumes data is already preprocessed by the pipeline.
 """
 
 import logging
+import gc
 import numpy as np
 import h2o
 from typing import Dict, Any, Optional, Union, Tuple, List
@@ -21,6 +22,7 @@ from ...hypothesis import (
     DMLEffectSize,
     DMLBayesian
 )
+from ...utils import H2OManager
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,12 @@ class Method3DML(BaseRegressionMethod):
         self.n_folds = self.dml_config.get('n_folds', 5)
         self.n_rep = self.dml_config.get('n_rep', 1)
         
+        # Initialize H2O safely
+        self.h2o = H2OManager.get_or_init(
+            max_mem_size=self.config.get('h2o_memory', '32G'),
+            nthreads=self.config.get('h2o_threads', -1)
+        )
+        
         # Storage
         self.data_h2o = None
         self.results = {}
@@ -79,75 +87,89 @@ class Method3DML(BaseRegressionMethod):
         Returns:
             Dictionary with raw DML outputs for hypothesis testing
         """
-        n = h2o_data.nrows
-        
-        # Create fold column
-        h2o_data['fold'] = h2o_data.runif(seed=42)
-        h2o_data['fold'] = (h2o_data['fold'] * self.n_folds).floor()
-        
-        # Storage for residuals
-        residuals_y = []
-        residuals_treatments = {t: [] for t in treatments}
-        
-        # Cross-fitting
-        for k in range(self.n_folds):
-            logger.debug(f"Processing fold {k+1}/{self.n_folds}")
+        try:
+            n = h2o_data.nrows
             
-            # Split data
-            train = h2o_data[h2o_data['fold'] != k]
-            test = h2o_data[h2o_data['fold'] == k]
+            # Create fold column
+            h2o_data['fold'] = h2o_data.runif(seed=42)
+            h2o_data['fold'] = (h2o_data['fold'] * self.n_folds).floor()
             
-            # Fit outcome nuisance model
-            g_model = H2OGBM(self.config.config)
-            g_features = confounders + treatments
-            g_data = train[g_features + [outcome]]
-            g_model.fit(g_data, y=outcome)
+            # Storage for residuals
+            residuals_y = []
+            residuals_treatments = {t: [] for t in treatments}
             
-            # Fit treatment nuisance models
-            m_models = {}
-            for treatment in treatments:
-                m_model = H2OGBM(self.config.config)
-                m_data = train[confounders + [treatment]]
-                m_model.fit(m_data, y=treatment)
-                m_models[treatment] = m_model
+            # Cross-fitting
+            for k in range(self.n_folds):
+                logger.debug(f"Processing fold {k+1}/{self.n_folds}")
+                
+                # Split data
+                train = h2o_data[h2o_data['fold'] != k]
+                test = h2o_data[h2o_data['fold'] == k]
+                
+                # Fit outcome nuisance model
+                g_model = H2OGBM(self.config.config)
+                g_features = confounders + treatments
+                g_data = train[g_features + [outcome]]
+                g_model.fit(g_data, y=outcome)
+                
+                # Fit treatment nuisance models
+                m_models = {}
+                for treatment in treatments:
+                    m_model = H2OGBM(self.config.config)
+                    m_data = train[confounders + [treatment]]
+                    m_model.fit(m_data, y=treatment)
+                    m_models[treatment] = m_model
+                
+                # Predict on test
+                g_pred = g_model.predict(test)
+                
+                # Compute residuals
+                y_resid = test[outcome] - g_pred
+                if hasattr(y_resid, 'as_data_frame'):
+                    y_resid = y_resid.as_data_frame().values.flatten()
+                residuals_y.extend(y_resid)
+                
+                # Treatment residuals
+                for treatment in treatments:
+                    m_pred = m_models[treatment].predict(test)
+                    d_resid = test[treatment] - m_pred
+                    if hasattr(d_resid, 'as_data_frame'):
+                        d_resid = d_resid.as_data_frame().values.flatten()
+                    residuals_treatments[treatment].extend(d_resid)
+                
+                # Clean up fold models to free memory
+                del g_model, m_models
+                gc.collect()
             
-            # Predict on test
-            g_pred = g_model.predict(test)
+            # Convert to arrays
+            residuals_y = np.array(residuals_y)
+            residuals_a1 = np.array(residuals_treatments[treatments[0]])
+            residuals_a2 = np.array(residuals_treatments[treatments[1]]) if len(treatments) > 1 else None
             
-            # Compute residuals
-            y_resid = test[outcome] - g_pred
-            if hasattr(y_resid, 'as_data_frame'):
-                y_resid = y_resid.as_data_frame().values.flatten()
-            residuals_y.extend(y_resid)
+            # Simple OLS on residuals for causal effects
+            theta1 = np.dot(residuals_a1, residuals_y) / np.dot(residuals_a1, residuals_a1)
+            theta2 = None
+            if residuals_a2 is not None:
+                theta2 = np.dot(residuals_a2, residuals_y) / np.dot(residuals_a2, residuals_a2)
             
-            # Treatment residuals
-            for treatment in treatments:
-                m_pred = m_models[treatment].predict(test)
-                d_resid = test[treatment] - m_pred
-                if hasattr(d_resid, 'as_data_frame'):
-                    d_resid = d_resid.as_data_frame().values.flatten()
-                residuals_treatments[treatment].extend(d_resid)
+            # Return raw outputs for hypothesis testing
+            return {
+                'residuals_Y': residuals_y,
+                'residuals_A1': residuals_a1,
+                'residuals_A2': residuals_a2,
+                'theta1': theta1,
+                'theta2': theta2,
+                'n_obs': n
+            }
         
-        # Convert to arrays
-        residuals_y = np.array(residuals_y)
-        residuals_a1 = np.array(residuals_treatments[treatments[0]])
-        residuals_a2 = np.array(residuals_treatments[treatments[1]]) if len(treatments) > 1 else None
-        
-        # Simple OLS on residuals for causal effects
-        theta1 = np.dot(residuals_a1, residuals_y) / np.dot(residuals_a1, residuals_a1)
-        theta2 = None
-        if residuals_a2 is not None:
-            theta2 = np.dot(residuals_a2, residuals_y) / np.dot(residuals_a2, residuals_a2)
-        
-        # Return raw outputs for hypothesis testing
-        return {
-            'residuals_Y': residuals_y,
-            'residuals_A1': residuals_a1,
-            'residuals_A2': residuals_a2,
-            'theta1': theta1,
-            'theta2': theta2,
-            'n_obs': n
-        }
+        finally:
+            # Explicit cleanup of temporary arrays
+            if 'residuals_y' in locals():
+                del residuals_y
+            if 'residuals_treatments' in locals():
+                del residuals_treatments
+            gc.collect()
+            logger.debug("Memory cleanup completed")
     
     def test_biodiversity_hypothesis(
         self,
@@ -282,29 +304,40 @@ class Method3DML(BaseRegressionMethod):
         # For null model, fit only outcome nuisance model
         logger.info("Fitting model without biodiversity predictors")
         
-        # Create fold column
-        h2o_data['fold'] = h2o_data.runif(seed=42)
-        h2o_data['fold'] = (h2o_data['fold'] * self.n_folds).floor()
-        
-        residuals_y_null = []
-        
-        for k in range(self.n_folds):
-            train = h2o_data[h2o_data['fold'] != k]
-            test = h2o_data[h2o_data['fold'] == k]
+        try:
+            # Create fold column
+            h2o_data['fold'] = h2o_data.runif(seed=42)
+            h2o_data['fold'] = (h2o_data['fold'] * self.n_folds).floor()
             
-            # Fit outcome model without treatments
-            g_model = H2OGBM(self.config.config)
-            g_data = train[confounders + [outcome]]
-            g_model.fit(g_data, y=outcome)
+            residuals_y_null = []
             
-            # Predict and compute residuals
-            g_pred = g_model.predict(test)
-            y_resid = test[outcome] - g_pred
-            if hasattr(y_resid, 'as_data_frame'):
-                y_resid = y_resid.as_data_frame().values.flatten()
-            residuals_y_null.extend(y_resid)
+            for k in range(self.n_folds):
+                train = h2o_data[h2o_data['fold'] != k]
+                test = h2o_data[h2o_data['fold'] == k]
+                
+                # Fit outcome model without treatments
+                g_model = H2OGBM(self.config.config)
+                g_data = train[confounders + [outcome]]
+                g_model.fit(g_data, y=outcome)
+                
+                # Predict and compute residuals
+                g_pred = g_model.predict(test)
+                y_resid = test[outcome] - g_pred
+                if hasattr(y_resid, 'as_data_frame'):
+                    y_resid = y_resid.as_data_frame().values.flatten()
+                residuals_y_null.extend(y_resid)
+                
+                # Clean up fold model
+                del g_model
+                gc.collect()
+            
+            dml_without = {'residuals_Y': np.array(residuals_y_null)}
         
-        dml_without = {'residuals_Y': np.array(residuals_y_null)}
+        finally:
+            # Explicit cleanup
+            if 'residuals_y_null' in locals():
+                del residuals_y_null
+            gc.collect()
         
         # Model with biodiversity
         logger.info("Fitting model with biodiversity predictors")

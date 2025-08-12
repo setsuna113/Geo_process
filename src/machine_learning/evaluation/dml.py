@@ -42,10 +42,25 @@ class DMLParameterCalculator:
         Returns:
             Standard error of theta
         """
+        # Input validation
+        if not isinstance(residuals_Y, np.ndarray) or not isinstance(residuals_A, np.ndarray):
+            raise TypeError("Residuals must be numpy arrays")
+        
         n = len(residuals_Y)
         
         if len(residuals_A) != n:
-            raise ValueError("Residuals must have same length")
+            raise ValueError(f"Residuals must have same length: Y={len(residuals_Y)}, A={len(residuals_A)}")
+        
+        if n < 10:
+            raise ValueError(f"Sample size too small for reliable SE estimation: n={n}")
+        
+        if not np.isfinite(theta):
+            raise ValueError(f"Theta must be finite, got {theta}")
+        
+        # Check for zero variance in treatment residuals
+        var_A = np.var(residuals_A)
+        if var_A < 1e-10:
+            raise ValueError(f"Treatment residuals have near-zero variance: {var_A:.2e}")
         
         # Residuals from final regression
         final_residuals = residuals_Y - theta * residuals_A
@@ -81,10 +96,28 @@ class DMLParameterCalculator:
         Returns:
             T-statistic
         """
+        # Defensive validation
+        if not np.isfinite(theta):
+            raise ValueError(f"Theta must be finite, got {theta}")
+        
+        if not np.isfinite(se_theta):
+            raise ValueError(f"Standard error must be finite, got {se_theta}")
+        
         if se_theta <= 0:
-            raise ValueError("Standard error must be positive")
+            raise ValueError(f"Standard error must be positive, got {se_theta}")
+        
+        if se_theta < 1e-10:
+            logger.warning(f"Very small standard error: {se_theta:.2e}. Results may be unreliable.")
         
         t_stat = theta / se_theta
+        
+        # Bounds check on result
+        if abs(t_stat) > 1000:
+            logger.warning(f"Extreme t-statistic: {t_stat:.2f}. Check data and model.")
+        
+        if not np.isfinite(t_stat):
+            raise ValueError(f"T-statistic calculation resulted in non-finite value: {t_stat}")
+        
         return t_stat
     
     @staticmethod
@@ -105,7 +138,15 @@ class DMLParameterCalculator:
         Returns:
             P-value
         """
-        t_stat = theta / se_theta
+        # Validate inputs
+        if alternative not in ['two-sided', 'greater', 'less']:
+            raise ValueError(f"alternative must be 'two-sided', 'greater', or 'less', got '{alternative}'")
+        
+        if df is not None and (df <= 0 or not isinstance(df, (int, np.integer))):
+            raise ValueError(f"Degrees of freedom must be positive integer, got {df}")
+        
+        # Use validated t-statistic calculation
+        t_stat = DMLParameterCalculator.calculate_t_statistic(theta, se_theta)
         
         # Use normal or t-distribution
         if df is None:
@@ -149,6 +190,16 @@ class DMLParameterCalculator:
         Returns:
             Tuple of (lower_bound, upper_bound)
         """
+        # Validate inputs
+        if not np.isfinite(theta):
+            raise ValueError(f"Theta must be finite, got {theta}")
+        
+        if not np.isfinite(se_theta) or se_theta <= 0:
+            raise ValueError(f"Standard error must be positive and finite, got {se_theta}")
+        
+        if not 0 < confidence_level < 1:
+            raise ValueError(f"Confidence level must be between 0 and 1, got {confidence_level}")
+        
         alpha = 1 - confidence_level
         
         if df is None:
@@ -219,6 +270,20 @@ class DMLParameterCalculator:
         Returns:
             Dictionary of correlation coefficients
         """
+        # Validate inputs
+        if not isinstance(residuals_Y, np.ndarray) or not isinstance(residuals_A1, np.ndarray):
+            raise TypeError("Residuals must be numpy arrays")
+        
+        if len(residuals_Y) != len(residuals_A1):
+            raise ValueError(f"Residuals must have same length: Y={len(residuals_Y)}, A1={len(residuals_A1)}")
+        
+        if len(residuals_Y) < 3:
+            raise ValueError(f"Need at least 3 observations for correlation, got {len(residuals_Y)}")
+        
+        # Check for zero variance
+        if np.var(residuals_Y) < 1e-10 or np.var(residuals_A1) < 1e-10:
+            logger.warning("Near-zero variance in residuals, correlation may be unreliable")
+        
         correlations = {}
         
         # Correlation between fungi and plants
@@ -294,6 +359,25 @@ class DMLParameterCalculator:
         Returns:
             Dictionary with all computed parameters
         """
+        # Comprehensive input validation
+        if not isinstance(residuals_Y, np.ndarray) or not isinstance(residuals_A1, np.ndarray):
+            raise TypeError("Residuals must be numpy arrays")
+        
+        if len(residuals_Y) == 0 or len(residuals_A1) == 0:
+            raise ValueError("Residuals cannot be empty")
+        
+        if len(residuals_Y) != len(residuals_A1):
+            raise ValueError(f"Residuals must have same length: Y={len(residuals_Y)}, A1={len(residuals_A1)}")
+        
+        # Check for NaN or Inf values
+        if not np.all(np.isfinite(residuals_Y)):
+            n_invalid = np.sum(~np.isfinite(residuals_Y))
+            raise ValueError(f"Outcome residuals contain {n_invalid} non-finite values")
+        
+        if not np.all(np.isfinite(residuals_A1)):
+            n_invalid = np.sum(~np.isfinite(residuals_A1))
+            raise ValueError(f"Treatment residuals contain {n_invalid} non-finite values")
+        
         results = {}
         
         # If thetas not provided, estimate from residuals
