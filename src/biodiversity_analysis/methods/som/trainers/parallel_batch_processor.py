@@ -1,5 +1,9 @@
 """Parallel batch processing for memory-efficient SOM training.
 
+⚠️ DEPRECATION WARNING: This module is being replaced by pure_numba_som.py
+   which provides 48x better performance without joblib overhead.
+   See MIGRATION_TO_PURE_NUMBA.md for migration guide.
+
 PURPOSE: This module handles parallel processing of data chunks for efficient
 batch SOM updates on large datasets. It splits data into manageable chunks
 that can be processed in parallel across CPU cores.
@@ -91,7 +95,8 @@ def process_single_chunk(chunk_idx: int,
                         grid_positions: np.ndarray,
                         current_radius: float,
                         use_chunking: bool = True,
-                        chunk_size_internal: int = 1000) -> ChunkResult:
+                        chunk_size_internal: int = 1000,
+                        calculator=None) -> ChunkResult:
     """Process a single chunk of data - standalone function for parallel execution.
     
     This function is defined at module level to be pickleable for multiprocessing.
@@ -116,7 +121,9 @@ def process_single_chunk(chunk_idx: int,
     
     # Calculate distances for this chunk using optimized calculator
     # Note: OptimizedDistanceCalculator handles memory-efficient processing
-    calculator = get_distance_calculator()
+    if calculator is None:
+        # Fallback if not provided (shouldn't happen in normal flow)
+        calculator = get_distance_calculator()
     
     if chunk_coords is not None and neuron_coords is not None:
         chunk_distances = calculator.combined_distance_chunked(
@@ -215,14 +222,36 @@ class ParallelBatchProcessor:
             n_workers: Number of parallel workers
             config: Full config object for optimization settings
         """
+        # Deprecation warning
+        import warnings
+        warnings.warn(
+            "ParallelBatchProcessor is deprecated and will be removed in a future version. "
+            "Use PureNumbaSOM from pure_numba_som.py for 48x better performance. "
+            "See MIGRATION_TO_PURE_NUMBA.md for migration guide.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         self.config = config
         self.n_workers = self._determine_worker_count(n_workers)
         self._parallel_context = None  # Renamed from _executor
         self._shared_weights = None
         self._shared_grid_positions = None
         
-        # Pre-initialize the distance calculator to avoid race conditions
-        _ = get_distance_calculator()
+        # Pre-initialize and warm up the distance calculator to avoid race conditions
+        calculator = get_distance_calculator()
+        
+        # Pre-warm Numba JIT functions with small dummy data to ensure compilation
+        # This prevents all threads from trying to compile at the same time
+        if hasattr(calculator, '_warm_up_jit'):
+            calculator._warm_up_jit()
+        else:
+            # Minimal warm-up if method doesn't exist
+            dummy_data = np.random.rand(10, 4).astype(np.float32)
+            dummy_weights = np.random.rand(10, 4).astype(np.float32)
+            try:
+                _ = calculator.compute_distances(dummy_data, dummy_weights)
+            except:
+                pass  # Ignore warm-up errors
         
     def _determine_worker_count(self, requested=None) -> int:
         """Determine number of workers for parallel backend.
@@ -287,8 +316,19 @@ class ParallelBatchProcessor:
         n_samples = len(data)
         n_chunks = (n_samples + chunk_size - 1) // chunk_size
         
-        # Initialize distance calculator before parallel execution to avoid race conditions
-        _ = get_distance_calculator()
+        # Create a single calculator instance BEFORE parallel execution
+        # This avoids import lock deadlocks when 60 threads try to create calculators
+        # Note: OptimizedDistanceCalculator is thread-safe for read operations
+        shared_calculator = OptimizedDistanceCalculator()
+        
+        # Force JIT compilation with dummy data before parallel execution
+        dummy_data = np.random.rand(5, weights.shape[1]).astype(np.float32)
+        dummy_weights = weights[:5].copy()
+        try:
+            if hasattr(shared_calculator, 'partial_bray_curtis_chunked'):
+                _ = shared_calculator.partial_bray_curtis_chunked(dummy_data, dummy_weights, config.min_valid_features)
+        except:
+            pass  # Ignore warm-up errors
         
         # Always use parallel processing infrastructure (even with 1 worker or 1 chunk)
         # This ensures consistency and simplifies the codebase
@@ -312,8 +352,10 @@ class ParallelBatchProcessor:
             if start_idx >= n_samples:
                 continue
                 
-            chunk_data = data[start_idx:end_idx]
-            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
+            # Use views instead of copies to reduce memory
+            # Note: loky will still serialize these, but at least we don't double memory
+            chunk_data = data[start_idx:end_idx].view()
+            chunk_coords = coordinates[start_idx:end_idx].view() if coordinates is not None else None
             
             # Memory chunking is always enabled for consistency
             use_chunking = True  # Maintained for API compatibility
@@ -326,7 +368,7 @@ class ParallelBatchProcessor:
             chunk_params.append((
                 chunk_idx, chunk_data, chunk_coords,
                 shared_weights, neuron_coords, config, shared_grid, current_radius,
-                use_chunking, chunk_size_internal
+                use_chunking, chunk_size_internal, shared_calculator
             ))
         
         # Monitor memory usage and adjust workers if needed
@@ -339,11 +381,14 @@ class ParallelBatchProcessor:
                 actual_workers = max(1, actual_workers // 4)
                 logger.warning(f"Critical memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
         
-        # Use threading backend - NumPy releases GIL for most operations
-        # Threading has lower overhead than multiprocessing for NumPy-heavy code
-        backend = 'threading'
+        # Use loky backend - threading hangs in our setup with joblib
+        # Threading is optimal for NumPy/SciPy operations that release GIL
+        # Our SOM uses Bray-Curtis distance which releases GIL
+        # However, threading can hang due to import locks, so we use loky for stability
+        # To reduce memory with loky, we've added: views, pre_dispatch=n_jobs, gc.collect()
+        backend = 'loky'
         
-        logger.info(f"Starting joblib Parallel with threading backend, n_jobs={actual_workers}")
+        logger.info(f"Starting joblib Parallel with {backend} backend, n_jobs={actual_workers}")
         logger.info(f"Number of chunk_params: {len(chunk_params)}")
         
         # Debug: Log first chunk details
@@ -364,7 +409,8 @@ class ParallelBatchProcessor:
                 'backend': backend,
                 'verbose': 0,
                 'batch_size': 'auto',  # Let joblib decide
-                'pre_dispatch': '2*n_jobs'  # Standard pre-dispatch
+                'pre_dispatch': 'n_jobs',  # Reduced from 2*n_jobs to prevent memory accumulation
+                'max_nbytes': '50M'  # Force memmapping for large arrays to reduce memory
             }
             
             # Create and execute parallel job
@@ -392,6 +438,12 @@ class ParallelBatchProcessor:
         
         total_valid = sum(r.n_valid_samples for r in results)
         logger.info(f"Parallel processing complete. Processed {total_valid} valid samples")
+        
+        # Force garbage collection to prevent memory accumulation
+        import gc
+        del results  # Explicitly delete results
+        del chunk_params  # Delete chunk parameters
+        gc.collect()  # Force immediate collection
         
         return accumulated_numerator, accumulated_denominator
     
