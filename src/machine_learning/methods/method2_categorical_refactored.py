@@ -76,7 +76,7 @@ class Method2H2Testing(BaseRegressionMethod):
         # High temperature seasonality = temperate regions
         h2o_data = create_temperate_categories(
             h2o_data,
-            bio4_col='bio4_std',  # Use bio4 (temperature seasonality) not bio1!
+            bio4_col='bio04_std',  # Use bio4 (temperature seasonality) not bio1!
             output_col='temperate',
             method='quantile',
             quantile=0.75  # Top 25% as per regression_analysis_decisions.md
@@ -133,12 +133,12 @@ class Method2H2Testing(BaseRegressionMethod):
         logger.info("Fitting Model 3a: Continuous interaction (bio1 × plants_richness)")
         
         # Create continuous interaction term
-        h2o_data['bio1_x_plants'] = h2o_data['bio1_std'] * h2o_data['plants_richness_log']
+        h2o_data['bio01_x_plants'] = h2o_data['bio01_std'] * h2o_data['plants_richness_log']
         
         # Features for Model 3a
         feature_cols_3a = [
             # Climate variables
-            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
+            'bio01_std', 'bio04_std', 'bio12_std', 'bio15_std',
             'elevation_std', 'elevation_std_sq',
             # Biodiversity
             'plants_richness_log', 'vertebrates_richness_log',
@@ -159,7 +159,7 @@ class Method2H2Testing(BaseRegressionMethod):
         # Features for Model 3b
         feature_cols_3b = [
             # Climate variables
-            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
+            'bio01_std', 'bio04_std', 'bio12_std', 'bio15_std',
             'elevation_std', 'elevation_std_sq',
             # Biodiversity
             'plants_richness_log', 'vertebrates_richness_log',
@@ -189,7 +189,7 @@ class Method2H2Testing(BaseRegressionMethod):
             # Try to use score test if model provides necessary components
             continuous_score = ScoreTest.test_interaction(
                 null_model=self.model_3a_continuous,  # This would need a model without interaction
-                var1='bio1_std',
+                var1='bio01_std',
                 var2='plants_richness_log',
                 data=h2o_data
             )
@@ -296,7 +296,7 @@ class Method2H2Testing(BaseRegressionMethod):
             coefficients=coefficients,
             coefficient_names=coef_names,
             data=data_pd,
-            formula="fungi_richness ~ temperate * plant_high + bio1_std + bio12_std + bio15_std + elevation_std + elevation_std_sq + ME*"
+            formula="fungi_richness ~ temperate * plant_high + bio01_std + bio12_std + bio15_std + elevation_std + elevation_std_sq + ME*"
         )
         
         # Compute emmeans for 2x2 design

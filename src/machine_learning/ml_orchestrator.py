@@ -49,6 +49,7 @@ from src.machine_learning.preprocessing import (
     log_transform_biodiversity
 )
 from src.machine_learning.preprocessing.mesf_preprocessor import MESFPreprocessor
+from src.machine_learning.spatial.mesf_cache_manager import FungiRichnessCacheManager, MESFCacheManager
 
 # Diagnostics
 from src.machine_learning.diagnostics import DHARMaDiagnostics
@@ -80,7 +81,9 @@ class MLOrchestrator:
         
         # Initialize components
         self.path_validator = PathValidator()
-        self.data_loader = DataLoader(self.path_validator)
+        self.data_loader = DataLoader(max_file_size_mb=10000)
+        self.fungi_cache_manager = FungiRichnessCacheManager()
+        self.mesf_cache_manager = MESFCacheManager()
         
         # Initialize H2O if needed
         config_dict = self.config.config if hasattr(self.config, 'config') else {}
@@ -112,7 +115,7 @@ class MLOrchestrator:
         self, 
         data_path: Union[str, Path],
         spatial_grid_step: Optional[int] = None,
-        use_h2o: bool = True
+        use_h2o: bool = False  # Disable H2O for now
     ) -> Union[pd.DataFrame, h2o.H2OFrame]:
         """Load and preprocess data for all methods.
         
@@ -130,42 +133,167 @@ class MLOrchestrator:
         
         # Load data
         logger.info(f"Loading data from {data_path}")
-        data = self.data_loader.load_parquet(data_path)
+        data = self.data_loader.load_data(data_path)
         initial_rows = len(data)
         logger.info(f"Loaded {initial_rows:,} rows")
         
         # Remove missing data
         logger.info("Removing missing data...")
-        data = remove_missing(data, target_col='fungi_richness')
+        data = remove_missing(data)
         logger.info(f"After removing missing: {len(data):,} rows")
         
         # Spatial sampling if requested
         if spatial_grid_step and spatial_grid_step > 1:
             logger.info(f"Applying spatial grid sampling (step={spatial_grid_step})...")
-            data = sample_spatial_grid(data, grid_step=spatial_grid_step)
+            data = sample_spatial_grid(data, step=spatial_grid_step, lon_col='x', lat_col='y')
             logger.info(f"After spatial sampling: {len(data):,} rows")
         
         # Standardize climate variables
         logger.info("Standardizing climate variables (2SD method)...")
-        data = standardize_climate_2sd(data)
+        # Use the actual column names from the data
+        climate_vars = ['bio01', 'bio04', 'bio12', 'bio15', 'elevation']
+        data = standardize_climate_2sd(data, climate_vars=climate_vars)
         
         # Add elevation squared
         logger.info("Adding elevation squared term...")
         data = add_elevation_squared(data)
         
+        # Check if fungi_richness already exists or needs to be computed
+        if 'fungi_richness' not in data.columns:
+            # Define the compute function for cache manager
+            def compute_fungi_richness(input_path: str, output_path: str) -> str:
+                """Compute fungi_richness and save to cache."""
+                df = pd.read_parquet(input_path)
+                df['fungi_richness'] = df['am_fungi_richness'] + df['ecm_fungi_richness']
+                logger.info(f"Computed fungi_richness: mean={df['fungi_richness'].mean():.2f}, std={df['fungi_richness'].std():.2f}")
+                df.to_parquet(output_path, compression='snappy')
+                return output_path
+            
+            # Use cache manager to get or compute fungi_richness
+            cache_key = self.fungi_cache_manager.get_cache_key(str(data_path))
+            cached_path = self.fungi_cache_manager.get_cached_path(cache_key)
+            
+            if self.fungi_cache_manager.is_cached(cache_key):
+                logger.info(f"Loading cached fungi_richness from {cached_path}")
+                # Load the cached data with fungi_richness
+                cached_df = pd.read_parquet(cached_path)
+                # Only take the fungi_richness column from cache
+                data['fungi_richness'] = cached_df.loc[data.index, 'fungi_richness']
+                logger.info(f"Loaded cached fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
+            else:
+                logger.info("Computing fungi_richness (not cached)...")
+                data['fungi_richness'] = data['am_fungi_richness'] + data['ecm_fungi_richness']
+                logger.info(f"Created fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
+                
+                # Save to cache for future use (but only after full preprocessing)
+                # We'll save at the end of preprocessing to include all transformations
+        else:
+            logger.info(f"fungi_richness already exists: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
+        
+        # Create standardized column names for other biodiversity metrics
+        if 'plant_richness' in data.columns:
+            data['plants_richness'] = data['plant_richness']
+        if 'animal_richness' in data.columns:
+            data['vertebrates_richness'] = data['animal_richness']
+        
         # Log transform biodiversity predictors
         logger.info("Log-transforming biodiversity predictors...")
         data = log_transform_biodiversity(data)
         
-        # Add MESF spatial eigenvectors
+        # Add MESF spatial eigenvectors using cache
         logger.info("Computing MESF spatial eigenvectors...")
-        mesf_processor = MESFPreprocessor(self.config)
-        data = mesf_processor.add_mesf_features(data)
+        
+        # Get spatial config with proper structure
+        spatial_config = self.config.config.get('spatial', {})
+        mesf_params = {
+            'mesf': spatial_config.get('mesf', {
+                'variance_threshold': 0.75,
+                'max_eigenvectors': 10,
+                'min_eigenvectors': 5,
+                'distance_threshold': 100
+            }),
+            'nystrom': spatial_config.get('nystrom', {
+                'enable_for_large_data': True,
+                'size_threshold': 100000,
+                'n_landmark': 5000,
+                'n_sample': 25000
+            })
+        }
+        
+        # Generate cache key for current configuration
+        cache_key = self.mesf_cache_manager.get_cache_key(
+            str(data_path), 
+            spatial_grid_step or 1,
+            mesf_params
+        )
+        
+        # Check if MESF is already cached
+        cached_mesf_loaded = False
+        if self.mesf_cache_manager.is_cached(cache_key):
+            logger.info(f"Loading cached MESF eigenvectors from cache")
+            try:
+                cached_path, metadata = self.mesf_cache_manager.load_from_cache(cache_key)
+                
+                # Load MESF columns from cache
+                cached_df = pd.read_parquet(cached_path)
+                mesf_cols = [col for col in cached_df.columns if col.startswith('ME')]
+                
+                # Add MESF columns to current data
+                for col in mesf_cols:
+                    if col in cached_df.columns:
+                        data[col] = cached_df.loc[data.index, col].values
+                
+                logger.info(f"Loaded {len(mesf_cols)} MESF eigenvectors from cache")
+                cached_mesf_loaded = True
+            except Exception as e:
+                logger.warning(f"Failed to load MESF from cache: {e}. Recomputing...")
+                cached_mesf_loaded = False
+        
+        if not cached_mesf_loaded:
+            logger.info("Computing MESF eigenvectors...")
+            try:
+                from src.machine_learning.spatial.mesf import compute_mesf
+                
+                # Extract coordinates  
+                coords = data[['x', 'y']].values
+                
+                # Compute MESF
+                mesf_df = compute_mesf(coords, mesf_params)
+                
+                # Add MESF columns to data
+                for col in mesf_df.columns:
+                    data[col] = mesf_df[col].values
+                
+                logger.info(f"Computed {len(mesf_df.columns)} MESF eigenvectors")
+                
+                # Save to cache
+                import pyarrow as pa
+                augmented_table = pa.Table.from_pandas(data)
+                metadata = {
+                    'n_eigenvectors': len(mesf_df.columns),
+                    'n_samples': len(data),
+                    'spatial_grid_step': spatial_grid_step or 1
+                }
+                cached_path = self.mesf_cache_manager.save_to_cache(cache_key, augmented_table, metadata)
+                logger.info(f"Saved MESF results to cache: {cached_path}")
+                
+            except Exception as e:
+                logger.warning(f"MESF computation failed: {e}. Continuing without MESF.")
+                # Continue without MESF if it fails
+        
+        # Save the fully preprocessed data with fungi_richness to cache if it wasn't cached before
+        cache_key = self.fungi_cache_manager.get_cache_key(str(data_path))
+        if not self.fungi_cache_manager.is_cached(cache_key) and 'fungi_richness' in data.columns:
+            cached_path = self.fungi_cache_manager.get_cached_path(cache_key)
+            logger.info(f"Saving preprocessed data with fungi_richness to cache: {cached_path}")
+            # Save the full dataframe to cache
+            data.to_parquet(cached_path, compression='snappy')
         
         # Convert to H2O if requested
         if use_h2o:
             logger.info("Converting to H2O frame...")
             # Ensure H2O is initialized using manager
+            import h2o
             self.h2o = H2OManager.get_or_init()
             data = h2o.H2OFrame(data)
             logger.info(f"Final H2O frame: {data.nrows:,} rows × {data.ncols} columns")

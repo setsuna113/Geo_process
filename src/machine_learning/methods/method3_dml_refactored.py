@@ -202,7 +202,7 @@ class Method3DML(BaseRegressionMethod):
         # Define treatments and confounders for H0/H1 test
         treatments = ['plants_richness_log', 'vertebrates_richness_log']
         confounders = [
-            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
+            'bio01_std', 'bio04_std', 'bio12_std', 'bio15_std',
             'elevation_std', 'elevation_std_sq'
         ] + me_cols
         outcome = 'fungi_richness'
@@ -296,7 +296,7 @@ class Method3DML(BaseRegressionMethod):
         
         # Confounders only (no biodiversity)
         confounders = [
-            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std',
+            'bio01_std', 'bio04_std', 'bio12_std', 'bio15_std',
             'elevation_std', 'elevation_std_sq'
         ] + me_cols
         outcome = 'fungi_richness'

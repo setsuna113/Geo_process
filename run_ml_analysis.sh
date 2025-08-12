@@ -13,7 +13,7 @@ cd "$PROJECT_ROOT"
 echo "📍 Project root: $PROJECT_ROOT"
 
 # Default values
-DATA_PATH=""
+DATA_PATH="/home/jason/geo/biodiversity_climate_production_1x_corrected.parquet"
 METHOD="all"
 SPATIAL_GRID_STEP=""
 OUTPUT_DIR=""

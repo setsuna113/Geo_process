@@ -85,8 +85,9 @@ class Method1H0H1GLM(BaseRegressionMethod):
         
         # Model 1: Climate only (null model)
         logger.info("Fitting Model 1: Climate only (null)")
+        # Use actual column names from data (bio01, not bio1)
         feature_cols_null = [
-            'bio1_std', 'bio4_std', 'bio12_std', 'bio15_std', 
+            'bio01_std', 'bio04_std', 'bio12_std', 'bio15_std', 
             'elevation_std', 'elevation_std_sq'
         ] + me_cols
         
