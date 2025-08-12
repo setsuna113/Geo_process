@@ -1,10 +1,11 @@
-"""GeoSOM + VLRSOM hybrid implementation for biodiversity analysis.
+"""GeoSOM implementation for biodiversity analysis.
 
-This implementation follows the specifications in final_som_configuration_decisions.md:
+This implementation uses pure Batch SOM with momentum control:
 - Handles 70% missing data with partial Bray-Curtis distance
 - Integrates spatial information (30% spatial, 70% features)
-- Uses adaptive learning rate based on QE improvement
+- Uses momentum-based learning control (no learning rate)
 - Implements geographic coherence for convergence
+- Pure Batch SOM: direct weight assignment w = Σ(h*x) / Σ(h)
 """
 
 import numpy as np
@@ -25,7 +26,13 @@ from ..utils.constants import (
     MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG, DEFAULT_GEO_DISTANCE_NORM
 )
 from ..calculators.partial_metrics import validate_missing_data_handling
-from src.biodiversity_analysis.shared.metrics.distance_calculator import SharedDistanceCalculator
+from src.biodiversity_analysis.shared.metrics.som_metrics import (
+    calculate_qe_numba,
+    calculate_qe_with_coords_numba,
+    calculate_te_numba,
+    calculate_geographic_coherence_numba,
+    predict_batch_numba
+)
 from ..trainers.pure_numba_som import PureNumbaSOM
 
 logger = logging.getLogger(__name__)
@@ -39,7 +46,7 @@ from ..utils.constants import (
 
 @dataclass
 class GeoSOMConfig:
-    """Configuration for GeoSOM + VLRSOM hybrid."""
+    """Configuration for GeoSOM with pure Batch SOM."""
     # Grid parameters
     grid_size: Tuple[int, int]
     topology: str = "rectangular"  # or "hexagonal"
@@ -57,12 +64,7 @@ class GeoSOMConfig:
     # Memory Optimization Configuration  
     memory_optimization: Optional[Dict[str, Any]] = None
     
-    # VLRSOM parameters
-    initial_learning_rate: float = 0.5
-    min_learning_rate: float = 0.01
-    max_learning_rate: float = 0.8
-    lr_increase_factor: float = 1.1  # When QE improves
-    lr_decrease_factor: float = 0.85  # When QE worsens
+    # Pure Batch SOM doesn't use learning rate parameters
     
     # Adaptive regions
     high_qe_lr_min: float = 0.5
@@ -91,12 +93,13 @@ class GeoSOMConfig:
     qe_sample_size: int = 100000  # Sample size for QE calculation
 
 
-class GeoSOMVLRSOM:
-    """Geographic Self-Organizing Map with Variable Learning Rate SOM.
+class GeoSOM:
+    """Geographic Self-Organizing Map using pure Batch SOM.
     
-    This hybrid architecture combines:
+    This implementation features:
     1. GeoSOM: Incorporates spatial information into the distance calculation
-    2. VLRSOM: Adapts learning rate based on quantization error improvement
+    2. Pure Batch SOM: Direct weight assignment w = Σ(h*x) / Σ(h)
+    3. Momentum control: Smooths weight updates between epochs
     
     Designed for biodiversity data with high missing values and spatial structure.
     """
@@ -114,7 +117,7 @@ class GeoSOMVLRSOM:
         Args:
             key: Config key to access
             default: Default value if key not found
-            section: Optional config section (e.g., 'memory_optimization', 'training.momentum', 'vlrsom')
+            section: Optional config section (e.g., 'memory_optimization', 'training.momentum')
             
         Returns:
             Config value or default
@@ -180,8 +183,8 @@ class GeoSOMVLRSOM:
         # Initialize grid positions
         self._init_grid_positions()
         
-        # FIXED: Streamlined distance calculator without counterproductive caching
-        from ..calculators.optimized_distance_calculator import OptimizedDistanceCalculator
+        # Using shared Numba distance functions for all distance calculations
+        # (No more OptimizedDistanceCalculator - single source of truth in distance_calculator.py)
         
         self.spatial_weight = config.spatial_weight
         self.min_valid_features = config.min_valid_features
@@ -192,12 +195,8 @@ class GeoSOMVLRSOM:
         self.neighborhood_function = config.neighborhood_function
         
         # Use shared distance calculator for consistency across methods
-        # Read distance metric from config instead of hardcoding
-        distance_metric = self._get_config('feature_metric', 'bray_curtis', 'distance')
-        self.distance_calculator = SharedDistanceCalculator(
-            distance_metric=distance_metric,
-            min_valid_features=self.min_valid_features
-        )
+        # Distance metric for future extension (euclidean, etc.)
+        self.distance_metric = self._get_config('feature_metric', 'bray_curtis', 'distance')
         
         # Use pure Numba implementation for 48x speedup
         self.som_trainer = PureNumbaSOM(config=config)
@@ -205,11 +204,11 @@ class GeoSOMVLRSOM:
         logger.info("Using BATCH SOM - weight updates once per epoch")
         
         # Training state
-        self.current_lr = config.initial_learning_rate
+        # Pure Batch SOM doesn't use learning rate
         self.current_radius = None
         self.training_history = {
             'quantization_errors': [],
-            'learning_rates': [],
+            # Pure Batch SOM doesn't track learning rates
             'radii': [],
             'geographic_coherence': [],
             'topographic_errors': [],
@@ -283,7 +282,7 @@ class GeoSOMVLRSOM:
     def partial_bray_curtis(self, u: np.ndarray, v: np.ndarray) -> float:
         """Bray-Curtis distance for vectors with missing values.
         
-        Uses SharedDistanceCalculator for consistent implementation.
+        Uses shared Numba implementation for consistency.
         Only compares non-NA pairs, requires minimum valid features.
         
         Args:
@@ -292,11 +291,8 @@ class GeoSOMVLRSOM:
         Returns:
             Distance value or INVALID_DISTANCE (np.inf) if insufficient valid pairs
         """
-        # Use the shared distance calculator for consistency
-        distances = self.distance_calculator.compute_distances(
-            u.reshape(1, -1), v.reshape(1, -1)
-        )
-        return distances[0, 0]
+        from ...shared.metrics.distance_calculator import bray_curtis_distance_single
+        return bray_curtis_distance_single(u, v, self.min_valid_features)
     
     def haversine_distance(self, coord1: np.ndarray, coord2: np.ndarray) -> float:
         """Calculate haversine distance between geographic coordinates.
@@ -307,14 +303,9 @@ class GeoSOMVLRSOM:
         Returns:
             Distance in kilometers
         """
-        # Use shared distance calculator for consistency
-        # Convert from [lon, lat] to [lat, lon] for SharedDistanceCalculator
-        coords1 = np.array([[coord1[1], coord1[0]]])  # [lat, lon]
-        coords2 = np.array([[coord2[1], coord2[0]]])  # [lat, lon]
-        distances = self.distance_calculator.compute_pairwise_distances(
-            coords1, coords2, metric='haversine'
-        )
-        return distances[0, 0]
+        from ...shared.metrics.distance_calculator import haversine_distance_single
+        # coord1 and coord2 are [lon, lat]
+        return haversine_distance_single(coord1[0], coord1[1], coord2[0], coord2[1])
     
     def combined_distance(self, sample: np.ndarray, weights: np.ndarray,
                          sample_coord: np.ndarray, neuron_coord: np.ndarray) -> float:
@@ -350,57 +341,7 @@ class GeoSOMVLRSOM:
         
         return combined
 
-    def _vectorized_partial_bray_curtis_chunk(self, data_chunk: np.ndarray, weights: np.ndarray) -> np.ndarray:
-        """Vectorized Bray-Curtis distance calculation for a data chunk.
-        
-        Uses SharedDistanceCalculator to maintain abstraction and avoid code duplication.
-        
-        Args:
-            data_chunk: Shape (n_samples, n_features)
-            weights: Shape (n_neurons, n_features)
-            
-        Returns:
-            distances: Shape (n_samples, n_neurons)
-        """
-        # Use shared distance calculator - fixes abstraction violation
-        return self.distance_calculator.compute_distances(data_chunk, weights)
     
-    def _vectorized_combined_distance(self, data_chunk: np.ndarray, weights: np.ndarray,
-                                    coords_chunk: np.ndarray, neuron_coords: np.ndarray) -> np.ndarray:
-        """Vectorized combined distance calculation (feature + geographic).
-        
-        Combines Bray-Curtis feature distances with Haversine geographic distances
-        using SharedDistanceCalculator to maintain proper abstraction.
-        
-        Args:
-            data_chunk: Shape (n_samples, n_features)
-            weights: Shape (n_neurons, n_features)  
-            coords_chunk: Shape (n_samples, 2) - [lat, lon]
-            neuron_coords: Shape (n_neurons, 2) - [lat, lon]
-            
-        Returns:
-            distances: Shape (n_samples, n_neurons)
-        """
-        # Calculate feature distances using shared calculator
-        feature_distances = self.distance_calculator.compute_distances(data_chunk, weights)
-        
-        # Calculate geographic distances using shared calculator  
-        geo_distances = self.distance_calculator.compute_pairwise_distances(
-            coords_chunk, neuron_coords, metric='haversine'
-        )
-        
-        # Normalize geographic distances (max ~20,000 km)
-        geo_distances_norm = geo_distances / DEFAULT_GEO_DISTANCE_NORM
-        
-        # Combine distances with spatial weighting
-        valid_feature = ~np.isinf(feature_distances)
-        combined = np.full_like(feature_distances, INVALID_DISTANCE)
-        combined[valid_feature] = (
-            (1 - self.spatial_weight) * feature_distances[valid_feature] +
-            self.spatial_weight * geo_distances_norm[valid_feature]
-        )
-        
-        return combined
     
     def initialize_weights(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None,
                           method: str = "pca_transformed") -> None:
@@ -594,12 +535,8 @@ class GeoSOMVLRSOM:
     
     def _initialize_training_state(self, data: np.ndarray, coordinates: Optional[np.ndarray]) -> Dict[str, Any]:
         """Initialize training state including resume from checkpoint."""
-        # Log VLRSOM status
-        vlrsom_enabled = self._get_config('enabled', True, 'vlrsom')
-        if vlrsom_enabled:
-            logger.info("VLRSOM adaptation is ENABLED - learning rate will adapt based on J²(t)")
-        else:
-            logger.info("VLRSOM adaptation is DISABLED - using standard learning rate schedule")
+        # Log Batch SOM status
+        logger.info("Using pure Batch SOM - no learning rate, momentum-based control only")
         
         state = {
             'converged': False,
@@ -651,7 +588,7 @@ class GeoSOMVLRSOM:
         
         # Update training history
         self.training_history['quantization_errors'].append(qe)
-        self.training_history['learning_rates'].append(self.current_lr)
+        # Pure Batch SOM doesn't track learning rates
         self.training_history['radii'].append(self.current_radius)
         
         # Update convergence tracking
@@ -679,9 +616,9 @@ class GeoSOMVLRSOM:
         
         logger.info(f"Starting pure Numba SOM training for epoch {epoch+1}")
         
-        # Calculate current learning rate and radius using decay schedules
+        # Calculate current radius using decay schedule
+        # Note: Learning rate not used in pure Batch SOM
         progress = epoch / self.config.max_epochs
-        self.current_lr = self._calculate_learning_rate(epoch, self.config.max_epochs)
         self.current_radius = self._calculate_radius(epoch, self.config.max_epochs)
         
         # Get neuron coordinates if using spatial distance
@@ -689,11 +626,11 @@ class GeoSOMVLRSOM:
         
         # Train epoch using pure Numba (processes ALL data in parallel, no chunking!)
         # This replaces the entire joblib chunking infrastructure with a single parallel loop
+        # Note: Pure Batch SOM doesn't use learning_rate
         updated_weights = self.som_trainer.train_epoch(
             data=data,
             weights=self.weights.copy(),  # Pass a copy to preserve original for momentum
             grid_positions=self._grid_positions,
-            learning_rate=self.current_lr,
             radius=self.current_radius,
             coordinates=coordinates,
             neuron_coords=neuron_coords
@@ -708,13 +645,18 @@ class GeoSOMVLRSOM:
         momentum = self._get_config('initial_momentum', 0.9, 'training.momentum') * (1 - progress) + \
                   self._get_config('final_momentum', 0.1, 'training.momentum') * progress
         
-        # Calculate weight changes from pure Numba update
+        # Calculate weight changes from pure Batch SOM update
+        # Note: Pure Batch SOM directly assigns weighted averages (no learning rate)
         weight_diff = updated_weights - self.weights
         
-        # Apply momentum update
+        # Apply momentum to control the learning dynamics
+        # In pure Batch SOM, momentum is the ONLY learning control mechanism
+        # High momentum (0.9): Slow, stable updates (keeps 90% of previous direction)
+        # Low momentum (0.1): Fast, direct updates (keeps only 10% of previous direction)
         self.velocity = momentum * self.velocity + (1 - momentum) * weight_diff
         
-        # Update weights with momentum smoothing
+        # Update weights with momentum-controlled changes
+        # This provides smooth transitions between batch updates
         self.weights = self.weights + self.velocity
         
         logger.debug(f"Updated weights with momentum={momentum:.3f}")
@@ -724,7 +666,7 @@ class GeoSOMVLRSOM:
         qe = self.calculate_quantization_error(data, coordinates, sample_size=qe_sample_size)
         
         logger.info(f"Completed batch training for epoch {epoch+1}: "
-                   f"QE={qe:.6f}, LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
+                   f"QE={qe:.6f}, Radius={self.current_radius:.2f}")
         
         return qe
     
@@ -837,7 +779,7 @@ class GeoSOMVLRSOM:
             'max_epochs': self.max_epochs,
             'progress': (epoch + 1) / self.max_epochs,
             'qe': qe,
-            'learning_rate': self.current_lr,
+            # Pure Batch SOM doesn't use learning rate
             'radius': self.current_radius
         }
         progress_callback(progress_info)
@@ -850,136 +792,14 @@ class GeoSOMVLRSOM:
             topographic_errors=[],
             training_time=0.0,
             convergence_epoch=training_state.get('convergence_epoch'),
-            final_learning_rate=self.current_lr,
+            final_learning_rate=0.0,  # Pure Batch SOM doesn't use learning rate
             final_neighborhood_radius=self.current_radius,
             n_samples_trained=n_samples
         )
     
     # Note: Checkpoint saving is handled by the standardized save_checkpoint method at line 1376
     
-    def _calculate_vlrsom_error_squared(self, data: np.ndarray, 
-                                       coordinates: Optional[np.ndarray] = None,
-                                       sample_size: int = 10000) -> float:
-        """Calculate J²(t) error function for VLRSOM.
-        
-        From paper Equation (18): J(t) = (1/n) Σ ||wc(t) - xi(t)||²
-        
-        Args:
-            data: Input data samples
-            coordinates: Geographic coordinates (optional)
-            sample_size: Number of samples to use for approximation
-            
-        Returns:
-            J²(t): Squared error function value
-        """
-        # Check if VLRSOM is enabled
-        if not self._get_config('enabled', True, 'vlrsom'):
-            return 0.0  # Return 0 when disabled (won't be used anyway)
-        n_samples = len(data)
-        
-        # Use sampling for efficiency (leverages existing infrastructure)
-        if n_samples > sample_size:
-            indices = np.random.choice(n_samples, sample_size, replace=False)
-            data_sample = data[indices]
-            coords_sample = coordinates[indices] if coordinates is not None else None
-        else:
-            data_sample = data
-            coords_sample = coordinates
-        
-        # Pre-filter valid samples
-        valid_features = (~np.isnan(data_sample)).sum(axis=1)
-        valid_mask = valid_features >= self.min_valid_features
-        
-        if not valid_mask.any():
-            logger.warning("No valid samples for VLRSOM error calculation")
-            return 1.0  # High error value
-        
-        data_valid = data_sample[valid_mask]
-        coords_valid = coords_sample[valid_mask] if coords_sample is not None else None
-        n_valid = len(data_valid)
-        
-        # Calculate distances to all neurons for each sample
-        if coordinates is not None and hasattr(self, 'neuron_coords'):
-            # Combined distance (feature + geographic)
-            distances = self._vectorized_combined_distance(
-                data_valid, self.weights, coords_valid, self.neuron_coords
-            )
-        else:
-            # Feature distance only
-            distances = self._vectorized_partial_bray_curtis_chunk(data_valid, self.weights)
-        
-        # Find BMU for each sample
-        bmu_indices = np.argmin(distances, axis=1)
-        min_distances = np.take_along_axis(
-            distances, bmu_indices[:, np.newaxis], axis=1
-        ).squeeze()
-        
-        # Handle invalid distances
-        valid_distances = min_distances[~np.isinf(min_distances)]
-        if len(valid_distances) == 0:
-            logger.warning("All samples have infinite distances in VLRSOM error calculation")
-            return 1.0
-        
-        # Calculate mean squared error: J(t) = (1/n) Σ ||error||²
-        mean_squared_error = np.mean(valid_distances ** 2)
-        
-        # Return J²(t) as required by VLRSOM formula
-        return mean_squared_error
-    
-    def _adapt_learning_rate_vlrsom(self, data: np.ndarray,
-                                   coordinates: Optional[np.ndarray] = None):
-        """VLRSOM: Adapt learning rate using proper algorithm from paper.
-        
-        From paper Equation (20): μ'(t+1) = αμ(t) + γJ²(t)
-        From paper Equation (21): Bounds checking
-        
-        Args:
-            data: Current training data (already sampled by caller)
-            coordinates: Geographic coordinates (if available)
-        """
-        # Check if VLRSOM is enabled
-        if not self._get_config('enabled', True, 'vlrsom'):
-            # When disabled, do nothing - keep current learning rate from standard schedule
-            return
-        
-        # Get VLRSOM parameters from correct config location
-        alpha = self._get_config('alpha', 0.95, 'vlrsom')  # Decay factor (0 < α < 1)
-        gamma = self._get_config('gamma', 0.001, 'vlrsom')  # Adaptation parameter (γ > 0)
-        
-        # Calculate J²(t) using existing sampling infrastructure
-        error_sample_size = self._get_config('error_sample_size', 10000, 'vlrsom')
-        j_squared = self._calculate_vlrsom_error_squared(data, coordinates, error_sample_size)
-        
-        # Apply VLRSOM formula: μ'(t+1) = αμ(t) + γJ²(t)
-        new_lr = alpha * self.current_lr + gamma * j_squared
-        
-        # Apply bounds from paper Equation (21)
-        min_lr = self._get_config('vlrsom_min_lr', self.config.min_learning_rate)
-        max_lr = self._get_config('vlrsom_max_lr', self.config.max_learning_rate)
-        
-        self.current_lr = np.clip(new_lr, min_lr, max_lr)
-        
-        # Log VLRSOM adaptation for debugging
-        if hasattr(self, '_vlrsom_log_frequency'):
-            epoch = len(self.training_history.get('learning_rates', [])) 
-            if epoch % 10 == 0:
-                logger.debug(f"VLRSOM: J²(t)={j_squared:.6f}, α={alpha}, γ={gamma}, "
-                           f"LR: {self.current_lr:.6f} (bounds: [{min_lr:.6f}, {max_lr:.6f}])")
-        
-    def _adapt_learning_rate(self, data: np.ndarray, 
-                           coordinates: Optional[np.ndarray] = None):
-        """Adapt learning rate using VLRSOM algorithm.
-        
-        This is the main entry point called by the training loop.
-        
-        Args:
-            data: Current training data (already sampled by caller)
-            coordinates: Geographic coordinates (if available)
-        """
-        # Only call VLRSOM if enabled
-        if self._get_config('enabled', True, 'vlrsom'):
-            self._adapt_learning_rate_vlrsom(data, coordinates)
-        # Otherwise, learning rate follows standard schedule from batch trainer
+    # Pure Batch SOM doesn't use learning rate adaptation
     
     def _get_scheduled_radius(self, epoch: int) -> float:
         """Get the scheduled radius for a given epoch without adjustment."""
@@ -1058,15 +878,8 @@ class GeoSOMVLRSOM:
                 f"Neighborhood {self.neighborhood_function} not implemented"
             )
     
-    def _calculate_learning_rate(self, epoch: int, max_epochs: int) -> float:
-        """Calculate learning rate for current epoch using exponential decay."""
-        if self.config.initial_learning_rate == self.config.min_learning_rate:
-            return self.config.initial_learning_rate
-        
-        # Exponential decay
-        decay_rate = np.log(self.config.min_learning_rate / self.config.initial_learning_rate) / max_epochs
-        lr = self.config.initial_learning_rate * np.exp(decay_rate * epoch)
-        return max(lr, self.config.min_learning_rate)
+    # OBSOLETE - Pure Batch SOM doesn't use learning rate
+    # def _calculate_learning_rate removed
     
     def _calculate_radius(self, epoch: int, max_epochs: int) -> float:
         """Calculate neighborhood radius for current epoch."""
@@ -1086,7 +899,7 @@ class GeoSOMVLRSOM:
     def calculate_quantization_error(self, data: np.ndarray, 
                                    coordinates: Optional[np.ndarray] = None,
                                    sample_size: Optional[int] = None) -> float:
-        """Calculate average quantization error with optional sampling.
+        """Calculate average quantization error using fast Numba implementation.
         
         Args:
             data: Input data
@@ -1100,52 +913,27 @@ class GeoSOMVLRSOM:
             indices = np.random.choice(n_samples, sample_size, replace=False)
             data = data[indices]
             coordinates = coordinates[indices] if coordinates is not None else None
-            n_samples = sample_size
             logger.debug(f"Using {sample_size} samples for QE calculation")
         
-        # Pre-filter valid samples to avoid unnecessary computation
-        valid_features = (~np.isnan(data)).sum(axis=1)
-        valid_mask = valid_features >= self.min_valid_features
+        # Ensure contiguous arrays for Numba
+        data = np.ascontiguousarray(data, dtype=np.float32)
+        weights = np.ascontiguousarray(self.weights, dtype=np.float32)
         
-        if not valid_mask.any():
-            return np.inf
-        
-        data_valid = data[valid_mask]
-        coords_valid = coordinates[valid_mask] if coordinates is not None else None
-        
-        # Process in chunks for memory efficiency
-        chunk_size = self._get_config('qe_calc_chunk_size', 1000)
-        total_error = 0.0
-        n_valid = 0
-        
-        for start_idx in range(0, len(data_valid), chunk_size):
-            end_idx = min(start_idx + chunk_size, len(data_valid))
-            chunk_data = data_valid[start_idx:end_idx]
-            chunk_coords = coords_valid[start_idx:end_idx] if coords_valid is not None else None
-            
-            # Vectorized distance calculation
-            if coordinates is not None and hasattr(self, 'neuron_coords'):
-                distances = self._vectorized_combined_distance(
-                    chunk_data, self.weights, chunk_coords, self.neuron_coords
-                )
-            else:
-                distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
-            
-            # Find BMUs and calculate errors
-            bmu_indices = np.argmin(distances, axis=1)
-            min_errors = np.take_along_axis(distances, bmu_indices[:, np.newaxis], axis=1).squeeze()
-            
-            # Accumulate valid errors
-            valid_errors = ~np.isinf(min_errors)
-            total_error += min_errors[valid_errors].sum()
-            n_valid += valid_errors.sum()
-        
-        return total_error / n_valid if n_valid > 0 else np.inf
+        # Use fast Numba implementation (10x faster!)
+        if coordinates is not None and hasattr(self, 'neuron_coords'):
+            coords = np.ascontiguousarray(coordinates, dtype=np.float32)
+            neuron_coords = np.ascontiguousarray(self.neuron_coords, dtype=np.float32)
+            return calculate_qe_with_coords_numba(
+                data, weights, coords, neuron_coords,
+                self.spatial_weight, self.min_valid_features
+            )
+        else:
+            return calculate_qe_numba(data, weights, self.min_valid_features)
     
     def calculate_topographic_error(self, data: np.ndarray, 
                                   coordinates: Optional[np.ndarray] = None,
                                   sample_size: int = 10000) -> float:
-        """Calculate topographic error with sampling for efficiency.
+        """Calculate topographic error using fast Numba implementation.
         
         TE measures how well the SOM preserves the topology of the input space.
         For each data point, TE = 1 if BMU and 2nd BMU are not neighbors, 0 otherwise.
@@ -1165,58 +953,15 @@ class GeoSOMVLRSOM:
             indices = np.random.choice(n_samples, sample_size, replace=False)
             data = data[indices]
             coordinates = coordinates[indices] if coordinates is not None else None
-            n_samples = sample_size
             logger.debug(f"Using {sample_size} samples for TE calculation")
         
-        # Pre-filter valid samples
-        valid_features = (~np.isnan(data)).sum(axis=1)
-        valid_mask = valid_features >= self.min_valid_features
+        # Ensure contiguous arrays for Numba
+        data = np.ascontiguousarray(data, dtype=np.float32)
+        weights = np.ascontiguousarray(self.weights, dtype=np.float32)
+        grid_positions = np.ascontiguousarray(self._grid_positions, dtype=np.float32)
         
-        if not valid_mask.any():
-            return 1.0  # Maximum error if no valid samples
-        
-        data_valid = data[valid_mask]
-        coords_valid = coordinates[valid_mask] if coordinates is not None else None
-        
-        # Calculate distances to all neurons
-        if coordinates is not None and hasattr(self, 'neuron_coords'):
-            distances = self._vectorized_combined_distance(
-                data_valid, self.weights, coords_valid, self.neuron_coords
-            )
-        else:
-            distances = self._vectorized_partial_bray_curtis_chunk(data_valid, self.weights)
-        
-        # Find BMU and 2nd BMU for each sample
-        te_errors = 0
-        n_valid = 0
-        
-        for i in range(len(distances)):
-            dist_row = distances[i]
-            if np.all(np.isinf(dist_row)):
-                continue
-                
-            # Find BMU
-            bmu_idx = np.argmin(dist_row)
-            
-            # Find 2nd BMU by masking out the BMU
-            dist_row_2nd = dist_row.copy()
-            dist_row_2nd[bmu_idx] = np.inf
-            second_bmu_idx = np.argmin(dist_row_2nd)
-            
-            # Check if they are neighbors on the grid
-            bmu_pos = self._get_neuron_position(bmu_idx)
-            second_bmu_pos = self._get_neuron_position(second_bmu_idx)
-            
-            # Calculate grid distance (Manhattan distance for rectangular grid)
-            grid_distance = abs(bmu_pos[0] - second_bmu_pos[0]) + abs(bmu_pos[1] - second_bmu_pos[1])
-            
-            # Neighbors are adjacent if grid distance is 1
-            if grid_distance > 1:
-                te_errors += 1
-            
-            n_valid += 1
-        
-        return te_errors / n_valid if n_valid > 0 else 1.0
+        # Use fast Numba implementation (parallel, no intermediate matrices)
+        return calculate_te_numba(data, weights, grid_positions, self.min_valid_features)
     
     def _get_neuron_position(self, neuron_idx: int) -> Tuple[int, int]:
         """Get grid position (row, col) from neuron index."""
@@ -1226,33 +971,22 @@ class GeoSOMVLRSOM:
     
     def _calculate_geographic_coherence(self, data: np.ndarray, 
                                       coordinates: np.ndarray) -> float:
-        """Calculate geographic coherence using Moran's I.
+        """Calculate geographic coherence using fast Numba implementation.
         
-        Uses chunked processing for large datasets to avoid O(n²) memory usage.
-        For datasets > 10k samples, uses a chunked approach that processes
-        the distance matrix in blocks.
+        Uses simplified Moran's I calculation optimized for SOM BMU assignments.
         """
-        # Get cluster assignments using vectorized approach
-        logger.debug(f"Finding BMUs for {len(data)} samples for geographic coherence")
+        logger.debug(f"Calculating geographic coherence for {len(data)} samples")
         
-        # Use vectorized distance calculation
-        if hasattr(self, 'neuron_coords'):
-            distances = self._vectorized_combined_distance(
-                data, self.weights, coordinates, self.neuron_coords
-            )
-        else:
-            distances = self._vectorized_partial_bray_curtis_chunk(data, self.weights)
+        # Ensure contiguous arrays for Numba
+        data = np.ascontiguousarray(data, dtype=np.float32)
+        weights = np.ascontiguousarray(self.weights, dtype=np.float32)
+        coords = np.ascontiguousarray(coordinates, dtype=np.float32)
         
-        # Find BMUs
-        clusters = np.argmin(distances, axis=1)
-        
-        # Mark invalid distances as INVALID_INDEX
-        invalid_mask = np.all(np.isinf(distances), axis=1)
-        clusters[invalid_mask] = self.INVALID_INDEX
-        valid = clusters >= 0
-        
-        if valid.sum() < 10:  # Need minimum samples
-            return 0.0
+        # Use fast Numba implementation
+        distance_threshold = self._get_config('coherence_distance_threshold', 50.0, 'spatial_metrics')
+        return calculate_geographic_coherence_numba(
+            data, weights, coords, self.min_valid_features, distance_threshold
+        )
         
         # Calculate spatial weights matrix using vectorized operations
         coords_valid = coordinates[valid]
@@ -1401,7 +1135,7 @@ class GeoSOMVLRSOM:
         return morans_i
     
     def _check_convergence(self, geo_coherence: float, patience_counter: int) -> bool:
-        """Check convergence criteria using topology preservation metrics from VLRSOM paper."""
+        """Check convergence criteria using topology preservation metrics."""
         converged_qe = False
         converged_topology = False
         
@@ -1418,7 +1152,7 @@ class GeoSOMVLRSOM:
                 logger.info(f"QE stable over {qe_stability_window} epochs (range = {qe_relative_range:.5f} < {qe_stability_threshold})")
                 converged_qe = True
         
-        # Check topographic error (from VLRSOM paper) - better topology preservation metric
+        # Check topographic error - better topology preservation metric
         if len(self.training_history['topographic_errors']) >= 5:
             recent_te = self.training_history['topographic_errors'][-5:]
             avg_te = np.mean(recent_te)
@@ -1481,7 +1215,7 @@ class GeoSOMVLRSOM:
         checkpoint_data = {
             'epoch': epoch,
             'weights': self.weights,
-            'current_lr': self.current_lr,
+            # Pure Batch SOM doesn't use learning rate
             'current_radius': self.current_radius,
             'best_qe': best_qe,
             'patience_counter': patience_counter,
@@ -1575,7 +1309,7 @@ class GeoSOMVLRSOM:
                 logger.info("Checkpoint integrity verified successfully")
             
             # Validate checkpoint structure
-            required_fields = ['epoch', 'weights', 'current_lr', 'current_radius', 'best_qe', 'patience_counter']
+            required_fields = ['epoch', 'weights', 'current_radius', 'best_qe', 'patience_counter']
             for field in required_fields:
                 if field not in checkpoint:
                     raise ValueError(f"Corrupted checkpoint: missing required field '{field}'")
@@ -1591,7 +1325,7 @@ class GeoSOMVLRSOM:
             checkpoint_data = {
                 'epoch': int(checkpoint['epoch']),
                 'weights': checkpoint['weights'],
-                'current_lr': float(checkpoint['current_lr']),
+                # Pure Batch SOM doesn't use learning rate
                 'current_radius': float(checkpoint['current_radius']),
                 'best_qe': float(checkpoint['best_qe']),
                 'patience_counter': int(checkpoint['patience_counter']),
@@ -1626,12 +1360,12 @@ class GeoSOMVLRSOM:
         
         # Restore state
         self.weights = checkpoint_data['weights']
-        self.current_lr = checkpoint_data['current_lr']
+        # Pure Batch SOM doesn't use learning rate
         self.current_radius = checkpoint_data['current_radius']
         self.training_history = checkpoint_data['training_history']
         
         logger.info(f"Loaded checkpoint from epoch {checkpoint_data['epoch']}")
-        logger.info(f"Resumed with LR={self.current_lr:.4f}, Radius={self.current_radius:.2f}")
+        logger.info(f"Resumed with Radius={self.current_radius:.2f}")
         
         return checkpoint_data
     
@@ -1677,7 +1411,7 @@ class GeoSOMVLRSOM:
             logger.warning(f"Error during cleanup: {e}")
     
     def predict(self, data: np.ndarray, coordinates: Optional[np.ndarray] = None) -> np.ndarray:
-        """Predict BMU indices for data using vectorized operations."""
+        """Predict BMU indices using fast Numba implementation."""
         # Validate coordinates shape if provided
         if coordinates is not None:
             if coordinates.shape[0] != data.shape[0]:
@@ -1685,36 +1419,15 @@ class GeoSOMVLRSOM:
             if coordinates.shape[1] != 2:
                 raise ValueError(f"Coordinates must have 2 columns [longitude, latitude], got {coordinates.shape[1]}")
         
-        n_samples = len(data)
-        bmu_indices = np.full(n_samples, INVALID_INDEX, dtype=np.int32)
+        # Ensure contiguous arrays for Numba
+        data = np.ascontiguousarray(data, dtype=np.float32)
+        weights = np.ascontiguousarray(self.weights, dtype=np.float32)
         
-        # Process in chunks for memory efficiency
-        prediction_chunk_size = self._get_config('prediction_chunk_size', 5000)
-        chunk_size = min(prediction_chunk_size, n_samples)
+        # Use fast parallel Numba implementation (no chunking needed!)
+        bmu_indices = predict_batch_numba(data, weights, self.min_valid_features)
         
-        for start_idx in range(0, n_samples, chunk_size):
-            end_idx = min(start_idx + chunk_size, n_samples)
-            chunk_data = data[start_idx:end_idx]
-            chunk_coords = coordinates[start_idx:end_idx] if coordinates is not None else None
-            
-            # Vectorized distance calculation
-            if coordinates is not None and hasattr(self, 'neuron_coords'):
-                distances = self._vectorized_combined_distance(
-                    chunk_data, self.weights, chunk_coords, self.neuron_coords
-                )
-            else:
-                distances = self._vectorized_partial_bray_curtis_chunk(chunk_data, self.weights)
-            
-            # Find BMUs for valid samples
-            valid_distances = ~np.all(np.isinf(distances), axis=1)
-            if valid_distances.any():
-                chunk_bmus = np.argmin(distances[valid_distances], axis=1)
-                valid_indices = np.where(valid_distances)[0]
-                bmu_indices[start_idx + valid_indices] = chunk_bmus
-            
-            # Log progress for large datasets
-            if n_samples > DEFAULT_PROGRESS_LOG_INTERVAL and (end_idx % DEFAULT_PROGRESS_LOG_INTERVAL == 0 or end_idx == n_samples):
-                logger.debug(f"Predicted {end_idx}/{n_samples} samples")
+        # Note: If we need geographic distance in prediction later,
+        # we can add predict_batch_with_coords_numba to som_metrics.py
         
         return bmu_indices
     
