@@ -124,6 +124,15 @@ def som_epoch_pure(data, weights, grid_positions, radius,
         if bmu_idx < 0:
             continue
         
+        # Count valid features once per sample (optimization)
+        valid_count = 0.0
+        for k in range(n_features):
+            if not np.isnan(sample[k]):
+                valid_count += 1.0
+        
+        if valid_count == 0:
+            continue
+        
         # 2. Calculate neighborhood and accumulate
         for j in range(n_neurons):
             influence = calc_influence_numba(bmu_idx, j, grid_positions, radius)
@@ -138,15 +147,8 @@ def som_epoch_pure(data, weights, grid_positions, radius,
                         # Accumulate (may have race conditions, but acceptable for SOM)
                         numerator[j, k] += influence * sample[k]
                 
-                # Accumulate denominator
-                # Count valid features for this sample
-                valid_count = 0.0
-                for k in range(n_features):
-                    if not np.isnan(sample[k]):
-                        valid_count += 1.0
-                
-                if valid_count > 0:
-                    denominator[j] += influence * valid_count
+                # Accumulate denominator with pre-computed valid_count
+                denominator[j] += influence * valid_count
     
     # 4. Update weights - Pure Batch SOM (no learning rate)
     # Direct assignment of weighted average - this is true Batch SOM
@@ -172,6 +174,12 @@ def som_epoch_with_geographic(data, weights, grid_positions,
     
     Combines feature distance and geographic distance for BMU selection.
     Pure Batch SOM - direct weight assignment, no learning rate.
+    
+    Args:
+        geo_distance_norm: Normalization factor for geographic distance in km.
+                          Typical values: 1000 km for regional, 5000 km for continental,
+                          20000 km for global studies. This scales the geographic distance
+                          to be comparable with the feature distance (0-1 range).
     """
     n_samples = data.shape[0]
     n_neurons = weights.shape[0]
@@ -219,10 +227,20 @@ def som_epoch_with_geographic(data, weights, grid_positions,
                     sample_coord = coordinates[i]
                     neuron_coord = neuron_coords[j]
                     
-                    # Euclidean distance in coordinate space
-                    dx = sample_coord[0] - neuron_coord[0]
-                    dy = sample_coord[1] - neuron_coord[1]
-                    geo_dist = np.sqrt(dx * dx + dy * dy) / geo_distance_norm
+                    # Haversine distance for lat/lon coordinates
+                    # coordinates are [longitude, latitude] in degrees
+                    lat1 = sample_coord[1] * np.pi / 180.0
+                    lat2 = neuron_coord[1] * np.pi / 180.0
+                    dlon = (neuron_coord[0] - sample_coord[0]) * np.pi / 180.0
+                    dlat = lat2 - lat1
+                    
+                    # Haversine formula
+                    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+                    c = 2 * np.arcsin(np.sqrt(a))
+                    
+                    # Distance in km (Earth radius = 6371 km)
+                    geo_dist_km = 6371.0 * c
+                    geo_dist = geo_dist_km / geo_distance_norm
                     
                     # Combined distance
                     combined_dist = (1 - spatial_weight) * feature_dist + spatial_weight * geo_dist

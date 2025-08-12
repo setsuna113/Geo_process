@@ -454,7 +454,6 @@ class SOMConfig(IMethodConfig):
         - SOM_CHUNK_SIZE: Samples per chunk (int)
         - SOM_SPATIAL_GRID_STEP: Spatial sampling step (int)
         - SOM_GRID_SIZE: Grid dimensions (comma-separated, e.g., "60,60")
-        - SOM_INITIAL_LR: Initial learning rate (float)
         
         Args:
             config_name: Name of config file (without .yml)

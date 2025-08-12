@@ -555,7 +555,15 @@ class GeoSOM:
             state['best_qe'] = checkpoint_data['best_qe']
             state['patience_counter'] = checkpoint_data['patience_counter']
             logger.info(f"Resuming training from epoch {state['start_epoch']+1}")
+            # Load velocity from checkpoint if available
+            if 'velocity' in checkpoint_data:
+                self.velocity = checkpoint_data['velocity']
+            else:
+                # Initialize velocity for resumed training
+                self.velocity = np.zeros_like(self.weights, dtype=np.float32)
         else:
+            # Fresh training - always reset velocity
+            self.velocity = np.zeros_like(self.weights, dtype=np.float32)
             # Calculate initial QE
             initial_qe = self._calculate_initial_qe(data, coordinates)
             self.training_history['quantization_errors'].append(initial_qe)
@@ -636,11 +644,8 @@ class GeoSOM:
             neuron_coords=neuron_coords
         )
         
-        # Initialize momentum velocity if not exists
-        if not hasattr(self, 'velocity') or self.velocity is None:
-            self.velocity = np.zeros_like(self.weights, dtype=np.float32)
-        
         # Get momentum value (decay from initial to final)
+        # Note: velocity is already initialized in _initialize_training_state
         progress = epoch / self.config.max_epochs
         momentum = self._get_config('initial_momentum', 0.9, 'training.momentum') * (1 - progress) + \
                   self._get_config('final_momentum', 0.1, 'training.momentum') * progress
@@ -786,13 +791,19 @@ class GeoSOM:
     
     def _create_training_result(self, training_state: Dict[str, Any], n_samples: int) -> SOMTrainingResult:
         """Create the final training result."""
+        # Calculate final momentum value
+        final_epoch = training_state.get('convergence_epoch', self.max_epochs - 1)
+        progress = final_epoch / self.config.max_epochs
+        final_momentum = self._get_config('initial_momentum', 0.9, 'training.momentum') * (1 - progress) + \
+                        self._get_config('final_momentum', 0.1, 'training.momentum') * progress
+        
         return SOMTrainingResult(
             weights=self.weights.reshape(self.grid_rows, self.grid_cols, self.input_dim),
             quantization_errors=self.training_history['quantization_errors'],
             topographic_errors=[],
             training_time=0.0,
             convergence_epoch=training_state.get('convergence_epoch'),
-            final_learning_rate=0.0,  # Pure Batch SOM doesn't use learning rate
+            final_momentum=final_momentum,  # Pure Batch SOM uses momentum instead of learning rate
             final_neighborhood_radius=self.current_radius,
             n_samples_trained=n_samples
         )
