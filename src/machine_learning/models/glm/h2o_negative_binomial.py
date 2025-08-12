@@ -390,3 +390,57 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         # Note: In production, you might want to keep H2O running
         # across multiple model fits for efficiency
         pass  # Don't auto-shutdown to allow reuse
+    
+    def evaluate(self, X: Union[np.ndarray, pd.DataFrame], y: np.ndarray) -> Dict[str, float]:
+        """Evaluate model performance on test data.
+        
+        Args:
+            X: Features
+            y: Target values
+            
+        Returns:
+            Dictionary with evaluation metrics
+        """
+        predictions = self.predict(X)
+        from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+        
+        return {
+            'rmse': np.sqrt(mean_squared_error(y, predictions)),
+            'mae': mean_absolute_error(y, predictions),
+            'r2': r2_score(y, predictions)
+        }
+    
+    def get_feature_importance(self) -> pd.DataFrame:
+        """Get feature importance scores.
+        
+        Returns:
+            DataFrame with feature names and importance scores
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted first")
+        
+        # For GLM, use absolute coefficient values as importance
+        coeffs = self.get_all_coefficients()
+        importance_df = pd.DataFrame({
+            'feature': list(coeffs.keys()),
+            'importance': [abs(v) if v is not None else 0 for v in coeffs.values()]
+        })
+        return importance_df.sort_values('importance', ascending=False)
+    
+    def get_model_params(self) -> Dict[str, Any]:
+        """Get model parameters.
+        
+        Returns:
+            Dictionary of model parameters
+        """
+        if not self.is_fitted:
+            return self.params
+        return self.model.actual_params
+    
+    def set_model_params(self, **params) -> None:
+        """Set model parameters.
+        
+        Args:
+            **params: Model parameters to set
+        """
+        self.params.update(params)
