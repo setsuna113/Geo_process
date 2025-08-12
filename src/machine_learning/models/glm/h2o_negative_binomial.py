@@ -11,8 +11,8 @@ from typing import Dict, Any, Optional, Union, Tuple
 import h2o
 from h2o.estimators.glm import H2OGeneralizedLinearEstimator
 
-from ...base.ml_analyzer import BaseMLAnalyzer
-from ...abstractions.types.ml_types import ModelType
+from src.base.ml_analyzer import BaseMLAnalyzer
+from src.abstractions.types.ml_types import ModelType
 
 logger = logging.getLogger(__name__)
 

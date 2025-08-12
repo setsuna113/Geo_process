@@ -82,6 +82,26 @@ class MLRegressionConfig:
         # Log key configuration decisions
         self._log_configuration()
     
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get configuration value by key.
+        
+        Args:
+            key: Configuration key
+            default: Default value if key not found
+            
+        Returns:
+            Configuration value or default
+        """
+        return self.config.get(key, default)
+    
+    def get_glm_config(self) -> Dict[str, Any]:
+        """Get GLM-specific configuration.
+        
+        Returns:
+            GLM configuration dictionary
+        """
+        return self.regression_config.get('models', {}).get('glm', {})
+    
     def _log_configuration(self):
         """Log important configuration settings."""
         preprocessing = self.regression_config.get('preprocessing', {})

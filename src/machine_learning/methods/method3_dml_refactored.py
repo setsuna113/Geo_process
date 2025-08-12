@@ -13,16 +13,16 @@ from pathlib import Path
 
 from src.base.ml import BaseRegressionMethod
 from src.abstractions.types.ml_types import ModelType, ModelMetadata
-from ...models.gbm.h2o_gbm import H2OGBM
-from ...config_loader import MLRegressionConfig
-from ...evaluation.dml import DMLParameterCalculator
-from ...evaluation.dml_comparison import DMLModelComparison
-from ...hypothesis import (
+from ..models.gbm.h2o_gbm import H2OGBM
+from ..config_loader import MLRegressionConfig
+from ..evaluation.dml import DMLParameterCalculator
+from ..evaluation.dml_comparison import DMLModelComparison
+from ..hypothesis import (
     DMLClassicalTest,
     DMLEffectSize,
     DMLBayesian
 )
-from ...utils import H2OManager
+from ..utils import H2OManager
 
 logger = logging.getLogger(__name__)
 
@@ -418,3 +418,178 @@ class Method3DML(BaseRegressionMethod):
             return np.full(data.nrows, theta1)
         else:
             raise ValueError("No treatment effects estimated")
+    
+    def generate_report(self, output_dir: Optional[Path] = None) -> Dict[str, Any]:
+        """Generate comprehensive report for Method 3 DML causal inference.
+        
+        Coordinates reporting from DML hypothesis tests (Classical, Effect Size, Bayesian).
+        
+        Args:
+            output_dir: Optional directory to save report files
+            
+        Returns:
+            Dictionary with all report components
+        """
+        if not self.results:
+            logger.warning("No DML results available. Run fit_model first.")
+            return {}
+        
+        report = {
+            'method': 'Method 3: DML Causal Inference',
+            'hypotheses': {
+                'H0': 'No causal effect of biodiversity on fungi richness',
+                'H1': 'Biodiversity has causal effect on fungi richness'
+            },
+            'causal_parameters': {},
+            'tests': {},
+            'visualizations': []
+        }
+        
+        # Extract causal parameter estimates
+        if 'parameters' in self.results:
+            params = self.results['parameters']
+            report['causal_parameters'] = {
+                'plants_effect': {
+                    'theta': params.get('theta1', {}).get('estimate'),
+                    'se': params.get('theta1', {}).get('std_error'),
+                    'interpretation': f"1% increase in plant richness causes {params.get('theta1', {}).get('estimate', 0):.3f}% change in fungi"
+                },
+                'vertebrates_effect': {
+                    'theta': params.get('theta2', {}).get('estimate'),
+                    'se': params.get('theta2', {}).get('std_error'),
+                    'interpretation': f"1% increase in vertebrate richness causes {params.get('theta2', {}).get('estimate', 0):.3f}% change in fungi"
+                }
+            }
+        
+        # Generate reports from each hypothesis testing approach
+        if 'hypothesis_tests' in self.results:
+            tests = self.results['hypothesis_tests']
+            
+            # Classical testing report
+            if 'classical' in tests:
+                classical_report = DMLClassicalTest.generate_publication_report(
+                    tests['classical'],
+                    method_number=3,
+                    model_type="Double Machine Learning"
+                )
+                report['tests']['classical'] = classical_report
+                
+                # Generate visualization if output directory provided
+                if output_dir:
+                    try:
+                        fig = DMLClassicalTest.visualize_causal_effects(
+                            tests['classical'],
+                            title="Method 3: DML Causal Effects"
+                        )
+                        viz_path = output_dir / "method3_classical_test.png"
+                        fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        report['visualizations'].append(str(viz_path))
+                        logger.info(f"DML classical test visualization saved to {viz_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create DML classical visualization: {e}")
+            
+            # Effect size evaluation report
+            if 'effect_size' in tests:
+                effect_report = DMLEffectSize.generate_publication_report(
+                    tests['effect_size'],
+                    method_number=3
+                )
+                report['tests']['effect_size'] = effect_report
+                
+                # Generate visualization if output directory provided
+                if output_dir:
+                    try:
+                        fig = DMLEffectSize.visualize_effect_sizes(
+                            tests['effect_size'],
+                            title="Method 3: DML Effect Sizes"
+                        )
+                        viz_path = output_dir / "method3_effect_sizes.png"
+                        fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        report['visualizations'].append(str(viz_path))
+                        logger.info(f"DML effect size visualization saved to {viz_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create DML effect size visualization: {e}")
+            
+            # Bayesian interpretation report
+            if 'bayesian' in tests:
+                bayesian_report = DMLBayesian.generate_publication_report(
+                    tests['bayesian'],
+                    method_number=3
+                )
+                report['tests']['bayesian'] = bayesian_report
+                
+                # Generate visualization if output directory provided
+                if output_dir:
+                    try:
+                        fig = DMLBayesian.visualize_posterior_distributions(
+                            tests['bayesian'],
+                            title="Method 3: DML Bayesian Analysis"
+                        )
+                        viz_path = output_dir / "method3_bayesian.png"
+                        fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        report['visualizations'].append(str(viz_path))
+                        logger.info(f"DML Bayesian visualization saved to {viz_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create DML Bayesian visualization: {e}")
+        
+        # Model comparison results if available
+        if 'model_comparison' in self.results:
+            report['model_comparison'] = self.results['model_comparison']
+        
+        # Overall conclusion
+        if 'hypothesis_tests' in self.results:
+            tests = self.results['hypothesis_tests']
+            # Synthesize conclusions from different approaches
+            classical_support = tests.get('classical', {}).get('h1_supported', False)
+            effect_meaningful = tests.get('effect_size', {}).get('both_meaningful', False)
+            bayesian_support = tests.get('bayesian', {}).get('joint_probabilities', {}).get('both_positive', 0) > 0.95
+            
+            if classical_support and effect_meaningful and bayesian_support:
+                overall_conclusion = "Strong causal evidence for biodiversity begets biodiversity"
+            elif classical_support or bayesian_support:
+                overall_conclusion = "Moderate causal evidence for biodiversity effects"
+            else:
+                overall_conclusion = "Weak or no causal evidence for biodiversity effects"
+            
+            report['conclusion'] = {
+                'overall': overall_conclusion,
+                'classical_support': classical_support,
+                'effect_meaningful': effect_meaningful,
+                'bayesian_support': bayesian_support
+            }
+        
+        # Save report summary if output directory provided
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save JSON summary
+            import json
+            summary_path = output_dir / "method3_report_summary.json"
+            with open(summary_path, 'w') as f:
+                # Convert non-serializable objects
+                report_serializable = self._make_serializable(report)
+                json.dump(report_serializable, f, indent=2)
+            logger.info(f"Method 3 report summary saved to {summary_path}")
+        
+        return report
+    
+    def _make_serializable(self, obj):
+        """Convert pandas/numpy objects to serializable format."""
+        import pandas as pd
+        import numpy as np
+        
+        if isinstance(obj, dict):
+            return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_serializable(v) for v in obj]
+        elif isinstance(obj, pd.DataFrame):
+            return obj.to_dict('records')
+        elif isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj

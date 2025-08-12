@@ -24,7 +24,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent))
 
 try:
-    from ml_orchestrator import MLOrchestrator
+    from src.machine_learning.ml_orchestrator import MLOrchestrator
     from src.machine_learning.config_loader import MLRegressionConfig
 except ImportError as e:
     # For help display, we don't need actual imports
@@ -184,10 +184,9 @@ def run_ml_pipeline(
         else:
             raise ValueError(f"Unknown method: {method}")
         
-        # Save results if output directory specified
+        # Generate method-specific reports if output directory specified
         if output_dir:
-            orchestrator.save_results(output_dir)
-            orchestrator.generate_reports(output_dir)
+            orchestrator.generate_method_reports(output_dir)
     
     # Save results if output directory specified
     if output_dir:

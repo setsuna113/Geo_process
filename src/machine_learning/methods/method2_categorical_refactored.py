@@ -14,15 +14,16 @@ from pathlib import Path
 
 from src.base.ml import BaseRegressionMethod
 from src.abstractions.types.ml_types import ModelType, ModelMetadata
-from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
-from ...config_loader import MLRegressionConfig
-from ...evaluation.emmeans_core import EMMeansCore
-from ...hypothesis import (
+from ..models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
+from ..config_loader import MLRegressionConfig
+from ..evaluation.emmeans_core import REMmeansWrapper, SimpleEMmeansApproximation
+from ..utils.vcov_extractor import extract_vcov_from_h2o
+from ..hypothesis import (
     WaldTest, LikelihoodRatioTest, ScoreTest,
     ContrastAnalysis, SimpleSlopesAnalysis
 )
-from ...evaluation import GLMComparison
-from ...preprocessing import (
+from ..evaluation import GLMComparison
+from ..preprocessing import (
     create_temperate_categories,
     create_biodiversity_categories,
     add_categorical_interactions
@@ -270,10 +271,33 @@ class Method2H2Testing(BaseRegressionMethod):
         if self.model_3b_categorical is None:
             raise ValueError("Must fit models first")
         
-        logger.info("Computing estimated marginal means using proper emmeans approach")
+        logger.info("Computing estimated marginal means with full vcov matrix")
         
-        # Initialize emmeans calculator with the categorical model
-        self.emmeans_calculator = EMMeansCore(self.model_3b_categorical, self.data_h2o)
+        # Extract variance-covariance matrix from H2O model
+        logger.info("Extracting variance-covariance matrix from H2O model")
+        coefficients, vcov_matrix, coef_names = extract_vcov_from_h2o(
+            self.model_3b_categorical.model,
+            self.data_h2o,
+            method='bootstrap',
+            n_bootstrap=100
+        )
+        
+        # Store vcov for later use in hypothesis tests
+        self.vcov_matrix = vcov_matrix
+        self.coefficients = coefficients
+        self.coef_names = coef_names
+        
+        # Use SimpleEMmeansApproximation for now (R integration can be added later)
+        # This computes emmeans at the mean of covariates
+        # Convert H2O frame to pandas for emmeans calculation
+        data_pd = self.data_h2o.as_data_frame()
+        
+        self.emmeans_calculator = SimpleEMmeansApproximation(
+            coefficients=coefficients,
+            coefficient_names=coef_names,
+            data=data_pd,
+            formula="fungi_richness ~ temperate * plant_high + bio1_std + bio12_std + bio15_std + elevation_std + elevation_std_sq + ME*"
+        )
         
         # Compute emmeans for 2x2 design
         # Get covariate list (climate variables and MESF)
@@ -313,7 +337,11 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # TEST 6: Contrast Analysis on Fitted Values
         logger.info("Performing Test 6: Contrast Analysis")
-        contrast_analyzer = ContrastAnalysis(self.emmeans_calculator)
+        # Pass vcov_matrix for accurate standard errors
+        contrast_analyzer = ContrastAnalysis(
+            self.emmeans_calculator,
+            vcov_matrix=self.vcov_matrix if hasattr(self, 'vcov_matrix') else None
+        )
         
         # Primary H2 contrast
         h2_contrast = contrast_analyzer.test_h2_contrast(
@@ -334,7 +362,11 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # TEST 7: Simple Slopes Analysis
         logger.info("Performing Test 7: Simple Slopes Analysis")
-        slopes_analyzer = SimpleSlopesAnalysis(self.emmeans_calculator)
+        # Pass vcov_matrix for accurate standard errors
+        slopes_analyzer = SimpleSlopesAnalysis(
+            self.emmeans_calculator,
+            vcov_matrix=self.vcov_matrix if hasattr(self, 'vcov_matrix') else None
+        )
         
         # H2-specific simple slopes test
         h2_slopes = slopes_analyzer.test_simple_slopes_h2()
@@ -533,3 +565,139 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # Use categorical model for prediction by default
         return self.model_3b_categorical.predict(data)
+    
+    def generate_report(self, output_dir: Optional[Path] = None) -> Dict[str, Any]:
+        """Generate comprehensive report for Method 2 H2 testing.
+        
+        Coordinates reporting from ContrastAnalysis and SimpleSlopesAnalysis.
+        
+        Args:
+            output_dir: Optional directory to save report files
+            
+        Returns:
+            Dictionary with all report components
+        """
+        if not self.contrast_results:
+            logger.warning("No H2 test results available. Run test_h2_comprehensive first.")
+            return {}
+        
+        report = {
+            'method': 'Method 2: H2 Hypothesis Testing',
+            'hypothesis': 'H2: Temperate mismatch - high-plant temperate regions have fewer fungi',
+            'models': {},
+            'tests': {},
+            'visualizations': []
+        }
+        
+        # Model summaries
+        if self.model_3a_continuous:
+            report['models']['continuous'] = {
+                'type': 'Model 3a: Continuous interaction (bio1 × plants)',
+                'aic': self.model_3a_continuous.get_aic() if hasattr(self.model_3a_continuous, 'get_aic') else None,
+                'bic': self.model_3a_continuous.get_bic() if hasattr(self.model_3a_continuous, 'get_bic') else None
+            }
+        
+        if self.model_3b_categorical:
+            report['models']['categorical'] = {
+                'type': 'Model 3b: Categorical interaction (temperate × plant_high)',
+                'aic': self.model_3b_categorical.get_aic() if hasattr(self.model_3b_categorical, 'get_aic') else None,
+                'bic': self.model_3b_categorical.get_bic() if hasattr(self.model_3b_categorical, 'get_bic') else None
+            }
+        
+        # Generate reports from hypothesis tests
+        if hasattr(self, 'emmeans_calculator') and hasattr(self, 'vcov_matrix'):
+            # Contrast Analysis report
+            contrast_analyzer = ContrastAnalysis(
+                self.emmeans_calculator,
+                vcov_matrix=self.vcov_matrix
+            )
+            
+            if 'contrast_analysis' in self.contrast_results:
+                h2_test = self.contrast_results['contrast_analysis']['h2_test']
+                contrast_report = contrast_analyzer.generate_publication_report(
+                    h2_test,
+                    method_number=2,
+                    hypothesis_description="H2: Temperate mismatch hypothesis"
+                )
+                report['tests']['contrast_analysis'] = contrast_report
+                
+                # Generate visualization if output directory provided
+                if output_dir:
+                    try:
+                        fig = contrast_analyzer.visualize_contrast_results(
+                            h2_test,
+                            self.emmeans_results if hasattr(self, 'emmeans_results') else None
+                        )
+                        viz_path = output_dir / "method2_contrast_analysis.png"
+                        fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        report['visualizations'].append(str(viz_path))
+                        logger.info(f"Contrast analysis visualization saved to {viz_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create contrast visualization: {e}")
+            
+            # Simple Slopes Analysis report
+            slopes_analyzer = SimpleSlopesAnalysis(
+                self.emmeans_calculator,
+                vcov_matrix=self.vcov_matrix
+            )
+            
+            if 'simple_slopes_analysis' in self.contrast_results:
+                slopes_test = self.contrast_results['simple_slopes_analysis']['h2_test']
+                slopes_report = slopes_analyzer.generate_publication_report(
+                    slopes_test,
+                    method_number=2
+                )
+                report['tests']['simple_slopes'] = slopes_report
+                
+                # Generate visualization if output directory provided
+                if output_dir:
+                    try:
+                        fig = slopes_analyzer.visualize_simple_slopes(
+                            slopes_test,
+                            self.emmeans_results if hasattr(self, 'emmeans_results') else None
+                        )
+                        viz_path = output_dir / "method2_simple_slopes.png"
+                        fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        report['visualizations'].append(str(viz_path))
+                        logger.info(f"Simple slopes visualization saved to {viz_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create slopes visualization: {e}")
+        
+        # Overall conclusion
+        report['conclusion'] = self.contrast_results.get('overall_conclusion', {})
+        
+        # Save report summary if output directory provided
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save JSON summary
+            import json
+            summary_path = output_dir / "method2_report_summary.json"
+            with open(summary_path, 'w') as f:
+                # Convert non-serializable objects
+                report_serializable = self._make_serializable(report)
+                json.dump(report_serializable, f, indent=2)
+            logger.info(f"Method 2 report summary saved to {summary_path}")
+        
+        return report
+    
+    def _make_serializable(self, obj):
+        """Convert pandas/numpy objects to serializable format."""
+        import pandas as pd
+        import numpy as np
+        
+        if isinstance(obj, dict):
+            return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_serializable(v) for v in obj]
+        elif isinstance(obj, pd.DataFrame):
+            return obj.to_dict('records')
+        elif isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj

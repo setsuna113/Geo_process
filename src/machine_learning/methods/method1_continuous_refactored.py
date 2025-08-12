@@ -16,10 +16,10 @@ from pathlib import Path
 
 from src.base.ml import BaseRegressionMethod
 from src.abstractions.types.ml_types import ModelType, ModelMetadata
-from ...models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
-from ...config_loader import MLRegressionConfig
-from ...hypothesis import WaldTest, LikelihoodRatioTest, ScoreTest
-from ...evaluation import GLMComparison
+from ..models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
+from ..config_loader import MLRegressionConfig
+from ..hypothesis import WaldTest, LikelihoodRatioTest, ScoreTest
+from ..evaluation.glm_comparison import ModelComparison
 
 logger = logging.getLogger(__name__)
 
@@ -244,3 +244,220 @@ class Method1H0H1GLM(BaseRegressionMethod):
             raise ValueError("Must fit models first")
         
         return self.model_full.predict(data)
+    
+    def generate_report(self, output_dir: Optional[Path] = None) -> Dict[str, Any]:
+        """Generate comprehensive report for Method 1 H0-H1 testing.
+        
+        Coordinates reporting from hypothesis tests (Wald, LRT, Score).
+        
+        Args:
+            output_dir: Optional directory to save report files
+            
+        Returns:
+            Dictionary with all report components
+        """
+        if not self.hypothesis_results:
+            logger.warning("No hypothesis test results available. Run test_h0_h1 first.")
+            return {}
+        
+        report = {
+            'method': 'Method 1: H0-H1 Hypothesis Testing',
+            'hypotheses': {
+                'H0': 'No effect of biodiversity on fungi richness',
+                'H1': 'Biodiversity begets biodiversity - positive effects'
+            },
+            'models': {},
+            'tests': {},
+            'visualizations': []
+        }
+        
+        # Model summaries
+        if self.model_full:
+            report['models']['full'] = {
+                'type': 'Model 1a: Full GLM with biodiversity predictors',
+                'formula': self.hypothesis_results.get('model_formula', ''),
+                'aic': self.model_full.get_aic() if hasattr(self.model_full, 'get_aic') else None,
+                'bic': self.model_full.get_bic() if hasattr(self.model_full, 'get_bic') else None
+            }
+        
+        if self.model_null:
+            report['models']['null'] = {
+                'type': 'Model 1b: Null model without biodiversity',
+                'aic': self.model_null.get_aic() if hasattr(self.model_null, 'get_aic') else None,
+                'bic': self.model_null.get_bic() if hasattr(self.model_null, 'get_bic') else None
+            }
+        
+        # Generate report from Score Test if available
+        if 'score_test' in self.hypothesis_results:
+            score_result = self.hypothesis_results['score_test']
+            score_report = ScoreTest.generate_publication_report(
+                score_result,
+                test_name="Score Test",
+                hypothesis="biodiversity effects",
+                variable_names=['plants_richness_log', 'vertebrates_richness_log']
+            )
+            report['tests']['score_test'] = score_report
+            
+            # Generate visualization if output directory provided
+            if output_dir:
+                try:
+                    fig = ScoreTest.visualize_score_test(
+                        score_result,
+                        variable_names=['plants_richness_log', 'vertebrates_richness_log']
+                    )
+                    viz_path = output_dir / "method1_score_test.png"
+                    fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                    report['visualizations'].append(str(viz_path))
+                    logger.info(f"Score test visualization saved to {viz_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to create score test visualization: {e}")
+        
+        # LRT results with full report
+        if 'lrt' in self.hypothesis_results:
+            lrt_result = self.hypothesis_results['lrt']
+            lrt_report = LikelihoodRatioTest.generate_publication_report(
+                lrt_result,
+                test_name="Likelihood Ratio Test",
+                hypothesis="biodiversity improves model fit",
+                null_model_name="Climate-only model",
+                full_model_name="Climate + Biodiversity model"
+            )
+            report['tests']['lrt'] = lrt_report
+            
+            # Generate LRT visualization if output directory provided
+            if output_dir:
+                try:
+                    fig = LikelihoodRatioTest.visualize_lrt(
+                        lrt_result,
+                        null_model_name="Null",
+                        full_model_name="Full"
+                    )
+                    viz_path = output_dir / "method1_lrt_test.png"
+                    fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                    report['visualizations'].append(str(viz_path))
+                    logger.info(f"LRT visualization saved to {viz_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to create LRT visualization: {e}")
+        
+        # Wald test results with visualization
+        if 'plants_effect' in self.hypothesis_results or 'vertebrates_effect' in self.hypothesis_results:
+            # Combine Wald test results
+            wald_results = {
+                'coefficients': {},
+                'std_errors': {},
+                'p_values': {}
+            }
+            
+            if 'plants_effect' in self.hypothesis_results:
+                wald_results['coefficients']['plants_richness_log'] = \
+                    self.hypothesis_results['plants_effect'].get('coefficient')
+                wald_results['std_errors']['plants_richness_log'] = \
+                    self.hypothesis_results['plants_effect'].get('std_error')
+                wald_results['plants_richness_log_p_value'] = \
+                    self.hypothesis_results['plants_effect'].get('p_value')
+            
+            if 'vertebrates_effect' in self.hypothesis_results:
+                wald_results['coefficients']['vertebrates_richness_log'] = \
+                    self.hypothesis_results['vertebrates_effect'].get('coefficient')
+                wald_results['std_errors']['vertebrates_richness_log'] = \
+                    self.hypothesis_results['vertebrates_effect'].get('std_error')
+                wald_results['vertebrates_richness_log_p_value'] = \
+                    self.hypothesis_results['vertebrates_effect'].get('p_value')
+            
+            # Generate Wald test report
+            wald_report = WaldTest.generate_publication_report(
+                wald_results,
+                test_name="Wald Test",
+                hypothesis="individual biodiversity effects",
+                variable_names=['plants_richness_log', 'vertebrates_richness_log']
+            )
+            report['tests']['wald_test'] = wald_report
+            
+            # Generate visualization if output directory provided
+            if output_dir:
+                try:
+                    fig = WaldTest.visualize_wald_test(
+                        wald_results,
+                        variable_names=['plants_richness_log', 'vertebrates_richness_log'],
+                        title="Biodiversity Effects (Wald Test)"
+                    )
+                    viz_path = output_dir / "method1_wald_test.png"
+                    fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                    report['visualizations'].append(str(viz_path))
+                    logger.info(f"Wald test visualization saved to {viz_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to create Wald test visualization: {e}")
+        
+        # Model comparison using GLMComparison
+        if self.model_null and self.model_full:
+            try:
+                # Compare models using information criteria
+                comparison_results = ModelComparison.compare_models(
+                    {'Null (Climate-only)': self.model_null, 
+                     'Full (Climate + Biodiversity)': self.model_full},
+                    criteria=['aic', 'bic']
+                )
+                report['model_comparison'] = comparison_results
+                
+                # Generate comparison visualization if output directory provided
+                if output_dir:
+                    try:
+                        fig = ModelComparison.visualize_model_comparison(comparison_results)
+                        viz_path = output_dir / "method1_model_comparison.png"
+                        fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        report['visualizations'].append(str(viz_path))
+                        logger.info(f"Model comparison visualization saved to {viz_path}")
+                    except Exception as e:
+                        logger.warning(f"Failed to create model comparison visualization: {e}")
+                
+                # Generate publication report for model comparison
+                comparison_report = ModelComparison.generate_publication_report(
+                    comparison_results,
+                    study_description="biodiversity effects on fungi richness",
+                    hypothesis="Biodiversity begets biodiversity"
+                )
+                report['model_comparison_report'] = comparison_report
+            except Exception as e:
+                logger.warning(f"Model comparison failed: {e}")
+        
+        # Overall conclusion
+        report['conclusion'] = {
+            'supports_h1': self.hypothesis_results.get('supports_h1', False),
+            'interpretation': self.hypothesis_results.get('interpretation', '')
+        }
+        
+        # Save report summary if output directory provided
+        if output_dir:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save JSON summary
+            import json
+            summary_path = output_dir / "method1_report_summary.json"
+            with open(summary_path, 'w') as f:
+                # Convert non-serializable objects
+                report_serializable = self._make_serializable(report)
+                json.dump(report_serializable, f, indent=2)
+            logger.info(f"Method 1 report summary saved to {summary_path}")
+        
+        return report
+    
+    def _make_serializable(self, obj):
+        """Convert pandas/numpy objects to serializable format."""
+        import pandas as pd
+        import numpy as np
+        
+        if isinstance(obj, dict):
+            return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_serializable(v) for v in obj]
+        elif isinstance(obj, pd.DataFrame):
+            return obj.to_dict('records')
+        elif isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj

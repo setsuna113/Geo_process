@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy import stats
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
 import logging
 
 logger = logging.getLogger(__name__)
@@ -248,3 +248,334 @@ class WaldTest:
                 'individual_tests': results,
                 'test_type': 'wald_individual'
             }
+    
+    @staticmethod
+    def generate_publication_report(
+        test_results: Dict[str, Any],
+        test_name: str = "Wald Test",
+        hypothesis: str = "coefficient significance",
+        variable_names: Optional[List[str]] = None,
+        method_number: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Generate publication-ready report for Wald test results.
+        
+        Following ecology journal standards for statistical reporting.
+        
+        Args:
+            test_results: Wald test results dictionary
+            test_name: Name of the test for reporting
+            hypothesis: Description of hypothesis being tested
+            variable_names: Names of variables tested
+            method_number: Method number for cross-reference
+            
+        Returns:
+            Dictionary with formatted text, tables, and LaTeX code
+        """
+        import pandas as pd
+        
+        # Extract test statistics
+        chi2_stat = test_results.get('chi2_statistic', test_results.get('statistic'))
+        p_value = test_results.get('p_value')
+        df = test_results.get('df', test_results.get('degrees_of_freedom'))
+        coefficients = test_results.get('coefficients', {})
+        std_errors = test_results.get('std_errors', {})
+        
+        # Create results table
+        rows = []
+        if variable_names and coefficients:
+            for var in variable_names:
+                if var in coefficients:
+                    row = {
+                        'Variable': var,
+                        'Coefficient': f"{coefficients[var]:.4f}",
+                        'SE': f"{std_errors.get(var, 'NA'):.4f}" if var in std_errors else 'NA',
+                        'Wald χ²': f"{test_results.get(f'{var}_wald_stat', 'NA'):.2f}" 
+                                  if f'{var}_wald_stat' in test_results else 'NA',
+                        'p-value': f"{test_results.get(f'{var}_p_value', 'NA'):.4f}"
+                                  if f'{var}_p_value' in test_results else 'NA'
+                    }
+                    rows.append(row)
+        
+        results_table = pd.DataFrame(rows) if rows else None
+        
+        # Generate main text
+        main_text = f"A {test_name} was conducted to test {hypothesis}. "
+        
+        if chi2_stat is not None and p_value is not None:
+            main_text += f"The overall test statistic was χ²({df}) = {chi2_stat:.2f}, p = {p_value:.4f}. "
+            
+            if p_value < 0.001:
+                main_text += "This provides very strong evidence against the null hypothesis. "
+            elif p_value < 0.01:
+                main_text += "This provides strong evidence against the null hypothesis. "
+            elif p_value < 0.05:
+                main_text += "This provides moderate evidence against the null hypothesis. "
+            else:
+                main_text += "There is insufficient evidence to reject the null hypothesis. "
+        
+        # Add individual coefficient results if available
+        if variable_names and coefficients:
+            sig_vars = []
+            for var in variable_names:
+                if var in coefficients:
+                    var_p = test_results.get(f'{var}_p_value')
+                    if var_p and var_p < 0.05:
+                        sig_vars.append(f"{var} (β={coefficients[var]:.3f}, p={var_p:.3f})")
+            
+            if sig_vars:
+                main_text += f"Significant predictors include: {', '.join(sig_vars)}."
+        
+        # Methods text
+        methods_text = (
+            "Hypothesis testing was performed using the Wald test, which evaluates whether "
+            "regression coefficients are significantly different from zero. The test statistic "
+            "follows a chi-square distribution under the null hypothesis. For each coefficient, "
+            "the Wald statistic is calculated as (β/SE)², where β is the coefficient estimate "
+            "and SE is its standard error. P-values < 0.05 were considered statistically significant."
+        )
+        
+        # Supplementary information
+        supplementary_info = {
+            'test_type': 'Wald Chi-Square Test',
+            'null_hypothesis': 'Coefficients equal to zero',
+            'alternative': 'Coefficients differ from zero',
+            'assumptions': [
+                'Large sample size for asymptotic validity',
+                'Correct specification of variance-covariance matrix',
+                'Model assumptions (e.g., linearity, independence) are met'
+            ],
+            'interpretation': {
+                'p < 0.001': 'Very strong evidence',
+                'p < 0.01': 'Strong evidence',
+                'p < 0.05': 'Moderate evidence',
+                'p ≥ 0.05': 'Insufficient evidence'
+            }
+        }
+        
+        # LaTeX table generation
+        latex_table = None
+        if results_table is not None:
+            latex_table = WaldTest._generate_latex_table(results_table, test_name)
+        
+        return {
+            'main_text': main_text,
+            'methods_text': methods_text,
+            'results_table': results_table,
+            'supplementary_info': supplementary_info,
+            'latex_table': latex_table,
+            'test_statistics': {
+                'chi2': chi2_stat,
+                'df': df,
+                'p_value': p_value
+            }
+        }
+    
+    @staticmethod
+    def visualize_wald_test(
+        test_results: Dict[str, Any],
+        variable_names: Optional[List[str]] = None,
+        title: str = "Wald Test Results",
+        figsize: Tuple[int, int] = (12, 6)
+    ) -> 'plt.Figure':
+        """Create publication-quality visualization of Wald test results.
+        
+        Creates forest plot for coefficients and significance plot.
+        
+        Args:
+            test_results: Wald test results
+            variable_names: Names of variables to plot
+            title: Plot title
+            figsize: Figure size
+            
+        Returns:
+            matplotlib figure
+        """
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from matplotlib.patches import Patch
+        
+        # Set style for publication-quality plots
+        sns.set_style("whitegrid")
+        sns.set_context("paper", font_scale=1.2)
+        
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+        
+        # Extract data
+        coefficients = test_results.get('coefficients', {})
+        std_errors = test_results.get('std_errors', {})
+        p_values = {}
+        
+        if not variable_names:
+            variable_names = list(coefficients.keys())
+        
+        # Get p-values for each variable
+        for var in variable_names:
+            p_key = f'{var}_p_value'
+            if p_key in test_results:
+                p_values[var] = test_results[p_key]
+        
+        # Panel 1: Forest plot of coefficients
+        ax1 = axes[0]
+        
+        if coefficients and std_errors:
+            n_vars = len(variable_names)
+            y_pos = np.arange(n_vars)
+            
+            # Calculate confidence intervals
+            coef_vals = []
+            ci_lower = []
+            ci_upper = []
+            colors = []
+            
+            for var in variable_names:
+                if var in coefficients:
+                    coef = coefficients[var]
+                    se = std_errors.get(var, 0)
+                    coef_vals.append(coef)
+                    ci_lower.append(coef - 1.96 * se)
+                    ci_upper.append(coef + 1.96 * se)
+                    
+                    # Color based on significance
+                    p_val = p_values.get(var, 1)
+                    if p_val < 0.001:
+                        colors.append('darkgreen')
+                    elif p_val < 0.01:
+                        colors.append('green')
+                    elif p_val < 0.05:
+                        colors.append('orange')
+                    else:
+                        colors.append('gray')
+            
+            # Plot forest plot
+            for i, (var, coef, ci_l, ci_u, color) in enumerate(
+                zip(variable_names, coef_vals, ci_lower, ci_upper, colors)
+            ):
+                # Error bars for CI
+                ax1.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
+                           fmt='o', color=color, markersize=8, 
+                           capsize=5, capthick=2, elinewidth=2)
+                
+                # Add coefficient value
+                ax1.text(coef, i + 0.15, f'{coef:.3f}', 
+                        ha='center', va='bottom', fontsize=8)
+            
+            # Add reference line at 0
+            ax1.axvline(x=0, color='black', linestyle='--', alpha=0.5, linewidth=1)
+            
+            # Formatting
+            ax1.set_yticks(y_pos)
+            ax1.set_yticklabels(variable_names)
+            ax1.set_xlabel('Coefficient Estimate (95% CI)', fontsize=11)
+            ax1.set_title('Forest Plot of Coefficients', fontsize=12, fontweight='bold')
+            ax1.grid(True, alpha=0.3, axis='x')
+            
+            # Add legend
+            legend_elements = [
+                Patch(facecolor='darkgreen', label='p < 0.001'),
+                Patch(facecolor='green', label='p < 0.01'),
+                Patch(facecolor='orange', label='p < 0.05'),
+                Patch(facecolor='gray', label='p ≥ 0.05')
+            ]
+            ax1.legend(handles=legend_elements, loc='best', fontsize=9)
+        
+        # Panel 2: Wald statistics and p-values
+        ax2 = axes[1]
+        
+        if p_values:
+            n_vars = len(variable_names)
+            y_pos = np.arange(n_vars)
+            
+            # Calculate -log10(p) for visualization
+            neg_log_p = []
+            colors = []
+            
+            for var in variable_names:
+                if var in p_values:
+                    p_val = p_values[var]
+                    neg_log_p.append(-np.log10(max(p_val, 1e-10)))
+                    
+                    if p_val < 0.001:
+                        colors.append('darkred')
+                    elif p_val < 0.01:
+                        colors.append('red')
+                    elif p_val < 0.05:
+                        colors.append('orange')
+                    else:
+                        colors.append('gray')
+            
+            # Create horizontal bar plot
+            bars = ax2.barh(y_pos, neg_log_p, color=colors, alpha=0.7)
+            
+            # Add p-value text
+            for i, (var, nlp) in enumerate(zip(variable_names, neg_log_p)):
+                p_val = p_values.get(var, 1)
+                if p_val < 0.001:
+                    p_text = 'p < 0.001'
+                else:
+                    p_text = f'p = {p_val:.3f}'
+                ax2.text(nlp + 0.1, i, p_text, va='center', fontsize=9)
+            
+            # Add significance thresholds
+            ax2.axvline(x=-np.log10(0.05), color='orange', linestyle='--', 
+                       alpha=0.5, label='p = 0.05')
+            ax2.axvline(x=-np.log10(0.01), color='red', linestyle='--', 
+                       alpha=0.5, label='p = 0.01')
+            ax2.axvline(x=-np.log10(0.001), color='darkred', linestyle='--', 
+                       alpha=0.5, label='p = 0.001')
+            
+            # Formatting
+            ax2.set_yticks(y_pos)
+            ax2.set_yticklabels(variable_names)
+            ax2.set_xlabel('-log₁₀(p-value)', fontsize=11)
+            ax2.set_title('Statistical Significance', fontsize=12, fontweight='bold')
+            ax2.legend(loc='best', fontsize=9)
+            ax2.grid(True, alpha=0.3, axis='x')
+        
+        # Overall title
+        fig.suptitle(title, fontsize=14, fontweight='bold', y=1.02)
+        plt.tight_layout()
+        
+        return fig
+    
+    @staticmethod
+    def _generate_latex_table(df: 'pd.DataFrame', test_name: str) -> str:
+        """Generate LaTeX table code for publication.
+        
+        Args:
+            df: DataFrame with results
+            test_name: Name of test for caption
+            
+        Returns:
+            LaTeX table code
+        """
+        n_cols = len(df.columns)
+        col_align = 'l' + 'c' * (n_cols - 1)
+        
+        latex = f"""\\begin{{table}}[htbp]
+\\centering
+\\caption{{{test_name} results for regression coefficients}}
+\\label{{tab:wald_test}}
+\\begin{{tabular}}{{{col_align}}}
+\\toprule
+"""
+        
+        # Add headers
+        headers = ' & '.join(df.columns) + ' \\\\'
+        latex += headers + '\n\\midrule\n'
+        
+        # Add data rows
+        for _, row in df.iterrows():
+            row_str = ' & '.join(str(val) for val in row.values) + ' \\\\'
+            latex += row_str + '\n'
+        
+        # Add footer
+        latex += """\\bottomrule
+\\end{tabular}
+\\begin{tablenotes}
+\\small
+\\item Note: SE = Standard Error. Wald χ² = (β/SE)².
+\\item Significance levels: *** p < 0.001, ** p < 0.01, * p < 0.05.
+\\end{tablenotes}
+\\end{table}"""
+        
+        return latex
