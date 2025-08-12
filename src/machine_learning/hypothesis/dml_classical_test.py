@@ -7,10 +7,17 @@ for Double Machine Learning causal parameters.
 
 import logging
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
 from scipy import stats
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
+
+# Set style for publication-quality plots
+sns.set_style("whitegrid")
+sns.set_context("paper", font_scale=1.2)
 
 
 class DMLClassicalTest:
@@ -286,3 +293,367 @@ class DMLClassicalTest:
         }
         
         return result
+    
+    @staticmethod
+    def generate_publication_report(
+        test_results: Dict[str, Any],
+        test_name: str = "DML Causal Effect Test",
+        hypothesis: str = "H1 (Biodiversity Begets Biodiversity)",
+        variable_names: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Generate publication-ready report for DML classical test results.
+        
+        Following ecology journal standards for reporting causal inference.
+        Focuses on H0 (no effect) vs H1 (biodiversity begets biodiversity).
+        
+        Args:
+            test_results: Results from test methods (single or biodiversity test)
+            test_name: Name of the specific test conducted
+            hypothesis: Description of what was tested (H0 or H1)
+            variable_names: Names of variables tested
+            
+        Returns:
+            Dictionary with formatted text, tables, and visualizations
+        """
+        # Handle both single effect and biodiversity hypothesis results
+        if 'plants_effect' in test_results:
+            # Biodiversity hypothesis test result
+            plants_result = test_results['plants_effect']
+            vert_result = test_results['vertebrates_effect']
+            h1_supported = test_results['h1_supported']
+            h1_conclusion = test_results['h1_conclusion']
+            
+            # Format p-values
+            def format_p(p):
+                if p < 0.001:
+                    return "< 0.001", "p < 0.001"
+                elif p < 0.01:
+                    return f"{p:.3f}", f"p = {p:.3f}"
+                else:
+                    return f"{p:.2f}", f"p = {p:.2f}"
+            
+            p_plants_fmt, p_plants_str = format_p(plants_result['p_value'])
+            p_vert_fmt, p_vert_str = format_p(vert_result['p_value'])
+            
+            # Generate main text
+            main_text = (
+                f"Double Machine Learning was used to test the biodiversity begets biodiversity hypothesis (H1). "
+                f"The causal effect of plant richness on fungi richness was "
+                f"{plants_result['theta']:.3f} (SE = {plants_result['se']:.3f}, "
+                f"t = {plants_result['t_statistic']:.2f}, {p_plants_str}). "
+                f"The causal effect of vertebrate richness on fungi richness was "
+                f"{vert_result['theta']:.3f} (SE = {vert_result['se']:.3f}, "
+                f"t = {vert_result['t_statistic']:.2f}, {p_vert_str}). "
+                f"{h1_conclusion}"
+            )
+            
+            # Create results table
+            results_table = pd.DataFrame([
+                {
+                    'Predictor': 'Plant Richness',
+                    'Causal Effect (θ)': f"{plants_result['theta']:.3f}",
+                    'SE': f"{plants_result['se']:.3f}",
+                    't-statistic': f"{plants_result['t_statistic']:.2f}",
+                    'p-value': p_plants_fmt,
+                    '95% CI': f"[{plants_result['ci_lower']:.3f}, {plants_result['ci_upper']:.3f}]"
+                },
+                {
+                    'Predictor': 'Vertebrate Richness',
+                    'Causal Effect (θ)': f"{vert_result['theta']:.3f}",
+                    'SE': f"{vert_result['se']:.3f}",
+                    't-statistic': f"{vert_result['t_statistic']:.2f}",
+                    'p-value': p_vert_fmt,
+                    '95% CI': f"[{vert_result['ci_lower']:.3f}, {vert_result['ci_upper']:.3f}]"
+                }
+            ])
+            
+        else:
+            # Single effect test result
+            theta = test_results['theta']
+            se = test_results['se']
+            t_stat = test_results['t_statistic']
+            p_value = test_results['p_value']
+            ci_lower = test_results['ci_lower']
+            ci_upper = test_results['ci_upper']
+            
+            # Format p-value
+            if p_value < 0.001:
+                p_str = "p < 0.001"
+                p_fmt = "< 0.001"
+            elif p_value < 0.01:
+                p_str = f"p = {p_value:.3f}"
+                p_fmt = f"{p_value:.3f}"
+            else:
+                p_str = f"p = {p_value:.2f}"
+                p_fmt = f"{p_value:.2f}"
+            
+            var_str = variable_names[0] if variable_names else "the treatment"
+            
+            main_text = (
+                f"Double Machine Learning was used to estimate the causal effect of {var_str}. "
+                f"The estimated causal effect was θ = {theta:.3f} (SE = {se:.3f}, "
+                f"95% CI [{ci_lower:.3f}, {ci_upper:.3f}], t = {t_stat:.2f}, {p_str}). "
+            )
+            
+            if test_results['reject_h0']:
+                main_text += f"The null hypothesis of no causal effect was rejected at α = {test_results['alpha']:.2f}."
+            else:
+                main_text += f"The null hypothesis of no causal effect was not rejected at α = {test_results['alpha']:.2f}."
+            
+            # Create results table
+            results_table = pd.DataFrame([{
+                'Predictor': var_str,
+                'Causal Effect (θ)': f"{theta:.3f}",
+                'SE': f"{se:.3f}",
+                't-statistic': f"{t_stat:.2f}",
+                'p-value': p_fmt,
+                '95% CI': f"[{ci_lower:.3f}, {ci_upper:.3f}]"
+            }])
+        
+        # Generate methods text
+        methods_text = (
+            "Causal effects were estimated using Double Machine Learning (DML), which provides "
+            "valid statistical inference for treatment effects in high-dimensional settings. "
+            "The DML framework uses cross-fitting to avoid overfitting bias and Neyman orthogonality "
+            "to achieve √n-consistency. Machine learning models were used to control for confounding "
+            "in the first stage, while the second stage estimates the causal parameter of interest. "
+            "Standard errors were computed using the influence function approach, and significance "
+            "was assessed using t-tests at α = 0.05."
+        )
+        
+        # Supplementary statistics
+        if 'plants_effect' in test_results:
+            supplementary_stats = pd.DataFrame({
+                'Test': ['H1: Biodiversity Hypothesis'],
+                'Both Significant': [test_results['h1_supported']],
+                'Either Significant': [test_results['h1_partial_support']],
+                'Conclusion': [test_results['h1_conclusion']]
+            })
+        else:
+            supplementary_stats = pd.DataFrame({
+                'Statistic': ['Causal Effect', 'Standard Error', 't-statistic', 
+                             'p-value', 'Decision'],
+                'Value': [f"{test_results['theta']:.3f}", 
+                         f"{test_results['se']:.3f}",
+                         f"{test_results['t_statistic']:.2f}",
+                         f"{test_results['p_value']:.4f}",
+                         'Reject H₀' if test_results['reject_h0'] else 'Retain H₀']
+            })
+        
+        return {
+            'main_text': main_text,
+            'methods_text': methods_text,
+            'results_table': results_table,
+            'supplementary_stats': supplementary_stats,
+            'latex_table': DMLClassicalTest._generate_latex_table(results_table),
+            'statistical_summary': test_results
+        }
+    
+    @staticmethod
+    def visualize_causal_effects(
+        test_results: Dict[str, Any],
+        figsize: Tuple[int, int] = (14, 5)
+    ) -> plt.Figure:
+        """Create publication-quality visualization of DML causal effect tests.
+        
+        Creates forest plots and distribution visualizations for causal effects.
+        
+        Args:
+            test_results: Results from test methods
+            figsize: Figure size
+            
+        Returns:
+            matplotlib figure suitable for publication
+        """
+        fig, axes = plt.subplots(1, 3, figsize=figsize)
+        
+        # Check if biodiversity hypothesis or single effect
+        if 'plants_effect' in test_results:
+            # Panel 1: Forest plot of causal effects
+            ax1 = axes[0]
+            
+            effects = [
+                ('Plant Richness', test_results['plants_effect']),
+                ('Vertebrate Richness', test_results['vertebrates_effect'])
+            ]
+            
+            y_pos = np.arange(len(effects))
+            estimates = [e[1]['theta'] for e in effects]
+            ses = [e[1]['se'] for e in effects]
+            ci_lower = [e[1]['ci_lower'] for e in effects]
+            ci_upper = [e[1]['ci_upper'] for e in effects]
+            p_values = [e[1]['p_value'] for e in effects]
+            
+            # Plot confidence intervals
+            for i, (name, result) in enumerate(effects):
+                color = 'green' if result['reject_h0'] else 'gray'
+                ax1.plot([ci_lower[i], ci_upper[i]], [i, i], 
+                        color=color, linewidth=2, alpha=0.7)
+                ax1.plot(estimates[i], i, 'o', color=color, markersize=10)
+                
+                # Add p-value annotation
+                p_text = f"p < 0.001" if p_values[i] < 0.001 else f"p = {p_values[i]:.3f}"
+                ax1.text(ci_upper[i] + 0.01, i, p_text, 
+                        va='center', fontsize=9)
+            
+            ax1.axvline(0, color='black', linestyle='--', alpha=0.5)
+            ax1.set_yticks(y_pos)
+            ax1.set_yticklabels([e[0] for e in effects])
+            ax1.set_xlabel('Causal Effect (θ) with 95% CI', fontsize=11)
+            ax1.set_title('Forest Plot of Causal Effects', fontsize=12, fontweight='bold')
+            ax1.grid(True, alpha=0.3, axis='x')
+            
+            # Panel 2: t-statistics comparison
+            ax2 = axes[1]
+            
+            t_stats = [e[1]['t_statistic'] for e in effects]
+            colors = ['green' if e[1]['reject_h0'] else 'gray' for e in effects]
+            
+            bars = ax2.bar([e[0] for e in effects], t_stats, color=colors, alpha=0.7)
+            
+            # Add critical values
+            ax2.axhline(1.96, color='red', linestyle='--', alpha=0.5, 
+                       label='Critical value (α=0.05)')
+            ax2.axhline(-1.96, color='red', linestyle='--', alpha=0.5)
+            ax2.axhline(0, color='black', linestyle='-', linewidth=1)
+            
+            ax2.set_ylabel('t-statistic', fontsize=11)
+            ax2.set_title('Test Statistics', fontsize=12, fontweight='bold')
+            ax2.legend(loc='upper right', fontsize=9)
+            ax2.grid(True, alpha=0.3, axis='y')
+            
+            # Panel 3: Effect size interpretation
+            ax3 = axes[2]
+            
+            # H1 hypothesis support visualization
+            support_text = test_results['h1_conclusion']
+            
+            # Create summary box
+            props = dict(boxstyle='round,pad=1', facecolor='lightgreen' if test_results['h1_supported'] 
+                        else 'lightcoral' if not test_results['h1_partial_support'] 
+                        else 'lightyellow', alpha=0.8)
+            
+            summary = f"""H1 Biodiversity Hypothesis Test
+            
+Plant Effect: {test_results['plants_effect']['theta']:.3f} 
+              (p = {test_results['plants_effect']['p_value']:.4f})
+              
+Vertebrate Effect: {test_results['vertebrates_effect']['theta']:.3f}
+                  (p = {test_results['vertebrates_effect']['p_value']:.4f})
+
+{support_text}"""
+            
+            ax3.text(0.5, 0.5, summary, transform=ax3.transAxes,
+                    fontsize=10, ha='center', va='center',
+                    bbox=props)
+            ax3.axis('off')
+            
+        else:
+            # Single effect visualization
+            ax1 = axes[0]
+            
+            # Panel 1: Distribution with observed effect
+            theta = test_results['theta']
+            se = test_results['se']
+            t_stat = test_results['t_statistic']
+            p_value = test_results['p_value']
+            
+            # Create normal distribution
+            x = np.linspace(-4, 4, 1000)
+            y = stats.norm.pdf(x, 0, 1)
+            
+            ax1.plot(x, y, 'b-', linewidth=2, label='Null distribution')
+            ax1.fill_between(x[np.abs(x) > 1.96], y[np.abs(x) > 1.96], 
+                            alpha=0.3, color='red', label='Rejection region')
+            ax1.axvline(t_stat, color='darkgreen', linestyle='--', linewidth=2.5,
+                       label=f'Observed t = {t_stat:.2f}')
+            
+            ax1.set_xlabel('t-statistic', fontsize=11)
+            ax1.set_ylabel('Probability Density', fontsize=11)
+            ax1.set_title('Hypothesis Test', fontsize=12, fontweight='bold')
+            ax1.legend(loc='upper right', fontsize=9)
+            ax1.grid(True, alpha=0.3)
+            
+            # Panel 2: Confidence interval
+            ax2 = axes[1]
+            
+            ci_lower = test_results['ci_lower']
+            ci_upper = test_results['ci_upper']
+            
+            ax2.plot([ci_lower, ci_upper], [0, 0], 'b-', linewidth=3)
+            ax2.plot(theta, 0, 'ro', markersize=12, label=f'θ = {theta:.3f}')
+            ax2.axvline(0, color='black', linestyle='--', alpha=0.5)
+            
+            ax2.set_xlim([min(ci_lower*1.2, -0.1), max(ci_upper*1.2, 0.1)])
+            ax2.set_ylim([-0.5, 0.5])
+            ax2.set_xlabel('Causal Effect', fontsize=11)
+            ax2.set_yticks([])
+            ax2.set_title(f'95% CI: [{ci_lower:.3f}, {ci_upper:.3f}]', 
+                         fontsize=12, fontweight='bold')
+            ax2.grid(True, alpha=0.3, axis='x')
+            
+            # Panel 3: Summary
+            ax3 = axes[2]
+            
+            color = 'lightgreen' if test_results['reject_h0'] else 'lightgray'
+            props = dict(boxstyle='round,pad=1', facecolor=color, alpha=0.8)
+            
+            summary = f"""DML Causal Effect Test
+            
+Effect: θ = {theta:.3f} ± {se:.3f}
+t-statistic: {t_stat:.2f}
+p-value: {p_value:.4f}
+
+Decision: {'Reject H₀' if test_results['reject_h0'] else 'Retain H₀'}
+Interpretation: {test_results['interpretation']}"""
+            
+            ax3.text(0.5, 0.5, summary, transform=ax3.transAxes,
+                    fontsize=10, ha='center', va='center',
+                    bbox=props)
+            ax3.axis('off')
+        
+        # Overall title
+        fig.suptitle('DML Causal Inference Results: H1 Biodiversity Hypothesis',
+                    fontsize=14, fontweight='bold', y=1.02)
+        
+        plt.tight_layout()
+        return fig
+    
+    @staticmethod
+    def _generate_latex_table(df: pd.DataFrame) -> str:
+        """Generate LaTeX table code for publication.
+        
+        Args:
+            df: DataFrame with results
+            
+        Returns:
+            LaTeX table code suitable for ecology journals
+        """
+        latex = r"""\begin{table}[htbp]
+\centering
+\caption{Double Machine Learning Causal Effect Estimates}
+\label{tab:dml_effects}
+\begin{tabular}{lccccc}
+\toprule
+"""
+        
+        # Add headers
+        headers = ' & '.join(df.columns) + ' \\\\'
+        latex += headers + '\n\\midrule\n'
+        
+        # Add data rows
+        for _, row in df.iterrows():
+            row_str = ' & '.join(str(val) for val in row.values) + ' \\\\'
+            latex += row_str + '\n'
+        
+        # Add footer
+        latex += r"""\bottomrule
+\end{tabular}
+\begin{tablenotes}
+\small
+\item Note: Causal effects estimated using Double Machine Learning with cross-fitting.
+\item Standard errors computed using influence functions. Significance assessed at $\alpha = 0.05$.
+\end{tablenotes}
+\end{table}"""
+        
+        return latex

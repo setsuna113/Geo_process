@@ -1,227 +1,449 @@
 """
-Core Estimated Marginal Means (emmeans) computation for GLM models.
+R emmeans Wrapper for H2O GLM Models.
 
-This module provides the basic functionality to compute emmeans (predicted values)
-for each group in a factorial design, holding covariates at their mean values.
+This module provides a clean interface to R's emmeans package using coefficients
+and variance-covariance matrices extracted from H2O models.
+
+Usage:
+    1. Extract vcov from H2O model using utils/vcov_extractor.py
+    2. Pass coefficients and vcov to this wrapper
+    3. Get proper EMMs with standard errors and contrasts
 """
 
 import logging
 import numpy as np
 import pandas as pd
-import h2o
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional, Union, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Check if rpy2 is available
+try:
+    import rpy2.robjects as ro
+    from rpy2.robjects import pandas2ri
+    from rpy2.robjects.packages import importr
+    pandas2ri.activate()
+    R_AVAILABLE = True
+except ImportError:
+    logger.warning("rpy2 not available. R emmeans integration disabled.")
+    R_AVAILABLE = False
 
-class EMMeansCore:
-    """Core emmeans computation for GLM models.
+
+class REMmeansWrapper:
+    """Wrapper for R's emmeans package using H2O model components."""
     
-    Computes estimated marginal means (predicted values) for each group
-    in a factorial design while holding covariates at their mean values.
-    """
-    
-    def __init__(self, model: Any, data: Union[pd.DataFrame, h2o.H2OFrame]):
-        """Initialize emmeans calculator.
+    def __init__(
+        self,
+        coefficients: np.ndarray,
+        vcov_matrix: np.ndarray,
+        coefficient_names: List[str],
+        data: pd.DataFrame,
+        formula: str,
+        family: str = 'gaussian',
+        link: str = 'identity',
+        df_residual: Optional[int] = None
+    ):
+        """
+        Initialize R emmeans wrapper.
         
         Args:
-            model: Fitted GLM model (H2O or similar)
-            data: Data used for fitting (with categorical variables)
+            coefficients: Model coefficients from H2O
+            vcov_matrix: Variance-covariance matrix (from vcov_extractor)
+            coefficient_names: Names of coefficients
+            data: Original data as pandas DataFrame
+            formula: Model formula (R syntax)
+            family: GLM family (gaussian, poisson, binomial, etc.)
+            link: Link function (identity, log, logit, etc.)
+            df_residual: Residual degrees of freedom
         """
-        self.model = model
+        if not R_AVAILABLE:
+            raise ImportError("rpy2 is required for R emmeans. Install with: pip install rpy2")
+        
+        self.coefficients = coefficients
+        self.vcov_matrix = vcov_matrix
+        self.coefficient_names = coefficient_names
         self.data = data
-        self.emmeans_results = None
+        self.formula = formula
+        self.family = family
+        self.link = link
+        self.df_residual = df_residual if df_residual else len(data) - len(coefficients)
         
-    def compute_emmeans_2x2(
-        self, 
-        factor1: str = 'plant_high',
-        factor2: str = 'temperate',
-        covariates: Optional[List[str]] = None
-    ) -> Dict[str, Dict[str, float]]:
-        """Compute estimated marginal means for 2x2 factorial design.
+        # Import R packages
+        self.emmeans = importr('emmeans')
+        self.base = importr('base')
+        self.stats = importr('stats')
         
-        This is the core emmeans computation that produces 4 predicted values
-        for the combinations of two binary factors.
+        # Create reference grid
+        self.ref_grid = None
+        self._create_reference_grid()
+    
+    def _create_reference_grid(self):
+        """Create reference grid using R's qdrg function."""
+        logger.info("Creating reference grid from H2O model components")
         
-        Args:
-            factor1: First categorical factor (e.g., 'plant_high')
-            factor2: Second categorical factor (e.g., 'temperate')
-            covariates: List of covariates to hold at mean values
-            
-        Returns:
-            Dictionary with emmeans for all 4 groups:
-            {
-                'group_0_0': {'emmean': value, 'factor1': 0, 'factor2': 0},
-                'group_0_1': {'emmean': value, 'factor1': 0, 'factor2': 1},
-                'group_1_0': {'emmean': value, 'factor1': 1, 'factor2': 0},
-                'group_1_1': {'emmean': value, 'factor1': 1, 'factor2': 1}
-            }
-        """
-        logger.info(f"Computing emmeans for {factor1} × {factor2}")
+        # Convert data to R
+        r_data = pandas2ri.py2rpy(self.data)
         
-        # Define the 4 groups in 2x2 design
-        groups = [
-            {factor1: 0, factor2: 0, 'label': f'group_0_0'},
-            {factor1: 0, factor2: 1, 'label': f'group_0_1'},
-            {factor1: 1, factor2: 0, 'label': f'group_1_0'},
-            {factor1: 1, factor2: 1, 'label': f'group_1_1'}
-        ]
+        # Create R coefficient vector with names
+        r_coef = ro.FloatVector(self.coefficients)
+        r_coef.names = ro.StrVector(self.coefficient_names)
         
-        # Compute mean values for covariates
-        covariate_means = self._compute_covariate_means(covariates)
+        # Convert vcov matrix to R
+        n = len(self.coefficients)
+        r_vcov = ro.r.matrix(self.vcov_matrix.flatten(), nrow=n, ncol=n, byrow=True)
         
-        # Compute emmeans for each group
-        emmeans = {}
-        for group in groups:
-            # Create prediction dataset for this group
-            pred_data = self._create_prediction_data(
-                group, factor1, factor2, covariate_means
+        # Set row and column names for vcov
+        r_vcov.rownames = ro.StrVector(self.coefficient_names)
+        r_vcov.colnames = ro.StrVector(self.coefficient_names)
+        
+        # Create reference grid using qdrg
+        try:
+            self.ref_grid = self.emmeans.qdrg(
+                formula=ro.r(self.formula),
+                data=r_data,
+                coef=r_coef,
+                vcov=r_vcov,
+                df=self.df_residual,
+                family=self.family,
+                link=self.link
             )
-            
-            # Get prediction (emmean)
-            if isinstance(self.data, h2o.H2OFrame):
-                pred_frame = h2o.H2OFrame(pred_data)
-                
-                # Add interaction term if it exists in the model
-                if f'{factor2}_x_{factor1}' in self.data.columns:
-                    pred_frame[f'{factor2}_x_{factor1}'] = (
-                        pred_frame[factor1] * pred_frame[factor2]
-                    )
-                elif f'{factor1}_x_{factor2}' in self.data.columns:
-                    pred_frame[f'{factor1}_x_{factor2}'] = (
-                        pred_frame[factor1] * pred_frame[factor2]
-                    )
-                
-                prediction = self.model.predict(pred_frame)
-                emmean = prediction[0, 0] if hasattr(prediction, '__getitem__') else prediction
-            else:  # pandas DataFrame
-                pred_df = pd.DataFrame([pred_data])
-                prediction = self.model.predict(pred_df)
-                emmean = prediction[0]
-            
-            # Store result
-            emmeans[group['label']] = {
-                'emmean': float(emmean),
-                factor1: group[factor1],
-                factor2: group[factor2]
-            }
-        
-        self.emmeans_results = emmeans
-        
-        # Log results
-        logger.info("Estimated marginal means:")
-        for label, values in emmeans.items():
-            logger.info(f"  {label}: {values['emmean']:.3f}")
-        
-        return emmeans
+            logger.info("Reference grid created successfully")
+        except Exception as e:
+            logger.error(f"Failed to create reference grid: {e}")
+            raise
     
-    def _compute_covariate_means(self, covariates: Optional[List[str]]) -> Dict[str, float]:
-        """Compute mean values for covariates.
+    def compute_emmeans(
+        self,
+        specs: str,
+        by: Optional[str] = None,
+        at: Optional[Dict[str, Any]] = None,
+        weights: str = 'equal',
+        type: str = 'response'
+    ) -> pd.DataFrame:
+        """
+        Compute estimated marginal means.
         
         Args:
-            covariates: List of covariate names
+            specs: Specification for factors (e.g., "~ factor1 * factor2")
+            by: Optional grouping variable
+            at: Optional dictionary of values to fix covariates at
+            weights: Weighting scheme ('equal', 'proportional', 'outer')
+            type: Scale for results ('response' or 'link')
             
         Returns:
-            Dictionary of covariate means
+            DataFrame with EMMs, standard errors, and confidence intervals
         """
-        covariate_means = {}
+        if self.ref_grid is None:
+            raise ValueError("Reference grid not created")
         
-        if covariates:
-            for cov in covariates:
-                if cov in self.data.columns:
-                    if isinstance(self.data, h2o.H2OFrame):
-                        mean_val = self.data[cov].mean()
-                        if isinstance(mean_val, list):
-                            mean_val = mean_val[0]
-                    else:
-                        mean_val = self.data[cov].mean()
-                    covariate_means[cov] = mean_val
-        
-        # Also compute means for standard covariates
-        standard_covariates = ['bio1_std', 'bio4_std', 'bio12_std', 'bio15_std', 
-                               'elevation_std', 'elevation_std_sq']
-        
-        for cov in standard_covariates:
-            if cov in self.data.columns and cov not in covariate_means:
-                if isinstance(self.data, h2o.H2OFrame):
-                    mean_val = self.data[cov].mean()
-                    if isinstance(mean_val, list):
-                        mean_val = mean_val[0]
-                else:
-                    mean_val = self.data[cov].mean()
-                covariate_means[cov] = mean_val
-        
-        # Add MESF eigenvectors
-        for col in self.data.columns:
-            if col.startswith('ME') and col not in covariate_means:
-                if isinstance(self.data, h2o.H2OFrame):
-                    mean_val = self.data[col].mean()
-                    if isinstance(mean_val, list):
-                        mean_val = mean_val[0]
-                else:
-                    mean_val = self.data[col].mean()
-                covariate_means[col] = mean_val
-        
-        return covariate_means
-    
-    def _create_prediction_data(
-        self, 
-        group: Dict[str, Any],
-        factor1: str,
-        factor2: str,
-        covariate_means: Dict[str, float]
-    ) -> Dict[str, Any]:
-        """Create prediction dataset for a specific group.
-        
-        Args:
-            group: Group specification with factor levels
-            factor1: First factor name
-            factor2: Second factor name
-            covariate_means: Dictionary of covariate means
-            
-        Returns:
-            Dictionary ready for prediction
-        """
-        pred_dict = {
-            factor1: [group[factor1]], 
-            factor2: [group[factor2]]
+        # Build emmeans call
+        emmeans_args = {
+            'object': self.ref_grid,
+            'specs': ro.r(specs),
+            'weights': weights,
+            'type': type
         }
         
-        # Add all covariate means
-        for cov, mean_val in covariate_means.items():
-            pred_dict[cov] = [mean_val]
+        if by:
+            emmeans_args['by'] = by
         
-        return pred_dict
+        if at:
+            # Convert 'at' dictionary to R list
+            r_at = ro.ListVector(at)
+            emmeans_args['at'] = r_at
+        
+        # Compute emmeans
+        emmeans_result = self.emmeans.emmeans(**emmeans_args)
+        
+        # Convert to pandas DataFrame
+        summary = self.base.summary(emmeans_result)
+        emmeans_df = pandas2ri.rpy2py(summary)
+        
+        return emmeans_df
+    
+    def compute_emmeans_2x2(
+        self,
+        factor1: str = 'plant_high',
+        factor2: str = 'temperate',
+        type: str = 'response'
+    ) -> Dict[str, Any]:
+        """
+        Compute EMMs for 2x2 factorial design.
+        
+        Args:
+            factor1: First factor name
+            factor2: Second factor name
+            type: Scale for results ('response' or 'link')
+            
+        Returns:
+            Dictionary with EMMs for all 4 groups plus standard errors
+        """
+        # Compute emmeans for factorial design
+        specs = f"~ {factor1} * {factor2}"
+        emmeans_df = self.compute_emmeans(specs, type=type)
+        
+        # Parse results into dictionary format
+        results = {}
+        
+        for idx, row in emmeans_df.iterrows():
+            f1_val = int(row[factor1]) if factor1 in row else idx // 2
+            f2_val = int(row[factor2]) if factor2 in row else idx % 2
+            
+            group_label = f"group_{f1_val}_{f2_val}"
+            
+            # Extract relevant columns (may vary by R version)
+            if 'emmean' in emmeans_df.columns:
+                emmean_col = 'emmean'
+                se_col = 'SE'
+                lower_col = 'lower.CL'
+                upper_col = 'upper.CL'
+            elif 'estimate' in emmeans_df.columns:
+                emmean_col = 'estimate'
+                se_col = 'std.error'
+                lower_col = 'conf.low'
+                upper_col = 'conf.high'
+            else:
+                # Fallback to first numeric columns
+                numeric_cols = emmeans_df.select_dtypes(include=[np.number]).columns
+                emmean_col = numeric_cols[0]
+                se_col = numeric_cols[1] if len(numeric_cols) > 1 else None
+                lower_col = numeric_cols[2] if len(numeric_cols) > 2 else None
+                upper_col = numeric_cols[3] if len(numeric_cols) > 3 else None
+            
+            results[group_label] = {
+                'emmean': float(row[emmean_col]),
+                'SE': float(row[se_col]) if se_col and se_col in row else None,
+                'lower_CI': float(row[lower_col]) if lower_col and lower_col in row else None,
+                'upper_CI': float(row[upper_col]) if upper_col and upper_col in row else None,
+                factor1: f1_val,
+                factor2: f2_val
+            }
+        
+        logger.info("EMMs computed for 2x2 design:")
+        for label, values in results.items():
+            logger.info(f"  {label}: {values['emmean']:.3f} (SE={values['SE']:.3f})")
+        
+        return results
+    
+    def compute_contrasts(
+        self,
+        specs: str,
+        method: str = 'pairwise',
+        adjust: str = 'tukey',
+        type: str = 'response'
+    ) -> pd.DataFrame:
+        """
+        Compute contrasts between EMMs.
+        
+        Args:
+            specs: Specification for factors
+            method: Contrast method ('pairwise', 'trt.vs.ctrl', 'poly', etc.)
+            adjust: P-value adjustment method ('tukey', 'bonferroni', 'none', etc.)
+            type: Scale for results
+            
+        Returns:
+            DataFrame with contrast results
+        """
+        if self.ref_grid is None:
+            raise ValueError("Reference grid not created")
+        
+        # First compute emmeans
+        emm = self.emmeans.emmeans(
+            object=self.ref_grid,
+            specs=ro.r(specs),
+            type=type
+        )
+        
+        # Compute contrasts
+        contrasts = self.emmeans.contrast(
+            object=emm,
+            method=method,
+            adjust=adjust
+        )
+        
+        # Convert to pandas
+        summary = self.base.summary(contrasts)
+        contrasts_df = pandas2ri.rpy2py(summary)
+        
+        return contrasts_df
+    
+    def test_simple_slopes(
+        self,
+        focal_var: str,
+        mod_var: str,
+        mod_levels: Optional[List[Any]] = None
+    ) -> pd.DataFrame:
+        """
+        Compute simple slopes (for interaction testing).
+        
+        Args:
+            focal_var: Focal variable (whose effect is tested)
+            mod_var: Moderator variable (at whose levels focal effect is tested)
+            mod_levels: Specific levels of moderator (default: all levels)
+            
+        Returns:
+            DataFrame with simple slopes and tests
+        """
+        # Use emtrends for continuous focal variable, or contrasts for categorical
+        specs = f"~ {focal_var} | {mod_var}"
+        
+        if mod_levels:
+            at_dict = {mod_var: mod_levels}
+            emmeans_result = self.compute_emmeans(specs, at=at_dict)
+        else:
+            emmeans_result = self.compute_emmeans(specs)
+        
+        # Compute pairwise contrasts within each level of moderator
+        contrasts = self.compute_contrasts(specs, method='pairwise')
+        
+        return contrasts
     
     def get_emmeans_array(self) -> np.ndarray:
-        """Get emmeans as a numpy array in standard order.
+        """
+        Get EMMs as numpy array for 2x2 design.
         
         Returns:
-            Array of 4 emmeans in order: [00, 01, 10, 11]
+            Array of 4 EMMs in order: [00, 01, 10, 11]
         """
-        if self.emmeans_results is None:
-            raise ValueError("Must compute emmeans first")
+        emmeans_dict = self.compute_emmeans_2x2()
         
         return np.array([
-            self.emmeans_results['group_0_0']['emmean'],
-            self.emmeans_results['group_0_1']['emmean'],
-            self.emmeans_results['group_1_0']['emmean'],
-            self.emmeans_results['group_1_1']['emmean']
+            emmeans_dict['group_0_0']['emmean'],
+            emmeans_dict['group_0_1']['emmean'],
+            emmeans_dict['group_1_0']['emmean'],
+            emmeans_dict['group_1_1']['emmean']
         ])
+
+
+class SimpleEMmeansApproximation:
+    """
+    Fallback EMMs calculation when R is not available.
     
-    def get_emmeans_table(self) -> pd.DataFrame:
-        """Convert emmeans results to a formatted DataFrame.
-        
-        Returns:
-            DataFrame with emmeans results
+    WARNING: This provides only point estimates without proper standard errors.
+    Should only be used for exploratory analysis, not hypothesis testing.
+    """
+    
+    def __init__(
+        self,
+        coefficients: np.ndarray,
+        coefficient_names: List[str],
+        data: pd.DataFrame,
+        formula: str
+    ):
         """
-        if self.emmeans_results is None:
-            raise ValueError("Must compute emmeans first")
+        Initialize simple approximation.
         
-        rows = []
-        for label, values in self.emmeans_results.items():
-            row = {'group': label}
-            row.update(values)
-            rows.append(row)
+        Args:
+            coefficients: Model coefficients
+            coefficient_names: Names of coefficients
+            data: Original data
+            formula: Model formula (for reference)
+        """
+        self.coefficients = dict(zip(coefficient_names, coefficients))
+        self.data = data
+        self.formula = formula
         
-        return pd.DataFrame(rows)
+        logger.warning(
+            "Using simplified EMMs approximation without R. "
+            "Results lack proper standard errors and are not suitable for hypothesis testing."
+        )
+    
+    def compute_emmeans_2x2(
+        self,
+        factor1: str = 'plant_high',
+        factor2: str = 'temperate'
+    ) -> Dict[str, Any]:
+        """
+        Compute approximate EMMs for 2x2 design.
+        
+        Args:
+            factor1: First factor
+            factor2: Second factor
+            
+        Returns:
+            Dictionary with approximate EMMs (no standard errors)
+        """
+        # Get covariate means
+        covariates = [col for col in self.data.columns 
+                     if col not in [factor1, factor2, 'fungi_richness']]
+        covariate_means = self.data[covariates].mean()
+        
+        results = {}
+        
+        for f1_val in [0, 1]:
+            for f2_val in [0, 1]:
+                # Build prediction point
+                pred_point = covariate_means.to_dict()
+                pred_point[factor1] = f1_val
+                pred_point[factor2] = f2_val
+                
+                # Manual prediction using coefficients
+                emmean = self.coefficients.get('Intercept', 0)
+                
+                for var, value in pred_point.items():
+                    if var in self.coefficients:
+                        emmean += self.coefficients[var] * value
+                
+                # Check for interaction term
+                interaction_key = f"{factor1}:{factor2}"
+                if interaction_key in self.coefficients:
+                    emmean += self.coefficients[interaction_key] * f1_val * f2_val
+                
+                group_label = f"group_{f1_val}_{f2_val}"
+                results[group_label] = {
+                    'emmean': float(emmean),
+                    'SE': None,  # Not available without proper calculation
+                    'warning': 'No standard errors - approximation only',
+                    factor1: f1_val,
+                    factor2: f2_val
+                }
+        
+        return results
+
+
+def create_emmeans_from_h2o(
+    h2o_model,
+    vcov_info: Dict[str, Any],
+    data: pd.DataFrame,
+    formula: str,
+    use_r: bool = True
+) -> Union[REMmeansWrapper, SimpleEMmeansApproximation]:
+    """
+    Factory function to create appropriate EMMs calculator.
+    
+    Args:
+        h2o_model: H2O GLM model
+        vcov_info: Output from vcov_extractor.get_vcov_for_emmeans()
+        data: Original data as pandas DataFrame
+        formula: Model formula
+        use_r: Whether to use R emmeans (if False, uses approximation)
+        
+    Returns:
+        Either REMmeansWrapper or SimpleEMmeansApproximation
+    """
+    if use_r and R_AVAILABLE:
+        # Extract model family and link
+        family = h2o_model.actual_params.get('family', 'gaussian')
+        link = h2o_model.actual_params.get('link', 'identity')
+        df_residual = h2o_model.residual_degrees_of_freedom()
+        
+        return REMmeansWrapper(
+            coefficients=vcov_info['coefficients'],
+            vcov_matrix=vcov_info['vcov_matrix'],
+            coefficient_names=vcov_info['coefficient_names'],
+            data=data,
+            formula=formula,
+            family=family,
+            link=link,
+            df_residual=df_residual
+        )
+    else:
+        if use_r and not R_AVAILABLE:
+            logger.warning("R requested but not available, falling back to approximation")
+        
+        return SimpleEMmeansApproximation(
+            coefficients=vcov_info['coefficients'],
+            coefficient_names=vcov_info['coefficient_names'],
+            data=data,
+            formula=formula
+        )
