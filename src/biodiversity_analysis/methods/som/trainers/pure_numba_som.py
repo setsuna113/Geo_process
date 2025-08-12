@@ -11,12 +11,26 @@ Performance improvements:
 - 5x less memory usage (50GB vs 250GB)
 - Direct parallel processing of all 13M samples
 - No serialization or IPC overhead
+
+SOM Type: PURE BATCH SOM
+- Computes weighted averages from ALL samples in parallel
+- Direct weight assignment: w(t+1) = Σ(h*x) / Σ(h)
+- NO learning rate parameter (unlike Online/Sequential SOM)
+- Momentum is applied externally in geo_som_core.py for smoothing
+- Faster convergence than Online SOM due to batch processing
+- More stable than Online SOM (no learning rate decay issues)
 """
 
 import numpy as np
 from numba import jit, prange, float32, int32, types
 import numba
 import logging
+
+# Import shared distance functions - single source of truth
+from ....shared.metrics.distance_calculator import (
+    bray_curtis_distance_single,
+    find_bmu_numba  # Use shared BMU finding
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,55 +41,6 @@ logger = logging.getLogger(__name__)
 # However, for SOM, small numerical differences due to accumulation order
 # are acceptable and don't affect convergence significantly.
 # The performance gain from parallel execution far outweighs the minor numerical differences.
-
-
-@jit(nopython=True, cache=True, inline='always')
-def find_bmu_numba(sample, weights, min_valid_features=2):
-    """Find Best Matching Unit for a sample - replaces NumPy argmin.
-    
-    Args:
-        sample: Single data point (n_features,)
-        weights: All neuron weights (n_neurons, n_features)
-        min_valid_features: Minimum valid features required
-        
-    Returns:
-        Index of BMU (-1 if invalid)
-    """
-    n_neurons = weights.shape[0]
-    n_features = weights.shape[1]
-    
-    # Count valid features
-    valid_count = 0
-    for f in range(n_features):
-        if not np.isnan(sample[f]):
-            valid_count += 1
-    
-    if valid_count < min_valid_features:
-        return -1
-    
-    # Find BMU using Bray-Curtis distance
-    min_dist = np.inf
-    bmu_idx = -1
-    
-    for j in range(n_neurons):
-        numerator = 0.0
-        denominator = 0.0
-        
-        for k in range(n_features):
-            if not np.isnan(sample[k]):
-                diff = np.abs(sample[k] - weights[j, k])
-                summ = sample[k] + weights[j, k]
-                if summ > 0:
-                    numerator += diff
-                    denominator += summ
-        
-        if denominator > 0:
-            dist = numerator / denominator
-            if dist < min_dist:
-                min_dist = dist
-                bmu_idx = j
-    
-    return bmu_idx
 
 
 @jit(nopython=True, cache=True, inline='always')
@@ -110,7 +75,7 @@ def calc_influence_numba(bmu_idx, neuron_idx, grid_positions, radius):
 
 
 @jit(nopython=True, parallel=True, cache=True, fastmath=True)
-def som_epoch_pure(data, weights, grid_positions, learning_rate, radius, 
+def som_epoch_pure(data, weights, grid_positions, radius, 
                    min_valid_features=2, spatial_weight=0.0,
                    coordinates=None, neuron_coords=None):
     """Complete SOM epoch in pure Numba - processes ALL samples in parallel.
@@ -123,7 +88,6 @@ def som_epoch_pure(data, weights, grid_positions, learning_rate, radius,
         data: Input data (n_samples, n_features)
         weights: Current SOM weights (n_neurons, n_features)
         grid_positions: 2D grid positions (n_neurons, 2)
-        learning_rate: Current learning rate
         radius: Current neighborhood radius
         min_valid_features: Minimum valid features per sample
         spatial_weight: Weight for geographic distance (if using)
@@ -132,6 +96,9 @@ def som_epoch_pure(data, weights, grid_positions, learning_rate, radius,
         
     Returns:
         Updated weights array
+    
+    Note: This is PURE BATCH SOM - no learning rate parameter.
+    Weight update is direct assignment of weighted average: w = Σ(h*x) / Σ(h)
     """
     n_samples = data.shape[0]
     n_neurons = weights.shape[0]
@@ -162,7 +129,7 @@ def som_epoch_pure(data, weights, grid_positions, learning_rate, radius,
             influence = calc_influence_numba(bmu_idx, j, grid_positions, radius)
             
             # 3. Accumulate (replaces NumPy broadcasting)
-            if influence > 0.001:  # Threshold for sparse updates
+            if influence > 0.001:  # Threshold for sparse updates (TODO: make configurable)
                 # Note: These += operations may have race conditions in parallel execution
                 # but for SOM training, small numerical differences are acceptable
                 # The performance gain (48x speedup) outweighs minor accuracy loss
@@ -181,11 +148,15 @@ def som_epoch_pure(data, weights, grid_positions, learning_rate, radius,
                 if valid_count > 0:
                     denominator[j] += influence * valid_count
     
-    # 4. Update weights (sequential - outside parallel region)
+    # 4. Update weights - Pure Batch SOM (no learning rate)
+    # Direct assignment of weighted average - this is true Batch SOM
     for j in range(n_neurons):
         if denominator[j] > 0:
             for k in range(n_features):
+                # Pure Batch SOM: directly assign the weighted average
                 weights[j, k] = numerator[j, k] / denominator[j]
+                # Note: Learning rate is NOT used in pure Batch SOM
+                # Momentum is applied externally in geo_som_core.py for smoothing
     
     return weights
 
@@ -193,13 +164,14 @@ def som_epoch_pure(data, weights, grid_positions, learning_rate, radius,
 @jit(nopython=True, parallel=True, cache=True, fastmath=True)
 def som_epoch_with_geographic(data, weights, grid_positions, 
                               coordinates, neuron_coords,
-                              learning_rate, radius, 
+                              radius, 
                               min_valid_features=2, 
                               spatial_weight=0.2,
                               geo_distance_norm=1000.0):
     """SOM epoch with geographic distance component.
     
     Combines feature distance and geographic distance for BMU selection.
+    Pure Batch SOM - direct weight assignment, no learning rate.
     """
     n_samples = data.shape[0]
     n_neurons = weights.shape[0]
@@ -283,11 +255,13 @@ def som_epoch_with_geographic(data, weights, grid_positions,
                 # Accumulate weights
                 denominator[j] += influence * valid_count
     
-    # Update weights
+    # Update weights - Pure Batch SOM (no learning rate)
     for j in range(n_neurons):
         if denominator[j] > 0:
             for k in range(n_features):
+                # Pure Batch SOM: directly assign the weighted average
                 weights[j, k] = numerator[j, k] / denominator[j]
+                # Note: Learning rate is NOT used in pure Batch SOM
     
     return weights
 
@@ -327,9 +301,9 @@ class PureNumbaSOM:
         # Add some NaN values
         dummy_data[0, 0] = np.nan
         
-        # Compile basic version
+        # Compile basic version (no learning_rate parameter)
         _ = som_epoch_pure(dummy_data, dummy_weights.copy(), dummy_grid, 
-                          0.5, 10.0, 2, 0.0, None, None)
+                          10.0, 2, 0.0, None, None)  # radius, min_valid_features, spatial_weight, coords
         
         # Compile geographic version if needed
         if self.config and getattr(self.config, 'spatial_weight', 0) > 0:
@@ -338,14 +312,14 @@ class PureNumbaSOM:
             _ = som_epoch_with_geographic(
                 dummy_data, dummy_weights.copy(), dummy_grid,
                 dummy_coords, dummy_neuron_coords,
-                0.5, 10.0, 2, 0.2, 1000.0
+                10.0, 2, 0.2, 1000.0  # radius, min_valid_features, spatial_weight, geo_norm
             )
         
         self._compiled = True
         logger.info("JIT compilation complete")
     
     def train_epoch(self, data, weights, grid_positions, 
-                   learning_rate, radius,
+                   radius,
                    coordinates=None, neuron_coords=None):
         """Train single epoch using pure Numba implementation.
         
@@ -353,13 +327,14 @@ class PureNumbaSOM:
             data: Training data (n_samples, n_features)
             weights: Current weights (n_neurons, n_features)
             grid_positions: Grid positions (n_neurons, 2)
-            learning_rate: Current learning rate
             radius: Current neighborhood radius
             coordinates: Optional geographic coordinates
             neuron_coords: Optional neuron geographic coordinates
             
         Returns:
             Updated weights
+        
+        Note: Pure Batch SOM - no learning rate needed.
         """
         # Ensure data is contiguous and float32 for optimal performance
         data = np.ascontiguousarray(data, dtype=np.float32)
@@ -377,7 +352,7 @@ class PureNumbaSOM:
         
         # Log training info
         logger.info(f"Training epoch with {len(data):,} samples on {len(weights)} neurons")
-        logger.info(f"Learning rate: {learning_rate:.4f}, Radius: {radius:.2f}")
+        logger.info(f"Radius: {radius:.2f} (Pure Batch SOM - no learning rate)")
         
         # Choose appropriate function
         if spatial_weight > 0 and coordinates is not None and neuron_coords is not None:
@@ -388,13 +363,13 @@ class PureNumbaSOM:
             updated_weights = som_epoch_with_geographic(
                 data, weights, grid_positions,
                 coordinates, neuron_coords,
-                learning_rate, radius,
+                radius,  # No learning_rate parameter
                 min_valid_features, spatial_weight, geo_distance_norm
             )
         else:
             updated_weights = som_epoch_pure(
                 data, weights, grid_positions,
-                learning_rate, radius,
+                radius,  # No learning_rate parameter
                 min_valid_features, spatial_weight,
                 coordinates, neuron_coords
             )
@@ -424,7 +399,7 @@ class PureNumbaSOM:
         weights_copy = weights.copy()
         updated_weights = self.train_epoch(
             data, weights_copy, grid_positions, 
-            1.0, radius,  # learning_rate=1.0 for full update
+            radius,
             coordinates, neuron_coords
         )
         
@@ -461,13 +436,13 @@ def benchmark_implementations(n_samples=100000, n_features=4, n_neurons=2500):
     # Warm up
     print("Warming up JIT...")
     _ = som_epoch_pure(data[:100], weights.copy(), grid_positions, 
-                      0.5, 10.0, 2, 0.0, None, None)
+                      10.0, 2, 0.0, None, None)  # radius, min_valid_features, spatial_weight
     
     # Test pure Numba
     print("\nTesting pure Numba implementation...")
     start = time.time()
     result = som_epoch_pure(data, weights.copy(), grid_positions, 
-                           0.5, 10.0, 2, 0.0, None, None)
+                           10.0, 2, 0.0, None, None)  # radius, min_valid_features, spatial_weight
     numba_time = time.time() - start
     
     print(f"Pure Numba time: {numba_time:.3f}s")

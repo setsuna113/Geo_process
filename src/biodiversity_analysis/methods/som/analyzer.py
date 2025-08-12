@@ -14,7 +14,7 @@ from datetime import datetime
 
 from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
 from src.abstractions.interfaces.analyzer import AnalysisResult
-from .core.geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
+from .core.geo_som_core import GeoSOM, GeoSOMConfig
 from src.biodiversity_analysis.preprocessing import SharedPreprocessor
 from .utils.spatial_utils import SpatialBlockGenerator, GeographicCoherence
 from .calculators.partial_metrics import validate_missing_data_handling
@@ -234,7 +234,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             logger.info("Skipping cross-validation for exploratory analysis - training on full dataset")
         
         # Train final model on all data
-        self.som = GeoSOMVLRSOM(self._geosom_config)
+        self.som = GeoSOM(self._geosom_config)
         
         # Check if we should resume from a SOM checkpoint
         # Look for latest checkpoint in the standard location
@@ -246,7 +246,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             # Set resume_checkpoint in config so geo_som_core.py will load it
             self._geosom_config.resume_checkpoint = latest_checkpoint
             # Recreate SOM with resume config
-            self.som = GeoSOMVLRSOM(self._geosom_config)
+            self.som = GeoSOM(self._geosom_config)
         else:
             logger.info(f"Not resuming: resume flag={kwargs.get('resume', False)}, checkpoint exists={os.path.exists(latest_checkpoint)}")
         
@@ -438,16 +438,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             spatial_weight=arch_config['spatial_weight'],
             geographic_distance=arch_config['geographic_distance'],
             _config=som_config._config,  # Pass raw config dict for _get_config access
-            # Learning rate settings now from training_config
-            initial_learning_rate=training_config['initial_learning_rate'],
-            min_learning_rate=training_config['min_learning_rate'],
-            max_learning_rate=training_config['max_learning_rate'],
-            lr_increase_factor=training_config['lr_increase_factor'],
-            lr_decrease_factor=training_config['lr_decrease_factor'],
-            high_qe_lr_min=training_config['high_qe_lr_range'][0],
-            high_qe_lr_max=training_config['high_qe_lr_range'][1],
-            low_qe_lr_min=training_config['low_qe_lr_range'][0],
-            low_qe_lr_max=training_config['low_qe_lr_range'][1],
+            # Pure Batch SOM doesn't use learning rate parameters
             # Neighborhood from architecture (structural)
             neighborhood_function=arch_config['neighborhood_function'],
             initial_radius=arch_config['initial_radius'],
@@ -543,7 +534,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 logger.warning(f"Failed to update progress tracker: {e}")
             
             # Create fold SOM
-            fold_som = GeoSOMVLRSOM(config)
+            fold_som = GeoSOM(config)
             
             # Create progress callback for this fold
             try:
@@ -719,7 +710,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             'convergence_info': {
                 'converged': self.training_result.convergence_epoch is not None,
                 'convergence_epoch': self.training_result.convergence_epoch,
-                'final_learning_rate': self.training_result.final_learning_rate,
+                # Pure Batch SOM doesn't use learning rate
                 'final_radius': self.training_result.final_neighborhood_radius
             },
             'cluster_assignments': predictions,

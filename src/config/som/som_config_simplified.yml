@@ -47,11 +47,6 @@ training:
   max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
   n_workers: 100         # Number of workers (1 for sequential, >1 for parallel) - optimized for better load balancing
   
-  # Learning rate
-  learning_rate:
-    initial: 0.8          # Starting learning rate
-    minimum: 0.1          # Minimum learning rate
-    maximum: 1.0          # Maximum learning rate
     
   # Neighborhood radius
   radius:
@@ -59,10 +54,6 @@ training:
     final: 0.5            # Final neighborhood radius
     decay: 'exponential'       # Decay type: 'linear' or 'exponential'
     
-  # Batch processing
-  batch:
-    size: 10000            # Samples per batch
-    shuffle: true         # Shuffle batches each epoch
     
   # Momentum (for faster convergence)
   momentum:
@@ -70,14 +61,6 @@ training:
     final: 0.1            # Low final momentum for fine-tuning
     schedule: 'exponential'    # How momentum decays
     
-  # Memory optimization
-  memory:
-    chunk_size: 43386     # Process data in chunks (299 chunks for better load balancing)
-    max_memory_gb: 600    # Maximum memory to use (conservative with 682GB available)
-  
-  # Parallel optimization settings (threading backend only)
-  parallel_optimization:
-    optimal_workers: 100       # Number of threading workers (balanced for NumPy operations) - optimized for 300 chunks
 
 # ============================================================================
 # CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training
@@ -154,14 +137,20 @@ spatial_metrics:
   k_neighbors: 50                  # Neighbors for spatial analysis
   max_distance_km: 500             # Maximum spatial influence
   neighborhood_function: 'gaussian'  # Type of neighborhood function for SOM
+  coherence_distance_threshold: 50.0  # Distance threshold for geographic coherence (km)
+  earth_radius_km: 6371.0          # Earth radius for haversine distance calculations
 
 # ============================================================================
-# VLRSOM SETTINGS - Variable Learning Rate SOM parameters
+# NUMBA OPTIMIZATION - Parameters specific to pure Numba implementation
 # ============================================================================
-# Note: When enabled=false, uses standard learning rate schedule from training section
 
-vlrsom:
-  enabled: false                     # Enable/disable VLRSOM adaptation (false = use standard schedule)
-  alpha: 0.95                        # Decay factor (0 < α < 1) - only used when enabled=true
-  gamma: 0.001                       # Adaptation parameter (γ > 0) - only used when enabled=true
-  error_sample_size: 10000          # Sample size for J²(t) calculation - only used when enabled=true
+numba:
+  # Sparse update threshold - skip neurons with influence below this
+  sparse_influence_threshold: 0.001
+  
+  # Geographic distance normalization for combined distance calculations
+  geo_distance_norm: 20000.0      # Max earth distance for normalization (~half circumference)
+  
+  # Default values for missing configuration
+  default_geo_distance_norm: 1000.0  # Fallback normalization if not specified
+

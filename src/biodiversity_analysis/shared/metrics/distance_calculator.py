@@ -1,112 +1,81 @@
-"""Shared distance calculations for biodiversity analysis.
+"""Core distance calculations for biodiversity analysis.
 
-This module provides optimized distance calculations that can be used
-by all analysis methods (SOM, K-means, etc.) ensuring consistency.
+This module provides optimized distance calculations used by all analysis methods.
+Single source of truth for distance mathematics - no duplication.
 """
 
 import numpy as np
-from numba import jit  # Removed prange to prevent thread explosion
-from typing import Optional
-import logging
-
-logger = logging.getLogger(__name__)
+from numba import jit
 
 
-@jit(nopython=True, parallel=False, cache=True, fastmath=True)  # parallel=False to prevent thread explosion
-def bray_curtis_distances_numba(data: np.ndarray, weights: np.ndarray, 
-                                min_valid_features: int = 2) -> np.ndarray:
-    """Numba-optimized partial Bray-Curtis distance calculation.
+# ============================================================================
+# CORE DISTANCE FUNCTIONS - Single source of truth
+# ============================================================================
+
+@jit(nopython=True, cache=True, inline='always', fastmath=True)
+def bray_curtis_distance_single(sample, weight, min_valid_features=2):
+    """Calculate Bray-Curtis distance between two vectors.
     
-    Computes Bray-Curtis distances between all data samples and all weight vectors,
-    handling missing values (NaN) by only considering valid feature pairs.
-    
-    Formula: BC(u,v) = Σ|u_i - v_i| / Σ(u_i + v_i)
+    Single source of truth for Bray-Curtis distance calculation.
+    Used by both training and metrics calculations.
     
     Args:
-        data: Input data (n_samples, n_features), may contain NaN
-        weights: Weight vectors (n_neurons, n_features)
-        min_valid_features: Minimum valid features required for valid distance
+        sample: Input vector, may contain NaN
+        weight: Weight vector, may contain NaN  
+        min_valid_features: Minimum valid features required
         
     Returns:
-        Distance matrix (n_samples, n_neurons), inf for invalid comparisons
+        Distance value (0-1), or inf if insufficient valid features
     """
-    n_samples = data.shape[0]
-    n_neurons = weights.shape[0]
-    n_features = data.shape[1]
-    distances = np.zeros((n_samples, n_neurons), dtype=np.float32)
+    numerator = 0.0
+    denominator = 0.0
+    valid_count = 0
+    n_features = len(sample)
     
-    for i in range(n_samples):  # Changed from prange to prevent thread explosion
-        for j in range(n_neurons):
-            numerator = 0.0
-            denominator = 0.0
-            valid_count = 0
-            
-            for k in range(n_features):
-                data_val = data[i, k]
-                weight_val = weights[j, k]
-                
-                # Check if both values are valid (not NaN)
-                if not np.isnan(data_val) and not np.isnan(weight_val):
-                    abs_diff = abs(data_val - weight_val)
-                    sum_val = data_val + weight_val
-                    
-                    if sum_val > 0:  # Avoid division by zero
-                        numerator += abs_diff
-                        denominator += sum_val
-                        valid_count += 1
-            
-            # Calculate distance if enough valid features
-            if valid_count >= min_valid_features and denominator > 0:
-                distances[i, j] = numerator / denominator
-            else:
-                distances[i, j] = np.inf
-                
-    return distances
+    for k in range(n_features):
+        if not np.isnan(sample[k]) and not np.isnan(weight[k]):
+            abs_diff = abs(sample[k] - weight[k])
+            sum_val = sample[k] + weight[k]
+            if sum_val > 0:
+                numerator += abs_diff
+                denominator += sum_val
+                valid_count += 1
+    
+    if valid_count >= min_valid_features and denominator > 0:
+        return numerator / denominator
+    return np.inf
 
 
-@jit(nopython=True, parallel=False, cache=True, fastmath=True)  # parallel=False to prevent thread explosion
-def euclidean_distances_numba(data: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """Numba-optimized Euclidean distance calculation.
-    
-    Handles missing values by ignoring NaN pairs.
+@jit(nopython=True, cache=True, inline='always', fastmath=True)
+def euclidean_distance_single(sample, weight, min_valid_features=1):
+    """Calculate Euclidean distance between two vectors.
     
     Args:
-        data: Input data (n_samples, n_features), may contain NaN
-        weights: Weight vectors (n_neurons, n_features)
+        sample: Input vector, may contain NaN
+        weight: Weight vector, may contain NaN
+        min_valid_features: Minimum valid features required
         
     Returns:
-        Squared distance matrix (n_samples, n_neurons)
+        Squared distance, or inf if insufficient valid features
     """
-    n_samples = data.shape[0]
-    n_neurons = weights.shape[0]
-    n_features = data.shape[1]
-    distances = np.zeros((n_samples, n_neurons), dtype=np.float32)
+    dist = 0.0
+    valid_count = 0
+    n_features = len(sample)
     
-    for i in range(n_samples):  # Changed from prange to prevent thread explosion
-        for j in range(n_neurons):
-            dist = 0.0
-            valid_count = 0
-            
-            for k in range(n_features):
-                data_val = data[i, k]
-                weight_val = weights[j, k]
-                
-                if not np.isnan(data_val) and not np.isnan(weight_val):
-                    diff = data_val - weight_val
-                    dist += diff * diff
-                    valid_count += 1
-            
-            if valid_count > 0:
-                distances[i, j] = dist
-            else:
-                distances[i, j] = np.inf
-                
-    return distances
+    for k in range(n_features):
+        if not np.isnan(sample[k]) and not np.isnan(weight[k]):
+            diff = sample[k] - weight[k]
+            dist += diff * diff
+            valid_count += 1
+    
+    if valid_count >= min_valid_features:
+        return dist
+    return np.inf
 
 
-@jit(nopython=True)
-def haversine_distance_numba(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-    """Numba-optimized haversine distance calculation.
+@jit(nopython=True, cache=True, inline='always')
+def haversine_distance_single(lon1, lat1, lon2, lat2):
+    """Calculate haversine distance between two coordinates.
     
     Args:
         lon1, lat1: First coordinate in degrees
@@ -125,88 +94,72 @@ def haversine_distance_numba(lon1: float, lat1: float, lon2: float, lat2: float)
     a = np.sin(dlat/2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon/2)**2
     c = 2 * np.arcsin(np.sqrt(a))
     
-    # Earth radius in km
-    r = 6371.0
-    return c * r
+    # Earth radius in km (standard value, config can override if needed)
+    return 6371.0 * c
 
 
-class SharedDistanceCalculator:
-    """Shared distance calculator for all biodiversity analysis methods.
+# ============================================================================
+# BMU FINDING - Shared logic
+# ============================================================================
+
+@jit(nopython=True, cache=True, fastmath=True)
+def find_bmu_numba(sample, weights, min_valid_features=2):
+    """Find Best Matching Unit for a sample.
     
-    This ensures consistency across different analysis methods and avoids
-    code duplication.
+    Shared BMU finding logic used by both training and prediction.
+    
+    Args:
+        sample: Input vector
+        weights: Weight matrix (n_neurons, n_features)
+        min_valid_features: Minimum valid features required
+        
+    Returns:
+        Index of BMU, or -1 if no valid BMU found
     """
+    n_neurons = weights.shape[0]
+    min_dist = np.inf
+    bmu_idx = -1
     
-    def __init__(self, distance_metric: str = 'bray_curtis', 
-                 min_valid_features: int = 2):
-        """Initialize shared distance calculator.
-        
-        Args:
-            distance_metric: 'bray_curtis' or 'euclidean'
-            min_valid_features: Minimum valid features for distance calculation
-        """
-        self.distance_metric = distance_metric
-        self.min_valid_features = min_valid_features
-        logger.info(f"SharedDistanceCalculator initialized with {distance_metric} metric")
+    for j in range(n_neurons):
+        dist = bray_curtis_distance_single(sample, weights[j], min_valid_features)
+        if dist < min_dist:
+            min_dist = dist
+            bmu_idx = j
     
-    def compute_distances(self, data: np.ndarray, weights: np.ndarray) -> np.ndarray:
-        """Compute distance matrix between data and weights.
-        
-        Args:
-            data: Input samples (n_samples, n_features)
-            weights: Weight vectors (n_weights, n_features)
-            
-        Returns:
-            Distance matrix (n_samples, n_weights)
-        """
-        # Ensure contiguous memory layout for optimal performance
-        data = np.ascontiguousarray(data, dtype=np.float32)
-        weights = np.ascontiguousarray(weights, dtype=np.float32)
-        
-        if self.distance_metric == 'bray_curtis':
-            return bray_curtis_distances_numba(data, weights, self.min_valid_features)
-        else:
-            return euclidean_distances_numba(data, weights)
+    return bmu_idx
+
+
+@jit(nopython=True, cache=True, fastmath=True)
+def find_two_bmus_numba(sample, weights, min_valid_features=2):
+    """Find first and second Best Matching Units.
     
-    def compute_pairwise_distances(self, coords1: np.ndarray, coords2: np.ndarray, 
-                                  metric: str = 'haversine') -> np.ndarray:
-        """Compute pairwise distances between coordinate sets.
-        
-        Args:
-            coords1: First set of coordinates (n_samples1, 2) [lat, lon]
-            coords2: Second set of coordinates (n_samples2, 2) [lat, lon]
-            metric: Distance metric ('haversine' for geographic)
-            
-        Returns:
-            Distance matrix (n_samples1, n_samples2)
-        """
-        if metric == 'haversine':
-            n_samples1 = coords1.shape[0]
-            n_samples2 = coords2.shape[0]
-            distances = np.zeros((n_samples1, n_samples2), dtype=np.float32)
-            
-            for i in range(n_samples1):
-                for j in range(n_samples2):
-                    # coords are [lat, lon] so lon=coords[:,1], lat=coords[:,0]
-                    distances[i, j] = haversine_distance_numba(
-                        coords1[i, 1], coords1[i, 0],  # lon1, lat1
-                        coords2[j, 1], coords2[j, 0]   # lon2, lat2
-                    )
-            
-            return distances
-        else:
-            # Use euclidean for non-geographic distances
-            return euclidean_distances_numba(coords1, coords2)
+    Used for topographic error calculation.
     
-    def find_bmus(self, data: np.ndarray, weights: np.ndarray) -> np.ndarray:
-        """Find Best Matching Units (BMUs) for each data sample.
+    Args:
+        sample: Input vector
+        weights: Weight matrix (n_neurons, n_features)
+        min_valid_features: Minimum valid features required
         
-        Args:
-            data: Input samples (n_samples, n_features)
-            weights: Weight vectors (n_weights, n_features)
-            
-        Returns:
-            BMU indices for each sample (n_samples,)
-        """
-        distances = self.compute_distances(data, weights)
-        return np.argmin(distances, axis=1)
+    Returns:
+        Tuple of (first_bmu_idx, second_bmu_idx)
+    """
+    n_neurons = weights.shape[0]
+    min_dist1 = np.inf
+    min_dist2 = np.inf
+    bmu1_idx = -1
+    bmu2_idx = -1
+    
+    for j in range(n_neurons):
+        dist = bray_curtis_distance_single(sample, weights[j], min_valid_features)
+        if dist < min_dist1:
+            # Current best becomes second best
+            min_dist2 = min_dist1
+            bmu2_idx = bmu1_idx
+            # New best
+            min_dist1 = dist
+            bmu1_idx = j
+        elif dist < min_dist2:
+            min_dist2 = dist
+            bmu2_idx = j
+    
+    return bmu1_idx, bmu2_idx
