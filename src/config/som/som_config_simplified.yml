@@ -45,7 +45,7 @@ distance:
 training:
   # Basic settings
   max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 150          # Number of workers (1 for sequential, >1 for parallel)
+  n_workers: 60          # Number of workers (1 for sequential, >1 for parallel)
   
   # Learning rate
   learning_rate:
@@ -77,7 +77,7 @@ training:
   
   # Parallel optimization settings (threading backend only)
   parallel_optimization:
-    optimal_workers: 150        # Number of threading workers (optimal for NumPy operations)
+    optimal_workers: 60        # Number of threading workers (balanced for NumPy operations)
 
 # ============================================================================
 # CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training

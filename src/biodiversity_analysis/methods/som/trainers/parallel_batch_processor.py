@@ -59,12 +59,12 @@ def get_distance_calculator():
     preventing redundant initialization within a thread.
     """
     # Check if this thread already has a calculator
+    # No lock needed - thread-local storage is inherently thread-safe!
     if not hasattr(_CALCULATOR_STORAGE, 'calculator'):
-        with _CALCULATOR_LOCK:
-            # Double-check after acquiring lock
-            if not hasattr(_CALCULATOR_STORAGE, 'calculator'):
-                _CALCULATOR_STORAGE.calculator = OptimizedDistanceCalculator()
-                logger.debug(f"Created distance calculator for thread {threading.current_thread().name}")
+        # Each thread creates its own calculator independently
+        # No synchronization needed since thread-local storage isolates each thread
+        _CALCULATOR_STORAGE.calculator = OptimizedDistanceCalculator()
+        # Removed debug logging - causes GIL contention
     return _CALCULATOR_STORAGE.calculator
 
 # NOTE: StreamlinedDistanceCalculator provides memory-efficient distance calculations.
@@ -96,8 +96,7 @@ def process_single_chunk(chunk_idx: int,
     
     This function is defined at module level to be pickleable for multiprocessing.
     """
-    # Log entry for debugging
-    logger.debug(f"Starting chunk {chunk_idx} processing in thread {threading.current_thread().name}")
+    # Removed debug logging - causes GIL contention with many threads
     
     n_neurons = len(weights)
     min_valid_features = config.min_valid_features
@@ -226,18 +225,18 @@ class ParallelBatchProcessor:
         _ = get_distance_calculator()
         
     def _determine_worker_count(self, requested=None) -> int:
-        """Determine number of workers for threading backend.
+        """Determine number of workers for parallel backend.
         
         Priority order:
         1. Environment variable SOM_MAX_WORKERS
         2. Config optimal_workers setting  
         3. Requested parameter
-        4. Default of 100 (optimal for threading)
+        4. Default of 30 (optimal for loky/multiprocessing)
         """
         available_cpus = cpu_count()
         
         # Start with optimal default for threading backend
-        optimal = 100
+        optimal = 60  # Reasonable for threading without excessive contention
         
         # Check config for override
         if self.config and hasattr(self.config, 'get'):
@@ -255,7 +254,7 @@ class ParallelBatchProcessor:
         if requested:
             optimal = requested
         
-        # Cap at available CPUs (threading can efficiently use all cores)
+        # Cap at available CPUs (threading can use more workers than CPUs)
         suggested = min(optimal, available_cpus)
         
         logger.info(f"Threading backend with {suggested} workers (system has {available_cpus} CPUs)")
@@ -340,7 +339,8 @@ class ParallelBatchProcessor:
                 actual_workers = max(1, actual_workers // 4)
                 logger.warning(f"Critical memory usage ({current_memory:.1f}%), reducing workers to {actual_workers}")
         
-        # Always use threading backend - it's optimal for NumPy operations
+        # Use threading backend - NumPy releases GIL for most operations
+        # Threading has lower overhead than multiprocessing for NumPy-heavy code
         backend = 'threading'
         
         logger.info(f"Starting joblib Parallel with threading backend, n_jobs={actual_workers}")
