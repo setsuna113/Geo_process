@@ -35,17 +35,23 @@ class MESFCacheManager:
     # Class-level lock for thread safety
     _lock = threading.Lock()
     
-    def __init__(self, cache_dir: Optional[str] = None):
+    def __init__(self, cache_dir: Optional[str] = None, max_cache_size_gb: float = 10.0,
+                 max_cache_age_days: int = 30):
         """Initialize the cache manager with configurable and secure cache directory.
         
         Args:
             cache_dir: Directory for cache storage (default from env or system temp dir)
+            max_cache_size_gb: Maximum cache size in GB (default 10GB)
+            max_cache_age_days: Maximum age of cache entries in days (default 30)
         """
         if cache_dir is None:
             # Allow configuration via environment variable, with user-isolated fallback
             base_temp = os.environ.get('ML_CACHE_DIR', tempfile.gettempdir())
             user_id = os.getuid() if hasattr(os, 'getuid') else 'user'
             cache_dir = os.path.join(base_temp, f'ml_cache_{user_id}', 'mesf')
+        
+        self.max_cache_size_bytes = max_cache_size_gb * 1024 * 1024 * 1024
+        self.max_cache_age_seconds = max_cache_age_days * 24 * 3600
         
         # Validate and sanitize the cache directory path
         try:
@@ -625,3 +631,203 @@ class FungiRichnessCacheManager:
         augmented_path = compute_fn(file_path, str(cached_path))
         
         return augmented_path
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics including size and age information.
+        
+        Returns:
+            Dictionary with cache statistics
+        """
+        import time
+        
+        stats = {
+            'cache_dir': str(self.cache_dir),
+            'total_files': 0,
+            'total_size_mb': 0.0,
+            'oldest_file_days': 0.0,
+            'newest_file_days': 0.0,
+            'avg_file_size_mb': 0.0,
+            'disk_free_gb': 0.0,
+            'disk_used_gb': 0.0,
+            'cache_entries': []
+        }
+        
+        try:
+            # Get disk usage
+            stat = os.statvfs(self.cache_dir)
+            stats['disk_free_gb'] = (stat.f_bavail * stat.f_frsize) / (1024**3)
+            stats['disk_used_gb'] = ((stat.f_blocks - stat.f_bavail) * stat.f_frsize) / (1024**3)
+            
+            cache_files = list(self.cache_dir.glob("mesf_*.parquet"))
+            if not cache_files:
+                return stats
+            
+            current_time = time.time()
+            oldest_mtime = current_time
+            newest_mtime = 0
+            total_size = 0
+            
+            for cache_file in cache_files:
+                try:
+                    file_stat = cache_file.stat()
+                    file_size_mb = file_stat.st_size / (1024**2)
+                    file_age_days = (current_time - file_stat.st_mtime) / 86400
+                    
+                    total_size += file_stat.st_size
+                    oldest_mtime = min(oldest_mtime, file_stat.st_mtime)
+                    newest_mtime = max(newest_mtime, file_stat.st_mtime)
+                    
+                    stats['cache_entries'].append({
+                        'file': cache_file.name,
+                        'size_mb': round(file_size_mb, 2),
+                        'age_days': round(file_age_days, 1)
+                    })
+                except:
+                    continue
+            
+            stats['total_files'] = len(cache_files)
+            stats['total_size_mb'] = round(total_size / (1024**2), 2)
+            stats['oldest_file_days'] = round((current_time - oldest_mtime) / 86400, 1) if oldest_mtime < current_time else 0
+            stats['newest_file_days'] = round((current_time - newest_mtime) / 86400, 1) if newest_mtime > 0 else 0
+            stats['avg_file_size_mb'] = round(stats['total_size_mb'] / len(cache_files), 2) if cache_files else 0
+            
+        except Exception as e:
+            logger.warning(f"Failed to get cache statistics: {e}")
+        
+        return stats
+    
+    def cleanup_old_entries(self, force: bool = False) -> Dict[str, int]:
+        """Clean up old cache entries based on age and size limits.
+        
+        Args:
+            force: Force cleanup even if within limits
+            
+        Returns:
+            Dictionary with cleanup statistics
+        """
+        import time
+        
+        cleanup_stats = {
+            'removed_by_age': 0,
+            'removed_by_size': 0,
+            'errors': 0,
+            'space_freed_mb': 0
+        }
+        
+        try:
+            current_time = time.time()
+            cache_files = []
+            
+            # Collect all cache files with metadata
+            for cache_file in self.cache_dir.glob("mesf_*.parquet"):
+                try:
+                    file_stat = cache_file.stat()
+                    cache_files.append({
+                        'path': cache_file,
+                        'size': file_stat.st_size,
+                        'mtime': file_stat.st_mtime,
+                        'age_seconds': current_time - file_stat.st_mtime
+                    })
+                except:
+                    continue
+            
+            # Sort by age (oldest first)
+            cache_files.sort(key=lambda x: x['mtime'])
+            
+            # Remove files older than max age
+            for file_info in cache_files[:]:
+                if file_info['age_seconds'] > self.max_cache_age_seconds:
+                    try:
+                        file_info['path'].unlink()
+                        # Also remove metadata
+                        metadata_path = Path(str(file_info['path'].with_suffix('')) + '_metadata.json')
+                        if metadata_path.exists():
+                            metadata_path.unlink()
+                        
+                        cleanup_stats['removed_by_age'] += 1
+                        cleanup_stats['space_freed_mb'] += file_info['size'] / (1024**2)
+                        cache_files.remove(file_info)
+                    except Exception as e:
+                        logger.warning(f"Failed to remove old cache file: {e}")
+                        cleanup_stats['errors'] += 1
+            
+            # Check total cache size
+            total_size = sum(f['size'] for f in cache_files)
+            
+            # Remove oldest files if cache exceeds size limit
+            while total_size > self.max_cache_size_bytes and cache_files:
+                file_info = cache_files.pop(0)
+                try:
+                    file_info['path'].unlink()
+                    # Also remove metadata
+                    metadata_path = Path(str(file_info['path'].with_suffix('')) + '_metadata.json')
+                    if metadata_path.exists():
+                        metadata_path.unlink()
+                    
+                    cleanup_stats['removed_by_size'] += 1
+                    cleanup_stats['space_freed_mb'] += file_info['size'] / (1024**2)
+                    total_size -= file_info['size']
+                except Exception as e:
+                    logger.warning(f"Failed to remove cache file for size limit: {e}")
+                    cleanup_stats['errors'] += 1
+            
+            if cleanup_stats['removed_by_age'] + cleanup_stats['removed_by_size'] > 0:
+                logger.info(f"Cache cleanup: removed {cleanup_stats['removed_by_age']} old files, "
+                           f"{cleanup_stats['removed_by_size']} for size limit, "
+                           f"freed {cleanup_stats['space_freed_mb']:.1f}MB")
+            
+        except Exception as e:
+            logger.error(f"Cache cleanup failed: {e}")
+            cleanup_stats['errors'] += 1
+        
+        return cleanup_stats
+    
+    def validate_cache_integrity(self, cache_key: str) -> bool:
+        """Validate cache entry integrity including schema and data.
+        
+        Args:
+            cache_key: Cache key to validate
+            
+        Returns:
+            True if cache is valid, False otherwise
+        """
+        cached_path = self.get_cached_path(cache_key)
+        metadata_path = self.get_metadata_path(cache_key)
+        
+        try:
+            # Check files exist
+            if not cached_path.exists() or not metadata_path.exists():
+                return False
+            
+            # Validate metadata
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            
+            # Check required metadata fields
+            required_fields = ['n_eigenvectors', 'n_samples']
+            if not all(field in metadata for field in required_fields):
+                logger.warning(f"Cache metadata missing required fields: {cache_key}")
+                return False
+            
+            # Validate parquet file
+            pq_file = pq.ParquetFile(cached_path)
+            schema = pq_file.schema_arrow
+            
+            # Check for MESF columns
+            mesf_cols = [name for name in schema.names if name.startswith('ME')]
+            if len(mesf_cols) != metadata.get('n_eigenvectors', 0):
+                logger.warning(f"Cache eigenvector count mismatch: expected {metadata.get('n_eigenvectors')}, "
+                              f"found {len(mesf_cols)}")
+                return False
+            
+            # Quick data integrity check (read first row)
+            table = pq_file.read_row_group(0, columns=[mesf_cols[0]] if mesf_cols else None)
+            if table.num_rows == 0:
+                logger.warning(f"Cache file has no data: {cache_key}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Cache validation failed for {cache_key}: {e}")
+            return False
