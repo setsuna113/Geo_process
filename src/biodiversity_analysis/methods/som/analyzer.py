@@ -418,9 +418,8 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         max_epochs = kwargs.get('iterations', training_config['max_epochs'])  # FIXED: Now reads from training_config!
         
         # Get performance settings - prefer training_config values
-        chunk_size = training_config.get('chunk_size', som_config.get_chunk_size())
+        # No longer need chunk_size or n_workers with pure Numba implementation
         qe_sample_size = som_config.get_qe_sample_size()
-        n_workers = training_config.get('n_workers', som_config.get_n_workers())
         
         # Get batch training settings from training config
         # All optimizations are now built-in and always enabled
@@ -464,9 +463,7 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                                                   default_config.get('distance_config', {}).get('min_valid_features', 2)),
             random_seed=kwargs.get('random_seed', 42),
             # Add performance settings
-            chunk_size=kwargs.get('chunk_size', chunk_size),
             qe_sample_size=kwargs.get('qe_sample_size', qe_sample_size),
-            n_workers=kwargs.get('n_workers', n_workers),
             # Add batch training settings as a config dict
             batch_training=batch_config
         )
