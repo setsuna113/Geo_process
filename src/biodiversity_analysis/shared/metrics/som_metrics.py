@@ -168,6 +168,7 @@ def calculate_geographic_coherence_numba(data, weights, coordinates, min_valid_f
     """Calculate geographic coherence using simplified Moran's I.
     
     Measures spatial autocorrelation of BMU assignments.
+    Optimized with parallel processing for both BMU finding and spatial weight calculation.
     
     Args:
         data: Input data (n_samples, n_features)
@@ -181,7 +182,7 @@ def calculate_geographic_coherence_numba(data, weights, coordinates, min_valid_f
     """
     n_samples = data.shape[0]
     
-    # Find BMUs for all samples
+    # Find BMUs for all samples in parallel
     bmus = np.zeros(n_samples, dtype=np.int32)
     for i in prange(n_samples):
         bmus[i] = find_bmu_numba(data[i], weights, min_valid_features)
@@ -193,15 +194,27 @@ def calculate_geographic_coherence_numba(data, weights, coordinates, min_valid_f
     
     mean_bmu = np.mean(valid_bmus)
     
-    # Calculate spatial autocorrelation
-    numerator = 0.0
-    denominator = 0.0
-    weight_sum = 0.0
-    
+    # Pre-calculate deviations for all samples
+    deviations = np.zeros(n_samples, dtype=np.float32)
     for i in range(n_samples):
+        if bmus[i] >= 0:
+            deviations[i] = bmus[i] - mean_bmu
+    
+    # Parallel calculation of spatial autocorrelation
+    # Use thread-local accumulators to avoid race conditions
+    # Each thread processes a range of i values
+    thread_numerators = np.zeros(n_samples, dtype=np.float64)
+    thread_weights = np.zeros(n_samples, dtype=np.float64)
+    
+    # Parallelize over rows (i)
+    for i in prange(n_samples):
         if bmus[i] < 0:
             continue
-            
+        
+        local_numerator = 0.0
+        local_weight = 0.0
+        
+        # Process all j > i for this i
         for j in range(i + 1, n_samples):
             if bmus[j] < 0:
                 continue
@@ -215,17 +228,24 @@ def calculate_geographic_coherence_numba(data, weights, coordinates, min_valid_f
             # Spatial weight (1 if neighbors, 0 otherwise)
             if geo_dist <= distance_threshold:
                 w_ij = 1.0
-                weight_sum += w_ij
+                local_weight += w_ij
                 
                 # Deviation products
-                dev_i = bmus[i] - mean_bmu
-                dev_j = bmus[j] - mean_bmu
-                numerator += w_ij * dev_i * dev_j
+                local_numerator += w_ij * deviations[i] * deviations[j]
+        
+        # Store thread-local results
+        thread_numerators[i] = local_numerator
+        thread_weights[i] = local_weight
     
-    # Variance of BMUs
-    for i in range(n_samples):
+    # Aggregate results from all threads
+    numerator = np.sum(thread_numerators)
+    weight_sum = np.sum(thread_weights)
+    
+    # Variance of BMUs (can also be parallelized but usually fast enough)
+    denominator = 0.0
+    for i in prange(n_samples):
         if bmus[i] >= 0:
-            denominator += (bmus[i] - mean_bmu) ** 2
+            denominator += deviations[i] ** 2
     
     if weight_sum > 0 and denominator > 0:
         morans_i = (n_samples / weight_sum) * (numerator / denominator)

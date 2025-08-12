@@ -745,8 +745,9 @@ class GeoSOM:
         logger.info(f"Calculating geographic coherence for epoch {epoch+1}")
         
         # Calculate geographic coherence with sampling for large datasets
-        coherence_sample_threshold = self._get_config('coherence_sample_threshold', 10000)
-        coherence_sample_size = self._get_config('coherence_sample_size', 5000)
+        # Now properly configured in monitoring.sampling section
+        coherence_sample_threshold = self._get_config('coherence_sample_threshold', 10000, 'monitoring.sampling')
+        coherence_sample_size = self._get_config('coherence_sample_size', 5000, 'monitoring.sampling')
         
         if len(data) > coherence_sample_threshold:
             indices = np.random.choice(len(data), coherence_sample_size, replace=False)

@@ -120,6 +120,8 @@ monitoring:
   sampling:
     large_sample: 50000              # Sample size for accurate metrics
     qe_sample_size: 10000            # Sample size for QE calculation each epoch
+    coherence_sample_threshold: 10000  # If data > this, use sampling for geographic coherence
+    coherence_sample_size: 5000      # Number of samples to use for geographic coherence
 
 # ============================================================================
 # VALIDATION - Cross-validation settings
