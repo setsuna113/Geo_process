@@ -138,7 +138,7 @@ class Method1H0H1GLM(BaseRegressionMethod):
         results['score_test'] = score_results
         
         # 3. Model comparison using AIC/BIC
-        model_comparison = GLMComparison.compare_models(
+        model_comparison = ModelComparison.compare_models(
             models={'null_model': self.model_null, 'full_model': self.model_full},
             criteria=['aic', 'bic', 'deviance']
         )
@@ -389,7 +389,7 @@ class Method1H0H1GLM(BaseRegressionMethod):
                 except Exception as e:
                     logger.warning(f"Failed to create Wald test visualization: {e}")
         
-        # Model comparison using GLMComparison
+        # Model comparison using ModelComparison
         if self.model_null and self.model_full:
             try:
                 # Compare models using information criteria

@@ -228,26 +228,40 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         coef_table = self.model._model_json['output']['coefficients_table']
         
         if coef_table is not None:
-            # Extract table as dict
-            names = coef_table['data'][0]  # First row is names
-            coefficients = coef_table['data'][1]  # Second row is coefficients
-            std_errors = coef_table['data'][2] if len(coef_table['data']) > 2 else None
-            z_values = coef_table['data'][3] if len(coef_table['data']) > 3 else None
-            p_values = coef_table['data'][4] if len(coef_table['data']) > 4 else None
+            # H2O coefficient table structure varies - handle both formats
+            if hasattr(coef_table, 'as_data_frame'):
+                # Convert to pandas DataFrame
+                coef_df = coef_table.as_data_frame()
+                if coef_name in coef_df['names'].values:
+                    row = coef_df[coef_df['names'] == coef_name].iloc[0]
+                    return {
+                        'coefficient': row.get('coefficients', None),
+                        'std_error': row.get('std_error', None),
+                        'z_value': row.get('z_value', None),
+                        'p_value': row.get('p_value', None),
+                        'significant': row.get('p_value', 1.0) < 0.05 if 'p_value' in row else None
+                    }
+            elif 'cell_values' in coef_table:
+                # Handle as nested structure
+                rows = coef_table['cell_values']
+                col_names = coef_table.get('col_headers', [])
+                
+                # Find name column index
+                name_idx = col_names.index('names') if 'names' in col_names else 0
+                coef_idx = col_names.index('coefficients') if 'coefficients' in col_names else 1
+                
+                for row in rows:
+                    if row[name_idx] == coef_name:
+                        return {
+                            'coefficient': row[coef_idx] if len(row) > coef_idx else None,
+                            'std_error': row[2] if len(row) > 2 else None,
+                            'z_value': row[3] if len(row) > 3 else None,
+                            'p_value': row[4] if len(row) > 4 else None,
+                            'significant': row[4] < 0.05 if len(row) > 4 and row[4] is not None else None
+                        }
             
-            # Find the index of the coefficient
-            if coef_name in names:
-                idx = names.index(coef_name)
-                result = {
-                    'coefficient': coefficients[idx],
-                    'std_error': std_errors[idx] if std_errors else None,
-                    'z_value': z_values[idx] if z_values else None,
-                    'p_value': p_values[idx] if p_values else None,
-                    'significant': p_values[idx] < 0.05 if p_values else None
-                }
-                return result
-            else:
-                raise ValueError(f"Coefficient {coef_name} not found in model")
+            # If no match found in above structures
+            raise ValueError(f"Coefficient {coef_name} not found in coefficient table")
         else:
             # Fallback to basic coefficients if p-values not computed
             coefficients = self.model.coef()
@@ -426,6 +440,44 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
             'importance': [abs(v) if v is not None else 0 for v in coeffs.values()]
         })
         return importance_df.sort_values('importance', ascending=False)
+    
+    def get_log_likelihood(self) -> float:
+        """Get log-likelihood of the fitted model.
+        
+        Returns:
+            Log-likelihood value
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted first")
+        
+        # H2O GLM provides log-likelihood via the model metrics
+        if hasattr(self.model, 'loglikelihood'):
+            return self.model.loglikelihood()
+        
+        # Alternative: compute from deviance
+        # Log-likelihood = -0.5 * deviance for GLM
+        deviance = self.get_deviance()
+        return -0.5 * deviance
+    
+    def get_deviance(self) -> float:
+        """Get deviance of the fitted model.
+        
+        Returns:
+            Deviance value
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted first")
+        
+        # H2O provides residual deviance
+        if hasattr(self.model, 'residual_deviance'):
+            return self.model.residual_deviance()
+        
+        # Fallback to null deviance if available
+        if hasattr(self.model, 'null_deviance'):
+            return self.model.null_deviance()
+        
+        # If neither available, raise error
+        raise NotImplementedError("Deviance not available from H2O model")
     
     def get_model_params(self) -> Dict[str, Any]:
         """Get model parameters.
