@@ -128,6 +128,25 @@ class NystromEigensolver:
         n = len(coords)
         logger.info(f"Building sparse weights matrix for {n} points using BallTree...")
         
+        # Validate coordinates before building tree
+        if n < 2:
+            raise ValueError(f"Need at least 2 points for spatial weights, got {n}")
+        
+        # Check for valid coordinate ranges
+        lon_range = coords[:, 0]
+        lat_range = coords[:, 1]
+        if np.any(np.abs(lon_range) > 180) or np.any(np.abs(lat_range) > 90):
+            raise ValueError(f"Invalid coordinates: lon must be in [-180, 180], lat in [-90, 90]")
+        
+        # Check for degenerate cases (all points at same location)
+        unique_coords = np.unique(coords, axis=0)
+        if len(unique_coords) < 2:
+            logger.warning(f"Only {len(unique_coords)} unique coordinates found - spatial weights may be degenerate")
+            if len(unique_coords) == 1:
+                # All points at same location - return identity matrix
+                logger.warning("All points at same location - returning identity matrix")
+                return csr_matrix(np.eye(n, dtype=np.float32))
+        
         # Convert to radians for BallTree with haversine metric
         coords_rad = np.radians(coords[:, [1, 0]])  # [lat, lon] order for sklearn
         

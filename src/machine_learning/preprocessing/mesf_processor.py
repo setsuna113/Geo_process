@@ -244,13 +244,14 @@ class MESFProcessor:
             
             # Apply spatial sampling if needed
             if spatial_grid_step and spatial_grid_step > 1:
-                coords_df = coords_df.take_every(spatial_grid_step)
+                # For DataFrame, use slice with step
+                coords_df = coords_df[::spatial_grid_step]
             
             # Remove nulls
             coords_df = coords_df.drop_nulls()
             
-            # Select only the sample indices
-            coords_df = coords_df.take(indices)
+            # Select only the sample indices using iloc-style indexing
+            coords_df = coords_df[indices]
             
             # Convert to numpy
             coords_np = coords_df.to_numpy().astype(np.float32)
@@ -341,6 +342,7 @@ class MESFProcessor:
             Full eigenvectors (n_total, n_eigenvectors) or None if error
         """
         try:
+            import psutil
             logger.info(f"Interpolating to {n_total:,} points using k-NN...")
             
             # Build k-NN index from samples
@@ -352,9 +354,16 @@ class MESFProcessor:
             knn.fit(coords_sample_rad)
             logger.info(f"Built k-NN index with {k} neighbors using {n_jobs if n_jobs != -1 else 'all'} cores")
             
-            # Process in batches
-            batch_size = 100000
+            # Calculate memory-aware batch size
+            available_memory = psutil.virtual_memory().available
+            # Estimate memory per sample: k neighbors * 2 arrays (distances + indices) * 8 bytes * n_eigenvectors
             n_eigenvectors = eigenvectors_sample.shape[1]
+            memory_per_sample = k * 2 * 8 * n_eigenvectors
+            # Use at most 25% of available memory for safety
+            max_batch_from_memory = int((available_memory * 0.25) / memory_per_sample)
+            batch_size = min(100000, max_batch_from_memory, n_total)
+            
+            logger.info(f"Using batch size {batch_size:,} based on {available_memory/(1024**3):.1f}GB available memory")
             eigenvectors_full = np.zeros((n_total, n_eigenvectors), dtype=np.float32)
             
             # Load all coordinates for interpolation

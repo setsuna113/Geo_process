@@ -50,8 +50,8 @@ def standardize_climate_2sd(
     
     for var in climate_vars:
         if var in data.columns:
-            mean_val = data[var].mean()
-            std_val = data[var].sd()
+            mean_val = data[var].mean()[0]  # H2O returns list, extract scalar
+            std_val = data[var].sd()[0]      # H2O returns list, extract scalar
             
             # Gelman standardization: divide by 2 SDs
             data[f'{var}_std'] = (data[var] - mean_val) / (2 * std_val)
@@ -202,10 +202,19 @@ def create_temperate_categories(
     else:
         threshold = 0  # For standardized data
     
-    # High seasonality = temperate (bio4 > threshold)
-    data[output_col] = (data[bio4_col] > threshold).ifelse(1, 0)
+    # Extract scalar value if threshold is an H2OFrame
+    if hasattr(threshold, 'as_data_frame'):
+        # It's an H2OFrame, extract the scalar
+        threshold_value = float(threshold)
+    elif isinstance(threshold, (list, tuple)) and len(threshold) > 0:
+        threshold_value = float(threshold[0])
+    else:
+        threshold_value = float(threshold)
     
-    logger.info(f"Created temperate category using {bio4_col} (threshold={threshold:.3f}, method={method})")
+    # High seasonality = temperate (bio4 > threshold)
+    data[output_col] = (data[bio4_col] > threshold_value).ifelse(1, 0)
+    
+    logger.info(f"Created temperate category using {bio4_col} (threshold={threshold_value:.3f}, method={method})")
     return data
 
 
@@ -241,9 +250,18 @@ def create_biodiversity_categories(
     else:
         threshold = 100  # Default threshold
     
-    data[output_col] = (data[richness_col] > threshold).ifelse(1, 0)
+    # Extract scalar value if threshold is an H2OFrame
+    if hasattr(threshold, 'as_data_frame'):
+        # It's an H2OFrame, extract the scalar
+        threshold_value = float(threshold)
+    elif isinstance(threshold, (list, tuple)) and len(threshold) > 0:
+        threshold_value = float(threshold[0])
+    else:
+        threshold_value = float(threshold)
     
-    logger.info(f"Created biodiversity category for {richness_col} (threshold={threshold:.0f}, method={method})")
+    data[output_col] = (data[richness_col] > threshold_value).ifelse(1, 0)
+    
+    logger.info(f"Created biodiversity category for {richness_col} (threshold={threshold_value:.0f}, method={method})")
     return data
 
 
