@@ -12,25 +12,36 @@
 #   SOM_N_WORKERS=150
 
 # ============================================================================
+# PREPROCESSING - Data preprocessing before SOM training
+# ============================================================================
+
+preprocessing:
+  missing_strategy: 'keep'     # 'keep' = let SOM handle missing with min_valid_features
+                                # 'complete' = drop incomplete samples (loses too much data)
+                                # 'zero' = fill NaN with 0 (distorts standardization)
+                                # 'mean' = fill with column mean
+                                # 'median' = fill with column median
+
+# ============================================================================
 # CORE SETTINGS - Essential parameters that define the SOM
 # ============================================================================
 
 # Grid architecture
 grid:
-  size: [50, 50]          # Number of neurons (rows, cols) - 3600 neurons for production
+  size: [60, 60]          # Number of neurons (rows, cols) - 3600 neurons for production
   topology: 'rectangular'  # Grid topology (hexagonal not yet implemented)
 
 # Data configuration
 data:
   # Input data sampling
-  spatial_grid_step: 2  # Sample every Nth spatial point (100 = fast testing)
+  spatial_grid_step: 2  # Sample every 2nd spatial point (reduce data by half)
   
   # Feature columns (standardized naming)
-  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
+  feature_cols: ['plant_richness', 'animal_richness', 'am_fungi_richness', 'ecm_fungi_richness']
   coordinate_columns: ['x', 'y']
   
-  # Missing data handling
-  min_valid_features: 2   # Minimum features required for valid distance
+  # Missing data handling (used when preprocessing.missing_strategy = 'keep')
+  min_valid_features: 3   # Minimum features required for valid distance (after fungi combination: plant, animal, total_fungi)
 
 # Distance metrics
 distance:
@@ -45,21 +56,21 @@ distance:
 training:
   # Basic settings
   max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 100         # Number of workers (1 for sequential, >1 for parallel) - optimized for better load balancing
+  n_workers: 120        # Number of workers (1 for sequential, >1 for parallel) - reduced to 120 for memory constraints
   
     
   # Neighborhood radius
   radius:
-    initial: 20.0         # Initial neighborhood radius (half of grid size)
-    final: 0.5            # Final neighborhood radius
+    initial: 40.0         # Initial neighborhood radius (larger for better global organization)
+    final: 5.0            # Final neighborhood radius (5 for 60x60 grid - maintains local neighborhood)
     decay: 'exponential'       # Decay type: 'linear' or 'exponential'
     
     
-  # Momentum (for faster convergence)
+  # Momentum (for smoothing batch updates)
   momentum:
-    initial: 0.9          # High initial momentum for global organization
-    final: 0.1            # Low final momentum for fine-tuning
-    schedule: 'exponential'    # How momentum decays
+    initial: 0.0          # No momentum - pure batch SOM updates
+    final: 0.0            # No momentum throughout training
+    schedule: 'linear'    # Linear interpolation from initial to final (schedule field currently ignored)
     
 
 # ============================================================================
@@ -104,7 +115,16 @@ convergence:
   logic: 'or'                        # 'or' = either TE or GC, 'weighted' = combine scores
   
   # Early stopping patience
-  patience: 50                      # Stop after N epochs without meaningful QE improvement (>0.1%)
+  patience: 500                     # Stop after N epochs without meaningful QE improvement (>0.1%) - set to 500 to force full training
+
+# ============================================================================
+# TERMINATION - Additional termination criteria
+# ============================================================================
+termination:
+  # Minimum radius termination
+  min_radius: 2.0                    # Stop training when radius reaches this value (prevents instability)
+                                     # Literature suggests 1.0-2.0 for stability
+                                     # Below 1.0 causes QE oscillations due to isolated local updates
 
 # ============================================================================
 # MONITORING & CHECKPOINTS - Track progress and save state
@@ -119,7 +139,7 @@ monitoring:
   # Sampling for metrics
   sampling:
     large_sample: 50000              # Sample size for accurate metrics
-    qe_sample_size: 10000            # Sample size for QE calculation each epoch
+    qe_sample_size: 20000            # Sample size for QE calculation each epoch
     coherence_sample_threshold: 10000  # If data > this, use sampling for geographic coherence
     coherence_sample_size: 5000      # Number of samples to use for geographic coherence
 

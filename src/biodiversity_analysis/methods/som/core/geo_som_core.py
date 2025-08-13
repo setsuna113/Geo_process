@@ -509,8 +509,16 @@ class GeoSOM:
         self._validate_training_inputs(data, coordinates)
         
         # Optimize thread count based on data size if not explicitly set
+        # Skip optimization if n_workers was explicitly set in config
         thread_controller = get_thread_controller()
-        if not hasattr(self, '_threads_optimized'):
+        skip_optimization = False
+        if hasattr(self.config, '_config') and self.config._config:
+            n_workers = self.config._config.get('training', {}).get('n_workers')
+            if n_workers is not None:
+                skip_optimization = True
+                logger.info(f"Skipping thread optimization - using configured n_workers={n_workers}")
+        
+        if not hasattr(self, '_threads_optimized') and not skip_optimization:
             from ..utils.numba_thread_control import optimize_threads_for_som
             optimal_threads = optimize_threads_for_som(data.shape, self.n_neurons)
             logger.info(f"Optimized Numba threads for data shape {data.shape}: {optimal_threads}")
@@ -531,7 +539,9 @@ class GeoSOM:
             logger.info("Warmed up Numba JIT compilation for pure SOM")
         
         # Main training loop
+        last_epoch = training_state['start_epoch'] - 1
         for epoch in range(training_state['start_epoch'], self.max_epochs):
+            last_epoch = epoch
             epoch_result = self._train_single_epoch(
                 epoch, data, coordinates, training_state, progress_callback
             )
@@ -545,6 +555,10 @@ class GeoSOM:
                 training_state['converged'] = True
                 training_state['convergence_epoch'] = epoch
                 break
+        
+        # If we didn't converge, set the convergence_epoch to the last completed epoch
+        if training_state['convergence_epoch'] is None:
+            training_state['convergence_epoch'] = last_epoch
         
         return self._create_training_result(training_state, len(data))
     
@@ -613,6 +627,18 @@ class GeoSOM:
         
         # Update radius
         self._update_radius(epoch)
+        
+        # Check for minimum radius termination
+        min_radius = self._get_config('min_radius', None, 'termination')
+        if min_radius is not None and self.current_radius <= min_radius:
+            logger.info(f"Radius {self.current_radius:.2f} reached minimum threshold {min_radius:.2f} - terminating training")
+            converged = True
+            training_state['convergence_reason'] = f"Minimum radius {min_radius} reached"
+            return {
+                'best_qe': training_state['best_qe'],
+                'patience_counter': training_state['patience_counter'],
+                'converged': converged
+            }
         
         # Execute mini-batch training
         qe = self._execute_minibatch_training(epoch, data, coordinates)
@@ -816,7 +842,10 @@ class GeoSOM:
     def _create_training_result(self, training_state: Dict[str, Any], n_samples: int) -> SOMTrainingResult:
         """Create the final training result."""
         # Calculate final momentum value
-        final_epoch = training_state.get('convergence_epoch', self.max_epochs - 1)
+        # If convergence_epoch is None, it means we reached max_epochs without converging
+        final_epoch = training_state.get('convergence_epoch')
+        if final_epoch is None:
+            final_epoch = self.max_epochs - 1
         progress = final_epoch / self.config.max_epochs
         final_momentum = self._get_config('initial_momentum', 0.9, 'training.momentum') * (1 - progress) + \
                         self._get_config('final_momentum', 0.1, 'training.momentum') * progress
@@ -1302,12 +1331,15 @@ class GeoSOM:
         
         logger.info(f"Saved checkpoint at epoch {epoch} to {checkpoint_file}")
         
-        # Clean up old checkpoints (keep last 3)
-        checkpoints = sorted(checkpoint_path.glob("som_checkpoint_epoch_*.npz"))
+        # Clean up old checkpoints (keep last 3 by modification time)
+        checkpoints = list(checkpoint_path.glob("som_checkpoint_epoch_*.npz"))
         if len(checkpoints) > 3:
-            for old_checkpoint in checkpoints[:-3]:
+            # Sort by modification time (oldest first)
+            checkpoints_by_time = sorted(checkpoints, key=lambda p: p.stat().st_mtime)
+            # Remove oldest checkpoints, keeping the 3 most recent
+            for old_checkpoint in checkpoints_by_time[:-3]:
                 old_checkpoint.unlink()
-                logger.debug(f"Removed old checkpoint: {old_checkpoint}")
+                logger.debug(f"Removed old checkpoint: {old_checkpoint.name} (keeping 3 most recent)")
     
     def load_checkpoint(self, checkpoint_path: str) -> Dict[str, Any]:
         """Load training checkpoint from disk with integrity verification.
