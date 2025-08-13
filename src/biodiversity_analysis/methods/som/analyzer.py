@@ -50,9 +50,15 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         self.config = config
         self.som = None
         
-        # Use shared preprocessor configured for SOM
-        self.preprocessor = SharedPreprocessor(method_name='som')
-        logger.info("Using shared preprocessor for SOM (minmax normalization, zero imputation)")
+        # Use shared preprocessor configured for SOM with fungi combination
+        # Get missing strategy from config - default to 'keep' to let SOM handle missing data
+        missing_strategy = config.get('preprocessing', {}).get('missing_strategy', 'keep')
+        self.preprocessor = SharedPreprocessor(
+            method_name='som',
+            combine_fungi=True,  # Combine am_fungi + ecm_fungi into total_fungi
+            missing_strategy=missing_strategy  # Usually 'keep' - let SOM handle with min_valid_features
+        )
+        logger.info(f"Using shared preprocessor for SOM (standard normalization, {missing_strategy} missing handling, fungi combination)")
             
         self.training_result = None
         self._geosom_config = None
@@ -359,10 +365,14 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         # Estimate memory requirements (in bytes)
         # Weights: n_neurons * n_features * 8 bytes (float64)
         weights_memory = n_neurons * n_features * 8
-        # Distance matrix (temporary): n_samples * n_neurons * 8 bytes
-        distance_memory = n_samples * n_neurons * 8
-        # Additional buffers and overhead: ~2x the weights
-        overhead_memory = weights_memory * 2
+        # For batch SOM, we don't store full distance matrix!
+        # We process in chunks, so only need temporary buffer for one batch
+        # Assuming batch size of ~10000 samples at a time
+        batch_size = min(10000, n_samples)
+        distance_memory = batch_size * n_neurons * 8
+        # Additional buffers and overhead: data array + temporary arrays
+        data_memory = n_samples * n_features * 8
+        overhead_memory = weights_memory * 2 + data_memory
         
         total_required = weights_memory + distance_memory + overhead_memory
         total_required_mb = total_required / (1024 * 1024)

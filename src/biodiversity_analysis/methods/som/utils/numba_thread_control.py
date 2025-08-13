@@ -42,7 +42,18 @@ class NumbaThreadController:
         """Setup initial thread configuration."""
         # Check if already set via environment
         env_threads = os.environ.get('NUMBA_NUM_THREADS')
-        if env_threads:
+        force_threads = os.environ.get('SOM_FORCE_THREADS')
+        
+        if force_threads:
+            # Force specific thread count (highest priority)
+            try:
+                self._max_threads = int(force_threads)
+                logger.info(f"FORCED Numba threads via SOM_FORCE_THREADS: {self._max_threads}")
+                numba.set_num_threads(self._max_threads)
+            except ValueError:
+                logger.warning(f"Invalid SOM_FORCE_THREADS value: {force_threads}")
+                
+        elif env_threads:
             try:
                 self._max_threads = int(env_threads)
                 logger.info(f"Numba threads set via environment: {self._max_threads}")

@@ -43,9 +43,13 @@ logger = logging.getLogger(__name__)
 # The performance gain from parallel execution far outweighs the minor numerical differences.
 
 
-@jit(nopython=True, cache=True, inline='always')
+@jit(nopython=True, cache=False, inline='always')
 def calc_influence_numba(bmu_idx, neuron_idx, grid_positions, radius):
-    """Calculate neighborhood influence - replaces NumPy vectorized ops.
+    """Calculate neighborhood influence with improved continuous transitions.
+    
+    This function implements an enhanced continuous neighborhood function that
+    prevents QE oscillations at integer radius boundaries. It uses a wider
+    smoothing range and a continuous effective radius adjustment.
     
     Args:
         bmu_idx: Index of Best Matching Unit
@@ -68,13 +72,42 @@ def calc_influence_numba(bmu_idx, neuron_idx, grid_positions, radius):
     dy = bmu_pos[1] - neuron_pos[1]
     dist_sq = dx * dx + dy * dy
     
-    # Gaussian neighborhood function
-    influence = np.exp(-dist_sq / (2 * radius * radius))
+    # Enhanced continuous radius adjustment
+    # Use a continuous effective radius that smoothly varies
+    # This prevents discrete jumps at integer boundaries
+    
+    # Wider smoothing range (±0.3 around integers)
+    smooth_width = 0.3
+    frac = radius - np.floor(radius)
+    
+    # Calculate effective radius with smooth transitions
+    # This creates a continuous mapping that reduces the effect of integer boundaries
+    if frac < smooth_width:
+        # Near lower integer - blend with larger effective radius
+        blend_factor = frac / smooth_width  # 0 at integer, 1 at smooth_width
+        # Use cubic interpolation for smoother transition
+        blend_factor = blend_factor * blend_factor * (3.0 - 2.0 * blend_factor)
+        effective_radius = radius + (1.0 - blend_factor) * 0.2
+    elif frac > (1.0 - smooth_width):
+        # Near upper integer - blend with smaller effective radius
+        blend_factor = (1.0 - frac) / smooth_width  # 0 at integer, 1 at smooth_width
+        # Use cubic interpolation for smoother transition
+        blend_factor = blend_factor * blend_factor * (3.0 - 2.0 * blend_factor)
+        effective_radius = radius - (1.0 - blend_factor) * 0.2
+    else:
+        # In the middle - use standard radius
+        effective_radius = radius
+    
+    # Apply Gaussian with effective radius
+    if effective_radius > 0:
+        influence = np.exp(-dist_sq / (2 * effective_radius * effective_radius))
+    else:
+        influence = 0.0
     
     return influence
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, parallel=True, cache=False, fastmath=True)
 def som_epoch_pure(data, weights, grid_positions, radius, 
                    min_valid_features=2, spatial_weight=0.0,
                    coordinates=None, neuron_coords=None):
@@ -163,7 +196,7 @@ def som_epoch_pure(data, weights, grid_positions, radius,
     return weights
 
 
-@jit(nopython=True, parallel=True, cache=True, fastmath=True)
+@jit(nopython=True, parallel=True, cache=False, fastmath=True)
 def som_epoch_with_geographic(data, weights, grid_positions, 
                               coordinates, neuron_coords,
                               radius, 
@@ -258,11 +291,38 @@ def som_epoch_with_geographic(data, weights, grid_positions,
         bmu_pos = grid_positions[bmu_idx]
         
         for j in range(n_neurons):
-            # Neighborhood influence
+            # Neighborhood influence with improved continuous transitions
             dx = bmu_pos[0] - grid_positions[j, 0]
             dy = bmu_pos[1] - grid_positions[j, 1]
             dist_sq = dx * dx + dy * dy
-            influence = np.exp(-dist_sq / (2 * radius * radius))
+            
+            # Enhanced continuous radius adjustment (same as calc_influence_numba)
+            # Wider smoothing range (±0.3 around integers)
+            smooth_width = 0.3
+            frac = radius - np.floor(radius)
+            
+            # Calculate effective radius with smooth transitions
+            if frac < smooth_width:
+                # Near lower integer - blend with larger effective radius
+                blend_factor = frac / smooth_width
+                # Use cubic interpolation for smoother transition
+                blend_factor = blend_factor * blend_factor * (3.0 - 2.0 * blend_factor)
+                effective_radius = radius + (1.0 - blend_factor) * 0.2
+            elif frac > (1.0 - smooth_width):
+                # Near upper integer - blend with smaller effective radius
+                blend_factor = (1.0 - frac) / smooth_width
+                # Use cubic interpolation for smoother transition
+                blend_factor = blend_factor * blend_factor * (3.0 - 2.0 * blend_factor)
+                effective_radius = radius - (1.0 - blend_factor) * 0.2
+            else:
+                # In the middle - use standard radius
+                effective_radius = radius
+            
+            # Apply Gaussian with effective radius
+            if effective_radius > 0:
+                influence = np.exp(-dist_sq / (2 * effective_radius * effective_radius))
+            else:
+                influence = 0.0
             
             if influence > 0.001:
                 # Accumulate weighted samples
