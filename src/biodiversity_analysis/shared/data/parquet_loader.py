@@ -1,10 +1,14 @@
 """Parquet data loader for biodiversity analysis."""
 
-import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import logging
+import gc
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pyarrow.compute as pc
 
 from src.abstractions.types.biodiversity_types import BiodiversityData
 
@@ -54,10 +58,6 @@ class ParquetLoader:
         if spatial_grid_step > 1:
             logger.info(f"Applying spatial grid sampling during load: taking every {spatial_grid_step}th point")
             
-            # Import PyArrow for efficient filtering
-            import pyarrow.parquet as pq
-            import pyarrow.compute as pc
-            
             # Open parquet file for metadata inspection
             parquet_file = pq.ParquetFile(data_path)
             
@@ -65,8 +65,11 @@ class ParquetLoader:
             if coordinate_cols is None:
                 # Read just first row to detect columns (minimal memory)
                 first_batch = next(parquet_file.iter_batches(batch_size=1))
-                first_df = first_batch.to_pandas()
-                coordinate_cols = self._detect_coordinate_columns(first_df)
+                # Convert to dict for column detection without pandas
+                first_row_dict = {col: first_batch.column(col).to_pylist()[0] 
+                                 for col in first_batch.column_names}
+                coordinate_cols = self._detect_coordinate_columns_from_dict(first_row_dict, 
+                                                                           first_batch.column_names)
             
             x_col, y_col = coordinate_cols[0], coordinate_cols[1]
             
@@ -78,9 +81,11 @@ class ParquetLoader:
             # Read coordinates in batches (memory efficient)
             batch_size = 1000000  # Process 1M rows at a time
             for batch in parquet_file.iter_batches(columns=coordinate_cols, batch_size=batch_size):
-                batch_df = batch.to_pandas()
-                unique_x.update(batch_df[x_col].unique())
-                unique_y.update(batch_df[y_col].unique())
+                # Get numpy arrays directly without pandas
+                x_array = batch.column(x_col).to_numpy()
+                y_array = batch.column(y_col).to_numpy()
+                unique_x.update(np.unique(x_array))
+                unique_y.update(np.unique(y_array))
             
             # Sort and select every Nth value
             unique_x = sorted(unique_x)
@@ -107,20 +112,24 @@ class ParquetLoader:
                 ]
             )
             
-            # Convert filtered table to pandas (only filtered data in memory)
-            df = filtered_table.to_pandas()
+            # Keep as PyArrow table (no pandas conversion!)
+            table = filtered_table
             
             # Get actual row count
             total_rows = parquet_file.metadata.num_rows
-            logger.info(f"Loaded {len(df):,} rows after spatial sampling (from {total_rows:,} total)")
+            logger.info(f"Loaded {table.num_rows:,} rows after spatial sampling (from {total_rows:,} total)")
         else:
-            # Load full parquet file
-            df = pd.read_parquet(data_path)
-            logger.info(f"Loaded {len(df)} rows with {len(df.columns)} columns")
+            # Load full parquet file as PyArrow table
+            table = pq.read_table(data_path)
+            logger.info(f"Loaded {table.num_rows} rows with {len(table.column_names)} columns")
         
         # Auto-detect coordinate columns if not specified
         if coordinate_cols is None:
-            coordinate_cols = self._detect_coordinate_columns(df)
+            # Create a dict from first row for detection without pandas
+            first_row_dict = {col: table.column(col).to_pylist()[0] 
+                            for col in table.column_names}
+            coordinate_cols = self._detect_coordinate_columns_from_dict(first_row_dict, 
+                                                                       table.column_names)
         
         # Extract coordinates
         if len(coordinate_cols) != 2:
@@ -137,17 +146,26 @@ class ParquetLoader:
         
         if col0_lower in lon_names and col1_lower in lat_names:
             # First column is longitude, second is latitude - need to swap
-            coordinates = df[[coordinate_cols[1], coordinate_cols[0]]].values
+            coordinates = np.column_stack([
+                table.column(coordinate_cols[1]).to_numpy(),
+                table.column(coordinate_cols[0]).to_numpy()
+            ])
             logger.info(f"Reordered coordinates from [{coordinate_cols[0]}, {coordinate_cols[1]}] to [latitude, longitude]")
         elif col0_lower in lat_names and col1_lower in lon_names:
             # Already in correct order [latitude, longitude]
-            coordinates = df[coordinate_cols].values
+            coordinates = np.column_stack([
+                table.column(coordinate_cols[0]).to_numpy(),
+                table.column(coordinate_cols[1]).to_numpy()
+            ])
             logger.info(f"Coordinates already in correct order: [{coordinate_cols[0]}, {coordinate_cols[1]}]")
         else:
             # Unknown column names - warn but proceed
             logger.warning(f"Could not determine coordinate order from column names: {coordinate_cols}. "
                          f"Assuming order is [latitude, longitude]")
-            coordinates = df[coordinate_cols].values
+            coordinates = np.column_stack([
+                table.column(coordinate_cols[0]).to_numpy(),
+                table.column(coordinate_cols[1]).to_numpy()
+            ])
         
         # Validate coordinate ranges
         lat_values = coordinates[:, 0]
@@ -164,18 +182,25 @@ class ParquetLoader:
         # Auto-detect feature columns if not specified
         if feature_cols is None:
             # Use all numeric columns except coordinates
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            feature_cols = [col for col in numeric_cols if col not in coordinate_cols]
+            numeric_cols = []
+            for field in table.schema:
+                if (pa.types.is_floating(field.type) or pa.types.is_integer(field.type)) \
+                   and field.name not in coordinate_cols:
+                    numeric_cols.append(field.name)
+            feature_cols = numeric_cols
             logger.info(f"Auto-detected {len(feature_cols)} feature columns")
         
-        # Extract features
-        features = df[feature_cols].values
+        # Extract features directly from PyArrow table
+        if feature_cols:
+            features = np.column_stack([table.column(col).to_numpy() for col in feature_cols])
+        else:
+            features = np.empty((table.num_rows, 0))  # Empty array if no features
         feature_names = feature_cols
         
         # Extract species data if specified
         species_data = None
         if species_cols:
-            species_data = df[species_cols].values
+            species_data = np.column_stack([table.column(col).to_numpy() for col in species_cols])
         
         # Check for zero inflation
         zero_inflated = self._check_zero_inflation(features)
@@ -183,13 +208,13 @@ class ParquetLoader:
         # Create metadata
         metadata = {
             'source_file': str(path),
-            'n_rows': len(df),
-            'n_cols': len(df.columns),
+            'n_rows': table.num_rows,
+            'n_cols': len(table.column_names),
             'coordinate_columns': coordinate_cols,
             'feature_columns': feature_cols,
             'species_columns': species_cols,
-            'missing_proportion': np.isnan(features).mean(),
-            'zero_proportion': (features == 0).mean()
+            'missing_proportion': np.isnan(features).mean() if features.size > 0 else 0,
+            'zero_proportion': (features == 0).mean() if features.size > 0 else 0
         }
         
         # Create BiodiversityData object
@@ -203,6 +228,22 @@ class ParquetLoader:
             species_names=species_cols  # Use species column names if provided
         )
         
+        # IMPORTANT: Clean up PyArrow resources and minimize thread pools
+        del table  # Delete the PyArrow table
+        if 'parquet_file' in locals():
+            del parquet_file  # Delete the parquet file handle if it exists
+        if 'filtered_table' in locals():
+            del filtered_table  # Delete filtered table if it exists
+        
+        # Minimize PyArrow thread pools after data loading
+        # This won't release threads but will prevent them from doing work
+        pa.set_cpu_count(1)  # Minimize CPU threads
+        pa.set_io_thread_count(1)  # Minimize I/O threads
+        
+        # Force garbage collection
+        gc.collect()
+        logger.debug("Minimized PyArrow thread pools (CPU=1, IO=1) after data loading")
+        
         # Validate if requested
         if validate:
             self._validate_data(biodiv_data)
@@ -213,7 +254,59 @@ class ParquetLoader:
         
         return biodiv_data
     
-    def _detect_coordinate_columns(self, df: pd.DataFrame) -> List[str]:
+    def _detect_coordinate_columns_from_dict(self, first_row: Dict[str, Any], 
+                                            column_names: List[str]) -> List[str]:
+        """Auto-detect coordinate columns from first row dict.
+        
+        Args:
+            first_row: Dictionary of column_name -> value from first row
+            column_names: List of all column names
+            
+        Returns:
+            List of coordinate column names [longitude, latitude]
+        """
+        # Common coordinate column names
+        lon_names = ['longitude', 'lon', 'x', 'lng', 'long']
+        lat_names = ['latitude', 'lat', 'y']
+        
+        lon_col = None
+        lat_col = None
+        
+        # Case-insensitive search
+        cols_lower = {col.lower(): col for col in column_names}
+        
+        # Find longitude column
+        for name in lon_names:
+            if name in cols_lower:
+                lon_col = cols_lower[name]
+                break
+        
+        # Find latitude column
+        for name in lat_names:
+            if name in cols_lower:
+                lat_col = cols_lower[name]
+                break
+        
+        if lon_col and lat_col:
+            return [lon_col, lat_col]
+        
+        # Fallback: use first two numeric columns
+        numeric_cols = []
+        for col in column_names:
+            val = first_row.get(col)
+            if isinstance(val, (int, float)):
+                numeric_cols.append(col)
+                if len(numeric_cols) == 2:
+                    break
+        
+        if len(numeric_cols) >= 2:
+            logger.warning(f"Could not find standard coordinate columns. "
+                         f"Using first two numeric columns: {numeric_cols[:2]}")
+            return numeric_cols[:2]
+        
+        raise ValueError("Could not detect coordinate columns")
+    
+    def _detect_coordinate_columns(self, df) -> List[str]:
         """Auto-detect coordinate columns from dataframe.
         
         Args:

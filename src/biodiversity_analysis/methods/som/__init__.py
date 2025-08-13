@@ -1,31 +1,30 @@
 """Self-Organizing Map (SOM) analysis for biodiversity patterns.
 
-This module implements GeoSOM + VLRSOM hybrid architecture for analyzing
+This module implements GeoSOM with pure Batch SOM for analyzing
 biodiversity data with high sparsity (up to 70% missing values).
 
 Key Features:
 - Partial Bray-Curtis distance for sparse data
 - Geographic coherence for spatial patterns
-- Adaptive learning rate (VLRSOM)
-- Optimized mini-batch training with momentum
-- Parallel processing for large datasets
+- Pure Batch SOM (no learning rate, momentum control)
+- Direct parallel processing with Numba
+- Handles 13M+ samples efficiently
 """
 
 # Core implementation
-from .core.geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
+from .core.geo_som_core import GeoSOM, GeoSOMConfig
+# Backwards compatibility
+GeoSOMVLRSOM = GeoSOM
 
 # Main analyzer interface
 from .analyzer import GeoSOMAnalyzer
 from .analyzer_adapter import SOMAnalyzer
 
 # Training algorithms
-from .trainers import ParallelBatchProcessor
+from .trainers import PureNumbaSOM
 
 # Calculators and metrics
-from .calculators import (
-    OptimizedDistanceCalculator,
-    validate_missing_data_handling
-)
+from .calculators import validate_missing_data_handling
 
 # Utilities
 from .utils import (
@@ -48,10 +47,9 @@ __all__ = [
     'SOMAnalyzer',
     
     # Trainers
-    'ParallelBatchProcessor',
+    'PureNumbaSOM',
     
     # Calculators
-    'OptimizedDistanceCalculator',
     'validate_missing_data_handling',
     
     # Utils

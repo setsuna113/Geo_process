@@ -20,8 +20,7 @@ class SOMConfigValidation:
     max_chunk_size: int = 1000000
     min_grid_size: int = 2
     max_grid_size: int = 100
-    min_learning_rate: float = 0.001
-    max_learning_rate: float = 1.0
+    # Learning rate validation removed - Pure Batch SOM doesn't use it
     min_epochs: int = 1
     max_epochs: int = 10000
     min_workers: int = 1
@@ -168,11 +167,7 @@ class SOMConfig(IMethodConfig):
                 'spatial_weight': old_config.get('architecture_config', {}).get('spatial_weight', 0.2)
             },
             'training': old_config.get('training_config', {}),
-            'vlrsom': {
-                'enabled': True,
-                'alpha': old_config.get('training_config', {}).get('vlrsom_alpha', 0.95),
-                'gamma': old_config.get('training_config', {}).get('vlrsom_gamma', 0.001)
-            },
+            # Pure Batch SOM doesn't use VLRSOM
             'convergence': {
                 'patience': old_config.get('training_config', {}).get('patience', 50),
                 'min_improvement': old_config.get('training_config', {}).get('qe_improvement_threshold', 0.001)
@@ -209,13 +204,7 @@ class SOMConfig(IMethodConfig):
                     f"and {self._validation.max_grid_size}, got {dim}"
                 )
         
-        # Validate learning rate
-        lr = self.get_initial_learning_rate()
-        if not (self._validation.min_learning_rate <= lr <= self._validation.max_learning_rate):
-            raise SOMConfigError(
-                f"initial_learning_rate must be between {self._validation.min_learning_rate} "
-                f"and {self._validation.max_learning_rate}, got {lr}"
-            )
+        # Learning rate validation removed - Pure Batch SOM doesn't use it
         
         # Validate parallel processing configuration
         parallel_config = self.get_parallel_config()
@@ -302,27 +291,16 @@ class SOMConfig(IMethodConfig):
         """Get training configuration (compatibility layer)."""
         # Map new config to old format for backward compatibility
         training = self._config.get('training', {})
-        vlrsom = self._config.get('vlrsom', {})
         convergence = self._config.get('convergence', {})
         
         return {
             'max_epochs': training.get('max_epochs', 15),
             'n_workers': training.get('n_workers', 50),
-            'initial_learning_rate': training.get('learning_rate', {}).get('initial', 0.4),
-            'min_learning_rate': training.get('learning_rate', {}).get('minimum', 0.1),
-            'max_learning_rate': training.get('learning_rate', {}).get('maximum', 1.0),
+            # Pure Batch SOM doesn't use learning rate
             'batch_size': training.get('batch', {}).get('size', 5000),
             'chunk_size': training.get('memory', {}).get('chunk_size', 50000),
             'patience': convergence.get('patience', 50),
-            # VLRSOM parameters now properly read from vlrsom section
-            'vlrsom_alpha': vlrsom.get('alpha', 0.95),
-            'vlrsom_gamma': vlrsom.get('gamma', 0.001),
-            'vlrsom_error_sample_size': vlrsom.get('error_sample_size', 10000),
-            # VLRSOM adaptation factors
-            'lr_increase_factor': vlrsom.get('increase_factor', 1.1),
-            'lr_decrease_factor': vlrsom.get('decrease_factor', 0.95),
-            'high_qe_lr_range': [0.01, 0.8],  # Default values for compatibility
-            'low_qe_lr_range': [0.01, 0.8],   # Default values for compatibility
+            # Pure Batch SOM doesn't use VLRSOM parameters
             # Convergence criteria - updated to new structure
             'geographic_coherence_threshold': convergence.get('geographic_coherence', {}).get('threshold', 0.6),
             'geographic_coherence_weight': convergence.get('geographic_coherence', {}).get('weight', 0.3),
@@ -339,9 +317,7 @@ class SOMConfig(IMethodConfig):
         """Get SOM grid size."""
         return self._config.get('grid', {}).get('size', [20, 20])
     
-    def get_initial_learning_rate(self) -> float:
-        """Get initial learning rate."""
-        return self._config.get('training', {}).get('learning_rate', {}).get('initial', 0.4)
+    # Pure Batch SOM doesn't use learning rate
     
     def get_chunk_size(self) -> int:
         """Get chunk size for batch processing."""
@@ -478,7 +454,6 @@ class SOMConfig(IMethodConfig):
         - SOM_CHUNK_SIZE: Samples per chunk (int)
         - SOM_SPATIAL_GRID_STEP: Spatial sampling step (int)
         - SOM_GRID_SIZE: Grid dimensions (comma-separated, e.g., "60,60")
-        - SOM_INITIAL_LR: Initial learning rate (float)
         
         Args:
             config_name: Name of config file (without .yml)
@@ -509,7 +484,7 @@ class SOMConfig(IMethodConfig):
             'SOM_CHUNK_SIZE': ('training.memory', 'chunk_size', int),
             'SOM_SPATIAL_GRID_STEP': ('data', 'spatial_grid_step', int),
             'SOM_GRID_SIZE': ('grid', 'size', lambda x: [int(v) for v in x.split(',')]),
-            'SOM_INITIAL_LR': ('training.learning_rate', 'initial', float),
+            # Pure Batch SOM doesn't use learning rate
         }
         
         for env_var, (section_path, key, converter) in env_overrides.items():
@@ -546,8 +521,6 @@ class SOMConfig(IMethodConfig):
             'SOM_CHUNK_SIZE',
             'SOM_SPATIAL_GRID_STEP',
             'SOM_GRID_SIZE',
-            'SOM_INITIAL_LR',
-            'SOM_MIN_LR',
             'SOM_CONFIG_MODE',
         ]
     
@@ -564,8 +537,6 @@ class SOMConfig(IMethodConfig):
             'SOM_CHUNK_SIZE': 'Chunk size for batch processing (int)',
             'SOM_SPATIAL_GRID_STEP': 'Spatial grid sampling step (int, e.g., 100 = every 100th point)',
             'SOM_GRID_SIZE': 'SOM grid dimensions (comma-separated, e.g., "3,3")',
-            'SOM_INITIAL_LR': 'Initial learning rate (float)',
-            'SOM_MIN_LR': 'Minimum learning rate floor (float)',
             'SOM_CONFIG_MODE': 'Configuration mode: "test" or "production"',
         }
     
@@ -600,7 +571,7 @@ class SOMConfig(IMethodConfig):
             'SOM_CHUNK_SIZE': ('training.memory', 'chunk_size', int),
             'SOM_SPATIAL_GRID_STEP': ('data', 'spatial_grid_step', int),
             'SOM_GRID_SIZE': ('grid', 'size', lambda x: [int(v) for v in x.split(',')]),
-            'SOM_INITIAL_LR': ('training.learning_rate', 'initial', float),
+            # Pure Batch SOM doesn't use learning rate
         }
         
         for env_var, (section_path, key, converter) in env_overrides.items():
