@@ -85,23 +85,26 @@ class MLOrchestrator:
         self.fungi_cache_manager = FungiRichnessCacheManager()
         self.mesf_cache_manager = MESFCacheManager()
         
-        # Run cache cleanup on initialization
+        # Run cache cleanup on initialization (only for FungiRichnessCacheManager)
         try:
-            cleanup_stats = self.mesf_cache_manager.cleanup_old_entries()
-            if cleanup_stats['removed_by_age'] + cleanup_stats['removed_by_size'] > 0:
-                logger.info(f"Cache cleanup performed: freed {cleanup_stats['space_freed_mb']:.1f}MB")
-            
-            # Log cache statistics
-            cache_stats = self.mesf_cache_manager.get_cache_stats()
-            logger.info(f"Cache status: {cache_stats['total_files']} files, "
-                       f"{cache_stats['total_size_mb']:.1f}MB used, "
-                       f"{cache_stats['disk_free_gb']:.1f}GB free")
+            if hasattr(self.fungi_cache_manager, 'cleanup_old_entries'):
+                cleanup_stats = self.fungi_cache_manager.cleanup_old_entries()
+                if cleanup_stats['removed_by_age'] + cleanup_stats['removed_by_size'] > 0:
+                    logger.info(f"Cache cleanup performed: freed {cleanup_stats['space_freed_mb']:.1f}MB")
+                
+                # Log cache statistics
+                if hasattr(self.fungi_cache_manager, 'get_cache_stats'):
+                    cache_stats = self.fungi_cache_manager.get_cache_stats()
+                    logger.info(f"Cache status: {cache_stats['total_files']} files, "
+                               f"{cache_stats['total_size_mb']:.1f}MB used, "
+                               f"{cache_stats['disk_free_gb']:.1f}GB free")
         except Exception as e:
             logger.warning(f"Cache maintenance failed: {e}")
         
         # Initialize H2O if needed
         config_dict = self.config.config if hasattr(self.config, 'config') else {}
         self.h2o_initialized = False
+        # Initialize H2O
         if config_dict.get('use_h2o', True):
             try:
                 # Initialize H2O using manager with error handling
@@ -137,7 +140,7 @@ class MLOrchestrator:
         self, 
         data_path: Union[str, Path],
         spatial_grid_step: Optional[int] = None,
-        use_h2o: bool = False  # Disable H2O for now
+        use_h2o: Optional[bool] = None
     ) -> Union[pd.DataFrame, h2o.H2OFrame]:
         """Load and preprocess data for all methods.
         
@@ -361,12 +364,17 @@ class MLOrchestrator:
             # Save the full dataframe to cache
             data.to_parquet(cached_path, compression='snappy')
         
-        # Convert to H2O if requested
+        # Convert to H2O if requested or if H2O is initialized
+        if use_h2o is None:
+            use_h2o = self.h2o_initialized
+            
         if use_h2o:
             logger.info("Converting to H2O frame...")
             # Ensure H2O is initialized using manager
             import h2o
-            self.h2o = H2OManager.get_or_init()
+            if not self.h2o_initialized:
+                self.h2o = H2OManager.get_or_init()
+                self.h2o_initialized = True
             data = h2o.H2OFrame(data)
             logger.info(f"Final H2O frame: {data.nrows:,} rows × {data.ncols} columns")
         else:
@@ -403,22 +411,31 @@ class MLOrchestrator:
             'models': model_results,
             'h0_h1_test': h1_results,
             'lr_test': model_results.get('lr_test_h0_h1'),
-            'aic_comparison': {
-                'model1_aic': model_results['null_model']['aic'],
-                'model2_aic': model_results['full_model']['aic'],
-                'delta_aic': model_results['null_model']['aic'] - model_results['full_model']['aic']
-            }
+            'model_comparison': model_results.get('model_comparison'),
+            'h0_h1_conclusion': model_results.get('h0_h1_conclusion')
         }
         
         # Log key findings
         logger.info("\nMethod 1 Results (H0-H1):")
         logger.info(f"  H1 supported: {h1_results['supports_h1']}")
-        logger.info(f"  Plants coef: {h1_results['plants']['coefficient']:.4f} "
-                   f"(p={h1_results['plants'].get('p_value', 'N/A'):.4f})")
-        logger.info(f"  Vertebrates coef: {h1_results['vertebrates']['coefficient']:.4f} "
-                   f"(p={h1_results['vertebrates'].get('p_value', 'N/A'):.4f})")
-        logger.info(f"  LRT p-value: {model_results['lr_test_h0_h1']['p_value']:.4f}")
-        logger.info(f"  ΔAIC: {self.results['method1']['aic_comparison']['delta_aic']:.2f}")
+        
+        # Log coefficient info if available
+        if 'plants' in h1_results:
+            logger.info(f"  Plants coef: {h1_results['plants']['coefficient']:.4f} "
+                       f"(p={h1_results['plants'].get('p_value', 'N/A')})")
+        if 'vertebrates' in h1_results:
+            logger.info(f"  Vertebrates coef: {h1_results['vertebrates']['coefficient']:.4f} "
+                       f"(p={h1_results['vertebrates'].get('p_value', 'N/A')})")
+        
+        # Log LRT results if available
+        if model_results.get('lr_test_h0_h1'):
+            logger.info(f"  LRT p-value: {model_results['lr_test_h0_h1']['p_value']:.4f}")
+        
+        # Log model comparison if available
+        if model_results.get('model_comparison'):
+            comparison = model_results['model_comparison']
+            if 'best_models' in comparison:
+                logger.info(f"  Best model (AIC): {comparison['best_models'].get('aic', 'N/A')}")
         
         return self.results['method1']
     

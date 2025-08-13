@@ -22,10 +22,15 @@ try:
     import rpy2.robjects as ro
     from rpy2.robjects import pandas2ri
     from rpy2.robjects.packages import importr
-    pandas2ri.activate()
+    from rpy2.robjects import conversion
+    
+    # Use the new conversion context method instead of deprecated activate()
+    with conversion.localconverter(ro.default_converter + pandas2ri.converter):
+        pass  # Just testing the import
+    
     R_AVAILABLE = True
-except ImportError:
-    logger.warning("rpy2 not available. R emmeans integration disabled.")
+except (ImportError, Exception) as e:
+    logger.warning(f"rpy2 not available or failed to initialize: {e}")
     R_AVAILABLE = False
 
 
