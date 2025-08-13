@@ -64,7 +64,12 @@ def create_temperate_categories(
         data[output_col] = (data[bio4_col] > threshold).ifelse(1, 0)
         result = data
     
-    logger.info(f"Created temperate category using {bio4_col} (threshold={threshold:.3f}, method={method})")
+    # Convert threshold to float if it's an H2OFrame
+    if hasattr(threshold, 'as_data_frame'):
+        threshold_val = float(threshold.as_data_frame().iloc[0, 0])
+    else:
+        threshold_val = float(threshold)
+    logger.info(f"Created temperate category using {bio4_col} (threshold={threshold_val:.3f}, method={method})")
     return result
 
 
