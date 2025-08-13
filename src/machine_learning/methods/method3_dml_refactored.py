@@ -7,6 +7,7 @@ This refactored version assumes data is already preprocessed by the pipeline.
 import logging
 import gc
 import numpy as np
+import pandas as pd
 import h2o
 from typing import Dict, Any, Optional, Union, Tuple, List
 from pathlib import Path
@@ -107,17 +108,24 @@ class Method3DML(BaseRegressionMethod):
                 test = h2o_data[h2o_data['fold'] == k]
                 
                 # Fit outcome nuisance model
-                g_model = H2OGBM(self.config.config)
+                g_model = H2OGBM(is_dml_nuisance=True, n_threads=4)
                 g_features = confounders + treatments
-                g_data = train[g_features + [outcome]]
-                g_model.fit(g_data, y=outcome)
+                # H2OGBM expects dict format for train_set
+                g_train_set = {
+                    'data': train[g_features],
+                    'label': train[outcome].as_data_frame().values.ravel() if hasattr(train[outcome], 'as_data_frame') else train[outcome]
+                }
+                g_model.train(g_train_set)
                 
                 # Fit treatment nuisance models
                 m_models = {}
                 for treatment in treatments:
-                    m_model = H2OGBM(self.config.config)
-                    m_data = train[confounders + [treatment]]
-                    m_model.fit(m_data, y=treatment)
+                    m_model = H2OGBM(is_dml_nuisance=True, n_threads=4)
+                    m_train_set = {
+                        'data': train[confounders],
+                        'label': train[treatment].as_data_frame().values.ravel() if hasattr(train[treatment], 'as_data_frame') else train[treatment]
+                    }
+                    m_model.train(m_train_set)
                     m_models[treatment] = m_model
                 
                 # Predict on test
@@ -270,6 +278,48 @@ class Method3DML(BaseRegressionMethod):
         logger.info(f"  P-values: plants={params['theta1']['p_value']:.4f}, vertebrates={params['theta2']['p_value']:.4f}")
         
         return results
+    
+    def test_all_hypotheses(self, data: Union[pd.DataFrame, h2o.H2OFrame]) -> Dict[str, Any]:
+        """Test all relevant hypotheses for Method 3.
+        
+        Method 3 only tests H0-H1 (biodiversity effect) using DML.
+        H2 (temperate mismatch) requires heterogeneous treatment effects
+        which standard DML cannot test.
+        
+        Args:
+            data: Preprocessed data
+            
+        Returns:
+            Dictionary with hypothesis test results
+        """
+        # For Method 3, we only test H0-H1
+        logger.info("Testing H0-H1 hypothesis using DML...")
+        
+        results = self.test_biodiversity_hypothesis(
+            h2o_data=data,
+            hypothesis_tests=['classical', 'effect_size']
+        )
+        
+        # Format results for consistency with other methods
+        hypothesis_results = {
+            'h0': {
+                'causal_effect': 0,
+                'p_value': 1.0,
+                'interpretation': 'No causal effect (null hypothesis)'
+            },
+            'h1': {
+                'causal_effect': results['parameters']['theta1']['estimate'],
+                'p_value': results['parameters']['theta1']['p_value'],
+                'interpretation': 'Biodiversity has causal effect on fungi richness' 
+                                if results['parameters']['theta1']['p_value'] < 0.05
+                                else 'No significant causal effect detected'
+            }
+        }
+        
+        # Add detailed DML results
+        hypothesis_results['dml_details'] = results
+        
+        return hypothesis_results
     
     def compare_models_with_without_biodiversity(
         self,
