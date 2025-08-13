@@ -1,8 +1,8 @@
 """Method 2: H2 Hypothesis Testing with Both Continuous and Categorical Models (REFACTORED).
 
 Tests H2: Climate-diversity interaction differs in temperate vs non-temperate regions.
-- Model 3a: Continuous interaction (bio1 × plants_richness)
-- Model 3b: Categorical interaction (temperate × plant_high)
+- Model 3a: Continuous interaction (bio4 × plants_richness) - seasonality gradient
+- Model 3b: Categorical interaction (temperate × plant_high) - binary temperate regions
 This refactored version assumes data is already preprocessed by the pipeline.
 """
 
@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 class Method2H2Testing(BaseRegressionMethod):
     """Method 2: Tests H2 hypothesis using both continuous and categorical interactions.
     
-    Model 3a: Continuous interaction (bio1 × plants_richness)
-    Model 3b: Categorical interaction (temperate × plant_high)
+    Model 3a: Continuous interaction (bio4 × plants_richness) - seasonality gradient
+    Model 3b: Categorical interaction (temperate × plant_high) - binary categories
     
     Expected preprocessed features:
     - Climate variables: bio1_std, bio4_std, bio12_std, bio15_std
@@ -99,12 +99,47 @@ class Method2H2Testing(BaseRegressionMethod):
             output_col='temperate_x_plant_high'
         )
         
-        # Log categorical levels
+        # Log categorical levels and validate balance
         temperate_counts = h2o_data['temperate'].table()
         plant_high_counts = h2o_data['plant_high'].table()
         
         logger.info(f"Temperate regions: {temperate_counts}")
         logger.info(f"High plant diversity: {plant_high_counts}")
+        
+        # Validate categorical balance for robust model fitting
+        min_category_size = 100  # Minimum samples per category
+        
+        # Check temperate categories
+        temp_sizes = temperate_counts.as_data_frame()['Count'].values
+        if np.min(temp_sizes) < min_category_size:
+            logger.warning(f"Temperate category imbalance: min size {np.min(temp_sizes)} < {min_category_size}")
+            logger.warning("Consider adjusting quantile threshold or using stratified sampling")
+        
+        # Check plant diversity categories
+        plant_sizes = plant_high_counts.as_data_frame()['Count'].values
+        if np.min(plant_sizes) < min_category_size:
+            logger.warning(f"Plant diversity category imbalance: min size {np.min(plant_sizes)} < {min_category_size}")
+            logger.warning("Consider adjusting quantile threshold or using stratified sampling")
+        
+        # Check interaction term balance
+        interaction_counts = h2o_data['temperate_x_plant_high'].table()
+        interaction_sizes = interaction_counts.as_data_frame()['Count'].values
+        if np.min(interaction_sizes) < min_category_size:
+            logger.warning(f"Interaction category imbalance: min size {np.min(interaction_sizes)} < {min_category_size}")
+            logger.warning("This may affect the reliability of interaction effect estimates")
+        
+        # Calculate effective sample sizes for contrasts
+        n_total = h2o_data.nrows
+        prop_temp = temp_sizes[1] / n_total if len(temp_sizes) > 1 else 0
+        prop_plant = plant_sizes[1] / n_total if len(plant_sizes) > 1 else 0
+        
+        logger.info(f"Category proportions: temperate={prop_temp:.2%}, high_plants={prop_plant:.2%}")
+        
+        # Warn if categories are extremely imbalanced
+        if prop_temp < 0.1 or prop_temp > 0.9:
+            logger.warning(f"Temperate category is highly imbalanced ({prop_temp:.1%})")
+        if prop_plant < 0.1 or prop_plant > 0.9:
+            logger.warning(f"Plant diversity category is highly imbalanced ({prop_plant:.1%})")
         
         return h2o_data
     
@@ -130,10 +165,11 @@ class Method2H2Testing(BaseRegressionMethod):
         GLMClass = H2ONegativeBinomialGLM
         
         # ========== Model 3a: Continuous Interaction ==========
-        logger.info("Fitting Model 3a: Continuous interaction (bio1 × plants_richness)")
+        logger.info("Fitting Model 3a: Continuous interaction (bio4 × plants_richness)")
         
-        # Create continuous interaction term
-        h2o_data['bio01_x_plants'] = h2o_data['bio01_std'] * h2o_data['plants_richness_log']
+        # Create continuous interaction term using bio04 (seasonality) not bio01!
+        # This tests how biodiversity effect varies with seasonality (temperate gradient)
+        h2o_data['bio04_x_plants'] = h2o_data['bio04_std'] * h2o_data['plants_richness_log']
         
         # Features for Model 3a
         feature_cols_3a = [
@@ -142,8 +178,8 @@ class Method2H2Testing(BaseRegressionMethod):
             'elevation_std', 'elevation_std_sq',
             # Biodiversity
             'plants_richness_log', 'vertebrates_richness_log',
-            # Continuous interaction
-            'bio01_x_plants'  # Fixed: was 'bio1_x_plants', must match line 136
+            # Continuous interaction - bio4 (seasonality) × plants for H2 hypothesis
+            'bio04_x_plants'
         ] + me_cols
         
         model_3a_data = h2o_data[feature_cols_3a + ['fungi_richness']]
@@ -183,8 +219,8 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # Look for the interaction term - could be named differently by H2O
         interaction_coef_name = None
-        possible_names = ['bio1_x_plants', 'bio01_std:plants_richness_log', 
-                         'plants_richness_log:bio01_std', 'bio1_x_plants_richness']
+        possible_names = ['bio04_x_plants', 'bio04_std:plants_richness_log', 
+                         'plants_richness_log:bio04_std', 'bio4_x_plants_richness']
         
         # First try exact matches
         for name in possible_names:
@@ -196,15 +232,15 @@ class Method2H2Testing(BaseRegressionMethod):
         # If not found, search for any coefficient with both terms
         if not interaction_coef_name:
             for coef_name in all_coeffs.keys():
-                if ('bio' in coef_name.lower() and 'plant' in coef_name.lower()) or \
-                   ('bio1' in coef_name.lower() and 'plant' in coef_name.lower()):
+                if ('bio04' in coef_name.lower() and 'plant' in coef_name.lower()) or \
+                   ('bio4' in coef_name.lower() and 'plant' in coef_name.lower()):
                     interaction_coef_name = coef_name
                     logger.info(f"Found interaction coefficient by pattern: {coef_name}")
                     break
         
         # If still not found, log available coefficients for debugging
         if not interaction_coef_name:
-            logger.warning("Could not find bio1 x plants interaction coefficient")
+            logger.warning("Could not find bio4 x plants interaction coefficient")
             logger.info(f"Available coefficients: {list(all_coeffs.keys())}")
             # Use a placeholder result
             continuous_wald = {
@@ -224,7 +260,7 @@ class Method2H2Testing(BaseRegressionMethod):
             # Try to use score test if model provides necessary components
             continuous_score = ScoreTest.test_interaction(
                 null_model=self.model_3a_continuous,  # This would need a model without interaction
-                var1='bio01_std',
+                var1='bio04_std',  # Testing seasonality × plants interaction
                 var2='plants_richness_log',
                 data=h2o_data
             )
@@ -240,7 +276,7 @@ class Method2H2Testing(BaseRegressionMethod):
             'wald_test': continuous_wald,
             'score_test': continuous_score,
             'h2_supported': continuous_wald.get('significant_at_0.05', False),
-            'interpretation': 'Tests continuous bio1 × plants interaction'
+            'interpretation': 'Tests continuous bio4 (seasonality) × plants interaction for H2 temperate hypothesis'
         }
         
         # === Model 3b: Categorical Interaction Testing ===

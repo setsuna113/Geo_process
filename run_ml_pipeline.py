@@ -138,15 +138,35 @@ def run_ml_pipeline(
         config_path_str = "src/config/ml/ml_config.yml"
         config = MLRegressionConfig(config_path_str, validate=True)
     
-    # Initialize H2O before creating orchestrator
+    # Initialize H2O before creating orchestrator using config values
     logger.info("Initializing H2O...")
     import h2o
+    
+    # Get H2O config values
+    h2o_config = config.config.get('h2o', {})
+    
+    # Ensure ice_root directory exists
+    ice_root = h2o_config.get('ice_root', '/tmp/h2o_tmp')
+    Path(ice_root).mkdir(parents=True, exist_ok=True)
+    logger.debug(f"Ensured ice_root directory exists: {ice_root}")
+    
+    # Always initialize H2O (it will connect to existing or start new)
     try:
-        h2o.cluster()
-        logger.info("H2O already running")
-    except:
-        h2o.init(max_mem_size='32G', nthreads=-1)
-        logger.info("H2O initialized")
+        h2o.init(
+            max_mem_size=h2o_config.get('max_mem_size', '128G'),
+            nthreads=h2o_config.get('nthreads', 80),
+            ice_root=ice_root
+        )
+        logger.info(f"H2O initialized with {h2o_config.get('max_mem_size', '128G')} memory and {h2o_config.get('nthreads', 80)} threads")
+    except Exception as e:
+        logger.warning(f"H2O initialization warning: {e}")
+        # Try to connect to existing cluster
+        try:
+            h2o.connect()
+            logger.info("Connected to existing H2O cluster")
+        except:
+            logger.error("Failed to initialize or connect to H2O")
+            raise
     
     # Initialize orchestrator
     logger.info("Initializing ML Orchestrator...")

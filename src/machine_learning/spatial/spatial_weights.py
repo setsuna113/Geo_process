@@ -12,9 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 def haversine_distance_km(coords1: np.ndarray, coords2: np.ndarray = None) -> np.ndarray:
-    """Compute haversine distances in kilometers using fastdist.
-    
-    Fastdist is ~7x faster than sklearn's haversine_distances.
+    """Compute haversine distances in kilometers.
     
     Args:
         coords1: Coordinates (n1, 2) with [lon, lat] in degrees
@@ -23,26 +21,18 @@ def haversine_distance_km(coords1: np.ndarray, coords2: np.ndarray = None) -> np
     Returns:
         Distance matrix in km
     """
-    # Convert to radians and swap to [lat, lon] order for haversine
+    from sklearn.metrics.pairwise import haversine_distances
+    
+    # Convert to radians and swap to [lat, lon] order for sklearn
     coords1_rad = np.radians(coords1[:, [1, 0]]).astype(np.float32)
     
     if coords2 is None:
         # Pairwise distances within coords1
-        # fastdist.matrix_pairwise_distance is optimized for this case
-        distances = fastdist.matrix_pairwise_distance(
-            coords1_rad, fastdist.haversine, return_matrix=True
-        )
+        distances = haversine_distances(coords1_rad, coords1_rad)
     else:
         # Distances between two sets
         coords2_rad = np.radians(coords2[:, [1, 0]]).astype(np.float32)
-        n1, n2 = len(coords1_rad), len(coords2_rad)
-        distances = np.zeros((n1, n2), dtype=np.float32)
-        
-        # Use fastdist's vectorized haversine
-        for i in range(n1):
-            distances[i] = fastdist.vector_to_matrix_distance(
-                coords1_rad[i], coords2_rad, fastdist.haversine
-            )
+        distances = haversine_distances(coords1_rad, coords2_rad)
     
     # Convert from radians to km (Earth radius = 6371 km)
     return distances * 6371

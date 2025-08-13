@@ -199,47 +199,16 @@ class MLOrchestrator:
         if mesf_eigenvectors is not None:
             data = data.cbind(mesf_eigenvectors)
             logger.info(f"Added {mesf_eigenvectors.ncols} MESF eigenvectors to data")
-        
-        # Convert to H2O if requested or if H2O is initialized
-        if use_h2o is None:
-            use_h2o = self.h2o_initialized
-            
-        if use_h2o:
-            logger.info("Converting to H2O frame...")
-            # Ensure H2O is initialized and connected
-            import h2o
-            
-            # Always verify H2O connection before creating frames
-            h2o_connected = False
-            try:
-                # Try to actually use H2O, not just check cluster
-                test_frame = h2o.H2OFrame([[1,2,3]])
-                test_frame.rm()
-                h2o_connected = True
-                logger.debug("H2O connection verified")
-            except:
-                logger.info("H2O not connected, initializing...")
-                try:
-                    # Get H2O config from configuration
-                    config_dict = self.config.config if hasattr(self.config, 'config') else {}
-                    h2o_config = config_dict.get('h2o', {})
-                    
-                    h2o.init(
-                        max_mem_size=h2o_config.get('max_mem_size', '32G'),
-                        nthreads=h2o_config.get('nthreads', -1),
-                        ice_root=h2o_config.get('ice_root', '/tmp/h2o_tmp')
-                    )
-                    self.h2o_initialized = True
-                    logger.info(f"H2O initialized successfully with {h2o_config.get('max_mem_size', '32G')} memory")
-                except Exception as e:
-                    logger.error(f"Failed to initialize H2O: {e}")
-                    raise
-            
-            # Create H2O frame
-            data = h2o.H2OFrame(data)
-            logger.info(f"Final H2O frame: {data.nrows:,} rows × {data.ncols} columns")
         else:
-            logger.info(f"Final H2O Frame: {data.nrows:,} rows × {data.ncols} columns")
+            # MESF failed - this could bias results due to uncorrected spatial autocorrelation
+            logger.warning("⚠️ MESF computation failed - proceeding WITHOUT spatial autocorrelation correction")
+            logger.warning("Results may be biased due to uncorrected spatial dependencies")
+            # Optionally raise an error if MESF is critical
+            # raise RuntimeError("MESF computation failed - cannot proceed without spatial correction")
+        
+        # Data is already an H2O frame from preprocessing functions
+        # No need to convert or verify connection - H2O is already initialized
+        logger.info(f"Final H2O Frame: {data.nrows:,} rows × {data.ncols} columns")
         
         self.preprocessed_data = data
         return data

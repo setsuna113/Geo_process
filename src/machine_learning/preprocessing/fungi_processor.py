@@ -29,8 +29,8 @@ def get_fungi_richness(am_fungi: h2o.H2OFrame, ecm_fungi: h2o.H2OFrame) -> h2o.H
     fungi_richness.set_name(0, 'fungi_richness')
     
     # Log statistics
-    mean_val = fungi_richness.mean()
-    std_val = fungi_richness.sd()
+    mean_val = fungi_richness.mean()[0]
+    std_val = fungi_richness.sd()[0]
     logger.info(f"Created fungi_richness: mean={mean_val:.2f}, std={std_val:.2f}")
     
     return fungi_richness

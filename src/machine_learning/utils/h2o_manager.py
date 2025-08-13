@@ -67,6 +67,11 @@ class H2OManager:
             # Merge user config with defaults
             config = {**default_config, **kwargs}
             
+            # Ensure ice_root directory exists
+            from pathlib import Path
+            ice_root = config.get('ice_root', '/tmp/h2o_tmp')
+            Path(ice_root).mkdir(parents=True, exist_ok=True)
+            
             try:
                 h2o.init(**config)
                 cls._initialized = True
