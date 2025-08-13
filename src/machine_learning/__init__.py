@@ -3,12 +3,10 @@
 # Import H2O models
 from .models import H2ONegativeBinomialGLM, H2OGBM
 
-# Import feature builders
-from .preprocessing.feature_engineering import (
-    RichnessFeatureBuilder,
-    SpatialFeatureBuilder,
-    EcologicalFeatureBuilder,
-    CompositeFeatureBuilder
+# Import preprocessing (H2O-optimized)
+from .preprocessing import (
+    MESFProcessor,
+    preprocess_for_regression
 )
 
 # Import imputation (module not yet implemented)

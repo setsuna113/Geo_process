@@ -1,106 +1,55 @@
 """
 Machine learning preprocessing module.
 
-Provides modular preprocessing functions for the ML pipeline.
-Each preprocessing step is a separate function that can be called independently.
+Provides H2O-optimized preprocessing functions for the ML pipeline.
+All functions work directly with H2O frames to avoid conversions.
 """
 
-# Column standardization (includes fungi_richness addition)
-from .column_standardizer import ColumnStandardizer
-
-# Spatial sampling
-from .spatial_sampler import (
-    sample_spatial_grid,
-    sample_by_distance
-)
-
-# Missing data handling
-from .missing_handler import (
+# H2O-optimized preprocessing (primary interface)
+from .h2o_preprocessing import (
+    # Data cleaning
     remove_missing,
-    get_required_columns,
-    check_missing_patterns
-)
-
-# Climate standardization
-from .climate_standardizer import (
+    
+    # Standardization
     standardize_climate_2sd,
-    standardize_climate_zscore,
-    get_standardization_stats
-)
-
-# Polynomial features
-from .polynomial_features import (
+    standardize_column_names,
+    
+    # Feature engineering
     add_elevation_squared,
-    add_polynomial_terms,
-    add_spatial_polynomial
-)
-
-# Log transformations
-from .log_transformer import (
     log_transform_biodiversity,
-    sqrt_transform,
-    box_cox_transform,
-    inverse_transform,
-    check_skewness
-)
-
-# Interaction features
-from .interaction_features import (
-    add_continuous_interaction,
-    add_plants_bio4_interaction,
-    add_three_way_interaction,
-    add_all_pairwise_interactions
-)
-
-# Categorical features
-from .categorical_features import (
+    add_fungi_richness,
+    
+    # Categorical features for Method 2
     create_temperate_categories,
     create_biodiversity_categories,
     add_categorical_interactions,
-    create_climate_zones,
-    create_quantile_bins
+    
+    # Complete pipeline
+    preprocess_for_regression
 )
 
+# Specialized processors
+from .mesf_processor import MESFProcessor
+from .fungi_processor import get_fungi_richness
+
+# PyArrow-based utilities (for caching/parquet operations)
+from .column_standardizer import ColumnStandardizer
+
 __all__ = [
-    # Column standardization
-    'ColumnStandardizer',
-    
-    # Spatial sampling
-    'sample_spatial_grid',
-    'sample_by_distance',
-    
-    # Missing data
+    # H2O preprocessing functions
     'remove_missing',
-    'get_required_columns',
-    'check_missing_patterns',
-    
-    # Climate standardization
     'standardize_climate_2sd',
-    'standardize_climate_zscore',
-    'get_standardization_stats',
-    
-    # Polynomial features
+    'standardize_column_names',
     'add_elevation_squared',
-    'add_polynomial_terms',
-    'add_spatial_polynomial',
-    
-    # Log transformations
     'log_transform_biodiversity',
-    'sqrt_transform',
-    'box_cox_transform',
-    'inverse_transform',
-    'check_skewness',
-    
-    # Interaction features
-    'add_continuous_interaction',
-    'add_plants_bio4_interaction',
-    'add_three_way_interaction',
-    'add_all_pairwise_interactions',
-    
-    # Categorical features
+    'add_fungi_richness',
     'create_temperate_categories',
     'create_biodiversity_categories',
     'add_categorical_interactions',
-    'create_climate_zones',
-    'create_quantile_bins'
+    'preprocess_for_regression',
+    
+    # Processors
+    'MESFProcessor',
+    'get_fungi_richness',
+    'ColumnStandardizer'
 ]

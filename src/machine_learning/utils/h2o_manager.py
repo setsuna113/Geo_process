@@ -47,43 +47,41 @@ class H2OManager:
         """
         instance = cls()
         
-        if not cls._initialized:
-            try:
-                # Check if H2O is already running
-                h2o.cluster()
+        # Always check connection status
+        try:
+            h2o.cluster()
+            if not cls._initialized:
                 logger.info("H2O cluster already running, connecting to existing instance")
                 cls._initialized = True
-            except Exception:
-                # H2O not running, initialize it
-                logger.info(f"Initializing H2O cluster with parameters: {kwargs}")
+        except Exception:
+            # H2O not running or connection lost, reinitialize
+            logger.info(f"Initializing H2O cluster with parameters: {kwargs}")
+            
+            # Default configuration if not provided
+            default_config = {
+                'max_mem_size': '32G',
+                'nthreads': -1,  # Use all available cores
+                'ice_root': '/tmp/h2o_tmp'
+            }
+            
+            # Merge user config with defaults
+            config = {**default_config, **kwargs}
+            
+            try:
+                h2o.init(**config)
+                cls._initialized = True
+                cls._h2o_context = h2o
                 
-                # Default configuration if not provided
-                default_config = {
-                    'max_mem_size': '32G',
-                    'nthreads': -1,  # Use all available cores
-                    'ice_root': '/tmp/h2o_tmp'
-                }
+                # Log cluster info
+                cluster_info = h2o.cluster()
+                logger.info(f"H2O cluster initialized successfully:")
+                logger.info(f"  Version: {cluster_info.get('version', 'unknown')}")
+                logger.info(f"  Memory: {config['max_mem_size']}")
+                logger.info(f"  Threads: {config['nthreads']}")
                 
-                # Merge user config with defaults
-                config = {**default_config, **kwargs}
-                
-                try:
-                    h2o.init(**config)
-                    cls._initialized = True
-                    cls._h2o_context = h2o
-                    
-                    # Log cluster info
-                    cluster_info = h2o.cluster()
-                    logger.info(f"H2O cluster initialized successfully:")
-                    logger.info(f"  Version: {cluster_info.get('version', 'unknown')}")
-                    logger.info(f"  Memory: {config['max_mem_size']}")
-                    logger.info(f"  Threads: {config['nthreads']}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to initialize H2O: {e}")
-                    raise
-        else:
-            logger.debug("H2O already initialized, returning existing instance")
+            except Exception as e:
+                logger.error(f"Failed to initialize H2O: {e}")
+                raise
         
         return h2o
     

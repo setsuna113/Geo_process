@@ -50,6 +50,7 @@ class Method1H0H1GLM(BaseRegressionMethod):
         self.model_null = None  # Model 1: Climate only
         self.model_full = None  # Model 2: Climate + biodiversity
         self.data_h2o = None
+        self.hypothesis_results = {}  # Store hypothesis test results
     
     def fit_models(self, h2o_data: h2o.H2OFrame) -> Dict[str, Any]:
         """Fit the nested models using preprocessed data.
@@ -166,6 +167,40 @@ class Method1H0H1GLM(BaseRegressionMethod):
             'h1_supported': h1_supported,
             'interpretation': 'Biodiversity begets biodiversity (H1)' if h1_supported else 'No biodiversity effect (H0)'
         }
+        
+        # Store results for report generation
+        self.hypothesis_results = {
+            'supports_h1': h1_supported,
+            'interpretation': results['h0_h1_conclusion']['interpretation'],
+            'lrt': lrt_results,
+            'model_comparison': model_comparison,
+            'model_formula': 'fungi_richness ~ climate + biodiversity + spatial'
+        }
+        
+        # Get coefficients from the full model for biodiversity effects
+        if self.model_full:
+            full_coeffs = self.model_full.get_all_coefficients()
+            full_std_errors = self.model_full.get_standard_errors()
+            full_p_values = self.model_full.get_p_values()
+        else:
+            full_coeffs = {}
+            full_std_errors = {}
+            full_p_values = {}
+        
+        # Add biodiversity effects if available
+        if 'plants_richness_log' in full_coeffs:
+            self.hypothesis_results['plants_effect'] = {
+                'coefficient': full_coeffs['plants_richness_log'],
+                'std_error': full_std_errors.get('plants_richness_log', np.nan),
+                'p_value': full_p_values.get('plants_richness_log', np.nan)
+            }
+        
+        if 'vertebrates_richness_log' in full_coeffs:
+            self.hypothesis_results['vertebrates_effect'] = {
+                'coefficient': full_coeffs['vertebrates_richness_log'],
+                'std_error': full_std_errors.get('vertebrates_richness_log', np.nan),
+                'p_value': full_p_values.get('vertebrates_richness_log', np.nan)
+            }
         
         logger.info("Model fitting complete")
         return results

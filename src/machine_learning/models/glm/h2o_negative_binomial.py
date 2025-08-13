@@ -319,14 +319,53 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         # Get coefficients table with std errors when compute_p_values=True
         coef_table = self.model._model_json['output']['coefficients_table']
         
-        if coef_table is not None and len(coef_table['data']) > 2:
-            names = coef_table['data'][0]  # First row is names
-            std_errors = coef_table['data'][2]  # Third row is std_errors
-            return dict(zip(names, std_errors))
-        else:
-            logger.warning("Standard errors not available. Set compute_p_values=True when fitting.")
-            coeffs = self.model.coef()
-            return {name: None for name in coeffs.keys()}
+        if coef_table is not None:
+            # Handle different H2O table formats
+            if hasattr(coef_table, 'cell_values'):
+                # New format with cell_values
+                if len(coef_table.cell_values) > 2:
+                    names = coef_table.cell_values[0]  # First row is names
+                    std_errors = coef_table.cell_values[2]  # Third row is std_errors
+                    return dict(zip(names, std_errors))
+            elif 'data' in coef_table and len(coef_table['data']) > 2:
+                # Old format with 'data' key
+                names = coef_table['data'][0]  # First row is names
+                std_errors = coef_table['data'][2]  # Third row is std_errors
+                return dict(zip(names, std_errors))
+        
+        logger.warning("Standard errors not available. Set compute_p_values=True when fitting.")
+        coeffs = self.model.coef()
+        return {name: np.nan for name in coeffs.keys()}
+    
+    def get_p_values(self) -> Dict[str, float]:
+        """Get p-values for all coefficients.
+        
+        Returns:
+            Dictionary of coefficient names to p-values
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted first")
+        
+        # Get coefficients table with p-values when compute_p_values=True
+        coef_table = self.model._model_json['output']['coefficients_table']
+        
+        if coef_table is not None:
+            # Handle different H2O table formats
+            if hasattr(coef_table, 'cell_values'):
+                # New format with cell_values
+                if len(coef_table.cell_values) > 3:
+                    names = coef_table.cell_values[0]  # First row is names
+                    p_values = coef_table.cell_values[4]  # Fifth row is p_values
+                    return dict(zip(names, p_values))
+            elif 'data' in coef_table and len(coef_table['data']) > 3:
+                # Old format with 'data' key
+                names = coef_table['data'][0]  # First row is names
+                p_values = coef_table['data'][4]  # Fifth row is p_values
+                return dict(zip(names, p_values))
+        
+        logger.warning("P-values not available. Set compute_p_values=True when fitting.")
+        coeffs = self.model.coef()
+        return {name: np.nan for name in coeffs.keys()}
     
     def predict(self, X: Union[np.ndarray, pd.DataFrame]) -> np.ndarray:
         """Make predictions using the fitted model.

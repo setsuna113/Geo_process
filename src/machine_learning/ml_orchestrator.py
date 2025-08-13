@@ -23,7 +23,7 @@ import time
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
-import pandas as pd
+# pandas only imported locally for MESF operations
 import numpy as np
 import h2o
 
@@ -39,17 +39,16 @@ from src.machine_learning.methods import (
     Method3DML
 )
 
-# Preprocessing
-from src.machine_learning.preprocessing import (
-    ColumnStandardizer,
-    sample_spatial_grid,
+# Preprocessing - H2O optimized versions
+from src.machine_learning.preprocessing.h2o_preprocessing import (
     remove_missing,
     standardize_climate_2sd,
     add_elevation_squared,
-    log_transform_biodiversity
+    log_transform_biodiversity,
+    standardize_column_names,
+    add_fungi_richness
 )
-from src.machine_learning.preprocessing.mesf_preprocessor import MESFPreprocessor
-from src.machine_learning.spatial.mesf_cache_manager import FungiRichnessCacheManager, MESFCacheManager
+from src.machine_learning.preprocessing.mesf_processor import MESFProcessor
 
 # Diagnostics
 from src.machine_learning.diagnostics import DHARMaDiagnostics
@@ -82,38 +81,27 @@ class MLOrchestrator:
         # Initialize components
         self.path_validator = PathValidator()
         self.data_loader = DataLoader(max_file_size_mb=10000)
-        self.fungi_cache_manager = FungiRichnessCacheManager()
-        self.mesf_cache_manager = MESFCacheManager()
-        
-        # Run cache cleanup on initialization (only for FungiRichnessCacheManager)
-        try:
-            if hasattr(self.fungi_cache_manager, 'cleanup_old_entries'):
-                cleanup_stats = self.fungi_cache_manager.cleanup_old_entries()
-                if cleanup_stats['removed_by_age'] + cleanup_stats['removed_by_size'] > 0:
-                    logger.info(f"Cache cleanup performed: freed {cleanup_stats['space_freed_mb']:.1f}MB")
-                
-                # Log cache statistics
-                if hasattr(self.fungi_cache_manager, 'get_cache_stats'):
-                    cache_stats = self.fungi_cache_manager.get_cache_stats()
-                    logger.info(f"Cache status: {cache_stats['total_files']} files, "
-                               f"{cache_stats['total_size_mb']:.1f}MB used, "
-                               f"{cache_stats['disk_free_gb']:.1f}GB free")
-        except Exception as e:
-            logger.warning(f"Cache maintenance failed: {e}")
+        self.mesf_processor = MESFProcessor()
         
         # Initialize H2O if needed
         config_dict = self.config.config if hasattr(self.config, 'config') else {}
         self.h2o_initialized = False
+        
+        # Get H2O configuration from config file
+        h2o_config = config_dict.get('h2o', {})
+        h2o_enabled = h2o_config.get('enabled', True)
+        
         # Initialize H2O
-        if config_dict.get('use_h2o', True):
+        if h2o_enabled:
             try:
-                # Initialize H2O using manager with error handling
+                # Initialize H2O using manager with configuration from file
                 self.h2o = H2OManager.get_or_init(
-                    max_mem_size=config_dict.get('h2o_memory', '32G'),
-                    nthreads=config_dict.get('h2o_threads', -1)
+                    max_mem_size=h2o_config.get('max_mem_size', '32G'),
+                    nthreads=h2o_config.get('nthreads', -1),
+                    ice_root=h2o_config.get('ice_root', '/tmp/h2o_tmp')
                 )
                 self.h2o_initialized = True
-                logger.info("H2O cluster initialized successfully")
+                logger.info(f"H2O cluster initialized successfully with {h2o_config.get('max_mem_size', '32G')} memory")
             except Exception as e:
                 logger.warning(f"Failed to initialize H2O cluster: {e}. Will fall back to non-H2O methods if needed.")
                 self.h2o = None
@@ -141,228 +129,76 @@ class MLOrchestrator:
         data_path: Union[str, Path],
         spatial_grid_step: Optional[int] = None,
         use_h2o: Optional[bool] = None
-    ) -> Union[pd.DataFrame, h2o.H2OFrame]:
-        """Load and preprocess data for all methods.
+    ) -> h2o.H2OFrame:
+        """Load and preprocess data directly in H2O for all methods.
         
         Args:
             data_path: Path to input data
             spatial_grid_step: Spatial sampling step (None = no sampling)
-            use_h2o: Whether to convert to H2O frame
+            use_h2o: Deprecated, always returns H2O frame
             
         Returns:
-            Preprocessed data ready for methods
+            Preprocessed H2O frame ready for methods
         """
         logger.info("="*70)
-        logger.info("DATA LOADING AND PREPROCESSING")
+        logger.info("DATA LOADING AND PREPROCESSING (H2O-Optimized)")
         logger.info("="*70)
         
-        # Load data
+        # Ensure H2O is initialized
+        if not self.h2o_initialized:
+            raise RuntimeError("H2O not initialized. Cannot proceed.")
+        
+        # Load data using DataLoader (now loads directly into H2O with spatial sampling)
         logger.info(f"Loading data from {data_path}")
-        data = self.data_loader.load_data(data_path)
-        initial_rows = len(data)
-        logger.info(f"Loaded {initial_rows:,} rows")
+        data = self.data_loader.load_data(data_path, spatial_grid_step=spatial_grid_step)
+        initial_rows = data.nrows
+        logger.info(f"Loaded {initial_rows:,} rows into H2O")
+        
+        # Apply preprocessing pipeline using abstracted H2O functions
+        logger.info("Applying preprocessing pipeline...")
         
         # Remove missing data
-        logger.info("Removing missing data...")
         data = remove_missing(data)
-        logger.info(f"After removing missing: {len(data):,} rows")
+        logger.info(f"After removing missing: {data.nrows:,} rows")
         
-        # Spatial sampling if requested
-        if spatial_grid_step and spatial_grid_step > 1:
-            logger.info(f"Applying spatial grid sampling (step={spatial_grid_step})...")
-            data = sample_spatial_grid(data, step=spatial_grid_step, lon_col='x', lat_col='y')
-            logger.info(f"After spatial sampling: {len(data):,} rows")
+        # Standardize column names
+        data = standardize_column_names(data)
         
-        # Standardize climate variables
-        logger.info("Standardizing climate variables (2SD method)...")
-        # Use the actual column names from the data
-        climate_vars = ['bio01', 'bio04', 'bio12', 'bio15', 'elevation']
-        data = standardize_climate_2sd(data, climate_vars=climate_vars)
+        # Add fungi_richness if needed
+        data = add_fungi_richness(data)
         
-        # Add elevation squared
-        logger.info("Adding elevation squared term...")
+        # Standardize climate variables (2SD method)
+        data = standardize_climate_2sd(data)
+        
+        # Add polynomial terms
         data = add_elevation_squared(data)
         
-        # Check if fungi_richness already exists or needs to be computed
-        if 'fungi_richness' not in data.columns:
-            # Define the compute function for cache manager
-            def compute_fungi_richness(input_path: str, output_path: str) -> str:
-                """Compute fungi_richness and save to cache."""
-                df = pd.read_parquet(input_path)
-                df['fungi_richness'] = df['am_fungi_richness'] + df['ecm_fungi_richness']
-                logger.info(f"Computed fungi_richness: mean={df['fungi_richness'].mean():.2f}, std={df['fungi_richness'].std():.2f}")
-                df.to_parquet(output_path, compression='snappy')
-                return output_path
-            
-            # Use cache manager to get or compute fungi_richness
-            cache_key = self.fungi_cache_manager.get_cache_key(str(data_path))
-            cached_path = self.fungi_cache_manager.get_cached_path(cache_key)
-            
-            if self.fungi_cache_manager.is_cached(cache_key):
-                logger.info(f"Loading cached fungi_richness from {cached_path}")
-                try:
-                    # Load the cached data with fungi_richness
-                    cached_df = pd.read_parquet(cached_path)
-                    
-                    # Validate cache schema
-                    if 'fungi_richness' not in cached_df.columns:
-                        logger.warning("Cache validation failed: 'fungi_richness' column missing. Recomputing...")
-                        raise ValueError("Invalid cache schema")
-                    
-                    # Validate indices match
-                    if not cached_df.index.equals(data.index):
-                        logger.warning("Cache validation failed: Index mismatch. Recomputing...")
-                        raise ValueError("Cache index mismatch")
-                    
-                    # Only take the fungi_richness column from cache
-                    data['fungi_richness'] = cached_df.loc[data.index, 'fungi_richness']
-                    logger.info(f"Loaded cached fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to load cache: {e}. Computing fungi_richness...")
-                    data['fungi_richness'] = data['am_fungi_richness'] + data['ecm_fungi_richness']
-                    logger.info(f"Created fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
-            else:
-                logger.info("Computing fungi_richness (not cached)...")
-                data['fungi_richness'] = data['am_fungi_richness'] + data['ecm_fungi_richness']
-                logger.info(f"Created fungi_richness: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
-                
-                # Save to cache for future use (but only after full preprocessing)
-                # We'll save at the end of preprocessing to include all transformations
-        else:
-            logger.info(f"fungi_richness already exists: mean={data['fungi_richness'].mean():.2f}, std={data['fungi_richness'].std():.2f}")
-        
-        # Create standardized column names for other biodiversity metrics
-        if 'plant_richness' in data.columns:
-            data['plants_richness'] = data['plant_richness']
-        if 'animal_richness' in data.columns:
-            data['vertebrates_richness'] = data['animal_richness']
-        
         # Log transform biodiversity predictors
-        logger.info("Log-transforming biodiversity predictors...")
         data = log_transform_biodiversity(data)
         
-        # Add MESF spatial eigenvectors using cache
-        logger.info("Computing MESF spatial eigenvectors...")
+        # Add MESF spatial eigenvectors
+        logger.info("Adding MESF spatial eigenvectors...")
         
-        # Get spatial config with proper structure
+        # Get MESF config (simplified - no complex params needed)
         spatial_config = self.config.config.get('spatial', {})
-        mesf_params = {
-            'mesf': spatial_config.get('mesf', {
-                'variance_threshold': 0.75,
-                'max_eigenvectors': 10,
-                'min_eigenvectors': 5,
-                'distance_threshold': 100
-            }),
-            'nystrom': spatial_config.get('nystrom', {
-                'enable_for_large_data': True,
-                'size_threshold': 100000,
-                'n_landmark': 5000,
-                'n_sample': 25000
-            })
-        }
+        n_eigenvectors = spatial_config.get('n_eigenvectors', 10)
+        distance_threshold = spatial_config.get('distance_threshold', 100.0)
         
-        # Generate cache key for current configuration
-        cache_key = self.mesf_cache_manager.get_cache_key(
-            str(data_path), 
-            spatial_grid_step or 1,
-            mesf_params
+        # Get n_jobs from H2O config (unified thread control)
+        h2o_config = self.config.config.get('h2o', {})
+        n_jobs = h2o_config.get('nthreads', -1)
+        
+        # Get MESF eigenvectors using clean Nystrom-only implementation
+        mesf_eigenvectors = self.mesf_processor.get_mesf_eigenvectors(
+            data_path=str(data_path),
+            spatial_grid_step=spatial_grid_step,
+            n_eigenvectors=n_eigenvectors,
+            distance_threshold=distance_threshold,
+            n_jobs=n_jobs
         )
-        
-        # Check if MESF is already cached
-        cached_mesf_loaded = False
-        if self.mesf_cache_manager.is_cached(cache_key):
-            # Validate cache integrity first
-            if self.mesf_cache_manager.validate_cache_integrity(cache_key):
-                logger.info(f"Loading cached MESF eigenvectors from cache")
-                try:
-                    cached_path, metadata = self.mesf_cache_manager.load_from_cache(cache_key)
-                    
-                    # Load MESF columns from cache
-                    cached_df = pd.read_parquet(cached_path)
-                    mesf_cols = [col for col in cached_df.columns if col.startswith('ME')]
-                    
-                    # Verify index compatibility
-                    if not cached_df.index.equals(data.index):
-                        logger.warning("Cache index mismatch, recomputing MESF")
-                        raise ValueError("Index mismatch")
-                    
-                    # Add MESF columns to current data
-                    for col in mesf_cols:
-                        if col in cached_df.columns:
-                            data[col] = cached_df.loc[data.index, col].values
-                    
-                    logger.info(f"Loaded {len(mesf_cols)} MESF eigenvectors from cache")
-                    cached_mesf_loaded = True
-                except Exception as e:
-                    logger.warning(f"Failed to load MESF from cache: {e}. Recomputing...")
-                    # Clean up corrupted cache
-                    self.mesf_cache_manager._cleanup_cache(cache_key)
-                    cached_mesf_loaded = False
-            else:
-                logger.warning("Cache validation failed, recomputing MESF")
-                # Clean up invalid cache
-                self.mesf_cache_manager._cleanup_cache(cache_key)
-                cached_mesf_loaded = False
-        
-        if not cached_mesf_loaded:
-            logger.info("Computing MESF eigenvectors...")
-            try:
-                from src.machine_learning.spatial.mesf import compute_mesf
-                
-                # Extract coordinates  
-                coords = data[['x', 'y']].values
-                
-                # Compute MESF
-                mesf_df = compute_mesf(coords, mesf_params)
-                
-                # Add MESF columns to data
-                for col in mesf_df.columns:
-                    data[col] = mesf_df[col].values
-                
-                logger.info(f"Computed {len(mesf_df.columns)} MESF eigenvectors")
-                
-                # Save to cache
-                import pyarrow as pa
-                augmented_table = pa.Table.from_pandas(data)
-                metadata = {
-                    'n_eigenvectors': len(mesf_df.columns),
-                    'n_samples': len(data),
-                    'spatial_grid_step': spatial_grid_step or 1
-                }
-                cached_path = self.mesf_cache_manager.save_to_cache(cache_key, augmented_table, metadata)
-                logger.info(f"Saved MESF results to cache: {cached_path}")
-                
-            except Exception as e:
-                logger.error(f"MESF computation failed: {e}")
-                logger.warning("Continuing without spatial components. This may significantly impact model quality.")
-                
-                # Add detailed warning to results metadata
-                if not hasattr(self, 'processing_warnings'):
-                    self.processing_warnings = []
-                    
-                self.processing_warnings.append({
-                    'type': 'MESF_FAILURE',
-                    'message': str(e),
-                    'impact': 'Models will not account for spatial autocorrelation',
-                    'severity': 'HIGH',
-                    'recommendations': [
-                        'Consider reducing spatial_grid_step for smaller dataset',
-                        'Check memory availability',
-                        'Verify coordinate columns (x, y) are valid'
-                    ]
-                })
-                
-                # Set flag to indicate MESF is not available
-                self.mesf_available = False
-        
-        # Save the fully preprocessed data with fungi_richness to cache if it wasn't cached before
-        cache_key = self.fungi_cache_manager.get_cache_key(str(data_path))
-        if not self.fungi_cache_manager.is_cached(cache_key) and 'fungi_richness' in data.columns:
-            cached_path = self.fungi_cache_manager.get_cached_path(cache_key)
-            logger.info(f"Saving preprocessed data with fungi_richness to cache: {cached_path}")
-            # Save the full dataframe to cache
-            data.to_parquet(cached_path, compression='snappy')
+        if mesf_eigenvectors is not None:
+            data = data.cbind(mesf_eigenvectors)
+            logger.info(f"Added {mesf_eigenvectors.ncols} MESF eigenvectors to data")
         
         # Convert to H2O if requested or if H2O is initialized
         if use_h2o is None:
@@ -370,15 +206,40 @@ class MLOrchestrator:
             
         if use_h2o:
             logger.info("Converting to H2O frame...")
-            # Ensure H2O is initialized using manager
+            # Ensure H2O is initialized and connected
             import h2o
-            if not self.h2o_initialized:
-                self.h2o = H2OManager.get_or_init()
-                self.h2o_initialized = True
+            
+            # Always verify H2O connection before creating frames
+            h2o_connected = False
+            try:
+                # Try to actually use H2O, not just check cluster
+                test_frame = h2o.H2OFrame([[1,2,3]])
+                test_frame.rm()
+                h2o_connected = True
+                logger.debug("H2O connection verified")
+            except:
+                logger.info("H2O not connected, initializing...")
+                try:
+                    # Get H2O config from configuration
+                    config_dict = self.config.config if hasattr(self.config, 'config') else {}
+                    h2o_config = config_dict.get('h2o', {})
+                    
+                    h2o.init(
+                        max_mem_size=h2o_config.get('max_mem_size', '32G'),
+                        nthreads=h2o_config.get('nthreads', -1),
+                        ice_root=h2o_config.get('ice_root', '/tmp/h2o_tmp')
+                    )
+                    self.h2o_initialized = True
+                    logger.info(f"H2O initialized successfully with {h2o_config.get('max_mem_size', '32G')} memory")
+                except Exception as e:
+                    logger.error(f"Failed to initialize H2O: {e}")
+                    raise
+            
+            # Create H2O frame
             data = h2o.H2OFrame(data)
             logger.info(f"Final H2O frame: {data.nrows:,} rows × {data.ncols} columns")
         else:
-            logger.info(f"Final DataFrame: {len(data):,} rows × {len(data.columns)} columns")
+            logger.info(f"Final H2O Frame: {data.nrows:,} rows × {data.ncols} columns")
         
         self.preprocessed_data = data
         return data
@@ -874,13 +735,14 @@ class MLOrchestrator:
     def cleanup(self) -> None:
         """Clean up resources (H2O cluster, cache monitoring, etc.)."""
         try:
-            # Log final cache statistics
-            try:
-                cache_stats = self.mesf_cache_manager.get_cache_stats()
-                logger.info(f"Final cache status: {cache_stats['total_files']} files, "
-                           f"{cache_stats['total_size_mb']:.1f}MB used")
-            except:
-                pass
+            # Log final cache statistics if mesf_processor exists
+            if hasattr(self, 'mesf_processor'):
+                try:
+                    cache_stats = self.mesf_processor.get_cache_stats()
+                    logger.info(f"Final cache status: {cache_stats['total_files']} files, "
+                               f"{cache_stats['total_size_mb']:.1f}MB used")
+                except:
+                    pass
             
             # Shutdown H2O cluster if initialized
             if self.h2o_initialized and self.h2o:
@@ -913,14 +775,9 @@ class MLOrchestrator:
             import time
             time.sleep(2)
             
-            # Try to initialize with reduced memory
-            config_dict = self.config.config if hasattr(self.config, 'config') else {}
-            self.h2o = H2OManager.get_or_init(
-                max_mem_size='4G',  # Reduced memory
-                nthreads=4  # Reduced threads
-            )
-            self.h2o_initialized = True
-            logger.info("H2O cluster reinitialized successfully with reduced resources")
+            # Don't fallback - raise the error
+            logger.error("H2O cluster connection lost and no fallback allowed")
+            raise
             return True
             
         except Exception as e:
