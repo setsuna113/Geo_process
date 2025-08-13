@@ -178,11 +178,46 @@ class Method2H2Testing(BaseRegressionMethod):
         # Multiple tests are appropriate for continuous interaction
         
         # 1a. Wald test for continuous interaction coefficient
-        continuous_wald = WaldTest.test_coefficients_from_model(
-            model=self.model_3a_continuous,
-            coefficient_names='bio1_x_plants',
-            null_values=0.0
-        )
+        # First, find the actual interaction coefficient name
+        all_coeffs = self.model_3a_continuous.get_all_coefficients()
+        
+        # Look for the interaction term - could be named differently by H2O
+        interaction_coef_name = None
+        possible_names = ['bio1_x_plants', 'bio01_std:plants_richness_log', 
+                         'plants_richness_log:bio01_std', 'bio1_x_plants_richness']
+        
+        # First try exact matches
+        for name in possible_names:
+            if name in all_coeffs:
+                interaction_coef_name = name
+                logger.info(f"Found interaction coefficient: {name}")
+                break
+        
+        # If not found, search for any coefficient with both terms
+        if not interaction_coef_name:
+            for coef_name in all_coeffs.keys():
+                if ('bio' in coef_name.lower() and 'plant' in coef_name.lower()) or \
+                   ('bio1' in coef_name.lower() and 'plant' in coef_name.lower()):
+                    interaction_coef_name = coef_name
+                    logger.info(f"Found interaction coefficient by pattern: {coef_name}")
+                    break
+        
+        # If still not found, log available coefficients for debugging
+        if not interaction_coef_name:
+            logger.warning("Could not find bio1 x plants interaction coefficient")
+            logger.info(f"Available coefficients: {list(all_coeffs.keys())}")
+            # Use a placeholder result
+            continuous_wald = {
+                'error': 'Interaction coefficient not found',
+                'available_coefficients': list(all_coeffs.keys()),
+                'significant_at_0.05': False
+            }
+        else:
+            continuous_wald = WaldTest.test_coefficients_from_model(
+                model=self.model_3a_continuous,
+                coefficient_names=interaction_coef_name,
+                null_values=0.0
+            )
         
         # 1b. Score test for continuous interaction (if possible)
         try:
@@ -212,11 +247,42 @@ class Method2H2Testing(BaseRegressionMethod):
         # For categorical, emmeans is primary; Wald is secondary
         
         # 2a. Wald test for categorical interaction (secondary test)
-        categorical_wald = WaldTest.test_coefficients_from_model(
-            model=self.model_3b_categorical,
-            coefficient_names='temperate_x_plant_high',
-            null_values=0.0
-        )
+        # Find the categorical interaction coefficient
+        cat_coeffs = self.model_3b_categorical.get_all_coefficients()
+        
+        cat_interaction_name = None
+        cat_possible_names = ['temperate_x_plant_high', 'temperate:plant_high', 
+                             'plant_high:temperate', 'temperate.1:plant_high.1']
+        
+        # Try exact matches
+        for name in cat_possible_names:
+            if name in cat_coeffs:
+                cat_interaction_name = name
+                logger.info(f"Found categorical interaction coefficient: {name}")
+                break
+        
+        # Pattern search if not found
+        if not cat_interaction_name:
+            for coef_name in cat_coeffs.keys():
+                if ('temperate' in coef_name.lower() and 'plant' in coef_name.lower()):
+                    cat_interaction_name = coef_name
+                    logger.info(f"Found categorical interaction by pattern: {coef_name}")
+                    break
+        
+        if not cat_interaction_name:
+            logger.warning("Could not find temperate x plant_high interaction")
+            logger.info(f"Available coefficients: {list(cat_coeffs.keys())}")
+            categorical_wald = {
+                'error': 'Categorical interaction coefficient not found',
+                'available_coefficients': list(cat_coeffs.keys()),
+                'significant_at_0.05': False
+            }
+        else:
+            categorical_wald = WaldTest.test_coefficients_from_model(
+                model=self.model_3b_categorical,
+                coefficient_names=cat_interaction_name,
+                null_values=0.0
+            )
         
         # 2b. Note about emmeans being the primary test for 3b
         results['model_3b_categorical'] = {
@@ -258,6 +324,32 @@ class Method2H2Testing(BaseRegressionMethod):
     def fit_model(self, h2o_data: h2o.H2OFrame) -> Dict[str, Any]:
         """Wrapper for compatibility - calls fit_models."""
         return self.fit_models(h2o_data)
+    
+    def debug_coefficients(self) -> Dict[str, List[str]]:
+        """Debug method to check available coefficient names.
+        
+        Returns:
+            Dictionary with coefficient names for each model
+        """
+        debug_info = {}
+        
+        if self.model_3a_continuous:
+            try:
+                coeffs_3a = self.model_3a_continuous.get_all_coefficients()
+                debug_info['model_3a_continuous'] = list(coeffs_3a.keys())
+                logger.info(f"Model 3a coefficients: {list(coeffs_3a.keys())}")
+            except Exception as e:
+                debug_info['model_3a_continuous'] = f"Error: {e}"
+                
+        if self.model_3b_categorical:
+            try:
+                coeffs_3b = self.model_3b_categorical.get_all_coefficients()
+                debug_info['model_3b_categorical'] = list(coeffs_3b.keys())
+                logger.info(f"Model 3b coefficients: {list(coeffs_3b.keys())}")
+            except Exception as e:
+                debug_info['model_3b_categorical'] = f"Error: {e}"
+                
+        return debug_info
     
     def compute_emmeans(self) -> Dict[str, Any]:
         """Compute estimated marginal means using proper emmeans approach.
