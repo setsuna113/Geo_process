@@ -2,7 +2,7 @@
 # Machine Learning Pipeline Launcher with Method Selection and Monitoring
 # Supports all three hypothesis testing methods with tmux monitoring
 
-echo "🤖 Machine Learning Regression Pipeline for Biodiversity Analysis"
+echo "🤖 Machine Learning Regression Pipeline (H2O-Optimized)"
 echo "=================================================================="
 
 # Get script directory and project root

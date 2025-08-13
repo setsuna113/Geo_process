@@ -264,7 +264,7 @@ class ConfigValidator:
 
 
 class DataLoader:
-    """Secure data loading with validation."""
+    """Secure H2O data loading with validation."""
     
     def __init__(self, 
                  max_file_size_mb: float = 10000,
@@ -284,76 +284,71 @@ class DataLoader:
     def load_data(self, 
                   file_path: Union[str, Path],
                   validate_shape: bool = True,
-                  max_rows: Optional[int] = None) -> 'pd.DataFrame':
-        """Load data with security validation.
+                  spatial_grid_step: Optional[int] = None) -> 'h2o.H2OFrame':
+        """Load data directly into H2O with security validation.
         
         Args:
             file_path: Path to data file
             validate_shape: Whether to validate data shape
-            max_rows: Maximum number of rows to load
+            spatial_grid_step: Spatial sampling step (e.g., 100 = take every 100th row)
             
         Returns:
-            Loaded DataFrame
+            Loaded H2O Frame
             
         Raises:
             ValueError: If data validation fails
         """
-        import pandas as pd
+        import h2o
         
         # Validate path
         path = self.path_validator.validate_path(file_path)
         
-        # Load based on extension
-        logger.info(f"Loading data from {path}")
+        # Load directly into H2O
+        logger.info(f"Loading data into H2O from {path}")
         
-        if path.suffix == '.parquet':
-            if max_rows:
-                # For parquet, we need to load all then slice
-                df = pd.read_parquet(path)
-                df = df.head(max_rows)
-            else:
-                df = pd.read_parquet(path)
-        elif path.suffix == '.csv':
-            df = pd.read_csv(path, nrows=max_rows)
-        elif path.suffix == '.tsv':
-            df = pd.read_csv(path, sep='\t', nrows=max_rows)
-        elif path.suffix == '.pkl':
-            df = pd.read_pickle(path)
-            if max_rows:
-                df = df.head(max_rows)
-        else:
-            raise ValueError(f"Unsupported file type: {path.suffix}")
+        # H2O.import_file supports parquet, csv, tsv, and more
+        if path.suffix not in ['.parquet', '.csv', '.tsv', '.txt']:
+            raise ValueError(f"Unsupported file type for H2O: {path.suffix}")
+        
+        # Load with H2O
+        data = h2o.import_file(str(path))
+        
+        # Apply spatial grid sampling if specified (take every Nth row)
+        if spatial_grid_step and spatial_grid_step > 1:
+            logger.info(f"Applying spatial grid sampling (step={spatial_grid_step})")
+            original_rows = data.nrows
+            # Take every Nth row
+            row_indices = list(range(0, data.nrows, spatial_grid_step))
+            data = data[row_indices, :]
+            logger.info(f"Sampled {data.nrows} rows from {original_rows} total rows")
         
         # Validate shape
         if validate_shape:
-            if df.empty:
-                raise ValueError("Loaded DataFrame is empty")
+            if data.nrows == 0:
+                raise ValueError("Loaded H2O Frame has no rows")
             
-            if len(df) == 0:
-                raise ValueError("DataFrame has no rows")
-            
-            logger.info(f"Loaded data shape: {df.shape}")
+            logger.info(f"Loaded data shape: ({data.nrows}, {data.ncols})")
         
         # Validate columns
         if self.required_columns:
-            missing_cols = set(self.required_columns) - set(df.columns)
+            missing_cols = set(self.required_columns) - set(data.columns)
             if missing_cols:
                 raise ValueError(f"Missing required columns: {missing_cols}")
         
         if self.validate_columns:
-            unexpected_cols = set(df.columns) - set(self.validate_columns)
+            unexpected_cols = set(data.columns) - set(self.validate_columns)
             if unexpected_cols:
                 logger.warning(f"Unexpected columns found: {unexpected_cols}")
         
         # Check for suspicious column names
         suspicious_patterns = ['__', 'eval', 'exec', 'system']
-        for col in df.columns:
+        for col in data.columns:
             for pattern in suspicious_patterns:
                 if pattern in col.lower():
                     raise ValueError(f"Suspicious column name detected: {col}")
         
-        logger.info(f"Data loaded successfully: {len(df)} rows, {len(df.columns)} columns")
-        return df
+        logger.info(f"Data loaded successfully: {data.nrows} rows, {data.ncols} columns")
+        return data
 
 
 class InputSanitizer:

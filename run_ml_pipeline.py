@@ -131,13 +131,26 @@ def run_ml_pipeline(
     if config_path:
         logger.info(f"Loading config from: {config_path}")
         config = MLRegressionConfig(config_path, validate=True)
+        config_path_str = str(config_path)
     else:
         logger.info("Using default configuration")
-        config = MLRegressionConfig(validate=True)
+        # Use the default config path
+        config_path_str = "src/config/ml/ml_config.yml"
+        config = MLRegressionConfig(config_path_str, validate=True)
+    
+    # Initialize H2O before creating orchestrator
+    logger.info("Initializing H2O...")
+    import h2o
+    try:
+        h2o.cluster()
+        logger.info("H2O already running")
+    except:
+        h2o.init(max_mem_size='32G', nthreads=-1)
+        logger.info("H2O initialized")
     
     # Initialize orchestrator
     logger.info("Initializing ML Orchestrator...")
-    orchestrator = MLOrchestrator(config_path)
+    orchestrator = MLOrchestrator(config_path_str)
     
     # Set output directory
     if output_dir:

@@ -23,7 +23,7 @@ from ..hypothesis import (
     ContrastAnalysis, SimpleSlopesAnalysis
 )
 from ..evaluation import GLMComparison
-from ..preprocessing import (
+from ..preprocessing.h2o_preprocessing import (
     create_temperate_categories,
     create_biodiversity_categories,
     add_categorical_interactions

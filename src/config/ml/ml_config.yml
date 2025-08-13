@@ -1,6 +1,13 @@
 # ML Configuration for Biodiversity Regression Analysis
 # Based on regression_analysis_decisions.md requirements
 
+# H2O Configuration
+h2o:
+  enabled: true
+  max_mem_size: "128G"  # Increase for large datasets (52M rows)
+  nthreads: 80  # Limit CPU cores (set to -1 to use all available cores)
+  ice_root: "/tmp/h2o_tmp"
+  
 regression_analysis:
   # Data loading and sampling
   data:
@@ -52,21 +59,11 @@ regression_analysis:
       num_threads: 80
       log_message: "Configuring LightGBM for DML nuisance models"
   
-  # Spatial analysis (lines 69-192)
+  # Spatial analysis (simplified for Nystrom-only)
   spatial:
-    mesf:
-      variance_threshold: 0.75  # Explain 75% of spatial variance
-      max_eigenvectors: 10
-      min_eigenvectors: 5
-      distance_threshold: 100  # km for spatial neighbors
-      log_message: "Computing Moran Eigenvector Spatial Filtering"
-    
-    nystrom:
-      enable_for_large_data: true
-      size_threshold: 100000  # Use Nystrom if >100k points
-      n_landmark: 5000
-      n_sample: 25000
-      log_message: "Using Nystrom approximation for large dataset"
+    n_eigenvectors: 10  # Number of MESF eigenvectors to compute
+    distance_threshold: 100.0  # Distance threshold in km for spatial weights
+    # Note: Nystrom parameters are auto-calculated using 100×√n rule
   
   # Feature engineering for H2 testing (lines 53-67)
   feature_engineering:
