@@ -227,6 +227,40 @@ class SharedPreprocessor:
         else:
             raise ValueError(f"Unknown missing value strategy: {self.missing_strategy}")
     
+    def clean_richness_data(self, data: np.ndarray, feature_names: Optional[List[str]] = None) -> np.ndarray:
+        """Clean richness-specific data issues.
+        
+        Args:
+            data: Input data array
+            feature_names: Optional feature names to identify fungi columns
+            
+        Returns:
+            Cleaned data array
+        """
+        if feature_names is None:
+            feature_names = self.feature_names
+            
+        # Clean each column based on its type
+        for i, name in enumerate(feature_names):
+            if i >= data.shape[1]:
+                break
+                
+            if 'richness' in name.lower():
+                # Handle extreme negative values in fungi data
+                if 'fungi' in name.lower():
+                    mask = data[:, i] < -1e20
+                    data[mask, i] = np.nan
+                    
+                # Negative richness values are invalid
+                mask = data[:, i] < 0
+                data[mask, i] = np.nan
+                
+                # Zero richness treated as no-data
+                mask = data[:, i] == 0
+                data[mask, i] = np.nan
+                
+        return data
+    
     def _remove_constant_features(self, data: np.ndarray) -> np.ndarray:
         """Remove features with constant or near-constant values."""
         # Calculate variance
