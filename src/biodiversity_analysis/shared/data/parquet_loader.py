@@ -29,7 +29,11 @@ class ParquetLoader:
              feature_cols: Optional[List[str]] = None,
              species_cols: Optional[List[str]] = None,
              validate: bool = True,
-             spatial_grid_step: int = 1) -> BiodiversityData:
+             spatial_grid_step: int = 1,
+             skip_auto_detection: bool = False,
+             skip_coordinate_validation: bool = False,
+             skip_zero_inflation_check: bool = False,
+             skip_thread_management: bool = False) -> BiodiversityData:
         """Load biodiversity data from parquet file.
         
         Args:
@@ -40,6 +44,10 @@ class ParquetLoader:
             validate: Whether to validate the loaded data
             spatial_grid_step: Take every Nth point in spatial grid (1=all points, 10=every 10th)
                              This provides better geographic coverage than random sampling.
+            skip_auto_detection: Skip auto-detection of columns (requires explicit cols)
+            skip_coordinate_validation: Skip coordinate range validation
+            skip_zero_inflation_check: Skip zero inflation detection
+            skip_thread_management: Skip PyArrow thread pool management
             
         Returns:
             BiodiversityData object
@@ -125,6 +133,8 @@ class ParquetLoader:
         
         # Auto-detect coordinate columns if not specified
         if coordinate_cols is None:
+            if skip_auto_detection:
+                raise ValueError("coordinate_cols must be provided when skip_auto_detection=True")
             # Create a dict from first row for detection without pandas
             first_row_dict = {col: table.column(col).to_pylist()[0] 
                             for col in table.column_names}
@@ -168,19 +178,22 @@ class ParquetLoader:
             ])
         
         # Validate coordinate ranges
-        lat_values = coordinates[:, 0]
-        lon_values = coordinates[:, 1]
-        
-        if np.any((lat_values < -90) | (lat_values > 90)):
-            logger.warning(f"Latitude values outside valid range [-90, 90]: "
-                         f"min={lat_values.min():.2f}, max={lat_values.max():.2f}")
-        
-        if np.any((lon_values < -180) | (lon_values > 180)):
-            logger.warning(f"Longitude values outside valid range [-180, 180]: "
-                         f"min={lon_values.min():.2f}, max={lon_values.max():.2f}")
+        if not skip_coordinate_validation:
+            lat_values = coordinates[:, 0]
+            lon_values = coordinates[:, 1]
+            
+            if np.any((lat_values < -90) | (lat_values > 90)):
+                logger.warning(f"Latitude values outside valid range [-90, 90]: "
+                             f"min={lat_values.min():.2f}, max={lat_values.max():.2f}")
+            
+            if np.any((lon_values < -180) | (lon_values > 180)):
+                logger.warning(f"Longitude values outside valid range [-180, 180]: "
+                             f"min={lon_values.min():.2f}, max={lon_values.max():.2f}")
         
         # Auto-detect feature columns if not specified
         if feature_cols is None:
+            if skip_auto_detection:
+                raise ValueError("feature_cols must be provided when skip_auto_detection=True")
             # Use all numeric columns except coordinates
             numeric_cols = []
             for field in table.schema:
@@ -203,7 +216,7 @@ class ParquetLoader:
             species_data = np.column_stack([table.column(col).to_numpy() for col in species_cols])
         
         # Check for zero inflation
-        zero_inflated = self._check_zero_inflation(features)
+        zero_inflated = False if skip_zero_inflation_check else self._check_zero_inflation(features)
         
         # Create metadata
         metadata = {
@@ -229,20 +242,28 @@ class ParquetLoader:
         )
         
         # IMPORTANT: Clean up PyArrow resources and minimize thread pools
-        del table  # Delete the PyArrow table
-        if 'parquet_file' in locals():
-            del parquet_file  # Delete the parquet file handle if it exists
-        if 'filtered_table' in locals():
-            del filtered_table  # Delete filtered table if it exists
-        
-        # Minimize PyArrow thread pools after data loading
-        # This won't release threads but will prevent them from doing work
-        pa.set_cpu_count(1)  # Minimize CPU threads
-        pa.set_io_thread_count(1)  # Minimize I/O threads
-        
-        # Force garbage collection
-        gc.collect()
-        logger.debug("Minimized PyArrow thread pools (CPU=1, IO=1) after data loading")
+        if not skip_thread_management:
+            del table  # Delete the PyArrow table
+            if 'parquet_file' in locals():
+                del parquet_file  # Delete the parquet file handle if it exists
+            if 'filtered_table' in locals():
+                del filtered_table  # Delete filtered table if it exists
+            
+            # Minimize PyArrow thread pools after data loading
+            # This won't release threads but will prevent them from doing work
+            pa.set_cpu_count(1)  # Minimize CPU threads
+            pa.set_io_thread_count(1)  # Minimize I/O threads
+            
+            # Force garbage collection
+            gc.collect()
+            logger.debug("Minimized PyArrow thread pools (CPU=1, IO=1) after data loading")
+        else:
+            # Still delete tables but skip thread management
+            del table
+            if 'parquet_file' in locals():
+                del parquet_file
+            if 'filtered_table' in locals():
+                del filtered_table
         
         # Validate if requested
         if validate:
