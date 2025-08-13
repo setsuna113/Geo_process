@@ -160,20 +160,39 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         logger.info(f"Fitting H2O Negative Binomial GLM with {self.n_threads} threads...")
         
         # Build the model
-        self.model = H2OGeneralizedLinearEstimator(
-            family='negativebinomial',
-            link='log',
-            max_iterations=self.max_iter,
-            standardize=True,
-            lambda_search=lambda_search,
-            nlambdas=100 if lambda_search else 1,
-            alpha=0.5,  # Elastic net mixing (0.5 = equal L1 and L2)
-            solver='IRLSM',  # Or 'COORDINATE_DESCENT' for wide data
-            compute_p_values=True,  # Enable to get std errors and p-values
-            remove_collinear_columns=True,
-            intercept=self.fit_intercept,
-            seed=42
-        )
+        # Note: remove_collinear_columns only works without regularization
+        # So we either use lambda_search OR remove_collinear_columns, not both
+        if lambda_search:
+            # Use regularization to handle collinearity
+            self.model = H2OGeneralizedLinearEstimator(
+                family='negativebinomial',
+                link='log',
+                max_iterations=self.max_iter,
+                standardize=True,
+                lambda_search=True,
+                nlambdas=100,
+                alpha=0.5,  # Elastic net mixing (0.5 = equal L1 and L2)
+                solver='IRLSM',
+                compute_p_values=True,
+                remove_collinear_columns=False,  # Can't use with lambda_search
+                intercept=self.fit_intercept,
+                seed=42
+            )
+        else:
+            # Remove collinear columns without regularization
+            self.model = H2OGeneralizedLinearEstimator(
+                family='negativebinomial',
+                link='log',
+                max_iterations=self.max_iter,
+                standardize=True,
+                lambda_search=False,
+                lambda_=0.0,  # No regularization
+                solver='IRLSM',
+                compute_p_values=True,
+                remove_collinear_columns=True,
+                intercept=self.fit_intercept,
+                seed=42
+            )
         
         # Train the model (automatically uses all threads!)
         self.model.train(
@@ -478,6 +497,53 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         
         # If neither available, raise error
         raise NotImplementedError("Deviance not available from H2O model")
+    
+    def get_aic(self) -> float:
+        """Get AIC (Akaike Information Criterion) of the fitted model.
+        
+        Returns:
+            AIC value
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted first")
+        
+        # H2O provides AIC directly
+        if hasattr(self.model, 'aic'):
+            return self.model.aic()
+        
+        # Alternative: compute from log-likelihood
+        # AIC = 2k - 2*log-likelihood
+        try:
+            log_lik = self.get_log_likelihood()
+            n_params = len(self.get_all_coefficients())
+            return 2 * n_params - 2 * log_lik
+        except:
+            logger.warning("AIC not available from H2O model")
+            return None
+    
+    def get_bic(self) -> float:
+        """Get BIC (Bayesian Information Criterion) of the fitted model.
+        
+        Returns:
+            BIC value
+        """
+        if not self.is_fitted:
+            raise ValueError("Model must be fitted first")
+        
+        # H2O provides BIC directly
+        if hasattr(self.model, 'bic'):
+            return self.model.bic()
+        
+        # Alternative: compute from log-likelihood
+        # BIC = k*log(n) - 2*log-likelihood
+        try:
+            log_lik = self.get_log_likelihood()
+            n_params = len(self.get_all_coefficients())
+            n_obs = self.model.nobs if hasattr(self.model, 'nobs') else 1000  # Fallback
+            return n_params * np.log(n_obs) - 2 * log_lik
+        except:
+            logger.warning("BIC not available from H2O model")
+            return None
     
     def get_model_params(self) -> Dict[str, Any]:
         """Get model parameters.
