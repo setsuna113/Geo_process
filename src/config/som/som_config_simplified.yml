@@ -71,6 +71,11 @@ training:
     initial: 0.0          # No momentum - pure batch SOM updates
     final: 0.0            # No momentum throughout training
     schedule: 'linear'    # Linear interpolation from initial to final (schedule field currently ignored)
+  
+  # Performance optimization
+  sparse_influence_threshold: 0.001  # Skip neuron updates when influence < this value
+                                     # Speeds up training by skipping negligible updates
+                                     # 0.001 = 0.1% of max influence (1.0)
     
 
 # ============================================================================

@@ -245,16 +245,51 @@ class GeoSOM:
         else:
             raise NotImplementedError(f"Topology {self.config.topology} not implemented")
     
-    def _validate_coordinates(self, coordinates: np.ndarray, n_samples: int) -> None:
-        """Validate coordinate array for proper shape and values.
+    def _validate_coordinates(self, coordinates: np.ndarray, n_samples: int) -> np.ndarray:
+        """Validate coordinate array for proper shape, memory, and values.
+        
+        COORDINATE ORDER: This function expects [latitude, longitude] order.
+        First column should be latitude (-90 to 90), second column longitude (-180 to 180).
         
         Args:
-            coordinates: Geographic coordinates to validate
+            coordinates: Geographic coordinates to validate [latitude, longitude]
             n_samples: Expected number of samples
+            
+        Returns:
+            Validated and potentially converted coordinates array
             
         Raises:
             ValueError: If coordinates have invalid shape or dimensions
+            MemoryError: If dataset would require too much memory
         """
+        import psutil  # For memory checking
+        
+        # Memory validation
+        available_memory = psutil.virtual_memory().available
+        # Estimate memory for coordinates + processing overhead
+        n_features = 4  # Typical feature count
+        estimated_memory = (
+            coordinates.nbytes +  # Coordinates array
+            (n_samples * n_features * 8) +  # Data array (float64)
+            (self.config.grid_size[0] * self.config.grid_size[1] * n_features * 8) * 2  # Weights + temp arrays
+        )
+        
+        if estimated_memory > available_memory * 0.8:
+            raise MemoryError(
+                f"Dataset too large: {estimated_memory/1e9:.1f}GB required, "
+                f"only {available_memory/1e9:.1f}GB available. "
+                f"Consider reducing data size or grid size."
+            )
+        
+        # Data type validation and conversion
+        if coordinates.dtype not in [np.float32, np.float64]:
+            logger.info(f"Converting coordinates from {coordinates.dtype} to float64")
+            coordinates = coordinates.astype(np.float64)
+        elif coordinates.dtype == np.float32:
+            # Optionally convert float32 to float64 for better precision
+            logger.info("Converting coordinates from float32 to float64 for better precision")
+            coordinates = coordinates.astype(np.float64)
+        
         # Check shape
         if len(coordinates.shape) != 2:
             raise ValueError(f"Coordinates must be 2D array, got shape {coordinates.shape}")
@@ -293,6 +328,8 @@ class GeoSOM:
                 logger.warning(f"Found {invalid_lon.sum()} samples with invalid longitude values "
                              f"(outside [-180, 180]): min={lon_values[valid_lon_mask].min():.2f}, "
                              f"max={lon_values[valid_lon_mask].max():.2f}")
+        
+        return coordinates  # Return the validated/converted coordinates
     
     def partial_bray_curtis(self, u: np.ndarray, v: np.ndarray) -> float:
         """Bray-Curtis distance for vectors with missing values.
@@ -371,7 +408,7 @@ class GeoSOM:
         
         # Validate coordinates if provided
         if coordinates is not None:
-            self._validate_coordinates(coordinates, data.shape[0])
+            coordinates = self._validate_coordinates(coordinates, data.shape[0])
         
         if method == "pca_transformed":
             self._init_pca_transformed(data)
