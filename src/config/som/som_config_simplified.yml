@@ -12,25 +12,36 @@
 #   SOM_N_WORKERS=150
 
 # ============================================================================
+# PREPROCESSING - Data preprocessing before SOM training
+# ============================================================================
+
+preprocessing:
+  missing_strategy: 'keep'     # 'keep' = let SOM handle missing with min_valid_features
+                                # 'complete' = drop incomplete samples (loses too much data)
+                                # 'zero' = fill NaN with 0 (distorts standardization)
+                                # 'mean' = fill with column mean
+                                # 'median' = fill with column median
+
+# ============================================================================
 # CORE SETTINGS - Essential parameters that define the SOM
 # ============================================================================
 
 # Grid architecture
 grid:
-  size: [50, 50]          # Number of neurons (rows, cols) - 3600 neurons for production
+  size: [60, 60]          # Number of neurons (rows, cols) - 3600 neurons for production
   topology: 'rectangular'  # Grid topology (hexagonal not yet implemented)
 
 # Data configuration
 data:
   # Input data sampling
-  spatial_grid_step: 100  # Sample every Nth spatial point (100 = fast testing)
+  spatial_grid_step: 2  # Sample every 2nd spatial point (reduce data by half)
   
   # Feature columns (standardized naming)
-  feature_cols: ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']
+  feature_cols: ['plant_richness', 'animal_richness', 'am_fungi_richness', 'ecm_fungi_richness']
   coordinate_columns: ['x', 'y']
   
-  # Missing data handling
-  min_valid_features: 2   # Minimum features required for valid distance
+  # Missing data handling (used when preprocessing.missing_strategy = 'keep')
+  min_valid_features: 3   # Minimum features required for valid distance (after fungi combination: plant, animal, total_fungi)
 
 # Distance metrics
 distance:
@@ -44,40 +55,28 @@ distance:
 
 training:
   # Basic settings
-  max_epochs: 11          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 200          # Number of workers (1 for sequential, >1 for parallel)
+  max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
+  n_workers: 120        # Number of workers (1 for sequential, >1 for parallel) - reduced to 120 for memory constraints
   
-  # Learning rate
-  learning_rate:
-    initial: 0.8          # Starting learning rate
-    minimum: 0.1          # Minimum learning rate
-    maximum: 1.0          # Maximum learning rate
     
   # Neighborhood radius
   radius:
-    initial: 20.0         # Initial neighborhood radius (half of grid size)
-    final: 0.5            # Final neighborhood radius
+    initial: 40.0         # Initial neighborhood radius (larger for better global organization)
+    final: 5.0            # Final neighborhood radius (5 for 60x60 grid - maintains local neighborhood)
     decay: 'exponential'       # Decay type: 'linear' or 'exponential'
     
-  # Batch processing
-  batch:
-    size: 10000            # Samples per batch
-    shuffle: true         # Shuffle batches each epoch
     
-  # Momentum (for faster convergence)
+  # Momentum (for smoothing batch updates)
   momentum:
-    initial: 0.9          # High initial momentum for global organization
-    final: 0.1            # Low final momentum for fine-tuning
-    schedule: 'exponential'    # How momentum decays
-    
-  # Memory optimization
-  memory:
-    chunk_size: 65000     # Process data in chunks (200 chunks for 200 workers)
-    max_memory_gb: 600    # Maximum memory to use (conservative with 682GB available)
+    initial: 0.0          # No momentum - pure batch SOM updates
+    final: 0.0            # No momentum throughout training
+    schedule: 'linear'    # Linear interpolation from initial to final (schedule field currently ignored)
   
-  # Parallel optimization settings (threading backend only)
-  parallel_optimization:
-    optimal_workers: 100        # Number of threading workers (optimal for NumPy operations)
+  # Performance optimization
+  sparse_influence_threshold: 0.001  # Skip neuron updates when influence < this value
+                                     # Speeds up training by skipping negligible updates
+                                     # 0.001 = 0.1% of max influence (1.0)
+    
 
 # ============================================================================
 # CONVERGENCE CRITERIA - Multiple metrics to determine when to stop training
@@ -121,7 +120,16 @@ convergence:
   logic: 'or'                        # 'or' = either TE or GC, 'weighted' = combine scores
   
   # Early stopping patience
-  patience: 50                      # Stop after N epochs without meaningful QE improvement (>0.1%)
+  patience: 500                     # Stop after N epochs without meaningful QE improvement (>0.1%) - set to 500 to force full training
+
+# ============================================================================
+# TERMINATION - Additional termination criteria
+# ============================================================================
+termination:
+  # Minimum radius termination
+  min_radius: 2.0                    # Stop training when radius reaches this value (prevents instability)
+                                     # Literature suggests 1.0-2.0 for stability
+                                     # Below 1.0 causes QE oscillations due to isolated local updates
 
 # ============================================================================
 # MONITORING & CHECKPOINTS - Track progress and save state
@@ -136,7 +144,9 @@ monitoring:
   # Sampling for metrics
   sampling:
     large_sample: 50000              # Sample size for accurate metrics
-    qe_sample_size: 10000            # Sample size for QE calculation each epoch
+    qe_sample_size: 20000            # Sample size for QE calculation each epoch
+    coherence_sample_threshold: 10000  # If data > this, use sampling for geographic coherence
+    coherence_sample_size: 5000      # Number of samples to use for geographic coherence
 
 # ============================================================================
 # VALIDATION - Cross-validation settings
@@ -154,14 +164,25 @@ spatial_metrics:
   k_neighbors: 50                  # Neighbors for spatial analysis
   max_distance_km: 500             # Maximum spatial influence
   neighborhood_function: 'gaussian'  # Type of neighborhood function for SOM
+  coherence_distance_threshold: 50.0  # Distance threshold for geographic coherence (km)
+  earth_radius_km: 6371.0          # Earth radius for haversine distance calculations
 
 # ============================================================================
-# VLRSOM SETTINGS - Variable Learning Rate SOM parameters
+# NUMBA OPTIMIZATION - Parameters specific to pure Numba implementation
 # ============================================================================
-# Note: When enabled=false, uses standard learning rate schedule from training section
 
-vlrsom:
-  enabled: false                     # Enable/disable VLRSOM adaptation (false = use standard schedule)
-  alpha: 0.95                        # Decay factor (0 < α < 1) - only used when enabled=true
-  gamma: 0.001                       # Adaptation parameter (γ > 0) - only used when enabled=true
-  error_sample_size: 10000          # Sample size for J²(t) calculation - only used when enabled=true
+numba:
+  # Thread control - uniformly controls ALL Numba parallel operations
+  # Note: Can also be set via NUMBA_NUM_THREADS environment variable
+  # If not set, uses all CPU cores by default
+  # max_threads: 100  # Uncomment to limit Numba threads (overrides n_workers)
+  
+  # Sparse update threshold - skip neurons with influence below this
+  sparse_influence_threshold: 0.001
+  
+  # Geographic distance normalization for combined distance calculations
+  geo_distance_norm: 20000.0      # Max earth distance for normalization (~half circumference)
+  
+  # Default values for missing configuration
+  default_geo_distance_norm: 1000.0  # Fallback normalization if not specified
+

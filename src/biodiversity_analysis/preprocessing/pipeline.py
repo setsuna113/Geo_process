@@ -31,7 +31,9 @@ class SharedPreprocessor:
                  handle_missing: bool = True,
                  missing_strategy: str = 'zero',
                  remove_constant_features: bool = False,
-                 variance_threshold: float = 1e-10):
+                 variance_threshold: float = 1e-10,
+                 combine_fungi: bool = False,
+                 feature_names: Optional[List[str]] = None):
         """Initialize shared preprocessor.
         
         Args:
@@ -39,9 +41,11 @@ class SharedPreprocessor:
             normalize: Whether to normalize/standardize data
             normalization_method: 'auto' (method-specific), 'minmax', 'standard', 'robust', or 'none'
             handle_missing: Whether to handle missing values
-            missing_strategy: 'zero', 'mean', 'median', or 'keep'
+            missing_strategy: 'complete' (drop incomplete), 'zero', 'mean', 'median', or 'keep'
             remove_constant_features: Whether to remove constant features
             variance_threshold: Minimum variance to keep features
+            combine_fungi: Whether to combine am_fungi and ecm_fungi into total_fungi
+            feature_names: List of feature column names for fungi combination
         """
         self.method_name = method_name
         self.normalize = normalize
@@ -50,8 +54,11 @@ class SharedPreprocessor:
         self.missing_strategy = missing_strategy
         self.remove_constant_features = remove_constant_features
         self.variance_threshold = variance_threshold
+        self.combine_fungi = combine_fungi
+        self.feature_names = feature_names or ['plant_richness', 'animal_richness', 'am_fungi_richness', 'ecm_fungi_richness']
         self.scaler = None
         self._fitted = False
+        self._fungi_indices = None  # Will store indices of fungi columns after combination
         
         # Auto-configure based on method
         if normalization_method == 'auto':
@@ -60,9 +67,11 @@ class SharedPreprocessor:
     def _auto_configure(self):
         """Auto-configure preprocessing based on analysis method."""
         if self.method_name == 'som':
-            # SOM prefers minmax normalization
-            self.normalization_method = 'minmax'
-            self.missing_strategy = 'zero'  # SOM handles sparse data well
+            # SOM now uses standardization for better feature balance
+            self.normalization_method = 'standard'
+            # Don't override missing_strategy if already set
+            if self.missing_strategy == 'auto':
+                self.missing_strategy = 'keep'  # Let SOM handle pairwise missing
         elif self.method_name == 'cpwopt':
             # CP-WOPT needs non-negative values
             self.normalization_method = 'minmax'
@@ -76,6 +85,30 @@ class SharedPreprocessor:
             self.normalization_method = 'robust'
             self.missing_strategy = 'zero'
     
+    def _combine_fungi_features(self, data: np.ndarray) -> np.ndarray:
+        """Combine am_fungi and ecm_fungi into total_fungi feature.
+        
+        Args:
+            data: Input array with 4 features [plant, animal, am_fungi, ecm_fungi]
+            
+        Returns:
+            Array with 3 features [plant, animal, total_fungi]
+        """
+        if data.shape[1] != 4:
+            logger.warning(f"Expected 4 features for fungi combination, got {data.shape[1]}. Skipping combination.")
+            return data
+            
+        # Assuming standard order: [plant_richness, animal_richness, am_fungi, ecm_fungi]
+        plant = data[:, 0:1]  # Keep as 2D
+        animal = data[:, 1:2]  # Keep as 2D
+        total_fungi = data[:, 2:3] + data[:, 3:4]  # Sum am_fungi + ecm_fungi
+        
+        # Stack to create new array
+        combined = np.hstack([plant, animal, total_fungi])
+        
+        logger.info(f"Combined fungi features: shape {data.shape} -> {combined.shape}")
+        return combined
+    
     def fit(self, data: Union[np.ndarray, pd.DataFrame]) -> 'SharedPreprocessor':
         """Fit the preprocessor on training data.
         
@@ -88,6 +121,10 @@ class SharedPreprocessor:
         # Convert to numpy if needed
         if isinstance(data, pd.DataFrame):
             data = data.values
+        
+        # Combine fungi features if requested
+        if self.combine_fungi:
+            data = self._combine_fungi_features(data)
         
         # Handle missing values first
         if self.handle_missing and self.missing_strategy != 'keep':
@@ -127,6 +164,10 @@ class SharedPreprocessor:
         else:
             column_names = None
         
+        # Combine fungi features if requested
+        if self.combine_fungi:
+            data = self._combine_fungi_features(data)
+        
         # Handle missing values
         if self.handle_missing and self.missing_strategy != 'keep':
             data = self._handle_missing_values(data)
@@ -158,7 +199,14 @@ class SharedPreprocessor:
     
     def _handle_missing_values(self, data: np.ndarray) -> np.ndarray:
         """Handle missing values according to strategy."""
-        if self.missing_strategy == 'zero':
+        if self.missing_strategy == 'complete':
+            # Only keep rows with all features present (complete case analysis)
+            complete_mask = ~np.isnan(data).any(axis=1)
+            n_dropped = (~complete_mask).sum()
+            if n_dropped > 0:
+                logger.info(f"Dropped {n_dropped} samples with missing values ({n_dropped/len(data)*100:.1f}%)")
+            return data[complete_mask]
+        elif self.missing_strategy == 'zero':
             # For biodiversity data, 0 is meaningful (no species)
             return np.nan_to_num(data, nan=0.0)
         elif self.missing_strategy == 'mean':

@@ -1,5 +1,8 @@
 """Core SOM implementation module."""
 
-from .geo_som_core import GeoSOMVLRSOM, GeoSOMConfig
+from .geo_som_core import GeoSOM, GeoSOMConfig
 
-__all__ = ['GeoSOMVLRSOM', 'GeoSOMConfig']
+# Keep alias for backwards compatibility
+GeoSOMVLRSOM = GeoSOM
+
+__all__ = ['GeoSOM', 'GeoSOMVLRSOM', 'GeoSOMConfig']
