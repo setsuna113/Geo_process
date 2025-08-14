@@ -28,6 +28,11 @@ methods:
   correlation:
     enabled: true
     sample_factor: 5  # Production: 5, Test: 20
+    
+  biome_analysis:
+    enabled: true
+    method: 'latitude'  # 'latitude', 'climate', or 'coords'
+    sample_factor: 5
 
 # Dataset paths
 datasets:
