@@ -13,6 +13,120 @@ from matplotlib.gridspec import GridSpec
 
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
 from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _create_nature_style_figure(arr, df, feature_col, name, stats_info, output_dir):
+    """Create Nature-style figure with map, density curve, and biome boxplots."""
+    import pandas as pd
+    import seaborn as sns
+    
+    # Create figure with complex layout
+    fig = plt.figure(figsize=(16, 12))
+    
+    # Layout: Top = map, Middle = density, Bottom = boxplots by biome
+    gs = GridSpec(3, 1, figure=fig, height_ratios=[2, 0.5, 1.5], hspace=0.3)
+    
+    # 1. GLOBAL MAP (top)
+    ax_map = fig.add_subplot(gs[0, :])
+    masked = np.ma.masked_invalid(arr)
+    vmin, vmax = np.percentile(masked.compressed(), [2, 98])
+    
+    im = ax_map.imshow(masked, cmap='viridis', aspect='equal',
+                      extent=[-180, 180, -90, 90],
+                      vmin=vmin, vmax=vmax)
+    
+    title_map = {
+        'animals': 'Global Terrestrial Animal Species Richness',
+        'plants': 'Global Plant Species Richness',
+        'am_fungi': 'Global AM Fungi Richness', 
+        'ecm_fungi': 'Global ECM Fungi Richness'
+    }
+    ax_map.set_title(title_map.get(name, name), fontsize=16, fontweight='bold')
+    ax_map.set_xlabel('Longitude')
+    ax_map.set_ylabel('Latitude')
+    
+    # Colorbar
+    cbar = plt.colorbar(im, ax=ax_map, fraction=0.046, pad=0.02)
+    cbar.set_label('Species Richness', rotation=270, labelpad=20)
+    
+    # 2. DENSITY CURVE (middle)
+    ax_density = fig.add_subplot(gs[1, :])
+    
+    # Get valid data
+    valid_data = df[feature_col].dropna()
+    
+    # Transform ECM data if needed (square root for visualization like Nature paper)
+    if 'ecm' in feature_col.lower() and valid_data.max() > 100:
+        valid_data = np.sqrt(valid_data)
+        ax_density.set_xlabel('Species Richness (√transformed)', fontsize=11)
+    else:
+        ax_density.set_xlabel('Species Richness', fontsize=11)
+    
+    # Plot density
+    valid_data.plot(kind='density', ax=ax_density, color='steelblue', linewidth=2)
+    ax_density.fill_between(ax_density.get_lines()[0].get_xdata(),
+                           ax_density.get_lines()[0].get_ydata(),
+                           alpha=0.3, color='steelblue')
+    ax_density.set_ylabel('Density', fontsize=11)
+    ax_density.set_title('Global Distribution of Richness Estimates', fontsize=12)
+    ax_density.grid(True, alpha=0.3)
+    
+    # 3. BIOME BOXPLOTS (bottom)
+    ax_box = fig.add_subplot(gs[2, :])
+    
+    # Prepare data for boxplot
+    biome_data = df.groupby('biome')[feature_col].apply(list).to_dict()
+    
+    # Remove biomes with too few samples (like Nature paper)
+    biome_data = {k: v for k, v in biome_data.items() 
+                  if len([x for x in v if pd.notna(x)]) >= 10}
+    
+    # Sort biomes by median richness
+    biome_medians = {k: np.median([x for x in v if pd.notna(x)]) 
+                     for k, v in biome_data.items()}
+    sorted_biomes = sorted(biome_medians.keys(), key=lambda x: biome_medians[x])
+    
+    # Create boxplot data
+    box_data = [biome_data[b] for b in sorted_biomes]
+    
+    # Transform ECM if needed
+    if 'ecm' in feature_col.lower() and df[feature_col].max() > 100:
+        box_data = [[np.sqrt(x) if pd.notna(x) else np.nan for x in b] 
+                    for b in box_data]
+    
+    # Create boxplot
+    bp = ax_box.boxplot(box_data, labels=sorted_biomes, patch_artist=True,
+                        showfliers=False)  # Hide outliers for cleaner look
+    
+    # Style boxplots
+    for patch in bp['boxes']:
+        patch.set_facecolor('lightsteelblue')
+        patch.set_alpha(0.7)
+    
+    # Formatting
+    ax_box.set_xlabel('Biome', fontsize=11)
+    ylabel = 'Species Richness (√transformed)' if 'ecm' in feature_col.lower() else 'Species Richness'
+    ax_box.set_ylabel(ylabel, fontsize=11)
+    ax_box.set_title('Richness Patterns Across Terrestrial Biomes', fontsize=12)
+    ax_box.tick_params(axis='x', rotation=45)
+    plt.setp(ax_box.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=9)
+    ax_box.grid(True, alpha=0.3, axis='y')
+    
+    # Add sample sizes
+    for i, biome in enumerate(sorted_biomes):
+        n = len([x for x in biome_data[biome] if pd.notna(x)])
+        ax_box.text(i+1, ax_box.get_ylim()[0], f'n={n}', 
+                   ha='center', va='top', fontsize=8, color='gray')
+    
+    plt.suptitle(f'{title_map.get(name, name)} - Nature Style Analysis', 
+                fontsize=18, y=0.98)
+    
+    plt.tight_layout()
+    save_figure(fig, output_dir / f'nature_style_{name}.png', dpi=300)
+    plt.close(fig)
 
 
 def analyze_global_maps(
@@ -137,39 +251,50 @@ def analyze_global_maps(
         save_figure(fig, output_dir / f'global_map_{name}.png', dpi=150)
         plt.close(fig)
     
-    # Also create combined overview grid (2x2 for 4 datasets)
-    n = len(data)
-    cols = min(2, n)
-    rows = (n + cols - 1) // cols
+    # Create Nature-style combined figure with map + density + biome boxplots
+    # IF we have parquet data with biome information
+    parquet_path = Path('biodiversity_climate_production_1x_corrected.parquet')
     
-    fig = plt.figure(figsize=(16, 10))
-    gs = GridSpec(rows, cols, figure=fig, hspace=0.3, wspace=0.2)
-    
-    for idx, (name, arr) in enumerate(data.items()):
-        ax = fig.add_subplot(gs[idx // cols, idx % cols])
-        
-        # Plot map
-        masked = np.ma.masked_invalid(arr)
-        vmin, vmax = np.percentile(masked.compressed(), [2, 98])
-        
-        im = ax.imshow(masked, cmap='viridis', aspect='equal', 
-                      extent=[-180, 180, -90, 90],
-                      vmin=vmin, vmax=vmax)
-        
-        # Simple formatting
-        ax.set_title(name.replace('_', ' ').title())
-        ax.set_xlabel('Longitude')
-        ax.set_ylabel('Latitude')
-        ax.grid(True, alpha=0.3, linestyle='--')
-        
-        # Colorbar
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        if stats[name]['max'] > 1000:
-            cbar.formatter.set_powerlimits((0, 0))
-        
-    plt.suptitle('Global Biodiversity Overview', fontsize=16, y=1.02)
-    save_figure(fig, output_dir / 'global_map_overview.png')
-    plt.close(fig)
+    if parquet_path.exists():
+        try:
+            import pandas as pd
+            from src.biodiversity_analysis.statistical.holdridge_classifier import classify_holdridge
+            
+            # Load parquet for biome analysis (sample for memory)
+            df = pd.read_parquet(parquet_path, 
+                                columns=['x', 'y', 'bio01', 'bio12', 'elevation',
+                                        'animal_richness', 'plant_richness', 
+                                        'am_fungi_richness', 'ecm_fungi_richness'])
+            
+            # Sample for memory efficiency
+            if len(df) > 100000:
+                df = df.sample(n=100000, random_state=42)
+            
+            # Classify biomes
+            df['biome'] = classify_holdridge(
+                df['bio01'].values,
+                df['bio12'].values, 
+                df['elevation'].values
+            )
+            
+            # Create Nature-style figure for each dataset
+            for name, arr in data.items():
+                # Map feature names
+                feature_map = {
+                    'animals': 'animal_richness',
+                    'plants': 'plant_richness',
+                    'am_fungi': 'am_fungi_richness',
+                    'ecm_fungi': 'ecm_fungi_richness'
+                }
+                
+                if name in feature_map and feature_map[name] in df.columns:
+                    _create_nature_style_figure(
+                        arr, df, feature_map[name], name, 
+                        stats[name], output_dir
+                    )
+                    
+        except Exception as e:
+            logger.warning(f"Could not create Nature-style figures: {e}")
     
     # Save results
     results = {
