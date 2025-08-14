@@ -13,18 +13,21 @@ import json
 
 from src.biodiversity_analysis.statistical.data_utils import load_data, save_results
 from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
+# Import the memory-efficient version
+from src.biodiversity_analysis.statistical.overlap_chunked import analyze_overlap as analyze_overlap_chunked
 
 
 def analyze_overlap(
     data_source: Dict[str, Union[str, np.ndarray]],
     output_dir: Union[str, Path],
     hotspot_percentile: float = 90,
-    plot: bool = True
+    plot: bool = True,
+    **kwargs
 ) -> Dict[str, Any]:
     """
     Analyze spatial overlap between biodiversity datasets.
     
-    Direct, no bullshit.
+    Now uses memory-efficient chunked processing.
     
     Args:
         data_source: Dict of dataset names to paths/arrays
@@ -35,6 +38,11 @@ def analyze_overlap(
     Returns:
         Overlap statistics
     """
+    # If all inputs are paths, use chunked version
+    if all(isinstance(v, str) for v in data_source.values()):
+        return analyze_overlap_chunked(data_source, output_dir, hotspot_percentile, plot=plot)
+    
+    # Otherwise fall back to original (for arrays)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     

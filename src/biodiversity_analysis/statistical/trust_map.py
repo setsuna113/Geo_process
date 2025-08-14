@@ -78,10 +78,12 @@ def analyze_trust_maps(
             cv = cv_data[name]
             cv_valid = ~np.isnan(cv)
             
-            # Trust levels based on CV
-            high_trust = cv < 0.3  # CV < 30%
-            medium_trust = (cv >= 0.3) & (cv < 0.6)
-            low_trust = cv >= 0.6
+            # Trust levels based on CV distribution, not magic numbers
+            # Use percentiles to define trust levels
+            cv_percentiles = np.nanpercentile(cv[cv_valid], [33, 67])
+            high_trust = cv < cv_percentiles[0]
+            medium_trust = (cv >= cv_percentiles[0]) & (cv < cv_percentiles[1])
+            low_trust = cv >= cv_percentiles[1]
             
             stats.update({
                 'mean_cv': float(np.nanmean(cv)),

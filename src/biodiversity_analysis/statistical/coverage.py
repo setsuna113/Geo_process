@@ -47,10 +47,10 @@ def analyze_coverage(
                 'total_pixels': int(src.height * src.width),
             }
             
-            # Accumulate statistics in chunks
-            valid_count = 0
-            value_sum = 0.0
-            value_sum2 = 0.0  # For std calculation
+            # Use Welford's algorithm for numerically stable statistics
+            n = 0
+            mean = 0.0
+            M2 = 0.0  # Sum of squares of differences from mean
             value_min = float('inf')
             value_max = float('-inf')
             all_values = []  # Only for percentiles, sample if too big
@@ -71,10 +71,14 @@ def analyze_coverage(
                 valid_chunk = chunk[valid_mask]
                 
                 if len(valid_chunk) > 0:
-                    # Update counters
-                    valid_count += len(valid_chunk)
-                    value_sum += valid_chunk.sum()
-                    value_sum2 += (valid_chunk ** 2).sum()
+                    # Welford update for each value
+                    for value in valid_chunk:
+                        n += 1
+                        delta = value - mean
+                        mean += delta / n
+                        delta2 = value - mean
+                        M2 += delta * delta2
+                    
                     value_min = min(value_min, valid_chunk.min())
                     value_max = max(value_max, valid_chunk.max())
                     
@@ -87,14 +91,14 @@ def analyze_coverage(
                         all_values.extend(valid_chunk[indices].tolist())
             
             # Calculate final statistics
-            stats['valid_pixels'] = int(valid_count)
-            stats['coverage_percent'] = float(100 * valid_count / stats['total_pixels'])
+            stats['valid_pixels'] = int(n)
+            stats['coverage_percent'] = float(100 * n / stats['total_pixels'])
             stats['missing_percent'] = float(100 - stats['coverage_percent'])
             
-            if valid_count > 0:
-                mean = value_sum / valid_count
-                variance = (value_sum2 / valid_count) - mean ** 2
-                std = np.sqrt(max(0, variance))  # Avoid numerical issues
+            if n > 0:
+                # Finalize Welford statistics
+                variance = M2 / n if n > 1 else 0
+                std = np.sqrt(variance)
                 
                 stats.update({
                     'min': float(value_min),

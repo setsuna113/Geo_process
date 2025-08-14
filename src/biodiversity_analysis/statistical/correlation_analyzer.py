@@ -76,11 +76,12 @@ def _analyze_rasters_chunked(
     plot: bool
 ) -> Dict[str, Any]:
     """
-    Analyze rasters using chunked processing to avoid memory explosion.
+    Analyze rasters using CORRECT chunked processing with Welford's algorithm.
     
-    Instead of loading all rasters and flattening (memory bomb),
-    we process in chunks and accumulate statistics.
+    The old version was mathematically wrong. This is the right way.
     """
+    from src.biodiversity_analysis.statistical.welford import WelfordAccumulator
+    
     raster_loader = RasterLoader()
     
     # Load rasters but don't flatten yet
@@ -109,88 +110,59 @@ def _analyze_rasters_chunked(
     # Calculate total pixels
     total_pixels = shapes[0][0] * shapes[0][1]
     
-    # If sampling requested and smaller than total, use random sampling
+    # If sampling requested and smaller than total, use spatial sampling (not random!)
     if sample_size and sample_size < total_pixels:
-        return _analyze_with_sampling(rasters, output_dir, method, sample_size, plot)
+        return _analyze_with_spatial_sampling(rasters, output_dir, method, sample_size, plot)
     
-    # Otherwise use chunked correlation computation
-    logger.info(f"Processing {total_pixels:,} pixels in chunks of {chunk_size:,}")
+    # Use Welford's algorithm for numerically stable incremental computation
+    logger.info(f"Processing {total_pixels:,} pixels with Welford's algorithm")
     
-    # For correlation, we need running sums for online algorithm
-    n = 0
-    sums = {name: 0.0 for name in rasters}
-    sums2 = {name: 0.0 for name in rasters}
-    cross_products = {}
-    
-    for i in rasters:
-        for j in rasters:
-            if i < j:
-                cross_products[f"{i}_{j}"] = 0.0
+    names = list(rasters.keys())
+    n_features = len(names)
+    accumulator = WelfordAccumulator(n_features)
     
     # Process in chunks
     height, width = shapes[0]
-    for row_start in range(0, height, chunk_size // width):
-        row_end = min(row_start + chunk_size // width, height)
-        
-        # Extract chunk from each raster
-        chunk_data = {}
-        for name, raster in rasters.items():
-            chunk = raster[row_start:row_end].flatten()
-            valid_mask = ~np.isnan(chunk)
-            chunk_data[name] = chunk[valid_mask]
-        
-        # Find common valid pixels
-        min_len = min(len(arr) for arr in chunk_data.values())
-        if min_len == 0:
-            continue
-        
-        # Truncate to common length
-        for name in chunk_data:
-            chunk_data[name] = chunk_data[name][:min_len]
-        
-        # Update statistics
-        n += min_len
-        for name, values in chunk_data.items():
-            sums[name] += values.sum()
-            sums2[name] += (values ** 2).sum()
-        
-        # Update cross products
-        for i in rasters:
-            for j in rasters:
-                if i < j:
-                    key = f"{i}_{j}"
-                    cross_products[key] += (chunk_data[i] * chunk_data[j]).sum()
+    pixels_processed = 0
     
-    # Calculate correlations from accumulated statistics
+    for start_idx in range(0, total_pixels, chunk_size):
+        end_idx = min(start_idx + chunk_size, total_pixels)
+        chunk_pixels = end_idx - start_idx
+        
+        # Extract chunk for each feature
+        chunk_data = np.full((chunk_pixels, n_features), np.nan)
+        for i, name in enumerate(names):
+            flat = rasters[name].flatten()
+            chunk_data[:, i] = flat[start_idx:end_idx]
+        
+        # Find rows with all valid data
+        valid_mask = ~np.any(np.isnan(chunk_data), axis=1)
+        valid_data = chunk_data[valid_mask]
+        
+        if len(valid_data) > 0:
+            accumulator.update(valid_data)
+            pixels_processed += len(valid_data)
+    
+    # Get final statistics
+    stats = accumulator.get_statistics()
+    
+    # Format results
     correlations = {}
-    for i in rasters:
-        correlations[i] = {}
-        for j in rasters:
-            if i == j:
-                correlations[i][j] = 1.0
-            else:
-                key = f"{min(i,j)}_{max(i,j)}"
-                if key in cross_products and n > 0:
-                    # Pearson correlation from sums
-                    mean_i = sums[i] / n
-                    mean_j = sums[j] / n
-                    var_i = (sums2[i] / n) - mean_i ** 2
-                    var_j = (sums2[j] / n) - mean_j ** 2
-                    cov = (cross_products[key] / n) - mean_i * mean_j
-                    
-                    if var_i > 0 and var_j > 0:
-                        r = cov / (np.sqrt(var_i) * np.sqrt(var_j))
-                        correlations[i][j] = float(np.clip(r, -1, 1))
-                    else:
-                        correlations[i][j] = 0.0
+    corr_matrix = stats['correlation']
+    for i, name_i in enumerate(names):
+        correlations[name_i] = {}
+        for j, name_j in enumerate(names):
+            correlations[name_i][name_j] = float(corr_matrix[i, j])
     
     results = {
         'pearson': correlations,
         'statistics': {
-            'n_samples': n,
-            'n_features': len(rasters),
-            'features': list(rasters.keys()),
-            'method': 'chunked_processing',
+            'n_samples': stats['n'],
+            'n_features': n_features,
+            'features': names,
+            'means': {name: float(stats['mean'][i]) for i, name in enumerate(names)},
+            'stds': {name: float(stats['std'][i]) for i, name in enumerate(names)},
+            'method': 'welford_incremental',
             'chunk_size': chunk_size
         }
     }
@@ -198,7 +170,7 @@ def _analyze_rasters_chunked(
     # Generate plot if requested
     if plot and len(rasters) > 1:
         corr_df = pd.DataFrame(correlations)
-        fig = _plot_correlation_matrix(corr_df, f"Correlation Matrix (chunked)")
+        fig = _plot_correlation_matrix(corr_df, f"Correlation Matrix (Welford)")
         save_figure(fig, output_dir / 'correlation_matrix.png')
         plt.close(fig)
     
@@ -206,24 +178,40 @@ def _analyze_rasters_chunked(
     return results
 
 
-def _analyze_with_sampling(rasters: Dict, output_dir: Path, method: str, 
-                          sample_size: int, plot: bool) -> Dict[str, Any]:
-    """Use random sampling instead of chunks."""
-    # Generate random indices
+def _analyze_with_spatial_sampling(rasters: Dict, output_dir: Path, method: str, 
+                                  sample_size: int, plot: bool) -> Dict[str, Any]:
+    """
+    Use SPATIAL sampling, not random garbage.
+    
+    Systematic grid sampling preserves spatial structure.
+    """
     height, width = next(iter(rasters.values())).shape
     total_pixels = height * width
     
-    np.random.seed(42)
-    sample_indices = np.random.choice(total_pixels, size=sample_size, replace=False)
+    # Calculate grid step for systematic sampling
+    step = int(np.sqrt(total_pixels / sample_size))
+    if step < 1:
+        step = 1
     
-    # Extract samples
+    # Create systematic grid indices
+    row_indices = np.arange(0, height, step)
+    col_indices = np.arange(0, width, step)
+    
+    # Extract samples at grid points
     sampled_data = {}
     for name, raster in rasters.items():
-        flat = raster.flatten()
-        sampled_data[name] = flat[sample_indices]
+        samples = []
+        for r in row_indices:
+            for c in col_indices:
+                samples.append(raster[r, c])
+        sampled_data[name] = np.array(samples)
     
-    # Create DataFrame and use standard analysis
+    # Remove rows with any NaN
     df = pd.DataFrame(sampled_data)
+    df = df.dropna()
+    
+    logger.info(f"Spatial sampling: {len(df)} valid samples from {step}×{step} grid")
+    
     return _analyze_dataframe(df, output_dir, method, None, None, plot)
 
 
