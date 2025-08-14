@@ -26,6 +26,104 @@ class InteractionPlots:
             model: Fitted GLM model (H2O or similar)
         """
         self.model = model
+    
+    @staticmethod
+    def plot_continuous_interaction(model: Any,
+                                   var1: str,
+                                   var2: str,
+                                   var1_range: Tuple[float, float],
+                                   var2_values: List[float],
+                                   data: Any,
+                                   ylabel: str = 'Predicted Outcome',
+                                   xlabel: str = None,
+                                   title: str = None) -> plt.Figure:
+        """Create interaction plot for continuous variables.
+        
+        For H2: Shows how plant-fungi relationship changes at different bio4 levels.
+        
+        Args:
+            model: Fitted model with interaction
+            var1: Continuous variable for x-axis (e.g., 'plants_richness_log')
+            var2: Moderator variable (e.g., 'bio04_std')
+            var1_range: Range for var1 (min, max)
+            var2_values: Specific values of var2 to plot
+            data: Data frame for baseline values
+            ylabel: Y-axis label
+            xlabel: X-axis label (default: var1 name)
+            title: Plot title
+            
+        Returns:
+            matplotlib figure
+        """
+        import matplotlib.pyplot as plt
+        import h2o
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Access the actual model
+        if hasattr(model, 'model'):
+            h2o_model = model.model
+        else:
+            h2o_model = model
+        
+        # Create prediction grid
+        var1_grid = np.linspace(var1_range[0], var1_range[1], 100)
+        
+        # Get baseline data
+        if hasattr(data, 'as_data_frame'):
+            base_df = data.as_data_frame()
+        else:
+            base_df = data.copy()
+        
+        # Plot line for each var2 value
+        colors = plt.cm.coolwarm(np.linspace(0.2, 0.8, len(var2_values)))
+        
+        for i, v2_val in enumerate(var2_values):
+            predictions = []
+            
+            # Create prediction data for this var2 value
+            for v1_val in var1_grid:
+                # Use mean values for other variables
+                pred_df = pd.DataFrame([base_df.mean()])
+                pred_df[var1] = v1_val
+                pred_df[var2] = v2_val
+                
+                # Convert to H2O frame if needed
+                if isinstance(data, h2o.H2OFrame):
+                    pred_h2o = h2o.H2OFrame(pred_df)
+                    pred = h2o_model.predict(pred_h2o)
+                    pred_val = float(pred.as_data_frame().values[0][0])
+                else:
+                    pred = h2o_model.predict(pred_df)
+                    pred_val = float(pred)
+                
+                predictions.append(pred_val)
+            
+            # Plot line
+            label = f"{var2} = {v2_val:.1f}"
+            if v2_val == -1:
+                label += " (Low seasonality)"
+            elif v2_val == 0:
+                label += " (Mean seasonality)"
+            elif v2_val == 1:
+                label += " (High seasonality)"
+                
+            ax.plot(var1_grid, predictions, color=colors[i], linewidth=2.5, label=label)
+        
+        # Formatting
+        ax.set_xlabel(xlabel if xlabel else var1, fontsize=12)
+        ax.set_ylabel(ylabel, fontsize=12)
+        ax.set_title(title if title else f'Interaction: {var1} × {var2}', fontsize=14, fontweight='bold')
+        ax.legend(loc='best', fontsize=10)
+        ax.grid(True, alpha=0.3)
+        
+        # Add reference line at y=0 if range includes it
+        if min(ax.get_ylim()) < 0 < max(ax.get_ylim()):
+            ax.axhline(0, color='black', linestyle='--', alpha=0.5)
+        
+        plt.tight_layout()
+        return fig
         
     def plot_interaction(self,
                         data: Union[pd.DataFrame, Any],

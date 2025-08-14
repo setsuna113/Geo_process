@@ -72,7 +72,14 @@ class MESFProcessor:
         if n_jobs is None:
             n_jobs = -1  # Default to all cores if not specified
         
-        logger.info(f"Using {n_jobs if n_jobs != -1 else 'all'} CPU cores for k-NN")
+        # Set environment variable for haversine_distance_km to use
+        import os
+        if n_jobs > 0:
+            os.environ['MESF_N_JOBS'] = str(n_jobs)
+            logger.info(f"Using {n_jobs} CPU cores for parallel computations")
+        else:
+            os.environ['MESF_N_JOBS'] = '80'  # Use config default
+            logger.info(f"Using all available CPU cores for parallel computations")
         
         # Generate cache key
         cache_key = self._get_cache_key(data_path, spatial_grid_step, n_eigenvectors, distance_threshold)
@@ -150,8 +157,9 @@ class MESFProcessor:
             total_rows = df.select(pl.count()).collect()[0, 0]
             
             if spatial_grid_step and spatial_grid_step > 1:
-                # Calculate sampled count
-                sampled_rows = total_rows // spatial_grid_step
+                # Calculate sampled count - match H2O's range(0, n, step) behavior
+                # This includes partial last group, so we need ceiling division
+                sampled_rows = (total_rows + spatial_grid_step - 1) // spatial_grid_step
                 logger.info(f"Data: {total_rows:,} rows → {sampled_rows:,} after 1/{spatial_grid_step} sampling")
                 return sampled_rows
             else:
@@ -176,12 +184,13 @@ class MESFProcessor:
         # √n rule for landmarks
         n_landmark = int(np.sqrt(n_total))
         
-        # 100× landmarks for samples (optimal balance)
-        n_sample = min(100 * n_landmark, n_total // 2)
+        # Use smaller multiplier for computational efficiency
+        # 10× landmarks is sufficient for good approximation
+        n_sample = min(10 * n_landmark, n_total // 2)
         
         # Apply reasonable bounds
-        n_landmark = max(1000, min(50000, n_landmark))
-        n_sample = max(10000, min(1000000, n_sample))
+        n_landmark = max(500, min(2000, n_landmark))  # Cap at 2000 for speed
+        n_sample = max(5000, min(50000, n_sample))    # Cap at 50k for speed
         
         logger.info(f"Nystrom parameters: {n_landmark:,} landmarks (√{n_total:,}), "
                    f"{n_sample:,} samples ({n_sample/n_landmark:.0f}× landmarks)")
@@ -207,6 +216,8 @@ class MESFProcessor:
             (sample_indices, landmark_indices) where landmarks ⊂ samples
         """
         # Select samples uniformly
+        # Ensure we dont sample more than available
+        n_sample = min(n_sample, n_total)
         sample_indices = np.random.choice(n_total, n_sample, replace=False)
         
         # Landmarks are the first n_landmark samples
@@ -349,10 +360,20 @@ class MESFProcessor:
             k = min(50, len(coords_sample))
             coords_sample_rad = np.radians(coords_sample[:, [1, 0]])  # [lat, lon] for sklearn
             
-            # Use configured n_jobs for parallelization
-            knn = NearestNeighbors(n_neighbors=k, metric='haversine', n_jobs=n_jobs)
-            knn.fit(coords_sample_rad)
-            logger.info(f"Built k-NN index with {k} neighbors using {n_jobs if n_jobs != -1 else 'all'} cores")
+            # Use pynndescent for parallel k-NN construction
+            from pynndescent import NNDescent
+            logger.info(f"Building k-NN index with pynndescent using {n_jobs if n_jobs != -1 else 'all'} cores...")
+            
+            # Build parallel k-NN index
+            knn_index = NNDescent(
+                coords_sample_rad,
+                metric='haversine',
+                n_neighbors=k,
+                n_jobs=n_jobs if n_jobs > 0 else -1,
+                random_state=42,
+                verbose=False
+            )
+            logger.info(f"Built pynndescent k-NN index with {k} neighbors using {n_jobs if n_jobs != -1 else 'all'} cores")
             
             # Calculate memory-aware batch size
             available_memory = psutil.virtual_memory().available
@@ -375,7 +396,8 @@ class MESFProcessor:
             )
             
             if spatial_grid_step and spatial_grid_step > 1:
-                coords_df = coords_df.take_every(spatial_grid_step)
+                # Use slice notation instead of non-existent take_every method
+                coords_df = coords_df[::spatial_grid_step]
             
             coords_df = coords_df.drop_nulls()
             coords_full = coords_df.to_numpy().astype(np.float32)
@@ -386,8 +408,8 @@ class MESFProcessor:
                 end_idx = min(start_idx + batch_size, n_total)
                 batch_coords = coords_full_rad[start_idx:end_idx]
                 
-                # Find nearest samples
-                distances, indices = knn.kneighbors(batch_coords)
+                # Find nearest samples using pynndescent
+                indices, distances = knn_index.query(batch_coords, k=k)
                 
                 # Use abstracted weight computation
                 weights = compute_knn_weights(distances, method='inverse_distance')
