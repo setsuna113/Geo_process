@@ -47,6 +47,9 @@ def run_analysis(
     # Prepare data paths
     data_paths = config['datasets'].copy()
     
+    # Extract climate_parquet separately (not a raster)
+    climate_parquet = data_paths.pop('climate_parquet', None)
+    
     # Handle variant
     if variant == '3_features_merged' and 'am_fungi' in data_paths and 'ecm_fungi' in data_paths:
         data_paths['total_fungi'] = {
@@ -63,6 +66,7 @@ def run_analysis(
         try:
             logger.info(f"Running {method}...")
             method_output = output_dir / method
+            method_config = config['methods'].get(method, {})
             
             # Direct function import
             if method == 'correlation':
@@ -92,8 +96,9 @@ def run_analysis(
             elif method == 'biome_analysis':
                 from src.biodiversity_analysis.statistical.biome_analysis import analyze_by_biome
                 # Use parquet if available, otherwise use rasters
-                if config.get('datasets', {}).get('climate_parquet'):
-                    result = analyze_by_biome(config['datasets']['climate_parquet'], method_output)
+                if climate_parquet:
+                    result = analyze_by_biome(climate_parquet, method_output, 
+                                             chunk_size=method_config.get('chunk_size', 100000))
                 else:
                     result = analyze_by_biome(data_paths, method_output)
                 

@@ -15,6 +15,9 @@ from src.biodiversity_analysis.statistical.data_utils import save_results
 from src.biodiversity_analysis.statistical.biome_classifier import (
     classify_biome, get_biome_for_latitude, estimate_climate_from_coords
 )
+from src.biodiversity_analysis.statistical.holdridge_classifier import (
+    classify_holdridge, get_altitudinal_belt
+)
 
 
 def analyze_by_biome(
@@ -47,7 +50,7 @@ def analyze_by_biome(
         if chunk_size and chunk_size < 51901336:  # Full dataset size
             # Sample for analysis
             df = pd.read_parquet(data_source, 
-                                columns=['x', 'y', 'bio01', 'bio12'] + 
+                                columns=['x', 'y', 'bio01', 'bio12', 'elevation'] + 
                                        ['animal_richness', 'plant_richness', 
                                         'am_fungi_richness', 'ecm_fungi_richness'])
             # Random sample to reduce size
@@ -59,14 +62,28 @@ def analyze_by_biome(
         # Legacy: dict of rasters
         df = _load_rasters_to_dataframe(data_source, chunk_size)
     
-    # Classify biomes - use the BEST data available
+    # Classify biomes - use ALL available data with Holdridge
     if 'bio01' in df.columns and 'bio12' in df.columns:
-        # We have climate data! Use it
+        # We have climate data!
         # bio01 = Mean Annual Temperature (°C * 10)
         # bio12 = Annual Precipitation (mm)
         temp_celsius = df['bio01'].values / 10.0  # Convert to °C
-        precip_cm = df['bio12'].values / 10.0  # Convert mm to cm
-        df['biome'] = classify_biome(temp_celsius, precip_cm)
+        precip_mm = df['bio12'].values  # Already in mm
+        
+        # Use Holdridge if we have elevation, otherwise Whittaker
+        if 'elevation' in df.columns:
+            # BEST: Holdridge with elevation
+            elevation_m = df['elevation'].values
+            latitude = df['y'].values if 'y' in df.columns else None
+            df['biome'] = classify_holdridge(temp_celsius, precip_mm, elevation_m, latitude)
+            
+            # Also add altitudinal belt if we have coordinates
+            if 'y' in df.columns:
+                df['altitude_belt'] = get_altitudinal_belt(elevation_m, df['y'].values)
+        else:
+            # GOOD: Whittaker without elevation
+            precip_cm = precip_mm / 10.0  # Convert to cm for Whittaker
+            df['biome'] = classify_biome(temp_celsius, precip_cm)
     elif 'y' in df.columns:
         # Fallback: latitude-based
         df['biome'] = get_biome_for_latitude(df['y'].values)
@@ -85,7 +102,13 @@ def analyze_by_biome(
     
     # Per-biome statistics
     biome_stats = []
-    feature_cols = [col for col in df.columns if col not in ['x', 'y', 'biome']]
+    feature_cols = [col for col in df.columns if col not in ['x', 'y', 'biome', 'altitude_belt']]
+    
+    # Add total_fungi if we have both AM and ECM
+    if 'am_fungi_richness' in df.columns and 'ecm_fungi_richness' in df.columns:
+        df['total_fungi_richness'] = df['am_fungi_richness'].fillna(0) + df['ecm_fungi_richness'].fillna(0)
+        if 'total_fungi_richness' not in feature_cols:
+            feature_cols.append('total_fungi_richness')
     
     for biome in df['biome'].unique():
         biome_data = df[df['biome'] == biome]
@@ -93,6 +116,12 @@ def analyze_by_biome(
         for feature in feature_cols:
             if feature in biome_data.columns:
                 values = biome_data[feature].dropna()
+                
+                # Skip non-numeric columns or convert them
+                try:
+                    values = pd.to_numeric(values, errors='coerce').dropna()
+                except:
+                    continue
                 
                 if len(values) > 0:
                     # Calculate robust statistics
@@ -131,15 +160,40 @@ def analyze_by_biome(
     # Create summary table (like your example)
     _write_summary_table(stats_df, output_dir / 'biome_summary.txt')
     
-    # Create comparison table
+    # Create HTML publication-ready table
+    _write_html_table(stats_df, output_dir / 'biome_table.html')
+    
+    # Create LaTeX table for papers
+    _write_latex_table(stats_df, output_dir / 'biome_table.tex')
+    
+    # Create better comparison tables
     if len(feature_cols) > 0:
-        pivot_table = stats_df.pivot_table(
-            index='biome',
-            columns='feature',
-            values=['median', 'iqr', 'n'],
-            aggfunc='first'
-        )
-        pivot_table.to_csv(output_dir / 'biome_comparison.csv')
+        # Biodiversity-focused pivot table
+        biodiv_features = ['animal_richness', 'plant_richness', 
+                          'am_fungi_richness', 'ecm_fungi_richness']
+        biodiv_stats = stats_df[stats_df['feature'].isin(biodiv_features)]
+        
+        if not biodiv_stats.empty:
+            biodiv_pivot = biodiv_stats.pivot_table(
+                index='biome',
+                columns='feature',
+                values=['median', 'iqr', 'n'],
+                aggfunc='first'
+            )
+            biodiv_pivot.to_csv(output_dir / 'biome_biodiversity_comparison.csv')
+            
+        # Climate-focused pivot table
+        climate_features = ['bio01', 'bio12', 'elevation']
+        climate_stats = stats_df[stats_df['feature'].isin(climate_features)]
+        
+        if not climate_stats.empty:
+            climate_pivot = climate_stats.pivot_table(
+                index='biome',
+                columns='feature',
+                values=['median', 'iqr'],
+                aggfunc='first'
+            )
+            climate_pivot.to_csv(output_dir / 'biome_climate_comparison.csv')
     
     return results
 
@@ -229,3 +283,175 @@ def _write_summary_table(stats_df: pd.DataFrame, output_path: Path):
         
         f.write("\n" + "=" * 80 + "\n")
         f.write("Note: Outliers detected using Tukey's method (1.5 * IQR)\n")
+
+
+def _write_html_table(stats_df: pd.DataFrame, output_path: Path):
+    """Create publication-ready HTML table."""
+    # ALL biodiversity features
+    biodiv_features = ['animal_richness', 'plant_richness', 
+                      'am_fungi_richness', 'ecm_fungi_richness', 'total_fungi_richness']
+    biodiv_df = stats_df[stats_df['feature'].isin(biodiv_features)].copy()
+    
+    # Create clean feature names
+    feature_names = {
+        'animal_richness': 'Animals',
+        'plant_richness': 'Plants',
+        'am_fungi_richness': 'AM Fungi',
+        'ecm_fungi_richness': 'ECM Fungi',
+        'total_fungi_richness': 'Total Fungi'
+    }
+    biodiv_df['feature'] = biodiv_df['feature'].map(feature_names)
+    
+    # Create pivot for HTML
+    pivot = biodiv_df.pivot_table(
+        index='biome',
+        columns='feature',
+        values=['median', 'iqr', 'n'],
+        aggfunc='first'
+    )
+    
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>Biome Analysis Results</title>
+    <style>
+        body { font-family: 'Arial', sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        table { 
+            border-collapse: collapse; 
+            width: 100%; 
+            margin: 20px 0;
+            box-shadow: 0 0 20px rgba(0,0,0,0.1);
+        }
+        th { 
+            background-color: #2c3e50; 
+            color: white; 
+            padding: 12px;
+            text-align: left;
+            font-weight: bold;
+        }
+        td { 
+            padding: 10px; 
+            border-bottom: 1px solid #ddd;
+        }
+        tr:hover { background-color: #f5f5f5; }
+        .biome-name { font-weight: bold; }
+        .metric { text-align: right; }
+        .header-group {
+            background-color: #34495e;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>Biodiversity by Holdridge Life Zones</h1>
+    <table>
+        <thead>
+            <tr>
+                <th rowspan="2">Biome</th>
+"""
+    
+    # Add feature headers
+    for feature in ['Animals', 'Plants', 'AM Fungi', 'ECM Fungi', 'Total Fungi']:
+        html += f'                <th colspan="3" class="header-group">{feature}</th>\n'
+    
+    html += """            </tr>
+            <tr>
+"""
+    
+    # Add metric headers
+    for _ in range(5):  # 5 features now
+        html += """                <th>n</th>
+                <th>Median</th>
+                <th>IQR</th>
+"""
+    
+    html += """            </tr>
+        </thead>
+        <tbody>
+"""
+    
+    # Add data rows
+    for biome in pivot.index:
+        html += f'            <tr>\n'
+        html += f'                <td class="biome-name">{biome}</td>\n'
+        
+        for feature in ['Animals', 'Plants', 'AM Fungi', 'ECM Fungi', 'Total Fungi']:
+            try:
+                n = int(pivot.loc[biome, ('n', feature)])
+                median = pivot.loc[biome, ('median', feature)]
+                iqr = pivot.loc[biome, ('iqr', feature)]
+                
+                html += f'                <td class="metric">{n}</td>\n'
+                html += f'                <td class="metric">{median:.1f}</td>\n'
+                html += f'                <td class="metric">{iqr:.1f}</td>\n'
+            except:
+                html += '                <td class="metric">-</td>\n' * 3
+        
+        html += '            </tr>\n'
+    
+    html += """        </tbody>
+    </table>
+    <p><em>Note: Median and IQR (Interquartile Range) values shown. 
+    Biomes classified using Holdridge Life Zones system.</em></p>
+</body>
+</html>"""
+    
+    with open(output_path, 'w') as f:
+        f.write(html)
+
+
+def _write_latex_table(stats_df: pd.DataFrame, output_path: Path):
+    """Create LaTeX table for publications."""
+    # ALL biodiversity features
+    biodiv_features = ['animal_richness', 'plant_richness', 
+                      'am_fungi_richness', 'ecm_fungi_richness', 'total_fungi_richness']
+    biodiv_df = stats_df[stats_df['feature'].isin(biodiv_features)].copy()
+    
+    # Create pivot
+    pivot = biodiv_df.pivot_table(
+        index='biome',
+        columns='feature',
+        values=['median', 'iqr', 'n'],
+        aggfunc='first'
+    )
+    
+    latex = r"""\begin{table}[h!]
+\centering
+\caption{Biodiversity richness across Holdridge Life Zones}
+\label{tab:biome_biodiversity}
+\begin{tabular}{l|rrr|rrr|rrr|rrr}
+\hline
+\multirow{2}{*}{Biome} & \multicolumn{3}{c|}{Animals} & \multicolumn{3}{c|}{Plants} & 
+\multicolumn{3}{c|}{AM Fungi} & \multicolumn{3}{c}{ECM Fungi} \\
+& n & Med & IQR & n & Med & IQR & n & Med & IQR & n & Med & IQR \\
+\hline
+"""
+    
+    # Add data rows
+    for biome in pivot.index[:10]:  # First 10 biomes for space
+        biome_short = biome.replace(' ', '~')  # Non-breaking spaces
+        latex += f"{biome_short} & "
+        
+        for feature in biodiv_features:
+            try:
+                n = int(pivot.loc[biome, ('n', feature)])
+                median = pivot.loc[biome, ('median', feature)]
+                iqr = pivot.loc[biome, ('iqr', feature)]
+                latex += f"{n} & {median:.0f} & {iqr:.0f}"
+            except:
+                latex += "- & - & -"
+            
+            if feature != biodiv_features[-1]:
+                latex += " & "
+        
+        latex += r" \\" + "\n"
+    
+    latex += r"""\hline
+\end{tabular}
+\footnotesize{Note: Med = Median, IQR = Interquartile Range. 
+Biomes classified using Holdridge Life Zones.}
+\end{table}"""
+    
+    with open(output_path, 'w') as f:
+        f.write(latex)
