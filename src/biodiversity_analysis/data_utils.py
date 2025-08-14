@@ -11,11 +11,21 @@ from typing import Dict, Tuple, Optional, List, Union
 from pathlib import Path
 import logging
 
+# Import the new unified RasterLoader
+from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
+
 logger = logging.getLogger(__name__)
 
 
 class RasterDataLoader:
-    """Unified raster data loading with consistent preprocessing."""
+    """Unified raster data loading with consistent preprocessing.
+    
+    This class now delegates to the optimized RasterLoader for actual loading,
+    maintaining backward compatibility with existing code.
+    """
+    
+    # Shared instance of the new loader
+    _loader = RasterLoader()
     
     @staticmethod
     def load_single_raster(file_path: Union[str, Path], 
@@ -32,10 +42,15 @@ class RasterDataLoader:
         Returns:
             Loaded raster data as numpy array
         """
-        with rasterio.open(file_path) as src:
-            data = src.read(band).astype(dtype)
-            logger.debug(f"Loaded {file_path}: shape {data.shape}, dtype {data.dtype}")
-            return data
+        # Use the new RasterLoader's load_single method
+        data = RasterDataLoader._loader.load_single(str(file_path), band=band)
+        
+        # Convert dtype if needed
+        if data.dtype != dtype:
+            data = data.astype(dtype)
+            
+        logger.debug(f"Loaded {file_path}: shape {data.shape}, dtype {data.dtype}")
+        return data
     
     @staticmethod
     def get_raster_info(file_path: Union[str, Path]) -> Dict:
@@ -48,6 +63,7 @@ class RasterDataLoader:
         Returns:
             Dictionary with raster metadata
         """
+        # Still use rasterio directly for metadata (no need to load data)
         with rasterio.open(file_path) as src:
             return {
                 'height': src.height,

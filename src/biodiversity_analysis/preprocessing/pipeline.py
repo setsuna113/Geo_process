@@ -227,6 +227,62 @@ class SharedPreprocessor:
         else:
             raise ValueError(f"Unknown missing value strategy: {self.missing_strategy}")
     
+    def clean_richness_data(self, data: np.ndarray, feature_names: Optional[List[str]] = None) -> np.ndarray:
+        """Clean richness-specific data issues.
+        
+        Args:
+            data: Input data array
+            feature_names: Optional feature names to identify fungi columns
+            
+        Returns:
+            Cleaned data array
+        """
+        if feature_names is None:
+            feature_names = self.feature_names
+            
+        # Clean each column based on its type
+        for i, name in enumerate(feature_names):
+            if i >= data.shape[1]:
+                break
+                
+            if 'richness' in name.lower():
+                # Handle extreme negative values in fungi data
+                if 'fungi' in name.lower():
+                    mask = data[:, i] < -1e20
+                    data[mask, i] = np.nan
+                    
+                # Negative richness values are invalid
+                mask = data[:, i] < 0
+                data[mask, i] = np.nan
+                
+                # Zero richness treated as no-data
+                mask = data[:, i] == 0
+                data[mask, i] = np.nan
+                
+        return data
+    
+    def extract_paired_valid(self, data: np.ndarray, 
+                           col1_idx: int, col2_idx: int,
+                           min_value: float = 0) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract paired valid values from two columns.
+        
+        Args:
+            data: 2D array with multiple features
+            col1_idx: Index of first column
+            col2_idx: Index of second column
+            min_value: Minimum valid value
+            
+        Returns:
+            Tuple of valid paired arrays
+        """
+        col1_data = data[:, col1_idx]
+        col2_data = data[:, col2_idx]
+        
+        valid_mask = (~np.isnan(col1_data) & ~np.isnan(col2_data) & 
+                     (col1_data > min_value) & (col2_data > min_value))
+        
+        return col1_data[valid_mask], col2_data[valid_mask]
+    
     def _remove_constant_features(self, data: np.ndarray) -> np.ndarray:
         """Remove features with constant or near-constant values."""
         # Calculate variance
