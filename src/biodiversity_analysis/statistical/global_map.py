@@ -97,18 +97,30 @@ def _create_nature_style_figure(arr, df, feature_col, name, stats_info, output_d
         box_data = [[np.sqrt(x) if pd.notna(x) else np.nan for x in b] 
                     for b in box_data]
     
-    # Create boxplot
+    # Create boxplot WITH outliers (Nature standard: 1.5 × IQR)
     bp = ax_box.boxplot(box_data, labels=sorted_biomes, patch_artist=True,
-                        showfliers=False)  # Hide outliers for cleaner look
+                        whis=1.5,  # 1.5 × IQR for whiskers (Nature standard)
+                        showfliers=True,  # Show outliers
+                        flierprops={'marker': 'o', 'markersize': 2, 
+                                   'markerfacecolor': 'gray', 'alpha': 0.5})
     
     # Style boxplots
     for patch in bp['boxes']:
         patch.set_facecolor('lightsteelblue')
         patch.set_alpha(0.7)
     
-    # Formatting
-    ax_box.set_xlabel('Biome', fontsize=11)
-    ylabel = 'Species Richness (√transformed)' if 'ecm' in feature_col.lower() else 'Species Richness'
+    # Formatting with correct labels
+    ax_box.set_xlabel('Biome (Holdridge Life Zones)', fontsize=11)
+    
+    # Different labels for different data types
+    if 'fungi' in feature_col.lower():
+        if 'ecm' in feature_col.lower() and df[feature_col].max() > 100:
+            ylabel = 'Predicted Richness Index (√transformed)'
+        else:
+            ylabel = 'Predicted Richness Index'
+    else:
+        ylabel = 'Species Count'
+    
     ax_box.set_ylabel(ylabel, fontsize=11)
     ax_box.set_title('Richness Patterns Across Terrestrial Biomes', fontsize=12)
     ax_box.tick_params(axis='x', rotation=45)
@@ -121,7 +133,13 @@ def _create_nature_style_figure(arr, df, feature_col, name, stats_info, output_d
         ax_box.text(i+1, ax_box.get_ylim()[0], f'n={n}', 
                    ha='center', va='top', fontsize=8, color='gray')
     
-    plt.suptitle(f'{title_map.get(name, name)} - Nature Style Analysis', 
+    # Add data description note
+    fig.text(0.02, 0.02, 
+            'Note: Animal/plant values are species counts. Fungi values are predicted richness indices.\n' + 
+            'Boxplots show median (center), quartiles (box), and 1.5×IQR whiskers with outliers.',
+            fontsize=8, style='italic', wrap=True)
+    
+    plt.suptitle(f'{title_map.get(name, name)} - Biome Analysis', 
                 fontsize=18, y=0.98)
     
     plt.tight_layout()
@@ -260,15 +278,30 @@ def analyze_global_maps(
             import pandas as pd
             from src.biodiversity_analysis.statistical.holdridge_classifier import classify_holdridge
             
-            # Load parquet for biome analysis (sample for memory)
+            # Load parquet for biome analysis
+            # Sample stratified by location for representative data
+            print(f"Loading biome data from {parquet_path}...")
+            
             df = pd.read_parquet(parquet_path, 
                                 columns=['x', 'y', 'bio01', 'bio12', 'elevation',
                                         'animal_richness', 'plant_richness', 
                                         'am_fungi_richness', 'ecm_fungi_richness'])
             
-            # Sample for memory efficiency
-            if len(df) > 100000:
-                df = df.sample(n=100000, random_state=42)
+            # Stratified sampling by grid cells for representation
+            # Create grid cells (10x10 degree cells)
+            df['grid_x'] = (df['x'] // 10).astype(int)
+            df['grid_y'] = (df['y'] // 10).astype(int)
+            
+            # Sample up to 100 points per grid cell
+            sampled = df.groupby(['grid_x', 'grid_y']).apply(
+                lambda x: x.sample(min(100, len(x)), random_state=42)
+            ).reset_index(drop=True)
+            
+            df = sampled.drop(['grid_x', 'grid_y'], axis=1)
+            print(f"Using {len(df):,} representative samples from global grid")
+            
+            # Note: For fungi, these are predicted richness indices (not species counts)
+            # For animals/plants, these are actual species counts
             
             # Classify biomes
             df['biome'] = classify_holdridge(
