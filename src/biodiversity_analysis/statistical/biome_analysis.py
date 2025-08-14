@@ -16,7 +16,7 @@ from src.biodiversity_analysis.statistical.biome_classifier import (
     classify_biome, get_biome_for_latitude, estimate_climate_from_coords
 )
 from src.biodiversity_analysis.statistical.holdridge_classifier import (
-    classify_holdridge, get_altitudinal_belt
+    classify_holdridge, get_altitudinal_belt, holdridge_to_wwf
 )
 
 
@@ -153,7 +153,7 @@ def analyze_by_biome(
     stats_df = pd.DataFrame(biome_stats)
     results['biome_statistics'] = stats_df.to_dict('records')
     
-    # Save outputs
+    # Save outputs for DETAILED Holdridge zones
     save_results(results, output_dir / 'biome_analysis.json')
     stats_df.to_csv(output_dir / 'biome_statistics.csv', index=False)
     
@@ -165,6 +165,79 @@ def analyze_by_biome(
     
     # Create LaTeX table for papers
     _write_latex_table(stats_df, output_dir / 'biome_table.tex')
+    
+    # ALSO create SIMPLIFIED WWF biome analysis
+    if 'biome' in df.columns:
+        # Map to WWF biomes
+        df['wwf_biome'] = holdridge_to_wwf(df['biome'].values)
+        
+        # Recalculate statistics for WWF biomes
+        wwf_stats = []
+        for biome in df['wwf_biome'].unique():
+            biome_data = df[df['wwf_biome'] == biome]
+            
+            for feature in feature_cols:
+                if feature in biome_data.columns:
+                    values = biome_data[feature].dropna()
+                    
+                    # Skip non-numeric columns or convert them
+                    try:
+                        values = pd.to_numeric(values, errors='coerce').dropna()
+                    except:
+                        continue
+                    
+                    if len(values) > 0:
+                        # Calculate robust statistics
+                        q25, median, q75 = np.percentile(values, [25, 50, 75])
+                        iqr = q75 - q25
+                        
+                        # Outlier detection
+                        lower_bound = q25 - 1.5 * iqr
+                        upper_bound = q75 + 1.5 * iqr
+                        outliers = ((values < lower_bound) | (values > upper_bound)).sum()
+                        
+                        wwf_stats.append({
+                            'biome': biome,
+                            'feature': feature,
+                            'n': len(values),
+                            'mean': values.mean(),
+                            'median': median,
+                            'std': values.std(),
+                            'min': values.min(),
+                            'max': values.max(),
+                            'q25': q25,
+                            'q75': q75,
+                            'iqr': iqr,
+                            'outliers': outliers,
+                            'outlier_pct': 100 * outliers / len(values)
+                        })
+        
+        # Save WWF biome outputs
+        wwf_df = pd.DataFrame(wwf_stats)
+        wwf_df.to_csv(output_dir / 'wwf_biome_statistics.csv', index=False)
+        _write_summary_table(wwf_df, output_dir / 'wwf_biome_summary.txt')
+        
+        # WWF comparison table
+        if len(feature_cols) > 0:
+            biodiv_features = ['animal_richness', 'plant_richness', 
+                              'am_fungi_richness', 'ecm_fungi_richness', 'total_fungi_richness']
+            biodiv_stats = wwf_df[wwf_df['feature'].isin(biodiv_features)]
+            
+            if not biodiv_stats.empty:
+                wwf_pivot = biodiv_stats.pivot_table(
+                    index='biome',
+                    columns='feature',
+                    values=['median', 'iqr', 'n'],
+                    aggfunc='first'
+                )
+                wwf_pivot.to_csv(output_dir / 'wwf_biome_comparison.csv')
+        
+        # Add WWF summary to results
+        results['wwf_summary'] = {
+            'total_samples': len(df),
+            'unique_biomes': df['wwf_biome'].nunique(),
+            'biomes': df['wwf_biome'].unique().tolist()
+        }
     
     # Create better comparison tables
     if len(feature_cols) > 0:
