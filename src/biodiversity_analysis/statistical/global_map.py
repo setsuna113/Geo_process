@@ -304,10 +304,11 @@ def analyze_global_maps(
             # For animals/plants, these are actual species counts
             
             # Classify biomes
+            # IMPORTANT: bio01 is temperature × 10 (WorldClim standard)
             df['biome'] = classify_holdridge(
-                df['bio01'].values,
-                df['bio12'].values, 
-                df['elevation'].values
+                df['bio01'].values / 10.0,  # Convert to °C
+                df['bio12'].values,         # Already in mm
+                df['elevation'].values      # Already in meters
             )
             
             # Create Nature-style figure for each dataset
