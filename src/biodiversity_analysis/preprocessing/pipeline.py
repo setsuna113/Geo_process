@@ -261,6 +261,28 @@ class SharedPreprocessor:
                 
         return data
     
+    def extract_paired_valid(self, data: np.ndarray, 
+                           col1_idx: int, col2_idx: int,
+                           min_value: float = 0) -> Tuple[np.ndarray, np.ndarray]:
+        """Extract paired valid values from two columns.
+        
+        Args:
+            data: 2D array with multiple features
+            col1_idx: Index of first column
+            col2_idx: Index of second column
+            min_value: Minimum valid value
+            
+        Returns:
+            Tuple of valid paired arrays
+        """
+        col1_data = data[:, col1_idx]
+        col2_data = data[:, col2_idx]
+        
+        valid_mask = (~np.isnan(col1_data) & ~np.isnan(col2_data) & 
+                     (col1_data > min_value) & (col2_data > min_value))
+        
+        return col1_data[valid_mask], col2_data[valid_mask]
+    
     def _remove_constant_features(self, data: np.ndarray) -> np.ndarray:
         """Remove features with constant or near-constant values."""
         # Calculate variance
