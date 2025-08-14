@@ -18,15 +18,119 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _create_standalone_biome_chart(df, feature_col, name, output_dir):
+    """Create standalone detailed biome distribution chart."""
+    import pandas as pd
+    import seaborn as sns
+    
+    # Use detailed Holdridge biomes for comprehensive view
+    biome_col = 'biome_detailed' if 'biome_detailed' in df.columns else 'biome'
+    
+    # Prepare data for detailed boxplot
+    biome_data = df.groupby(biome_col)[feature_col].apply(list).to_dict()
+    
+    # Remove biomes with too few samples
+    biome_data = {k: v for k, v in biome_data.items() 
+                  if len([x for x in v if pd.notna(x)]) >= 5}
+    
+    # Sort biomes by median richness
+    biome_medians = {k: np.median([x for x in v if pd.notna(x)]) 
+                     for k, v in biome_data.items()}
+    sorted_biomes = sorted(biome_medians.keys(), key=lambda x: biome_medians[x])
+    
+    # Create figure for detailed biome analysis
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), 
+                                   gridspec_kw={'height_ratios': [1, 2]})
+    
+    # Top panel: Biome sample sizes
+    biome_counts = {b: len([x for x in biome_data[b] if pd.notna(x)]) 
+                   for b in sorted_biomes}
+    
+    ax1.bar(range(len(sorted_biomes)), list(biome_counts.values()), 
+           color='steelblue', alpha=0.7)
+    ax1.set_xticks([])
+    ax1.set_ylabel('Sample Size (n)', fontsize=10)
+    ax1.set_title(f'Sample Distribution Across {len(sorted_biomes)} Holdridge Life Zones', 
+                 fontsize=12)
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Add text labels for large biomes
+    for i, (biome, count) in enumerate(biome_counts.items()):
+        if count > max(biome_counts.values()) * 0.1:  # Label if >10% of max
+            ax1.text(i, count, f'{count}', ha='center', va='bottom', fontsize=8)
+    
+    # Bottom panel: Boxplots
+    box_data = [biome_data[b] for b in sorted_biomes]
+    
+    # Transform ECM if needed
+    if 'ecm' in feature_col.lower() and df[feature_col].max() > 100:
+        box_data = [[np.sqrt(x) if pd.notna(x) else np.nan for x in b] 
+                    for b in box_data]
+    
+    bp = ax2.boxplot(box_data, labels=sorted_biomes, patch_artist=True,
+                     whis=1.5, showfliers=True,
+                     flierprops={'marker': 'o', 'markersize': 1, 
+                                'markerfacecolor': 'gray', 'alpha': 0.3})
+    
+    # Color boxes by temperature zone
+    colors = []
+    for biome in sorted_biomes:
+        if 'Tropical' in biome or 'Subtropical' in biome:
+            colors.append('coral')
+        elif 'Temperate' in biome:
+            colors.append('lightgreen')
+        elif 'Boreal' in biome:
+            colors.append('lightblue')
+        elif 'Polar' in biome or 'Subpolar' in biome:
+            colors.append('lavender')
+        else:
+            colors.append('lightgray')
+    
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
+    
+    # Formatting
+    ax2.set_xlabel('Holdridge Life Zone', fontsize=11)
+    
+    if 'fungi' in feature_col.lower():
+        if 'ecm' in feature_col.lower() and df[feature_col].max() > 100:
+            ylabel = 'Predicted Richness Index (√transformed)'
+        else:
+            ylabel = 'Predicted Richness Index'
+    else:
+        ylabel = 'Species Count'
+    
+    ax2.set_ylabel(ylabel, fontsize=11)
+    ax2.tick_params(axis='x', rotation=45)
+    plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right', fontsize=8)
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    # Title
+    title_map = {
+        'animals': 'Animal Species Richness',
+        'plants': 'Plant Species Richness',
+        'am_fungi': 'AM Fungi Richness',
+        'ecm_fungi': 'ECM Fungi Richness'
+    }
+    
+    plt.suptitle(f'{title_map.get(name, name)} Distribution Across All Biomes',
+                fontsize=14, y=0.98)
+    
+    plt.tight_layout()
+    save_figure(fig, output_dir / f'biome_distribution_{name}.png', dpi=150)
+    plt.close(fig)
+
+
 def _create_nature_style_figure(arr, df, feature_col, name, stats_info, output_dir):
-    """Create Nature-style figure with map, density curve, and biome boxplots."""
+    """Create Nature-style figure with map, density curve, and SIMPLIFIED biome boxplots."""
     import pandas as pd
     import seaborn as sns
     
     # Create figure with complex layout
     fig = plt.figure(figsize=(16, 12))
     
-    # Layout: Top = map, Middle = density, Bottom = boxplots by biome
+    # Layout: Top = map, Middle = density, Bottom = simplified WWF biome boxplots
     gs = GridSpec(3, 1, figure=fig, height_ratios=[2, 0.5, 1.5], hspace=0.3)
     
     # 1. GLOBAL MAP (top)
@@ -110,7 +214,7 @@ def _create_nature_style_figure(arr, df, feature_col, name, stats_info, output_d
         patch.set_alpha(0.7)
     
     # Formatting with correct labels
-    ax_box.set_xlabel('Biome (Holdridge Life Zones)', fontsize=11)
+    ax_box.set_xlabel('Biome (Simplified WWF Categories)', fontsize=11)
     
     # Different labels for different data types
     if 'fungi' in feature_col.lower():
@@ -305,11 +409,17 @@ def analyze_global_maps(
             
             # Classify biomes
             # IMPORTANT: bio01 is temperature × 10 (WorldClim standard)
-            df['biome'] = classify_holdridge(
+            from src.biodiversity_analysis.statistical.holdridge_classifier import holdridge_to_wwf
+            
+            holdridge_biomes = classify_holdridge(
                 df['bio01'].values / 10.0,  # Convert to °C
                 df['bio12'].values,         # Already in mm
                 df['elevation'].values      # Already in meters
             )
+            
+            # Use simplified WWF biomes for visualization
+            df['biome'] = holdridge_to_wwf(holdridge_biomes)
+            df['biome_detailed'] = holdridge_biomes  # Keep detailed for reference
             
             # Create Nature-style figure for each dataset
             for name, arr in data.items():
@@ -322,9 +432,15 @@ def analyze_global_maps(
                 }
                 
                 if name in feature_map and feature_map[name] in df.columns:
+                    # Create Nature-style figure with simplified WWF biomes
                     _create_nature_style_figure(
                         arr, df, feature_map[name], name, 
                         stats[name], output_dir
+                    )
+                    
+                    # Also create standalone detailed biome distribution chart
+                    _create_standalone_biome_chart(
+                        df, feature_map[name], name, output_dir
                     )
                     
         except Exception as e:
