@@ -31,7 +31,7 @@ methods:
     
   biome_analysis:
     enabled: true
-    method: 'latitude'  # 'latitude', 'climate', or 'coords'
+    chunk_size: 100000  # Sample size for large datasets
     sample_factor: 5
 
 # Dataset paths
@@ -41,8 +41,8 @@ datasets:
   am_fungi: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
   ecm_fungi: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
   
-  # Optional climate data (for coverage analysis)
-  climate_parquet: null
+  # Climate data with elevation for biome analysis
+  climate_parquet: "biodiversity_climate_production_1x_corrected.parquet"
 
 # Global settings
 settings:
