@@ -89,6 +89,14 @@ def run_analysis(
                 from src.biodiversity_analysis.statistical.trust_map import analyze_trust_maps
                 result = analyze_trust_maps(data_paths, method_output)
                 
+            elif method == 'biome_analysis':
+                from src.biodiversity_analysis.statistical.biome_analysis import analyze_by_biome
+                # Use parquet if available, otherwise use rasters
+                if config.get('datasets', {}).get('climate_parquet'):
+                    result = analyze_by_biome(config['datasets']['climate_parquet'], method_output)
+                else:
+                    result = analyze_by_biome(data_paths, method_output)
+                
             else:
                 raise ValueError(f"Unknown method: {method}")
             
