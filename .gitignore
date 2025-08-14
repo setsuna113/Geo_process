@@ -37,10 +37,12 @@ research_results/
 *.parquet
 models/
 
-# Test data
+# Test data and outputs
 test_*.parquet
 *_test.parquet
 test_biodiversity.parquet
+test_*/
+test_*_output/
 # GEE credentials (keep secure)
 .gee/
 
