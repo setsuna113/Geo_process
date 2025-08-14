@@ -275,6 +275,171 @@ class ParquetLoader:
         
         return biodiv_data
     
+    def load_filtered(self,
+                     data_path: str,
+                     min_value: float = 0,
+                     filter_columns: Optional[List[str]] = None,
+                     **kwargs) -> BiodiversityData:
+        """Load parquet with filtering for valid values.
+        
+        Args:
+            data_path: Path to parquet file
+            min_value: Minimum value to consider valid
+            filter_columns: Columns to apply filter to (None = all richness columns)
+            **kwargs: Additional arguments for load()
+            
+        Returns:
+            Filtered BiodiversityData
+        """
+        # Load data first
+        biodiv_data = self.load(data_path, **kwargs)
+        
+        # Determine columns to filter
+        if filter_columns is None:
+            filter_columns = [name for name in biodiv_data.feature_names 
+                            if 'richness' in name.lower()]
+        
+        # Create filter mask
+        valid_mask = np.ones(biodiv_data.n_samples, dtype=bool)
+        for col_name in filter_columns:
+            if col_name in biodiv_data.feature_names:
+                col_idx = biodiv_data.feature_names.index(col_name)
+                col_data = biodiv_data.features[:, col_idx]
+                valid_mask &= (col_data > min_value) & np.isfinite(col_data)
+        
+        # Apply filter
+        filtered_features = biodiv_data.features[valid_mask]
+        filtered_coords = biodiv_data.coordinates[valid_mask]
+        
+        # Create new BiodiversityData object
+        filtered_data = BiodiversityData(
+            features=filtered_features,
+            coordinates=filtered_coords,
+            feature_names=biodiv_data.feature_names,
+            coordinate_names=biodiv_data.coordinate_names,
+            n_samples=filtered_features.shape[0],
+            n_features=biodiv_data.n_features
+        )
+        
+        logger.info(f"Filtered {biodiv_data.n_samples} samples to {filtered_data.n_samples} "
+                   f"({filtered_data.n_samples/biodiv_data.n_samples*100:.1f}% retained)")
+        
+        return filtered_data
+    
+    def load_chunked(self,
+                    data_path: str,
+                    chunk_size: int = 1_000_000,
+                    columns: Optional[List[str]] = None):
+        """Load parquet file in chunks for memory efficiency.
+        
+        Args:
+            data_path: Path to parquet file
+            chunk_size: Number of rows per chunk
+            columns: Specific columns to load (None = all)
+            
+        Yields:
+            BiodiversityData chunks
+        """
+        import pyarrow.parquet as pq
+        
+        parquet_file = pq.ParquetFile(data_path)
+        
+        # Get column names if not specified
+        if columns is None:
+            columns = parquet_file.schema.names
+        
+        # Determine coordinate and feature columns
+        coord_cols = self._detect_coordinate_columns(pd.DataFrame(columns=[c for c in columns]))
+        feature_cols = [c for c in columns if c not in coord_cols]
+        
+        # Process in chunks
+        for batch in parquet_file.iter_batches(batch_size=chunk_size, columns=columns):
+            df_chunk = batch.to_pandas()
+            
+            # Extract coordinates and features
+            coordinates = df_chunk[coord_cols].values
+            features = df_chunk[feature_cols].values if feature_cols else np.array([])
+            
+            # Create BiodiversityData for this chunk
+            chunk_data = BiodiversityData(
+                features=features,
+                coordinates=coordinates,
+                feature_names=feature_cols,
+                coordinate_names=coord_cols,
+                n_samples=len(df_chunk),
+                n_features=len(feature_cols)
+            )
+            
+            yield chunk_data
+    
+    def compute_statistics(self,
+                          data_path: str,
+                          columns: Optional[List[str]] = None,
+                          chunk_size: int = 1_000_000) -> Dict[str, Dict]:
+        """Compute statistics on large parquet files efficiently.
+        
+        Args:
+            data_path: Path to parquet file
+            columns: Columns to compute stats for (None = all richness columns)
+            chunk_size: Rows per chunk for processing
+            
+        Returns:
+            Dictionary of statistics per column
+        """
+        # Initialize accumulators
+        stats = {}
+        
+        # Process in chunks
+        for chunk_data in self.load_chunked(data_path, chunk_size=chunk_size):
+            for i, col_name in enumerate(chunk_data.feature_names):
+                if columns is None or col_name in columns:
+                    if col_name not in stats:
+                        stats[col_name] = {
+                            'count': 0,
+                            'valid_count': 0,
+                            'sum': 0,
+                            'sum_sq': 0,
+                            'min': float('inf'),
+                            'max': float('-inf')
+                        }
+                    
+                    col_data = chunk_data.features[:, i]
+                    valid_mask = np.isfinite(col_data) & (col_data > 0)
+                    valid_data = col_data[valid_mask]
+                    
+                    stats[col_name]['count'] += len(col_data)
+                    stats[col_name]['valid_count'] += len(valid_data)
+                    
+                    if len(valid_data) > 0:
+                        stats[col_name]['sum'] += valid_data.sum()
+                        stats[col_name]['sum_sq'] += (valid_data ** 2).sum()
+                        stats[col_name]['min'] = min(stats[col_name]['min'], valid_data.min())
+                        stats[col_name]['max'] = max(stats[col_name]['max'], valid_data.max())
+        
+        # Compute final statistics
+        for col_name in stats:
+            s = stats[col_name]
+            if s['valid_count'] > 0:
+                mean = s['sum'] / s['valid_count']
+                variance = (s['sum_sq'] / s['valid_count']) - (mean ** 2)
+                std = np.sqrt(variance) if variance > 0 else 0
+                
+                stats[col_name].update({
+                    'mean': mean,
+                    'std': std,
+                    'coverage': s['valid_count'] / s['count'] * 100
+                })
+            else:
+                stats[col_name].update({
+                    'mean': np.nan,
+                    'std': np.nan,
+                    'min': np.nan,
+                    'max': np.nan,
+                    'coverage': 0
+                })
+        
+        return stats
+    
     def _detect_coordinate_columns_from_dict(self, first_row: Dict[str, Any], 
                                             column_names: List[str]) -> List[str]:
         """Auto-detect coordinate columns from first row dict.

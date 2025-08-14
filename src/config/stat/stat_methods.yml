@@ -4,30 +4,30 @@
 # Method enable/disable settings
 methods:
   coverage:
-    enabled: false
-    skip_reason: "Requires climate data in parquet format with ocean masking"
-    sample_factor: 10
+    enabled: true
+    skip_reason: "Enable for production run"
+    sample_factor: 5  # Production: 5, Test: 20
     
   trust_maps:
     enabled: true
-    sample_factor: 10
+    sample_factor: 5  # Production: 5, Test: 20
     
   overlap:
-    enabled: false
-    skip_reason: "Computationally intensive for large datasets"
-    sample_factor: 20
+    enabled: true
+    skip_reason: "Enable for production run"
+    sample_factor: 5  # Production: 5, Test: 20
     
   latitudinal:
     enabled: true
-    sample_factor: 5
+    sample_factor: 5  # Already optimized
     
   global_maps:
     enabled: true
-    sample_factor: 20
+    sample_factor: 5  # Production: 5, Test: 20
     
   correlation:
     enabled: true
-    sample_factor: 10
+    sample_factor: 5  # Production: 5, Test: 20
 
 # Dataset paths
 datasets:
