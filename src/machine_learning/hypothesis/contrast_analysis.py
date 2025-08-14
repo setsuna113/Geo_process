@@ -187,15 +187,53 @@ class ContrastAnalysis:
         """
         contrast_vector = np.array(contrast_vector)
         
-        if self.vcov_matrix is not None:
-            # Proper calculation: SE(c'μ) = sqrt(c'Σc)
-            # where c is contrast vector and Σ is vcov matrix of emmeans
+        # Check if we have emmeans with SEs from the wrapper
+        if hasattr(self.emmeans_wrapper, 'emmeans_results'):
+            # Use individual SEs from emmeans if available
+            emmeans_results = self.emmeans_wrapper.emmeans_results
+            if emmeans_results and isinstance(emmeans_results, dict):
+                # Extract SEs for each group
+                ses = []
+                for key in sorted(emmeans_results.keys()):
+                    if 'group' in key and 'SE' in emmeans_results[key]:
+                        se = emmeans_results[key]['SE']
+                        if se is not None:
+                            ses.append(se)
+                
+                if len(ses) == len(contrast_vector) and all(se is not None for se in ses):
+                    # Approximate contrast SE using individual SEs
+                    # SE(contrast) ≈ sqrt(sum(c_i^2 * SE_i^2))
+                    contrast_variance = sum(c**2 * se**2 for c, se in zip(contrast_vector, ses))
+                    return np.sqrt(max(0, contrast_variance))
+        
+        if self.vcov_matrix is not None and len(contrast_vector) == self.vcov_matrix.shape[0]:
+            # Use vcov matrix if dimensions match
             contrast_variance = contrast_vector @ self.vcov_matrix @ contrast_vector
-            return np.sqrt(max(0, contrast_variance))  # Ensure non-negative
+            return np.sqrt(max(0, contrast_variance))
         else:
             # Fallback to simplified approximation
-            logger.warning("Using simplified SE approximation. Provide vcov_matrix for accurate SEs.")
-            base_se = 0.1  # Rough approximation
+            logger.warning("Using simplified SE approximation based on pooled SE.")
+            # Try to get a reasonable SE from the emmeans
+            if hasattr(self.emmeans_wrapper, 'emmeans_results'):
+                emmeans_results = self.emmeans_wrapper.emmeans_results
+                if emmeans_results and isinstance(emmeans_results, dict):
+                    # Filter out None values
+                    ses = [v.get('SE') for k, v in emmeans_results.items() if 'group' in k and v.get('SE') is not None]
+                    if ses:
+                        base_se = np.mean(ses)  # Use mean SE as base
+                    else:
+                        # Very rough approximation based on data scale
+                        # Get emmeans to estimate scale
+                        emmeans = [v.get('emmean', 10) for k, v in emmeans_results.items() if 'group' in k and v.get('emmean') is not None]
+                        if emmeans:
+                            # Use ~5% of mean as rough SE estimate
+                            base_se = abs(np.mean(emmeans)) * 0.05
+                        else:
+                            base_se = 2.0  # Default fallback
+                else:
+                    base_se = 2.0
+            else:
+                base_se = 2.0
             
             # Simplified: assume diagonal covariance
             contrast_variance = sum(c**2 for c in contrast_vector) * base_se**2
@@ -362,9 +400,19 @@ class ContrastAnalysis:
         
         # Get emmeans if available
         emmeans_table = None
-        if self.emmeans_calc.emmeans_results:
-            emmeans = self.emmeans_calc.get_emmeans_array()
-            group_names = self.emmeans_calc.get_group_names()
+        if hasattr(self.emmeans_wrapper, 'emmeans_results') and self.emmeans_wrapper.emmeans_results:
+            if isinstance(self.emmeans_wrapper, REMmeansWrapper):
+                emmeans = self.emmeans_wrapper.get_emmeans_array()
+            else:
+                emmeans_dict = self.emmeans_wrapper.compute_emmeans_2x2()
+                emmeans = np.array([
+                    emmeans_dict['group_0_0']['emmean'],
+                    emmeans_dict['group_1_0']['emmean'],
+                    emmeans_dict['group_0_1']['emmean'],
+                    emmeans_dict['group_1_1']['emmean']
+                ])
+            group_names = ['Low Plant\nNon-temp', 'High Plant\nNon-temp',
+                          'Low Plant\nTemperate', 'High Plant\nTemperate']
             emmeans_table = pd.DataFrame({
                 'Group': group_names,
                 'Estimated Mean': [f"{m:.2f}" for m in emmeans]
@@ -405,8 +453,18 @@ class ContrastAnalysis:
         fig, axes = plt.subplots(1, 3, figsize=figsize)
         
         # Get emmeans and contrast info
-        emmeans = self.emmeans_calc.get_emmeans_array()
-        group_names = self.emmeans_calc.get_group_names()
+        if isinstance(self.emmeans_wrapper, REMmeansWrapper):
+            emmeans = self.emmeans_wrapper.get_emmeans_array()
+        else:
+            emmeans_dict = self.emmeans_wrapper.compute_emmeans_2x2()
+            emmeans = np.array([
+                emmeans_dict['group_0_0']['emmean'],
+                emmeans_dict['group_1_0']['emmean'],
+                emmeans_dict['group_0_1']['emmean'],
+                emmeans_dict['group_1_1']['emmean']
+            ])
+        group_names = ['Low Plant\nNon-temp', 'High Plant\nNon-temp',
+                      'Low Plant\nTemperate', 'High Plant\nTemperate']
         
         if 'contrast_estimate' in contrast_results:
             estimate = contrast_results['contrast_estimate']
@@ -567,7 +625,16 @@ class ContrastAnalysis:
         fig, axes = plt.subplots(2, 2, figsize=figsize)
         
         # Get emmeans and contrast info
-        emmeans = self.emmeans_calc.get_emmeans_array()
+        if isinstance(self.emmeans_wrapper, REMmeansWrapper):
+            emmeans = self.emmeans_wrapper.get_emmeans_array()
+        else:
+            emmeans_dict = self.emmeans_wrapper.compute_emmeans_2x2()
+            emmeans = np.array([
+                emmeans_dict['group_0_0']['emmean'],
+                emmeans_dict['group_1_0']['emmean'],
+                emmeans_dict['group_0_1']['emmean'],
+                emmeans_dict['group_1_1']['emmean']
+            ])
         group_names = ['Low Plant\nNon-temp', 'High Plant\nNon-temp',
                       'Low Plant\nTemperate', 'High Plant\nTemperate']
         

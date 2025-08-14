@@ -116,12 +116,51 @@ def _bootstrap_vcov(
     model_params = _extract_minimal_model_params(h2o_model)
     
     # Get predictor and response names
-    x_names = h2o_model.actual_params['x']
-    y_name = h2o_model.actual_params['y']
+    # Check different ways H2O might store these
+    x_names = None
+    y_name = None
+    
+    # Try actual_params first
+    if hasattr(h2o_model, 'actual_params'):
+        x_names = h2o_model.actual_params.get('x')
+        y_name = h2o_model.actual_params.get('y')
+    
+    # Try _parms if actual_params didn't work
+    if x_names is None and hasattr(h2o_model, '_parms'):
+        x_names = h2o_model._parms.get('x')
+        y_name = h2o_model._parms.get('y')
+    
+    # Try model JSON
+    if x_names is None and hasattr(h2o_model, '_model_json'):
+        try:
+            model_json = h2o_model._model_json
+            if 'output' in model_json:
+                # Get column names from the model
+                if 'coefficients_table' in model_json['output']:
+                    coef_table = model_json['output']['coefficients_table']
+                    if hasattr(coef_table, 'cell_values'):
+                        # Extract non-intercept coefficient names
+                        x_names = [row[0] for row in coef_table.cell_values if row[0] != 'Intercept']
+                if 'response_column_name' in model_json['output']:
+                    y_name = model_json['output']['response_column_name']
+        except Exception as e:
+            logger.debug(f"Could not extract from model JSON: {e}")
+    
+    # Final fallback: use coefficient names
+    if x_names is None:
+        x_names = [name for name in coef_names if name != 'Intercept']
+        y_name = 'fungi_richness'  # Default assumption
+        logger.warning(f"Could not find x/y in model params, using coefficient names: {len(x_names)} predictors")
     
     for i in range(n_bootstrap):
-        # Bootstrap sample
-        boot_data = data.sample(frac=1, replace=True, seed=seed + i)
+        # Bootstrap sample - H2O doesn't have sample(), use split_frame
+        # Create bootstrap sample by random sampling with replacement
+        n_rows = data.nrows
+        # Create random indices with replacement
+        import random
+        random.seed(seed + i)
+        indices = [random.randint(0, n_rows - 1) for _ in range(n_rows)]
+        boot_data = data[indices, :]
         
         # Refit model with same parameters
         boot_model = h2o.estimators.H2OGeneralizedLinearEstimator(**model_params)
@@ -162,16 +201,28 @@ def _extract_minimal_model_params(h2o_model) -> Dict[str, Any]:
     Returns:
         Dictionary of model parameters
     """
-    # Get essential parameters only
+    # Get essential parameters only - handle missing actual_params
+    if hasattr(h2o_model, 'actual_params'):
+        actual_params = h2o_model.actual_params
+    elif hasattr(h2o_model, 'params'):
+        actual_params = h2o_model.params  
+    elif hasattr(h2o_model, '_parms'):
+        actual_params = h2o_model._parms
+    else:
+        # Default to negative binomial
+        actual_params = {}
+        logger.warning("Could not find model parameters, using defaults")
+    
     params = {
-        'family': h2o_model.actual_params.get('family', 'gaussian'),
-        'link': h2o_model.actual_params.get('link', 'identity'),
-        'lambda_': h2o_model.actual_params.get('lambda', 0),
-        'alpha': h2o_model.actual_params.get('alpha', 0),
-        'solver': h2o_model.actual_params.get('solver', 'IRLSM'),
-        'standardize': h2o_model.actual_params.get('standardize', True),
+        'family': actual_params.get('family', 'negativebinomial'),
+        'link': actual_params.get('link', 'log'),
+        'lambda_': actual_params.get('lambda', 0),
+        'alpha': actual_params.get('alpha', 0),
+        'solver': actual_params.get('solver', 'IRLSM'),
+        'standardize': actual_params.get('standardize', False),
         'max_iterations': 20,  # Limit iterations for speed
-        'compute_p_values': False  # Not needed for bootstrap
+        'compute_p_values': False,  # Not needed for bootstrap
+        'remove_collinear_columns': True
     }
     
     # Remove None values

@@ -27,6 +27,99 @@ class PartialDependencePlot:
         """
         self.model = model
         self.feature_names = feature_names
+
+
+class PartialDependence:
+    """Static methods for partial dependence computation."""
+    
+    @staticmethod
+    def compute_pdp_interaction(model, features: List[str], data, grid_resolution: int = 20):
+        """Compute partial dependence for feature interaction.
+        
+        For H2: Shows how the combined effect of bio4 and plants affects fungi.
+        
+        Args:
+            model: Fitted model
+            features: List of two features [var1, var2]
+            data: Data frame (H2O or pandas)
+            grid_resolution: Number of grid points per feature
+            
+        Returns:
+            Dictionary with PDP results
+        """
+        import h2o
+        
+        # Access the actual model
+        if hasattr(model, 'model'):
+            h2o_model = model.model
+        else:
+            h2o_model = model
+            
+        # Get data as dataframe
+        if hasattr(data, 'as_data_frame'):
+            df = data.as_data_frame()
+        else:
+            df = data.copy()
+            
+        # Create grid for both features
+        var1, var2 = features
+        var1_min, var1_max = df[var1].quantile([0.05, 0.95])
+        var2_min, var2_max = df[var2].quantile([0.05, 0.95])
+        
+        var1_grid = np.linspace(var1_min, var1_max, grid_resolution)
+        var2_grid = np.linspace(var2_min, var2_max, grid_resolution)
+        
+        # Calculate partial dependence
+        pd_matrix = np.zeros((grid_resolution, grid_resolution))
+        
+        for i, v1 in enumerate(var1_grid):
+            for j, v2 in enumerate(var2_grid):
+                # Create prediction data
+                pred_df = df.copy()
+                pred_df[var1] = v1
+                pred_df[var2] = v2
+                
+                # Get predictions
+                if isinstance(data, h2o.H2OFrame):
+                    pred_h2o = h2o.H2OFrame(pred_df)
+                    preds = h2o_model.predict(pred_h2o)
+                    mean_pred = float(preds.mean().as_data_frame().values[0][0])
+                else:
+                    preds = h2o_model.predict(pred_df)
+                    mean_pred = np.mean(preds)
+                
+                pd_matrix[i, j] = mean_pred
+        
+        return {
+            'features': features,
+            'var1_grid': var1_grid,
+            'var2_grid': var2_grid,
+            'pd_matrix': pd_matrix,
+            'interpretation': PartialDependence._interpret_pdp(pd_matrix, var1, var2)
+        }
+    
+    @staticmethod
+    def _interpret_pdp(pd_matrix, var1, var2):
+        """Interpret PDP results for H2 hypothesis."""
+        # Check if effect changes sign (supports interaction)
+        min_val = pd_matrix.min()
+        max_val = pd_matrix.max()
+        range_val = max_val - min_val
+        
+        # Check corners for H2 pattern
+        # Low seasonality, high plants (should be high if H2 true)
+        corner_low_season_high_plant = pd_matrix[0, -1]
+        # High seasonality, high plants (should be low if H2 true)
+        corner_high_season_high_plant = pd_matrix[-1, -1]
+        
+        h2_pattern = corner_high_season_high_plant < corner_low_season_high_plant
+        
+        return {
+            'range': range_val,
+            'shows_interaction': range_val > 0.1 * abs(max_val),  # Substantial variation
+            'h2_pattern': h2_pattern,
+            'interpretation': f"PDP shows {'strong' if range_val > 0.2 * abs(max_val) else 'weak'} interaction between {var1} and {var2}"
+        }
         
     def calculate_1d_pdp(self, 
                         X: pd.DataFrame,

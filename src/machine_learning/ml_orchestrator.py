@@ -157,27 +157,8 @@ class MLOrchestrator:
         # Apply preprocessing pipeline using abstracted H2O functions
         logger.info("Applying preprocessing pipeline...")
         
-        # Remove missing data
-        data = remove_missing(data)
-        logger.info(f"After removing missing: {data.nrows:,} rows")
-        
-        # Standardize column names
-        data = standardize_column_names(data)
-        
-        # Add fungi_richness if needed
-        data = add_fungi_richness(data)
-        
-        # Standardize climate variables (2SD method)
-        data = standardize_climate_2sd(data)
-        
-        # Add polynomial terms
-        data = add_elevation_squared(data)
-        
-        # Log transform biodiversity predictors
-        data = log_transform_biodiversity(data)
-        
-        # Add MESF spatial eigenvectors
-        logger.info("Adding MESF spatial eigenvectors...")
+        # IMPORTANT: Compute MESF BEFORE removing missing data to ensure alignment
+        logger.info("Computing MESF spatial eigenvectors (before removing missing data)...")
         
         # Get MESF config (simplified - no complex params needed)
         spatial_config = self.config.config.get('spatial', {})
@@ -196,15 +177,37 @@ class MLOrchestrator:
             distance_threshold=distance_threshold,
             n_jobs=n_jobs
         )
+        
         if mesf_eigenvectors is not None:
+            # Add MESF columns to data BEFORE any row removal
             data = data.cbind(mesf_eigenvectors)
-            logger.info(f"Added {mesf_eigenvectors.ncols} MESF eigenvectors to data")
+            logger.info(f"Added {mesf_eigenvectors.ncols} MESF eigenvectors ({mesf_eigenvectors.nrows:,} rows)")
         else:
             # MESF failed - this could bias results due to uncorrected spatial autocorrelation
             logger.warning("⚠️ MESF computation failed - proceeding WITHOUT spatial autocorrelation correction")
             logger.warning("Results may be biased due to uncorrected spatial dependencies")
-            # Optionally raise an error if MESF is critical
-            # raise RuntimeError("MESF computation failed - cannot proceed without spatial correction")
+        
+        # Now proceed with preprocessing that may remove rows
+        logger.info("Continuing with preprocessing pipeline...")
+        
+        # Remove missing data (this will also remove corresponding MESF rows)
+        data = remove_missing(data)
+        logger.info(f"After removing missing: {data.nrows:,} rows")
+        
+        # Standardize column names
+        data = standardize_column_names(data)
+        
+        # Add fungi_richness if needed
+        data = add_fungi_richness(data)
+        
+        # Standardize climate variables (2SD method)
+        data = standardize_climate_2sd(data)
+        
+        # Add polynomial terms
+        data = add_elevation_squared(data)
+        
+        # Log transform biodiversity predictors
+        data = log_transform_biodiversity(data)
         
         # Data is already an H2O frame from preprocessing functions
         # No need to convert or verify connection - H2O is already initialized
@@ -305,14 +308,18 @@ class MLOrchestrator:
         # Log key findings
         logger.info("\nMethod 2 Results (H2):")
         logger.info("\nModel 3a (Continuous):")
-        continuous_coef = model_results['model_3a_continuous']['interaction_coef']
-        logger.info(f"  Interaction coef: {continuous_coef['coefficient']:.4f} "
-                   f"(p={continuous_coef.get('p_value', 'N/A'):.4f})")
+        if 'model_3a_continuous' in model_results and 'wald_test' in model_results['model_3a_continuous']:
+            wald_test = model_results['model_3a_continuous']['wald_test']
+            if 'error' not in wald_test:
+                logger.info(f"  Wald test significant: {wald_test.get('significant_at_0.05', False)}")
+            else:
+                logger.info(f"  Wald test error: {wald_test.get('error', 'Unknown error')}")
         
         logger.info("\nModel 3b (Categorical with emmeans):")
-        logger.info(f"  H2 supported: {h2_results['h2_supported']}")
-        logger.info(f"  Contrast estimate: {h2_results['contrast_estimate']:.4f} "
-                   f"(p={h2_results['p_value']:.4f})")
+        if 'h2_supported' in h2_results:
+            logger.info(f"  H2 supported: {h2_results['h2_supported']}")
+            logger.info(f"  Contrast estimate: {h2_results.get('contrast_estimate', 'N/A'):.4f} "
+                       f"(p={h2_results.get('p_value', 'N/A'):.4f})")
         
         return self.results['method2']
     

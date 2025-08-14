@@ -115,7 +115,7 @@ class NystromEigensolver:
     def _create_sparse_spatial_weights(self, coords: np.ndarray) -> csr_matrix:
         """Create sparse spatial weights matrix without computing full distance matrix.
         
-        Uses BallTree for efficient neighbor search - only computes distances for actual neighbors.
+        Uses pynndescent for parallel neighbor search.
         
         Args:
             coords: Coordinates (n, 2) with [lon, lat] in degrees
@@ -123,10 +123,12 @@ class NystromEigensolver:
         Returns:
             Sparse spatial weights matrix
         """
-        from sklearn.neighbors import BallTree
+        from pynndescent import NNDescent
+        import os
         
         n = len(coords)
-        logger.info(f"Building sparse weights matrix for {n} points using BallTree...")
+        n_jobs = int(os.environ.get('MESF_N_JOBS', '80'))
+        logger.info(f"Building sparse weights matrix for {n} points using pynndescent with {n_jobs} jobs...")
         
         # Validate coordinates before building tree
         if n < 2:
@@ -147,22 +149,39 @@ class NystromEigensolver:
                 logger.warning("All points at same location - returning identity matrix")
                 return csr_matrix(np.eye(n, dtype=np.float32))
         
-        # Convert to radians for BallTree with haversine metric
-        coords_rad = np.radians(coords[:, [1, 0]])  # [lat, lon] order for sklearn
+        # Convert to radians for haversine metric
+        coords_rad = np.radians(coords[:, [1, 0]])  # [lat, lon] order
         
-        # Build spatial index (BallTree is efficient for neighbor queries)
-        tree = BallTree(coords_rad, metric='haversine')
+        # Build spatial index using pynndescent (supports parallel construction)
+        # Use approximate nearest neighbor for efficiency
+        index = NNDescent(
+            coords_rad, 
+            metric='haversine',
+            n_neighbors=min(100, n-1),  # Find up to 100 neighbors
+            n_jobs=n_jobs,
+            random_state=42,
+            verbose=False
+        )
         
         # Convert distance threshold from km to radians
         # Earth radius = 6371 km
         radius_rad = self.distance_threshold / 6371.0
         
-        # Find all neighbors within threshold for each point
-        # This is much more efficient than computing full distance matrix
+        # Query all neighbors within threshold
         logger.info(f"Finding neighbors within {self.distance_threshold} km...")
-        indices_list = tree.query_radius(coords_rad, r=radius_rad, 
-                                         return_distance=False,
-                                         sort_results=False)
+        
+        # Get neighbors and distances for all points
+        neighbors, distances = index.neighbor_graph
+        
+        # Create lists to store neighbors within threshold
+        indices_list = []
+        for i in range(n):
+            # Get neighbors within radius threshold
+            mask = distances[i] <= radius_rad
+            valid_neighbors = neighbors[i][mask]
+            # Remove self-connections and invalid indices
+            valid_neighbors = valid_neighbors[(valid_neighbors != i) & (valid_neighbors >= 0)]
+            indices_list.append(valid_neighbors)
         
         # Build sparse matrix directly (never create dense matrix)
         # Use lil_matrix for efficient construction
