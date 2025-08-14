@@ -117,11 +117,11 @@ def classify_holdridge(temperature: Union[float, np.ndarray],
     # Polar zones
     zones[is_polar] = "Polar Desert"
     
-    # Subpolar/Alpine zones
-    zones[is_subpolar & (precip < 125)] = "Subpolar Dry Tundra"
-    zones[is_subpolar & (precip >= 125) & (precip < 250)] = "Subpolar Moist Tundra"
-    zones[is_subpolar & (precip >= 250) & (precip < 500)] = "Subpolar Wet Tundra"
-    zones[is_subpolar & (precip >= 500)] = "Subpolar Rain Tundra"
+    # Subpolar/Alpine zones (use PET ratio for consistency)
+    zones[is_subpolar & is_semiarid] = "Subpolar Dry Tundra"
+    zones[is_subpolar & is_subhumid] = "Subpolar Moist Tundra"
+    zones[is_subpolar & is_humid] = "Subpolar Wet Tundra"
+    zones[is_subpolar & (is_perhumid | is_superhumid)] = "Subpolar Rain Tundra"
     
     # Boreal zones
     zones[is_boreal & is_arid] = "Boreal Desert"
@@ -213,3 +213,110 @@ def get_altitudinal_belt(elevation: Union[float, np.ndarray],
     if belts.size == 1:
         return belts[0]
     return belts
+
+
+def holdridge_to_wwf(holdridge_zones: Union[str, np.ndarray]) -> Union[str, np.ndarray]:
+    """
+    Map detailed Holdridge Life Zones to simplified WWF biomes (14 categories).
+    
+    Args:
+        holdridge_zones: Holdridge zone names
+        
+    Returns:
+        WWF biome names
+    """
+    # Mapping dictionary from Holdridge to WWF
+    mapping = {
+        # Tropical/Subtropical Moist Forests
+        "Tropical Rain Forest": "Trop. Moist Forest",
+        "Tropical Wet Forest": "Trop. Moist Forest",
+        "Tropical Moist Forest": "Trop. Moist Forest",
+        "Subtropical Rain Forest": "Trop. Moist Forest",
+        "Subtropical Wet Forest": "Trop. Moist Forest",
+        "Subtropical Moist Forest": "Trop. Moist Forest",
+        
+        # Tropical/Subtropical Dry Forests
+        "Tropical Dry Forest": "Trop. Dry Forest",
+        "Tropical Very Dry Forest": "Trop. Dry Forest",
+        "Subtropical Dry Forest": "Trop. Dry Forest",
+        
+        # Temperate Broadleaf and Mixed Forests
+        "Warm Temperate Rain Forest": "Temp. Broad. Forest",
+        "Warm Temperate Wet Forest": "Temp. Broad. Forest",
+        "Warm Temperate Moist Forest": "Temp. Broad. Forest",
+        "Cool Temperate Rain Forest": "Temp. Broad. Forest",
+        "Cool Temperate Wet Forest": "Temp. Broad. Forest",
+        "Cool Temperate Moist Forest": "Temp. Broad. Forest",
+        
+        # Temperate Conifer Forests (if dominated by dry conditions)
+        "Warm Temperate Dry Forest": "Temp. Con. Forest",
+        "Cool Temperate Dry Forest": "Temp. Con. Forest",
+        
+        # Boreal Forests/Taiga
+        "Boreal Rain Forest": "Boreal Forest",
+        "Boreal Wet Forest": "Boreal Forest",
+        "Boreal Moist Forest": "Boreal Forest",
+        
+        # Tropical/Subtropical Grasslands
+        "Tropical Thorn Woodland": "Trop. Grassland",
+        "Subtropical Thorn Woodland": "Trop. Grassland",
+        
+        # Temperate Grasslands
+        "Cool Temperate Steppe": "Temp. Grassland",
+        "Warm Temperate Steppe": "Temp. Grassland",
+        "Boreal Steppe": "Temp. Grassland",
+        
+        # Flooded Grasslands
+        # (Would need additional water data)
+        
+        # Montane Grasslands
+        "Subalpine": "Montane Grassland",
+        "Alpine": "Montane Grassland",
+        
+        # Tundra
+        "Subpolar Dry Tundra": "Tundra",
+        "Subpolar Moist Tundra": "Tundra",
+        "Subpolar Wet Tundra": "Tundra",
+        "Subpolar Rain Tundra": "Tundra",
+        "Polar Desert": "Tundra",
+        
+        # Mediterranean (dry summer climates)
+        "Warm Temperate Thorn Scrub": "Mediterranean For.",
+        
+        # Deserts and Xeric Shrublands
+        "Tropical Desert": "Desert",
+        "Tropical Desert Scrub": "Desert",
+        "Subtropical Desert": "Desert",
+        "Subtropical Desert Scrub": "Desert",
+        "Warm Temperate Desert": "Desert",
+        "Warm Temperate Desert Scrub": "Desert",
+        "Cool Temperate Desert": "Desert",
+        "Cool Temperate Desert Scrub": "Desert",
+        "Boreal Desert": "Desert",
+        "Boreal Desert Scrub": "Desert",
+        
+        # Mangroves (would need coastal data)
+        # Not directly mappable from Holdridge
+        
+        # Default
+        "Unknown": "Unknown"
+    }
+    
+    # Handle scalar or array input
+    if isinstance(holdridge_zones, str):
+        return mapping.get(holdridge_zones, "Unknown")
+    
+    # Array input
+    zones = np.atleast_1d(holdridge_zones)
+    wwf = np.empty(zones.shape, dtype=object)
+    
+    for key, value in mapping.items():
+        mask = zones == key
+        wwf[mask] = value
+    
+    # Handle unmapped zones
+    wwf[wwf == None] = "Unknown"
+    
+    if wwf.size == 1:
+        return wwf[0]
+    return wwf
