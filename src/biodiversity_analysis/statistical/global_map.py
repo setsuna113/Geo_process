@@ -33,28 +33,59 @@ def analyze_global_maps(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load rasters
-    raster_loader = RasterLoader()
+    # Load rasters WITH DOWNSAMPLING for visualization
+    import rasterio
     data = {}
     stats = {}
+    
+    # Target resolution for visualization (max 1000x500 pixels)
+    max_viz_width = 1000
+    max_viz_height = 500
     
     for name, path in data_source.items():
         if path is None:
             continue
         
-        # Load data
-        arr = raster_loader.load_single(path)
-        data[name] = arr
-        
-        # Compute stats
-        valid = ~np.isnan(arr)
-        if valid.sum() > 0:
-            stats[name] = {
-                'min': float(np.nanmin(arr)),
-                'max': float(np.nanmax(arr)),
-                'mean': float(np.nanmean(arr)),
-                'coverage': float(100 * valid.sum() / arr.size)
-            }
+        # Open without loading
+        with rasterio.open(path) as src:
+            # Calculate downsampling factor
+            downsample = max(1, max(src.width // max_viz_width, 
+                                   src.height // max_viz_height))
+            
+            # Read downsampled for visualization
+            arr = src.read(1, out_shape=(src.height // downsample, 
+                                        src.width // downsample))
+            data[name] = arr
+            
+            # For stats, use windowed reading (more accurate than downsampled)
+            n = 0
+            value_sum = 0.0
+            value_min = float('inf')
+            value_max = float('-inf')
+            
+            # Read in chunks for statistics
+            chunk_size = 1000
+            for row in range(0, src.height, chunk_size):
+                window = ((row, min(row + chunk_size, src.height)), (0, src.width))
+                chunk = src.read(1, window=window)
+                valid = ~np.isnan(chunk) & (chunk != src.nodata if src.nodata else True)
+                
+                if valid.sum() > 0:
+                    n += valid.sum()
+                    value_sum += chunk[valid].sum()
+                    value_min = min(value_min, chunk[valid].min())
+                    value_max = max(value_max, chunk[valid].max())
+            
+            if n > 0:
+                stats[name] = {
+                    'min': float(value_min),
+                    'max': float(value_max),
+                    'mean': float(value_sum / n),
+                    'coverage': float(100 * n / (src.height * src.width)),
+                    'original_shape': src.shape,
+                    'display_shape': arr.shape,
+                    'downsample_factor': downsample
+                }
     
     if not data:
         return {'error': 'No data loaded'}

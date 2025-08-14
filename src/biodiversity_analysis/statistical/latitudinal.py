@@ -57,43 +57,61 @@ def analyze_latitudinal(
         lats = np.linspace(90, -90, height)
         lat_array = np.repeat(lats[:, np.newaxis], width, axis=1)
         
-        # Bin by latitude
+        # Bin by latitude WITH area weighting
         valid_mask = ~np.isnan(data)
         lat_means = []
         lat_stds = []
         lat_counts = []
+        lat_weighted_means = []  # Area-weighted means
+        
+        # Calculate pixel areas (proportional to cos(latitude))
+        # This accounts for projection distortion
+        lat_radians = np.deg2rad(lats)
+        pixel_areas = np.cos(lat_radians)
+        pixel_areas = np.repeat(pixel_areas[:, np.newaxis], width, axis=1)
         
         for i in range(lat_bins):
             lat_min, lat_max = lat_edges[i], lat_edges[i+1]
             bin_mask = (lat_array >= lat_min) & (lat_array < lat_max) & valid_mask
             
             if bin_mask.sum() > 0:
+                # Unweighted stats (for comparison)
                 lat_means.append(float(np.mean(data[bin_mask])))
                 lat_stds.append(float(np.std(data[bin_mask])))
                 lat_counts.append(int(bin_mask.sum()))
+                
+                # Area-weighted mean (correct for projection)
+                weights = pixel_areas[bin_mask]
+                values = data[bin_mask]
+                weighted_mean = np.average(values, weights=weights)
+                lat_weighted_means.append(float(weighted_mean))
             else:
                 lat_means.append(np.nan)
                 lat_stds.append(np.nan)
                 lat_counts.append(0)
+                lat_weighted_means.append(np.nan)
         
-        # Store results
+        # Store results with both weighted and unweighted
         results['datasets'][name] = {
             'means': lat_means,
+            'weighted_means': lat_weighted_means,  # Area-corrected means
             'stds': lat_stds,
             'counts': lat_counts,
-            'peak_latitude': float(lat_centers[np.nanargmax(lat_means)]) if any(~np.isnan(lat_means)) else np.nan,
-            'tropical_mean': float(np.nanmean([m for m, lat in zip(lat_means, lat_centers) 
+            'peak_latitude': float(lat_centers[np.nanargmax(lat_weighted_means)]) if any(~np.isnan(lat_weighted_means)) else np.nan,
+            'tropical_mean': float(np.nanmean([m for m, lat in zip(lat_weighted_means, lat_centers) 
                                               if -23.5 <= lat <= 23.5])),
-            'temperate_mean': float(np.nanmean([m for m, lat in zip(lat_means, lat_centers) 
-                                               if 23.5 < abs(lat) <= 66.5]))
+            'temperate_mean': float(np.nanmean([m for m, lat in zip(lat_weighted_means, lat_centers) 
+                                               if 23.5 < abs(lat) <= 66.5])),
+            'projection_note': 'weighted_means corrects for latitude area distortion'
         }
     
-    # Plot if requested
+    # Plot if requested (use weighted means)
     if plot and results['datasets']:
         fig, ax = plt.subplots(figsize=(10, 6))
         
         for name, data in results['datasets'].items():
-            means = np.array(data['means'])
+            # Use area-weighted means for accurate representation
+            means = np.array(data['weighted_means'])
             valid = ~np.isnan(means)
             ax.plot(lat_centers[valid], means[valid], 'o-', label=name, linewidth=2)
         
