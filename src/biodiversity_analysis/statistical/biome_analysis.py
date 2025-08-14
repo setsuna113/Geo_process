@@ -18,26 +18,19 @@ from src.biodiversity_analysis.statistical.biome_classifier import (
 
 
 def analyze_by_biome(
-    data_source: Union[Dict[str, str], pd.DataFrame],
+    data_source: Union[str, Dict[str, str], pd.DataFrame],
     output_dir: Union[str, Path],
-    climate_data: Optional[Dict[str, str]] = None,
-    method: str = 'latitude',  # 'latitude', 'climate', or 'coords'
     chunk_size: int = 100000,
     **kwargs
 ) -> Dict[str, Any]:
     """
     Analyze biodiversity data grouped by biome.
     
-    Like your table but generated from first principles.
+    No bullshit. Use the best data available.
     
     Args:
-        data_source: Biodiversity data (paths or DataFrame)
+        data_source: Parquet path with climate data, or DataFrame
         output_dir: Output directory
-        climate_data: Optional {'temperature': path, 'precipitation': path}
-        method: How to determine biomes:
-            - 'latitude': Simple latitude-based (fastest, least accurate)
-            - 'climate': Use temperature/precipitation data (most accurate)
-            - 'coords': Estimate from lat/lon (moderate accuracy)
         chunk_size: For processing large datasets
         
     Returns:
@@ -46,29 +39,39 @@ def analyze_by_biome(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load or prepare data
+    # Load data - intelligently
     if isinstance(data_source, pd.DataFrame):
         df = data_source
-    elif isinstance(data_source, dict):
-        # Load from rasters
-        df = _load_rasters_to_dataframe(data_source, chunk_size)
-    else:
-        # Assume parquet path
-        df = pd.read_parquet(data_source)
-    
-    # Classify biomes based on method
-    if method == 'climate' and climate_data:
-        # Use actual climate data
-        df = _add_climate_biomes(df, climate_data)
-    elif method == 'coords' and 'x' in df.columns and 'y' in df.columns:
-        # Estimate from coordinates
-        df = _add_coordinate_biomes(df)
-    else:
-        # Default: simple latitude-based
-        if 'y' in df.columns:
-            df['biome'] = get_biome_for_latitude(df['y'].values)
+    elif isinstance(data_source, str):
+        # Load parquet - may be huge, so sample if needed
+        if chunk_size and chunk_size < 51901336:  # Full dataset size
+            # Sample for analysis
+            df = pd.read_parquet(data_source, 
+                                columns=['x', 'y', 'bio01', 'bio12'] + 
+                                       ['animal_richness', 'plant_richness', 
+                                        'am_fungi_richness', 'ecm_fungi_richness'])
+            # Random sample to reduce size
+            if len(df) > chunk_size:
+                df = df.sample(n=chunk_size, random_state=42)
         else:
-            raise ValueError("Need 'y' coordinate for latitude-based classification")
+            df = pd.read_parquet(data_source)
+    else:
+        # Legacy: dict of rasters
+        df = _load_rasters_to_dataframe(data_source, chunk_size)
+    
+    # Classify biomes - use the BEST data available
+    if 'bio01' in df.columns and 'bio12' in df.columns:
+        # We have climate data! Use it
+        # bio01 = Mean Annual Temperature (°C * 10)
+        # bio12 = Annual Precipitation (mm)
+        temp_celsius = df['bio01'].values / 10.0  # Convert to °C
+        precip_cm = df['bio12'].values / 10.0  # Convert mm to cm
+        df['biome'] = classify_biome(temp_celsius, precip_cm)
+    elif 'y' in df.columns:
+        # Fallback: latitude-based
+        df['biome'] = get_biome_for_latitude(df['y'].values)
+    else:
+        raise ValueError("Need climate data (bio01, bio12) or coordinates")
     
     # Group by biome and calculate statistics
     results = {}
