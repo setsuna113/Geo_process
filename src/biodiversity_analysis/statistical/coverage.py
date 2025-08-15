@@ -1,30 +1,32 @@
 """
-Coverage analysis with memory efficiency - Linus style.
+Coverage analysis - Linus style.
 
-"Don't load what you don't need."
+"Simple. Clean. No bullshit."
 """
 
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Union
-import rasterio
+import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results
 
+logger = logging.getLogger(__name__)
+
 
 def analyze_coverage(
-    data_source: Dict[str, str],
+    data: Dict[str, np.ndarray],
     output_dir: Union[str, Path],
-    chunk_size: int = 1000,  # Read 1000 rows at a time
-    **kwargs
+    **kwargs  # Ignore extra config
 ) -> Dict[str, Any]:
     """
-    Analyze data coverage with minimal memory usage.
+    Analyze data coverage - SIMPLE version.
+    
+    Data already loaded by orchestrator. Just analyze it.
     
     Args:
-        data_source: Dict of dataset names to raster paths
+        data: Dict of arrays (already loaded)
         output_dir: Output directory
-        chunk_size: Rows to read at once
         
     Returns:
         Coverage statistics
@@ -34,95 +36,37 @@ def analyze_coverage(
     
     results = {'datasets': {}}
     
-    for name, path in data_source.items():
-        if path is None or not isinstance(path, str):
+    for name, array in data.items():
+        if array is None:
             continue
+            
+        # Simple statistics
+        valid_mask = ~np.isnan(array)
+        valid_pixels = valid_mask.sum()
+        total_pixels = array.size
         
-        # Use rasterio for efficient chunked reading
-        with rasterio.open(path) as src:
-            # Get metadata without loading data
-            stats = {
-                'path': str(path),
-                'shape': src.shape,
-                'total_pixels': int(src.height * src.width),
-            }
-            
-            # Use Welford's algorithm for numerically stable statistics
-            n = 0
-            mean = 0.0
-            M2 = 0.0  # Sum of squares of differences from mean
-            value_min = float('inf')
-            value_max = float('-inf')
-            all_values = []  # Only for percentiles, sample if too big
-            
-            # Process in chunks
-            for row_start in range(0, src.height, chunk_size):
-                row_end = min(row_start + chunk_size, src.height)
-                
-                # Read chunk
-                chunk = src.read(1, window=((row_start, row_end), (0, src.width)))
-                
-                # Handle nodata
-                if src.nodata is not None:
-                    valid_mask = (chunk != src.nodata) & ~np.isnan(chunk)
-                else:
-                    valid_mask = ~np.isnan(chunk)
-                
-                valid_chunk = chunk[valid_mask]
-                
-                if len(valid_chunk) > 0:
-                    # Welford update for each value
-                    for value in valid_chunk:
-                        n += 1
-                        delta = value - mean
-                        mean += delta / n
-                        delta2 = value - mean
-                        M2 += delta * delta2
-                    
-                    value_min = min(value_min, valid_chunk.min())
-                    value_max = max(value_max, valid_chunk.max())
-                    
-                    # Sample for percentiles (don't keep everything)
-                    if len(all_values) < 100000:  # Keep max 100k samples
-                        all_values.extend(valid_chunk.tolist())
-                    elif np.random.random() < 0.1:  # Random 10% after that
-                        sample_size = min(1000, len(valid_chunk))
-                        indices = np.random.choice(len(valid_chunk), sample_size, replace=False)
-                        all_values.extend(valid_chunk[indices].tolist())
-            
-            # Calculate final statistics
-            stats['valid_pixels'] = int(n)
-            stats['coverage_percent'] = float(100 * n / stats['total_pixels'])
-            stats['missing_percent'] = float(100 - stats['coverage_percent'])
-            
-            if n > 0:
-                # Finalize Welford statistics
-                variance = M2 / n if n > 1 else 0
-                std = np.sqrt(variance)
-                
-                stats.update({
-                    'min': float(value_min),
-                    'max': float(value_max),
-                    'mean': float(mean),
-                    'std': float(std),
-                })
-                
-                # Percentiles from sample
-                if all_values:
-                    all_values = np.array(all_values[:100000])  # Cap at 100k
-                    stats.update({
-                        'median': float(np.median(all_values)),
-                        'q25': float(np.percentile(all_values, 25)),
-                        'q75': float(np.percentile(all_values, 75))
-                    })
-            
-            results['datasets'][name] = stats
+        stats = {
+            'shape': array.shape,
+            'total_pixels': int(total_pixels),
+            'valid_pixels': int(valid_pixels),
+            'coverage_percent': float(100 * valid_pixels / total_pixels),
+            'min': float(np.nanmin(array)) if valid_pixels > 0 else None,
+            'max': float(np.nanmax(array)) if valid_pixels > 0 else None,
+            'mean': float(np.nanmean(array)) if valid_pixels > 0 else None,
+            'std': float(np.nanstd(array)) if valid_pixels > 0 else None
+        }
+        
+        results['datasets'][name] = stats
+        
+        logger.info(f"{name}: {valid_pixels:,}/{total_pixels:,} pixels "
+                   f"({stats['coverage_percent']:.1f}% coverage)")
     
-    # Summary
-    if results['datasets']:
+    # Summary statistics
+    n_datasets = len(results['datasets'])
+    if n_datasets > 0:
         coverages = [d['coverage_percent'] for d in results['datasets'].values()]
         results['summary'] = {
-            'n_datasets': len(results['datasets']),
+            'n_datasets': n_datasets,
             'mean_coverage': float(np.mean(coverages)),
             'min_coverage': float(np.min(coverages)),
             'max_coverage': float(np.max(coverages))
@@ -135,19 +79,7 @@ def analyze_coverage(
             'max_coverage': 0
         }
     
-    # Save
+    # Save results
     save_results(results, output_dir / 'coverage_results.json')
-    
-    # Simple text report
-    with open(output_dir / 'coverage_report.txt', 'w') as f:
-        f.write("COVERAGE ANALYSIS\n")
-        f.write("=================\n\n")
-        for name, stats in results['datasets'].items():
-            f.write(f"{name}:\n")
-            f.write(f"  Coverage: {stats['coverage_percent']:.1f}%\n")
-            if 'mean' in stats:
-                f.write(f"  Range: [{stats['min']:.1f}, {stats['max']:.1f}]\n")
-                f.write(f"  Mean: {stats['mean']:.1f} ± {stats['std']:.1f}\n")
-            f.write("\n")
     
     return results

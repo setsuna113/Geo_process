@@ -13,6 +13,7 @@ import json
 
 from src.biodiversity_analysis.statistical.data_utils import load_data, save_results
 from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
+from src.biodiversity_analysis.shared.data.raster_aligner import load_and_align_rasters
 # Import the memory-efficient version
 from src.biodiversity_analysis.statistical.overlap_chunked import analyze_overlap as analyze_overlap_chunked
 
@@ -38,22 +39,22 @@ def analyze_overlap(
     Returns:
         Overlap statistics
     """
-    # If all inputs are paths, use chunked version
-    if all(isinstance(v, str) for v in data_source.values()):
-        return analyze_overlap_chunked(data_source, output_dir, hotspot_percentile, plot=plot)
-    
-    # Otherwise fall back to original (for arrays)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load all rasters
-    raster_loader = RasterLoader()
-    data = {}
-    for name, source in data_source.items():
-        if isinstance(source, str):
-            data[name] = raster_loader.load_single(source)
-        else:
-            data[name] = source
+    # If all inputs are paths, align them first
+    if all(isinstance(v, str) for v in data_source.values()):
+        # Load and align to common resolution
+        data = load_and_align_rasters(data_source)
+    else:
+        # Load any paths, keep arrays as-is
+        raster_loader = RasterLoader()
+        data = {}
+        for name, source in data_source.items():
+            if isinstance(source, str):
+                data[name] = raster_loader.load_single(source)
+            else:
+                data[name] = source
     
     if len(data) < 2:
         raise ValueError("Need at least 2 datasets")
@@ -172,11 +173,34 @@ def analyze_overlap(
 
 
 def _plot_overlap(data: Dict, masks: Dict, output_dir: Path):
-    """Simple overlap visualization."""
+    """Create overlap visualizations - both simple and RGB if applicable."""
+    import matplotlib
+    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from scipy.stats import rankdata
     
+    # Always create simple overlap
+    _create_simple_overlap(data, masks, output_dir, plt)
+    
+    # Create RGB if we have the right data
+    if _can_create_rgb(data):
+        _create_rgb_overlap(data, output_dir, plt, rankdata)
+
+
+def _can_create_rgb(data: Dict) -> bool:
+    """Check if we can create RGB visualization."""
+    has_animals = any('animal' in k.lower() for k in data)
+    has_plants = any('plant' in k.lower() for k in data)
+    has_fungi = any('fungi' in k.lower() for k in data)
+    return has_animals and has_plants and has_fungi
+
+
+def _create_simple_overlap(data: Dict, masks: Dict, output_dir: Path, plt):
+    """Simple overlap count map."""
     n = len(data)
     fig, axes = plt.subplots(1, n+1, figsize=(4*(n+1), 4))
+    if n == 1:
+        axes = [axes]
     
     # Individual datasets
     for i, (name, arr) in enumerate(data.items()):
@@ -186,9 +210,9 @@ def _plot_overlap(data: Dict, masks: Dict, output_dir: Path):
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
     
-    # Overlap
+    # Overlap count
     overlap = np.zeros_like(next(iter(data.values())))
-    for i, mask in enumerate(masks.values()):
+    for mask in masks.values():
         overlap[mask] += 1
     
     ax = axes[-1]
@@ -200,3 +224,61 @@ def _plot_overlap(data: Dict, masks: Dict, output_dir: Path):
     plt.tight_layout()
     plt.savefig(output_dir / 'overlap_map.png', dpi=150, bbox_inches='tight')
     plt.close()
+
+
+def _create_rgb_overlap(data: Dict, output_dir: Path, plt, rankdata):
+    """RGB composite for Nature-standard visualization."""
+    # Get channels
+    R = next(v for k, v in data.items() if 'animal' in k.lower())
+    G = next(v for k, v in data.items() if 'plant' in k.lower())
+    
+    # Combine fungi if needed
+    fungi_arrays = [v for k, v in data.items() if 'fungi' in k.lower()]
+    B = np.nansum(fungi_arrays, axis=0) if len(fungi_arrays) > 1 else fungi_arrays[0]
+    
+    # Quantile normalize each channel
+    R_norm = _quantile_norm(R, rankdata)
+    G_norm = _quantile_norm(G, rankdata)
+    B_norm = _quantile_norm(B, rankdata)
+    
+    # Stack into RGB with proper NaN handling
+    rgb = np.zeros((*R_norm.shape, 3))
+    
+    # Fill RGB channels, treating NaN as 0 (black)
+    rgb[:, :, 0] = np.nan_to_num(R_norm, nan=0)
+    rgb[:, :, 1] = np.nan_to_num(G_norm, nan=0) 
+    rgb[:, :, 2] = np.nan_to_num(B_norm, nan=0)
+    
+    # Mark ocean/no-data as gray (where ALL channels are NaN/zero)
+    no_data_mask = (np.isnan(R_norm) | (R <= 0)) & \
+                   (np.isnan(G_norm) | (G <= 0)) & \
+                   (np.isnan(B_norm) | (B <= 0))
+    
+    for i in range(3):
+        rgb[:, :, i][no_data_mask] = 0.5  # Gray for ocean/no-data
+    
+    # Plot
+    fig, ax = plt.subplots(figsize=(14, 7))
+    ax.imshow(rgb, aspect='equal')
+    ax.set_title('Biodiversity RGB: Red=Animals, Green=Plants, Blue=Fungi',
+                fontweight='bold')
+    ax.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(output_dir / 'overlap_rgb.png', dpi=200, bbox_inches='tight')
+    plt.close()
+
+
+def _quantile_norm(data, rankdata):
+    """Normalize to [0,1] using quantiles, preserve NaN for no-data."""
+    valid = (data > 0)  # Only positive values are valid data
+    if valid.sum() == 0:
+        return np.full_like(data, np.nan)
+    
+    norm = np.full_like(data, np.nan)  # Start with all NaN
+    ranks = rankdata(data[valid], method='average')
+    norm[valid] = (ranks - 0.5) / len(ranks)
+    
+    # Set zeros (ocean/no-data) to NaN, not 0
+    norm[data <= 0] = np.nan
+    return norm

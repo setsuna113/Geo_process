@@ -105,25 +105,86 @@ def analyze_latitudinal(
             'projection_note': 'weighted_means corrects for latitude area distortion'
         }
     
-    # Plot if requested (use weighted means)
+    # Plot if requested - SEPARATE SUBPLOTS for each dataset (different scales)
     if plot and results['datasets']:
-        fig, ax = plt.subplots(figsize=(10, 6))
+        # Determine subplot layout based on number of datasets
+        n_datasets = len(results['datasets'])
+        if n_datasets <= 4:
+            fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+            axes = axes.flatten()
+        else:
+            cols = int(np.ceil(np.sqrt(n_datasets)))
+            rows = int(np.ceil(n_datasets / cols))
+            fig, axes = plt.subplots(rows, cols, figsize=(16, 4*rows))
+            axes = axes.flatten()
         
-        for name, data in results['datasets'].items():
+        # Colors for common dataset names
+        color_map = {
+            'plants': 'green', 'animals': 'orange',
+            'am_fungi': 'purple', 'ecm_fungi': 'brown',
+            'total_fungi': 'darkred'
+        }
+        
+        for idx, (name, data) in enumerate(results['datasets'].items()):
+            ax = axes[idx]
+            
             # Use area-weighted means for accurate representation
             means = np.array(data['weighted_means'])
+            stds = np.array(data.get('stds', [np.nan]*len(means)))
             valid = ~np.isnan(means)
-            ax.plot(lat_centers[valid], means[valid], 'o-', label=name, linewidth=2)
+            
+            # Choose color
+            color = color_map.get(name, f'C{idx}')
+            
+            # Main line plot
+            ax.plot(lat_centers[valid], means[valid], 
+                   'o-', color=color, linewidth=2.5, 
+                   markersize=5, alpha=0.9)
+            
+            # Add error bands if available
+            if 'stds' in data and any(~np.isnan(stds)):
+                ax.fill_between(lat_centers[valid], 
+                               (means - stds)[valid], 
+                               (means + stds)[valid],
+                               color=color, alpha=0.2)
+            
+            # Formatting
+            ax.set_xlabel('Latitude (degrees)', fontsize=11)
+            ax.set_ylabel('Richness', fontsize=11)
+            ax.set_title(f'{name.replace("_", " ").title()}', fontsize=13, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            
+            # Reference lines
+            ax.axhline(y=0, color='k', linestyle='-', alpha=0.3)
+            ax.axvline(x=0, color='k', linestyle='--', alpha=0.5)  # Equator
+            ax.axvline(x=23.5, color='gray', linestyle=':', alpha=0.3)  # Tropics
+            ax.axvline(x=-23.5, color='gray', linestyle=':', alpha=0.3)
+            
+            # Mark peak
+            if any(valid):
+                peak_idx = np.nanargmax(means)
+                peak_lat = data.get('peak_latitude', lat_centers[peak_idx])
+                peak_val = means[peak_idx]
+                ax.plot(peak_lat, peak_val, 'r*', markersize=10, alpha=0.7)
+                
+                # Add stats box
+                stats_text = f'Peak: {peak_lat:.1f}°\n'
+                if 'tropical_mean' in data:
+                    stats_text += f'Tropical: {data["tropical_mean"]:.0f}\n'
+                if 'temperate_mean' in data:
+                    stats_text += f'Temperate: {data["temperate_mean"]:.0f}'
+                
+                ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+                       fontsize=9, va='top',
+                       bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
-        ax.set_xlabel('Latitude (degrees)')
-        ax.set_ylabel('Biodiversity Richness')
-        ax.set_title('Latitudinal Gradient')
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-        ax.axhline(y=0, color='k', linestyle='-', alpha=0.3)
-        ax.axvline(x=0, color='k', linestyle='-', alpha=0.3)
+        # Hide unused subplots
+        for idx in range(n_datasets, len(axes)):
+            axes[idx].set_visible(False)
         
-        save_figure(fig, output_dir / 'latitudinal_gradient.png')
+        plt.suptitle('Latitudinal Biodiversity Gradients', fontsize=16, fontweight='bold')
+        plt.tight_layout()
+        save_figure(fig, output_dir / 'latitudinal_gradient.png', dpi=150)
         plt.close(fig)
     
     # Save
