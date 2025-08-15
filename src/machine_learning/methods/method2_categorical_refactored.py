@@ -12,12 +12,11 @@ import numpy as np
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 
-from src.base.ml import BaseRegressionMethod
-from src.abstractions.types.ml_types import ModelType, ModelMetadata
-from ..models.glm.h2o_negative_binomial import H2ONegativeBinomialGLM
+# No base class - each method stands alone
+from h2o.estimators.glm import H2OGeneralizedLinearEstimator
 from ..config_loader import MLRegressionConfig
 from ..evaluation.emmeans_core import REMmeansWrapper, SimpleEMmeansApproximation
-from ..utils.vcov_extractor import extract_vcov_from_h2o
+from ..utils.vcov import extract_vcov
 from ..hypothesis import (
     WaldTest, LikelihoodRatioTest, ScoreTest,
     ContrastAnalysis, SimpleSlopesAnalysis
@@ -32,7 +31,7 @@ from ..preprocessing.h2o_preprocessing import (
 logger = logging.getLogger(__name__)
 
 
-class Method2H2Testing(BaseRegressionMethod):
+class Method2H2Testing:
     """Method 2: Tests H2 hypothesis using both continuous and categorical interactions.
     
     Model 3a: Continuous interaction (bio4 × plants_richness) - seasonality gradient
@@ -52,8 +51,10 @@ class Method2H2Testing(BaseRegressionMethod):
         Args:
             config: ML regression configuration
         """
-        super().__init__(config)
-        self.glm_config = self.config.get_glm_config()
+        self.config = config
+        # Get config dict once, not config.config nonsense
+        config_dict = config.config if hasattr(config, 'config') else {}
+        self.glm_config = config_dict.get('models', {}).get('glm', {})
         
         self.model_3a_continuous = None  # Model 3a: Continuous interaction
         self.model_3b_categorical = None  # Model 3b: Categorical interaction
@@ -163,7 +164,7 @@ class Method2H2Testing(BaseRegressionMethod):
         logger.info(f"Using {len(me_cols)} MESF eigenvectors")
         
         # Initialize GLM class
-        GLMClass = H2ONegativeBinomialGLM
+        # Use H2O directly - no wrapper needed
         
         # ========== Model 3a: Continuous Interaction ==========
         logger.info("Fitting Model 3a: Continuous interaction (bio4 × plants_richness)")
@@ -183,9 +184,17 @@ class Method2H2Testing(BaseRegressionMethod):
             'bio04_x_plants'
         ] + me_cols
         
-        model_3a_data = h2o_data[feature_cols_3a + ['fungi_richness']]
-        self.model_3a_continuous = GLMClass(self.config.config)
-        self.model_3a_continuous.fit(model_3a_data, y='fungi_richness')
+        # Direct H2O usage - no wrapper
+        self.model_3a_continuous = H2OGeneralizedLinearEstimator(
+            family='negativebinomial',
+            link='log',
+            lambda_=0.0,  # No penalty for unbiased estimation
+            standardize=True,
+            solver='IRLSM',
+            remove_collinear_columns=True,
+            compute_p_values=True
+        )
+        self.model_3a_continuous.train(x=feature_cols_3a, y='fungi_richness', training_frame=h2o_data)
         
         # ========== Model 3b: Categorical Interaction ==========
         logger.info("Fitting Model 3b: Categorical interaction (temperate × plant_high)")
@@ -206,9 +215,21 @@ class Method2H2Testing(BaseRegressionMethod):
             'temperate', 'plant_high', 'temperate_x_plant_high'
         ] + me_cols
         
-        model_3b_data = h2o_data_cat[feature_cols_3b + ['fungi_richness']]
-        self.model_3b_categorical = GLMClass(self.config.config)
-        self.model_3b_categorical.fit(model_3b_data, y='fungi_richness')
+        # Direct H2O usage - no wrapper
+        self.model_3b_categorical = H2OGeneralizedLinearEstimator(
+            family='negativebinomial',
+            link='log',
+            lambda_=0.0,  # No penalty for unbiased estimation
+            standardize=True,
+            solver='IRLSM',
+            remove_collinear_columns=True,
+            compute_p_values=True
+        )
+        self.model_3b_categorical.train(x=feature_cols_3b, y='fungi_richness', training_frame=h2o_data_cat)
+        
+        # Store predictor and response names for bootstrap
+        self.x_names_3b = feature_cols_3b
+        self.y_name = 'fungi_richness'
         
         # ========== Hypothesis Testing ==========
         results = {}
@@ -218,7 +239,7 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # 1a. Wald test for continuous interaction coefficient
         # First, find the actual interaction coefficient name
-        all_coeffs = self.model_3a_continuous.get_all_coefficients()
+        all_coeffs = self.model_3a_continuous.coef()
         
         # Look for the interaction term - could be named differently by H2O
         interaction_coef_name = None
@@ -252,11 +273,29 @@ class Method2H2Testing(BaseRegressionMethod):
                 'significant_at_0.05': False
             }
         else:
+            # Pure Wald test
             continuous_wald = WaldTest.test_coefficients_from_model(
                 model=self.model_3a_continuous,
                 coefficient_names=interaction_coef_name,
                 null_values=0.0
             )
+            
+            # Add practical significance for large samples
+            from src.machine_learning.hypothesis.practical_significance import PracticalSignificance
+            n_obs = h2o_data.nrows
+            if n_obs > 100000 and interaction_coef_name in all_coeffs:
+                # Get coefficient value and SE for practical interpretation
+                coef_val = all_coeffs[interaction_coef_name]
+                # Note: Method 2 might not have SE readily available, so check
+                if 'standard_error' in continuous_wald:
+                    continuous_wald = PracticalSignificance.interpret_wald_with_practical_significance(
+                        wald_result=continuous_wald,
+                        coefficient_estimate=coef_val,
+                        standard_error=continuous_wald['standard_error'],
+                        n_obs=n_obs,
+                        sesoi=0.05,  # Smaller threshold for interaction effects
+                        parameter_name="Temperature×Plants interaction"
+                    )
         
         # 1b. Score test for continuous interaction (using H2O-compatible version)
         try:
@@ -307,9 +346,9 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # 1d. Model comparison (AIC/BIC) for continuous model
         results['model_3a_continuous'] = {
-            'aic': self.model_3a_continuous.get_aic(),
-            'bic': self.model_3a_continuous.get_bic(),
-            'deviance': self.model_3a_continuous.get_deviance(),
+            'aic': self.model_3a_continuous.aic(),
+            'bic': None,  # H2O doesn't provide BIC directly
+            'deviance': self.model_3a_continuous.residual_deviance(),
             'wald_test': continuous_wald,
             'score_test': continuous_score,
             'lrt_test': lrt_result,
@@ -323,7 +362,7 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # 2a. Wald test for categorical interaction (secondary test)
         # Find the categorical interaction coefficient
-        cat_coeffs = self.model_3b_categorical.get_all_coefficients()
+        cat_coeffs = self.model_3b_categorical.coef()
         
         cat_interaction_name = None
         cat_possible_names = ['temperate_x_plant_high', 'temperate:plant_high', 
@@ -361,9 +400,9 @@ class Method2H2Testing(BaseRegressionMethod):
         
         # 2b. Note about emmeans being the primary test for 3b
         results['model_3b_categorical'] = {
-            'aic': self.model_3b_categorical.get_aic(),
-            'bic': self.model_3b_categorical.get_bic(),
-            'deviance': self.model_3b_categorical.get_deviance(),
+            'aic': self.model_3b_categorical.aic(),
+            'bic': None,  # H2O doesn't provide BIC directly
+            'deviance': self.model_3b_categorical.residual_deviance(),
             'wald_test': categorical_wald,
             'primary_test': 'emmeans contrasts (see compute_emmeans and test_h2_contrast methods)',
             'h2_supported': categorical_wald.get('significant_at_0.05', False),
@@ -487,7 +526,7 @@ class Method2H2Testing(BaseRegressionMethod):
         
         if self.model_3a_continuous:
             try:
-                coeffs_3a = self.model_3a_continuous.get_all_coefficients()
+                coeffs_3a = self.model_3a_continuous.coef()
                 debug_info['model_3a_continuous'] = list(coeffs_3a.keys())
                 logger.info(f"Model 3a coefficients: {list(coeffs_3a.keys())}")
             except Exception as e:
@@ -495,7 +534,7 @@ class Method2H2Testing(BaseRegressionMethod):
                 
         if self.model_3b_categorical:
             try:
-                coeffs_3b = self.model_3b_categorical.get_all_coefficients()
+                coeffs_3b = self.model_3b_categorical.coef()
                 debug_info['model_3b_categorical'] = list(coeffs_3b.keys())
                 logger.info(f"Model 3b coefficients: {list(coeffs_3b.keys())}")
             except Exception as e:
@@ -518,12 +557,14 @@ class Method2H2Testing(BaseRegressionMethod):
         logger.info("Computing estimated marginal means with full vcov matrix")
         
         # Extract variance-covariance matrix from H2O model
-        logger.info("Extracting variance-covariance matrix from H2O model")
-        # Use diagonal method for now - bootstrap has issues with column names
-        coefficients, vcov_matrix, coef_names = extract_vcov_from_h2o(
-            self.model_3b_categorical.model,
+        logger.info("Extracting variance-covariance matrix from H2O model using bootstrap")
+        # Use bootstrap for proper vcov estimation
+        coefficients, vcov_matrix, coef_names = extract_vcov(
+            self.model_3b_categorical,  # The model itself, not .model
             self.data_h2o,
-            method='diagonal'  # Simpler method that doesn't require refitting
+            method='sandwich',  # LINUS: Sandwich is the standard
+            x_names=self.x_names_3b,  # Pass predictor names
+            y_name=self.y_name  # Pass response name
         )
         
         # Store vcov for later use in hypothesis tests
@@ -852,15 +893,15 @@ class Method2H2Testing(BaseRegressionMethod):
         if self.model_3a_continuous:
             report['models']['continuous'] = {
                 'type': 'Model 3a: Continuous interaction (bio1 × plants)',
-                'aic': self.model_3a_continuous.get_aic() if hasattr(self.model_3a_continuous, 'get_aic') else None,
-                'bic': self.model_3a_continuous.get_bic() if hasattr(self.model_3a_continuous, 'get_bic') else None
+                'aic': self.model_3a_continuous.aic() if hasattr(self.model_3a_continuous, 'aic') else None,
+                'bic': None  # H2O doesn't provide BIC directly
             }
         
         if self.model_3b_categorical:
             report['models']['categorical'] = {
                 'type': 'Model 3b: Categorical interaction (temperate × plant_high)',
-                'aic': self.model_3b_categorical.get_aic() if hasattr(self.model_3b_categorical, 'get_aic') else None,
-                'bic': self.model_3b_categorical.get_bic() if hasattr(self.model_3b_categorical, 'get_bic') else None
+                'aic': self.model_3b_categorical.aic() if hasattr(self.model_3b_categorical, 'aic') else None,
+                'bic': None  # H2O doesn't provide BIC directly
             }
         
         # Generate reports from hypothesis tests

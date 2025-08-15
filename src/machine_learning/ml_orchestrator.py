@@ -32,12 +32,10 @@ from src.machine_learning.config_loader import MLRegressionConfig
 from src.machine_learning.utils.security_utils import PathValidator, DataLoader
 from src.machine_learning.utils import H2OManager
 
-# Methods for hypothesis testing
-from src.machine_learning.methods import (
-    Method1H0H1GLM,
-    Method2H2Testing,
-    Method3DML
-)
+# Methods for hypothesis testing - standalone classes, no base class
+from src.machine_learning.methods.method1_continuous_refactored import Method1H0H1GLM
+from src.machine_learning.methods.method2_categorical_refactored import Method2H2Testing
+from src.machine_learning.methods.method3_dml_refactored import Method3DML
 
 # Preprocessing - H2O optimized versions
 from src.machine_learning.preprocessing.h2o_preprocessing import (
@@ -78,13 +76,15 @@ class MLOrchestrator:
         else:
             self.config = MLRegressionConfig()
         
+        # Get config dictionary once
+        config_dict = self.config.config if hasattr(self.config, 'config') else {}
+        
         # Initialize components
         self.path_validator = PathValidator()
         self.data_loader = DataLoader(max_file_size_mb=10000)
-        self.mesf_processor = MESFProcessor()
-        
-        # Initialize H2O if needed
-        config_dict = self.config.config if hasattr(self.config, 'config') else {}
+        # MESF processor gets config at initialization
+        cache_dir = config_dict.get('spatial', {}).get('cache_dir', None)
+        self.mesf_processor = MESFProcessor(cache_dir=cache_dir)
         self.h2o_initialized = False
         
         # Get H2O configuration from config file
@@ -157,35 +157,26 @@ class MLOrchestrator:
         # Apply preprocessing pipeline using abstracted H2O functions
         logger.info("Applying preprocessing pipeline...")
         
-        # IMPORTANT: Compute MESF BEFORE removing missing data to ensure alignment
-        logger.info("Computing MESF spatial eigenvectors (before removing missing data)...")
+        # Compute MESF spatial eigenvectors
+        logger.info("Computing MESF spatial eigenvectors...")
+        # Get config from instance - config_dict is defined in __init__
+        config_dict = self.config.config if hasattr(self.config, 'config') else {}
+        spatial_config = config_dict.get('spatial', {})
+        h2o_config = config_dict.get('h2o', {})
         
-        # Get MESF config (simplified - no complex params needed)
-        spatial_config = self.config.config.get('spatial', {})
-        n_eigenvectors = spatial_config.get('n_eigenvectors', 10)
-        distance_threshold = spatial_config.get('distance_threshold', 100.0)
-        
-        # Get n_jobs from H2O config (unified thread control)
-        h2o_config = self.config.config.get('h2o', {})
-        n_jobs = h2o_config.get('nthreads', -1)
-        
-        # Get MESF eigenvectors using clean Nystrom-only implementation
         mesf_eigenvectors = self.mesf_processor.get_mesf_eigenvectors(
             data_path=str(data_path),
             spatial_grid_step=spatial_grid_step,
-            n_eigenvectors=n_eigenvectors,
-            distance_threshold=distance_threshold,
-            n_jobs=n_jobs
+            n_eigenvectors=spatial_config.get('n_eigenvectors', 10),
+            distance_threshold=spatial_config.get('distance_threshold', 100.0)
+            # JAX handles its own parallelization - no n_jobs needed
         )
         
         if mesf_eigenvectors is not None:
-            # Add MESF columns to data BEFORE any row removal
             data = data.cbind(mesf_eigenvectors)
-            logger.info(f"Added {mesf_eigenvectors.ncols} MESF eigenvectors ({mesf_eigenvectors.nrows:,} rows)")
+            logger.info(f"Added {mesf_eigenvectors.ncols} MESF eigenvectors")
         else:
-            # MESF failed - this could bias results due to uncorrected spatial autocorrelation
-            logger.warning("⚠️ MESF computation failed - proceeding WITHOUT spatial autocorrelation correction")
-            logger.warning("Results may be biased due to uncorrected spatial dependencies")
+            logger.warning("MESF computation failed - proceeding without spatial correction")
         
         # Now proceed with preprocessing that may remove rows
         logger.info("Continuing with preprocessing pipeline...")

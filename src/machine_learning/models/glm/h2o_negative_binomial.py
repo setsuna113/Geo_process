@@ -7,7 +7,7 @@ import os
 import numpy as np
 import pandas as pd
 import logging
-from typing import Dict, Any, Optional, Union, Tuple
+from typing import Dict, Any, Optional, Union, Tuple, List
 import h2o
 from h2o.estimators.glm import H2OGeneralizedLinearEstimator
 
@@ -94,6 +94,7 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
             y: Optional[str] = None,
             validation_fraction: float = 0.2,
             lambda_search: bool = True,
+            fixed_theta: Optional[float] = None,
             **kwargs) -> 'H2ONegativeBinomialGLM':
         """Fit the H2O Negative Binomial GLM using all available cores.
         
@@ -102,6 +103,7 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
             y: Target column name (default: 'fungi_richness' or last column)
             validation_fraction: Fraction of data for validation
             lambda_search: Whether to perform automatic lambda search
+            fixed_theta: Optional fixed dispersion parameter (prevents instability)
             **kwargs: Additional parameters
             
         Returns:
@@ -159,39 +161,48 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         # Configure and fit the model
         logger.info(f"Fitting H2O Negative Binomial GLM with {self.n_threads} threads...")
         
+        # Store fixed theta if provided
+        self.fixed_theta = fixed_theta
+        if fixed_theta:
+            logger.info(f"Using fixed theta={fixed_theta:.4f} for stable dispersion")
+        
         # Build the model
         # Note: remove_collinear_columns only works without regularization
         # So we either use lambda_search OR remove_collinear_columns, not both
+        
+        # Prepare base parameters
+        base_params = {
+            'family': 'negativebinomial',
+            'link': 'log',
+            'max_iterations': self.max_iter,
+            'standardize': True,
+            'solver': 'IRLSM',
+            'compute_p_values': True,
+            'intercept': self.fit_intercept,
+            'seed': 42
+        }
+        
+        # Add fixed theta if provided
+        if fixed_theta is not None:
+            base_params['theta'] = fixed_theta
+            logger.info(f"Using fixed theta={fixed_theta:.6f} for dispersion parameter")
+        
         if lambda_search:
             # Use regularization to handle collinearity
             self.model = H2OGeneralizedLinearEstimator(
-                family='negativebinomial',
-                link='log',
-                max_iterations=self.max_iter,
-                standardize=True,
+                **base_params,
                 lambda_search=True,
                 nlambdas=100,
                 alpha=0.5,  # Elastic net mixing (0.5 = equal L1 and L2)
-                solver='IRLSM',
-                compute_p_values=True,
-                remove_collinear_columns=False,  # Can't use with lambda_search
-                intercept=self.fit_intercept,
-                seed=42
+                remove_collinear_columns=False  # Can't use with lambda_search
             )
         else:
             # Remove collinear columns without regularization
             self.model = H2OGeneralizedLinearEstimator(
-                family='negativebinomial',
-                link='log',
-                max_iterations=self.max_iter,
-                standardize=True,
+                **base_params,
                 lambda_search=False,
                 lambda_=0.0,  # No regularization
-                solver='IRLSM',
-                compute_p_values=True,
-                remove_collinear_columns=True,
-                intercept=self.fit_intercept,
-                seed=42
+                remove_collinear_columns=True
             )
         
         # Train the model (automatically uses all threads!)
@@ -462,6 +473,106 @@ class H2ONegativeBinomialGLM(BaseMLAnalyzer):
         # Note: In production, you might want to keep H2O running
         # across multiple model fits for efficiency
         pass  # Don't auto-shutdown to allow reuse
+    
+    @staticmethod
+    def estimate_stable_theta(
+        h2o_data: h2o.H2OFrame,
+        target_col: str,
+        baseline_features: List[str],
+        max_iter: int = 100
+    ) -> float:
+        """Estimate a stable theta parameter from a baseline model.
+        
+        This is used for the two-stage approach where we estimate theta
+        from a simpler model and then fix it for all nested models.
+        
+        Args:
+            h2o_data: H2O DataFrame with all data
+            target_col: Name of target column
+            baseline_features: List of baseline feature names (e.g., just climate)
+            max_iter: Maximum iterations for theta estimation
+            
+        Returns:
+            Estimated theta value
+        """
+        logger.info("Estimating stable theta from baseline model")
+        
+        # Fit a simple model to estimate theta
+        baseline_model = H2OGeneralizedLinearEstimator(
+            family='negativebinomial',
+            link='log',
+            max_iterations=max_iter,
+            standardize=True,
+            lambda_=0.0,  # No regularization for theta estimation
+            solver='IRLSM',
+            compute_p_values=False,  # Don't need p-values for theta
+            intercept=True,
+            seed=42
+        )
+        
+        # Train on baseline features only
+        baseline_model.train(
+            x=baseline_features,
+            y=target_col,
+            training_frame=h2o_data
+        )
+        
+        # Extract theta from the fitted model
+        # H2O stores theta in the model parameters
+        model_params = baseline_model._model_json['output']
+        
+        # Try different locations where H2O might store theta
+        theta = None
+        if 'theta' in model_params:
+            theta = model_params['theta']
+        elif 'dispersion' in model_params and model_params['dispersion'] != 0:
+            theta = 1.0 / model_params['dispersion']  # theta = 1/dispersion
+        elif 'family_params' in model_params and 'theta' in model_params['family_params']:
+            theta = model_params['family_params']['theta']
+        else:
+            # Try to extract from the model's actual parameters
+            try:
+                actual_params = baseline_model.actual_params
+                if 'theta' in actual_params:
+                    theta = actual_params['theta']
+            except:
+                pass
+            
+            # Try GLM-specific parameters
+            if theta is None:
+                try:
+                    glm_params = baseline_model.params
+                    if 'theta' in glm_params:
+                        theta = glm_params['theta']['actual']
+                except:
+                    pass
+            
+        if theta is None or theta == 0:
+            # Fallback: estimate from mean-variance relationship
+            # For NB: Var = μ + μ²/θ, so θ ≈ μ²/(Var - μ)
+            target_mean = h2o_data[target_col].mean()
+            target_var = h2o_data[target_col].var()
+            if isinstance(target_mean, list): target_mean = target_mean[0]
+            if isinstance(target_var, list): target_var = target_var[0]
+            
+            if target_var > target_mean:
+                # Better estimation: use dispersion ratio to estimate theta
+                dispersion_ratio = target_var / target_mean
+                # For typical ecological count data with dispersion ratio 5-10,
+                # theta should be around mean/(dispersion_ratio - 1)
+                theta = target_mean / (dispersion_ratio - 1)
+                logger.warning(f"Estimated theta from dispersion ratio: {theta:.4f} (dispersion={dispersion_ratio:.2f})")
+            else:
+                theta = 100.0  # Large theta = approximately Poisson
+                logger.warning(f"Data appears underdispersed, using large theta: {theta:.4f}")
+        else:
+            logger.info(f"Extracted theta from baseline model: {theta:.4f}")
+        
+        # Ensure theta is positive and reasonable
+        # Use more reasonable bounds based on typical ecological data
+        theta = max(1.0, min(theta, 1000.0))  # Minimum 1.0 instead of 0.1
+        
+        return float(theta)
     
     def evaluate(self, X: Union[np.ndarray, pd.DataFrame], y: np.ndarray) -> Dict[str, float]:
         """Evaluate model performance on test data.

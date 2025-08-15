@@ -1,7 +1,6 @@
 """Machine learning module for biodiversity analysis."""
 
-# Import H2O models
-from .models import H2ONegativeBinomialGLM, H2OGBM
+# No wrapper models - use H2O directly
 
 # Import preprocessing (H2O-optimized)
 from .preprocessing import (
@@ -20,8 +19,6 @@ from .validation.spatial_cv import (
 )
 
 __all__ = [
-    'H2ONegativeBinomialGLM',
-    'H2OGBM',
     'RichnessFeatureBuilder',
     'SpatialFeatureBuilder',
     'EcologicalFeatureBuilder',

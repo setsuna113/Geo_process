@@ -34,7 +34,7 @@ except ImportError as e:
         sys.exit(1)
 
 
-MethodType = Literal["all", "method1", "method2", "method3", "glm-continuous", "glm-categorical", "dml"]
+MethodType = Literal["all", "method1", "method2", "method3"]  # One name per method
 
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
@@ -82,8 +82,7 @@ def validate_inputs(data_path: Path, method: str) -> None:
     if not data_path.exists():
         raise FileNotFoundError(f"Data file not found: {data_path}")
     
-    valid_methods = ["all", "method1", "method2", "method3", 
-                     "glm-continuous", "glm-categorical", "dml"]
+    valid_methods = ["all", "method1", "method2", "method3"]
     
     if method not in valid_methods:
         raise ValueError(

@@ -1,244 +1,123 @@
-"""Nystrom approximation eigensolver for large-scale MESF.
+"""
+Nystrom eigensolver - JAX implementation.
 
-Implements the three-stage Nystrom approximation:
-1. Landmark eigendecomposition (with sparse matrix support)
-2. Extension to samples
-3. Interpolation to full dataset
+No fallbacks. If you don't have JAX, install it.
 """
 
 import numpy as np
-from scipy.sparse import csr_matrix, lil_matrix
-from scipy.sparse.linalg import eigsh
-from typing import Tuple, Optional, Union
+import jax.numpy as jnp
+from jax import jit
 import logging
-
-from .spatial_weights import haversine_distance_km
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
+# Configure JAX
+import jax
+# Use float32 for speed (2x faster than float64)
+jax.config.update("jax_enable_x64", False)
+
 
 class NystromEigensolver:
-    """Efficient Nystrom approximation for spatial eigendecomposition with sparse matrix support."""
+    """Nystrom approximation for spatial eigendecomposition."""
     
     def __init__(
         self,
         n_eigenvectors: int = 10,
         distance_threshold: float = 100.0,
         extension_bandwidth: float = 100.0,
-        use_sparse: bool = True,
-        kernel_threshold: float = 0.01
+        use_sparse: bool = True,  # Ignored - kept for compatibility
+        kernel_threshold: float = 0.01  # Ignored - no special cases
     ):
-        """Initialize Nystrom eigensolver.
-        
-        Args:
-            n_eigenvectors: Number of eigenvectors to compute
-            distance_threshold: Distance threshold in km for spatial weights
-            extension_bandwidth: Gaussian bandwidth for landmark-sample extension
-            use_sparse: Whether to use sparse matrices for efficiency
-            kernel_threshold: Threshold for sparse kernel (values below are set to 0)
-        """
         self.n_eigenvectors = n_eigenvectors
         self.distance_threshold = distance_threshold
         self.extension_bandwidth = extension_bandwidth
-        self.use_sparse = use_sparse
-        self.kernel_threshold = kernel_threshold
+    
+    @staticmethod
+    def _haversine_distances(coords1: jnp.ndarray, coords2: jnp.ndarray) -> jnp.ndarray:
+        """Compute haversine distances."""
+        c1 = jnp.radians(coords1)
+        c2 = jnp.radians(coords2)
+        
+        lat1 = c1[:, 1:2]
+        lon1 = c1[:, 0:1]
+        lat2 = c2[:, 1:2].T
+        lon2 = c2[:, 0:1].T
+        
+        dlat = lat2 - lat1
+        dlon = lon2 - lon1
+        
+        a = jnp.sin(dlat/2)**2 + jnp.cos(lat1) * jnp.cos(lat2) * jnp.sin(dlon/2)**2
+        c = 2 * jnp.arcsin(jnp.sqrt(jnp.clip(a, 0, 1)))
+        
+        return c * 6371.0
+    
+    def _compute_weights_matrix(self, coords: jnp.ndarray) -> jnp.ndarray:
+        """Compute spatial weights matrix."""
+        distances = self._haversine_distances(coords, coords)
+        W = (distances <= self.distance_threshold).astype(jnp.float32)
+        W = W.at[jnp.diag_indices(len(W))].set(0)
+        
+        # Row standardize
+        row_sums = W.sum(axis=1, keepdims=True)
+        row_sums = jnp.where(row_sums == 0, 1, row_sums)
+        
+        return W / row_sums
     
     def compute_landmark_eigenvectors(
-        self,
-        coords_landmark: np.ndarray
+        self, 
+        coords: np.ndarray,
+        return_eigenvalues: bool = True
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute eigenvectors on landmark points using sparse matrices.
-        
-        Args:
-            coords_landmark: Landmark coordinates (n_landmark, 2)
-            
-        Returns:
-            (eigenvalues, eigenvectors) tuple
-        """
-        n_landmark = len(coords_landmark)
-        logger.info(f"Computing eigendecomposition for {n_landmark:,} landmarks...")
-        
-        if self.use_sparse:
-            # Create sparse spatial weights matrix
-            W_sparse = self._create_sparse_spatial_weights(coords_landmark)
-            
-            # Use sparse eigendecomposition (much faster for sparse matrices)
-            # eigsh finds k largest eigenvalues of sparse matrix
-            try:
-                # Request a few extra to ensure we get enough positive ones
-                k = min(self.n_eigenvectors + 5, n_landmark - 1)
-                eigenvalues, eigenvectors = eigsh(
-                    W_sparse, 
-                    k=k,
-                    which='LM',  # Largest magnitude
-                    return_eigenvectors=True
-                )
-                
-                # Sort by eigenvalue magnitude (descending)
-                idx = np.argsort(np.abs(eigenvalues))[::-1]
-                eigenvalues = eigenvalues[idx]
-                eigenvectors = eigenvectors[:, idx]
-                
-            except Exception as e:
-                logger.warning(f"Sparse eigendecomposition failed: {e}, falling back to dense")
-                W_dense = W_sparse.toarray()
-                eigenvalues, eigenvectors = np.linalg.eigh(W_dense)
-                idx = np.argsort(np.abs(eigenvalues))[::-1]
-                eigenvalues = eigenvalues[idx]
-                eigenvectors = eigenvectors[:, idx]
-        else:
-            # Dense matrix computation (original approach)
-            W = self._create_dense_spatial_weights(coords_landmark)
-            eigenvalues, eigenvectors = np.linalg.eigh(W)
-            idx = np.argsort(np.abs(eigenvalues))[::-1]
-            eigenvalues = eigenvalues[idx]
-            eigenvectors = eigenvectors[:, idx]
-        
-        # Select top eigenvectors
-        selected_eigenvalues = eigenvalues[:self.n_eigenvectors]
-        selected_eigenvectors = eigenvectors[:, :self.n_eigenvectors]
-        
-        # Log statistics
-        positive_eigenvalues = eigenvalues[eigenvalues > 0]
-        if len(positive_eigenvalues) > 0:
-            variance_explained = (
-                np.sum(np.abs(selected_eigenvalues)) / 
-                np.sum(positive_eigenvalues) * 100
-            )
-            logger.info(
-                f"Selected {self.n_eigenvectors} eigenvectors "
-                f"explaining {variance_explained:.1f}% variance"
-            )
-        
-        return selected_eigenvalues, selected_eigenvectors
-    
-    def _create_sparse_spatial_weights(self, coords: np.ndarray) -> csr_matrix:
-        """Create sparse spatial weights matrix without computing full distance matrix.
-        
-        Uses pynndescent for parallel neighbor search.
-        
-        Args:
-            coords: Coordinates (n, 2) with [lon, lat] in degrees
-            
-        Returns:
-            Sparse spatial weights matrix
-        """
-        from pynndescent import NNDescent
-        import os
-        
+        """Compute eigenvectors for landmarks."""
         n = len(coords)
-        n_jobs = int(os.environ.get('MESF_N_JOBS', '80'))
-        logger.info(f"Building sparse weights matrix for {n} points using pynndescent with {n_jobs} jobs...")
+        logger.info(f"Computing eigendecomposition for {n:,} landmarks...")
         
-        # Validate coordinates before building tree
-        if n < 2:
-            raise ValueError(f"Need at least 2 points for spatial weights, got {n}")
+        # Convert to JAX
+        coords_jax = jnp.array(coords)
         
-        # Check for valid coordinate ranges
-        lon_range = coords[:, 0]
-        lat_range = coords[:, 1]
-        if np.any(np.abs(lon_range) > 180) or np.any(np.abs(lat_range) > 90):
-            raise ValueError(f"Invalid coordinates: lon must be in [-180, 180], lat in [-90, 90]")
+        # Compute weights
+        W = self._compute_weights_matrix(coords_jax)
         
-        # Check for degenerate cases (all points at same location)
-        unique_coords = np.unique(coords, axis=0)
-        if len(unique_coords) < 2:
-            logger.warning(f"Only {len(unique_coords)} unique coordinates found - spatial weights may be degenerate")
-            if len(unique_coords) == 1:
-                # All points at same location - return identity matrix
-                logger.warning("All points at same location - returning identity matrix")
-                return csr_matrix(np.eye(n, dtype=np.float32))
+        # Eigendecomposition
+        eigenvalues, eigenvectors = jnp.linalg.eigh(W)
         
-        # Convert to radians for haversine metric
-        coords_rad = np.radians(coords[:, [1, 0]])  # [lat, lon] order
+        # Select largest (skip trivial)
+        idx = jnp.argsort(eigenvalues)[::-1][1:self.n_eigenvectors+1]
+        eigenvalues = eigenvalues[idx]
+        eigenvectors = eigenvectors[:, idx]
         
-        # Build spatial index using pynndescent (supports parallel construction)
-        # Use approximate nearest neighbor for efficiency
-        index = NNDescent(
-            coords_rad, 
-            metric='haversine',
-            n_neighbors=min(100, n-1),  # Find up to 100 neighbors
-            n_jobs=n_jobs,
-            random_state=42,
-            verbose=False
-        )
+        # Moran's I
+        moran_i = jnp.diag(eigenvectors.T @ W @ eigenvectors)
         
-        # Convert distance threshold from km to radians
-        # Earth radius = 6371 km
-        radius_rad = self.distance_threshold / 6371.0
-        
-        # Query all neighbors within threshold
-        logger.info(f"Finding neighbors within {self.distance_threshold} km...")
-        
-        # Get neighbors and distances for all points
-        neighbors, distances = index.neighbor_graph
-        
-        # Create lists to store neighbors within threshold
-        indices_list = []
-        for i in range(n):
-            # Get neighbors within radius threshold
-            mask = distances[i] <= radius_rad
-            valid_neighbors = neighbors[i][mask]
-            # Remove self-connections and invalid indices
-            valid_neighbors = valid_neighbors[(valid_neighbors != i) & (valid_neighbors >= 0)]
-            indices_list.append(valid_neighbors)
-        
-        # Build sparse matrix directly (never create dense matrix)
-        # Use lil_matrix for efficient construction
-        W = lil_matrix((n, n), dtype=np.float32)
-        
-        # Populate sparse matrix with row-standardized weights
-        total_neighbors = 0
-        for i in range(n):
-            # Get neighbors (excluding self)
-            neighbors = indices_list[i]
-            neighbors = neighbors[neighbors != i]
-            
-            if len(neighbors) > 0:
-                # Row-standardize: each neighbor gets equal weight
-                weight = 1.0 / len(neighbors)
-                W[i, neighbors] = weight
-                total_neighbors += len(neighbors)
-        
-        # Convert to CSR format (efficient for matrix operations and eigendecomposition)
-        W_sparse = W.tocsr()
-        
-        # Log sparsity statistics
-        nnz = W_sparse.nnz
-        sparsity = 1 - (nnz / (n * n))
-        avg_neighbors = total_neighbors / n
         logger.info(
-            f"Sparse weights matrix created: {n}×{n}, "
-            f"{nnz:,} non-zeros ({sparsity*100:.1f}% sparse), "
-            f"avg {avg_neighbors:.1f} neighbors/point"
+            f"Selected {self.n_eigenvectors} eigenvectors with "
+            f"Moran's I range: [{moran_i.min():.3f}, {moran_i.max():.3f}]"
         )
         
-        return W_sparse
+        # Convert back to NumPy
+        if return_eigenvalues:
+            return np.array(eigenvalues), np.array(eigenvectors)
+        return np.array(eigenvectors)
     
-    def _create_dense_spatial_weights(self, coords: np.ndarray) -> np.ndarray:
-        """Create dense spatial weights matrix (fallback option).
-        
-        Args:
-            coords: Coordinates (n, 2) with [lon, lat] in degrees
-            
-        Returns:
-            Dense spatial weights matrix
-        """
-        n = len(coords)
-        
+    def _extend_eigenvectors_jax(
+        self,
+        coords_sample: jnp.ndarray,
+        coords_landmark: jnp.ndarray,
+        eigenvectors_landmark: jnp.ndarray
+    ) -> jnp.ndarray:
+        """Extend eigenvectors using Nystrom."""
         # Compute distances
-        distances_km = haversine_distance_km(coords)
+        distances = self._haversine_distances(coords_sample, coords_landmark)
         
-        # Create binary weights based on threshold
-        W = (distances_km <= self.distance_threshold).astype(float)
-        np.fill_diagonal(W, 0)  # Remove self-connections
+        # Gaussian kernel
+        kernel = jnp.exp(-distances / self.extension_bandwidth)
         
-        # Row-standardize
-        row_sums = W.sum(axis=1)
-        row_sums[row_sums == 0] = 1  # Avoid division by zero
-        W = W / row_sums[:, np.newaxis]
+        # Row normalize
+        kernel = kernel / kernel.sum(axis=1, keepdims=True)
         
-        return W
+        # Project
+        return kernel @ eigenvectors_landmark
     
     def extend_to_samples(
         self,
@@ -246,18 +125,7 @@ class NystromEigensolver:
         coords_landmark: np.ndarray,
         eigenvectors_landmark: np.ndarray
     ) -> np.ndarray:
-        """Extend eigenvectors from landmarks to samples using Nystrom.
-        
-        Can use sparse kernel matrix if memory is limited.
-        
-        Args:
-            coords_sample: Sample coordinates (n_sample, 2)
-            coords_landmark: Landmark coordinates (n_landmark, 2)
-            eigenvectors_landmark: Landmark eigenvectors (n_landmark, n_eigenvectors)
-            
-        Returns:
-            Sample eigenvectors (n_sample, n_eigenvectors)
-        """
+        """Extend eigenvectors from landmarks to samples."""
         n_sample = len(coords_sample)
         n_landmark = len(coords_landmark)
         
@@ -266,57 +134,70 @@ class NystromEigensolver:
             f"{n_landmark:,} landmarks to {n_sample:,} samples..."
         )
         
-        # Compute distances
-        distances_km = haversine_distance_km(coords_sample, coords_landmark)
+        # Check memory
+        memory_gb = (n_sample * n_landmark * 8) / (1024**3)
         
-        # Compute Gaussian kernel
-        kernel = np.exp(-distances_km / self.extension_bandwidth)
+        if memory_gb > 50:  # Process in batches if too large
+            return self._extend_in_batches(
+                coords_sample, coords_landmark, eigenvectors_landmark
+            )
         
-        if self.use_sparse and self.kernel_threshold > 0:
-            # Threshold small values for sparsity
-            logger.info(f"Creating sparse kernel with threshold {self.kernel_threshold}")
-            
-            # Count how many values will be kept
-            mask = kernel > self.kernel_threshold
-            nnz = np.sum(mask)
-            sparsity = 1 - (nnz / (n_sample * n_landmark))
-            
-            logger.info(f"Kernel sparsity: {sparsity*100:.1f}% zeros, {nnz:,} non-zeros")
-            
-            # Apply threshold
-            kernel[~mask] = 0
-            
-            # Convert to sparse and normalize rows
-            kernel_sparse = csr_matrix(kernel)
-            row_sums = np.array(kernel_sparse.sum(axis=1)).flatten()
-            row_sums[row_sums == 0] = 1
-            
-            # Normalize using sparse operations
-            inv_row_sums = 1.0 / row_sums
-            kernel_sparse = kernel_sparse.multiply(inv_row_sums[:, np.newaxis])
-            
-            # Project eigenvectors (sparse @ dense = dense)
-            eigenvectors_sample = kernel_sparse @ eigenvectors_landmark
-            
-        else:
-            # Dense kernel (original approach)
-            # Normalize rows
-            kernel = kernel / kernel.sum(axis=1, keepdims=True)
-            
-            # Project eigenvectors
-            eigenvectors_sample = kernel @ eigenvectors_landmark
+        # Small enough - do it all at once
+        coords_sample_jax = jnp.array(coords_sample)
+        coords_landmark_jax = jnp.array(coords_landmark)
+        eigenvectors_jax = jnp.array(eigenvectors_landmark)
         
-        return eigenvectors_sample
+        result = self._extend_eigenvectors_jax(
+            coords_sample_jax, coords_landmark_jax, eigenvectors_jax
+        )
+        
+        return np.array(result)
+    
+    def _extend_in_batches(
+        self,
+        coords_sample: np.ndarray,
+        coords_landmark: np.ndarray,
+        eigenvectors_landmark: np.ndarray,
+        batch_size: int = 50000
+    ) -> np.ndarray:
+        """Process in batches when memory constrained."""
+        n_sample = len(coords_sample)
+        n_eigenvectors = eigenvectors_landmark.shape[1]
+        result = np.empty((n_sample, n_eigenvectors), dtype=np.float64)
+        
+        coords_landmark_jax = jnp.array(coords_landmark)
+        eigenvectors_jax = jnp.array(eigenvectors_landmark)
+        
+        for i in range(0, n_sample, batch_size):
+            end = min(i + batch_size, n_sample)
+            batch = jnp.array(coords_sample[i:end])
+            
+            result[i:end] = np.array(
+                self._extend_eigenvectors_jax(batch, coords_landmark_jax, eigenvectors_jax)
+            )
+            
+            if i % (batch_size * 10) == 0 and i > 0:
+                logger.info(f"Processed {i:,}/{n_sample:,} samples")
+        
+        return result
     
     @staticmethod
     def _orthonormalize(vectors: np.ndarray) -> np.ndarray:
-        """Orthonormalize vectors using QR decomposition.
-        
-        Args:
-            vectors: Input vectors (n, m)
-            
-        Returns:
-            Orthonormalized vectors (n, m)
-        """
+        """Orthonormalize vectors using QR decomposition."""
         Q, _ = np.linalg.qr(vectors)
         return Q
+
+
+# Import for compatibility with old code that expects this
+def haversine_distance_km(coords1: np.ndarray, coords2: np.ndarray = None) -> np.ndarray:
+    """Compute haversine distances using JAX."""
+    if coords2 is None:
+        coords2 = coords1
+    
+    c1 = jnp.array(coords1)
+    c2 = jnp.array(coords2)
+    
+    # Use the static method
+    distances = NystromEigensolver._haversine_distances(c1, c2)
+    
+    return np.array(distances)

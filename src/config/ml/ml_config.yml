@@ -5,13 +5,13 @@
 h2o:
   enabled: true
   max_mem_size: "128G"  # Increase for large datasets (52M rows)
-  nthreads: 80  # Limit CPU cores (set to -1 to use all available cores)
+  nthreads: 120  # Using 120 cores for faster processing
   ice_root: "/tmp/h2o_tmp"
   
 regression_analysis:
   # Data loading and sampling
   data:
-    spatial_grid_step: 1000  # Take every 100th point in spatial grid for testing
+    spatial_grid_step: 1  # Take every point (full dataset)
     log_message: "Loading data with spatial grid sampling"
   
   # Data preprocessing (lines 199-277 from regression_analysis_decisions.md)
@@ -59,10 +59,11 @@ regression_analysis:
       num_threads: 80
       log_message: "Configuring LightGBM for DML nuisance models"
   
-  # Spatial analysis (simplified for Nystrom-only)
+  # Spatial analysis (JAX-optimized Nystrom)
   spatial:
     n_eigenvectors: 10  # Number of MESF eigenvectors to compute
     distance_threshold: 100.0  # Distance threshold in km for spatial weights
+    # JAX will automatically use all available CPU cores
     # Note: Nystrom parameters are auto-calculated using 100×√n rule
   
   # Feature engineering for H2 testing (lines 53-67)
