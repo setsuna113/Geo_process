@@ -362,6 +362,7 @@ dependencies:
   - zstd=1.5.7=hb8e6e7a_2
   - pip:
       - cramjam==2.11.0
+      - dcor==0.6
       - fastparquet==2024.11.0
       - h2o==3.46.0.7
       - jsonschema==4.25.0

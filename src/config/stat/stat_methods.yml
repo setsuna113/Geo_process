@@ -39,7 +39,9 @@ datasets:
   plants: "data/richness_maps/daru-plants-richness.tif"
   animals: "data/richness_maps/iucn-terrestrial-richness.tif"
   am_fungi: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
+  am_fungi_cv: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
   ecm_fungi: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
+  ecm_fungi_cv: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_CoeffVar.tif"
   
   # Climate data with elevation for biome analysis
   climate_parquet: "biodiversity_climate_production_1x_corrected.parquet"

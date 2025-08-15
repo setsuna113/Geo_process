@@ -1,8 +1,8 @@
 """
-Ultra-simple orchestrator - Linus style.
+Statistical Analysis Orchestrator - Final Version.
 
-"Theory and practice sometimes clash. Theory loses. Every single time."
-No classes, no inheritance, just functions.
+"Simplicity is the ultimate sophistication."
+This is what good code looks like.
 """
 
 import logging
@@ -10,8 +10,23 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from src.biodiversity_analysis.statistical.config_utils import load_config
+from src.biodiversity_analysis.shared.data.unified_loader import get_loader
+from src.biodiversity_analysis.statistical.method_adapters import call_method
 
 logger = logging.getLogger(__name__)
+
+
+# Method registry - clean and simple
+AVAILABLE_METHODS = {
+    'correlation',
+    'coverage',
+    'overlap',
+    'latitudinal',
+    'global_maps',
+    'trust_maps',
+    'biome_analysis',
+    'partial_correlation'
+}
 
 
 def run_analysis(
@@ -20,7 +35,9 @@ def run_analysis(
     methods: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
-    Run statistical analysis. Dead simple.
+    Run statistical analysis pipeline.
+    
+    Clean. Simple. No special cases.
     
     Args:
         config_path: Config file path
@@ -30,100 +47,166 @@ def run_analysis(
     Returns:
         Results from each method
     """
-    # Load config - just a dict
+    # Load configuration
     config = load_config(config_path)
+    config['variant'] = variant
     
-    # Output directory
-    output_base = Path(config['settings']['output_dir'])
-    output_dir = output_base / f'statistical_analysis_{variant}' if variant != 'default' else output_base / 'statistical_analysis'
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Setup output directory
+    output_dir = _get_output_dir(config, variant)
     
-    # Methods to run
-    if methods is None:
-        methods = [name for name, cfg in config['methods'].items() if cfg.get('enabled', False)]
+    # Get methods to run
+    methods = _get_methods(config, methods)
     
-    logger.info(f"Running {len(methods)} methods to {output_dir}")
+    # Load data manager
+    loader = get_loader()
     
-    # Prepare data paths
-    data_paths = config['datasets'].copy()
-    
-    # Extract climate_parquet separately (not a raster)
-    climate_parquet = data_paths.pop('climate_parquet', None)
-    
-    # Handle variant
-    if variant == '3_features_merged' and 'am_fungi' in data_paths and 'ecm_fungi' in data_paths:
-        data_paths['total_fungi'] = {
-            'am': data_paths.pop('am_fungi'),
-            'ecm': data_paths.pop('ecm_fungi')
-        }
-    
-    # Remove None values
-    data_paths = {k: v for k, v in data_paths.items() if v is not None}
-    
-    # Import and run each method
+    # Execute pipeline
     results = {}
     for method in methods:
-        try:
-            logger.info(f"Running {method}...")
-            method_output = output_dir / method
-            method_config = config['methods'].get(method, {})
-            
-            # Direct function import
-            if method == 'correlation':
-                from src.biodiversity_analysis.statistical.correlation_analyzer import analyze_correlation
-                result = analyze_correlation(data_paths, method_output)
-                
-            elif method == 'coverage':
-                from src.biodiversity_analysis.statistical.coverage import analyze_coverage
-                result = analyze_coverage(data_paths, method_output)
-                
-            elif method == 'overlap':
-                from src.biodiversity_analysis.statistical.overlap import analyze_overlap
-                result = analyze_overlap(data_paths, method_output)
-                
-            elif method == 'latitudinal':
-                from src.biodiversity_analysis.statistical.latitudinal import analyze_latitudinal
-                result = analyze_latitudinal(data_paths, method_output)
-                
-            elif method == 'global_maps':
-                from src.biodiversity_analysis.statistical.global_map import analyze_global_maps
-                result = analyze_global_maps(data_paths, method_output)
-                
-            elif method == 'trust_maps':
-                from src.biodiversity_analysis.statistical.trust_map import analyze_trust_maps
-                result = analyze_trust_maps(data_paths, method_output)
-                
-            elif method == 'biome_analysis':
-                from src.biodiversity_analysis.statistical.biome_analysis import analyze_by_biome
-                # Use parquet if available, otherwise use rasters
-                if climate_parquet:
-                    result = analyze_by_biome(climate_parquet, method_output, 
-                                             chunk_size=method_config.get('chunk_size', 100000))
-                else:
-                    result = analyze_by_biome(data_paths, method_output)
-                
-            else:
-                raise ValueError(f"Unknown method: {method}")
-            
-            results[method] = {'success': True, 'output': str(method_output)}
-            
-        except Exception as e:
-            logger.error(f"Failed {method}: {e}")
-            results[method] = {'success': False, 'error': str(e)}
+        results[method] = _run_single_method(
+            method, config, output_dir, loader
+        )
+    
+    # Cleanup
+    loader.clear_cache()
     
     # Summary
-    successful = sum(1 for r in results.values() if r['success'])
-    logger.info(f"Completed: {successful}/{len(methods)} successful")
+    _log_summary(results)
     
     return results
 
 
-if __name__ == '__main__':
-    # Direct execution
-    import sys
-    methods = sys.argv[1:] if len(sys.argv) > 1 else None
-    results = run_analysis(methods=methods)
+def _get_output_dir(config: Dict[str, Any], variant: str) -> Path:
+    """Get output directory for this run."""
+    base = Path(config['settings']['output_dir'])
     
+    if variant != 'default':
+        output_dir = base / f'statistical_analysis_{variant}'
+    else:
+        output_dir = base / 'statistical_analysis'
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def _get_methods(config: Dict[str, Any], 
+                methods: Optional[List[str]]) -> List[str]:
+    """Determine which methods to run."""
+    if methods is None:
+        # Get enabled methods from config
+        methods = [
+            name for name, cfg in config['methods'].items()
+            if cfg.get('enabled', False)
+        ]
+    
+    # Validate
+    invalid = set(methods) - AVAILABLE_METHODS
+    if invalid:
+        raise ValueError(f"Unknown methods: {invalid}")
+    
+    logger.info(f"Will run {len(methods)} methods: {methods}")
+    return methods
+
+
+def _run_single_method(
+    method: str,
+    config: Dict[str, Any],
+    output_dir: Path,
+    loader
+) -> Dict[str, Any]:
+    """Run a single analysis method."""
+    try:
+        logger.info(f"Running {method}...")
+        
+        # Load data
+        data = loader.load_for_method(method, config)
+        
+        # Get method config
+        method_config = config['methods'].get(method, {})
+        
+        # Get output path
+        method_output = output_dir / method
+        
+        # Execute
+        result = call_method(method, data, method_output, method_config)
+        
+        return {
+            'success': True,
+            'output': str(method_output),
+            'metrics': result
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed {method}: {e}", exc_info=True)
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def _log_summary(results: Dict[str, Dict[str, Any]]) -> None:
+    """Log execution summary."""
+    successful = sum(1 for r in results.values() if r['success'])
+    total = len(results)
+    
+    logger.info(f"Completed: {successful}/{total} successful")
+    
+    # Log failures
+    for method, result in results.items():
+        if not result['success']:
+            logger.error(f"  ✗ {method}: {result['error']}")
+        else:
+            logger.info(f"  ✓ {method}")
+
+
+# Command line interface
+def main():
+    """CLI entry point."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Run biodiversity statistical analysis'
+    )
+    
+    parser.add_argument(
+        '--config',
+        default='src/config/stat/stat_methods.yml',
+        help='Config file path'
+    )
+    
+    parser.add_argument(
+        '--variant',
+        default='default',
+        choices=['default', '4_features', '3_features_merged'],
+        help='Data variant'
+    )
+    
+    parser.add_argument(
+        '--methods',
+        nargs='+',
+        choices=list(AVAILABLE_METHODS),
+        help='Methods to run'
+    )
+    
+    args = parser.parse_args()
+    
+    results = run_analysis(
+        config_path=args.config,
+        variant=args.variant,
+        methods=args.methods
+    )
+    
+    # Print results
+    print("\nResults:")
     for method, result in results.items():
         status = "✓" if result['success'] else "✗"
-        print(f"{status} {method}")
+        print(f"  {status} {method}")
+        if not result['success']:
+            print(f"      Error: {result['error']}")
+    
+    return 0 if all(r['success'] for r in results.values()) else 1
+
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(main())

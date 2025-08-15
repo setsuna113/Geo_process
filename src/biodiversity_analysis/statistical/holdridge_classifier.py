@@ -30,8 +30,10 @@ def calculate_biotemperature(temperature: Union[float, np.ndarray],
     temp_corrected = temperature - (elevation * 0.006)
     
     # Convert to biotemperature
+    # Below 0°C -> set to 0 (no biological activity)
+    # Above 30°C -> cap at 30 (not set to 0! That would make deserts look polar!)
     biotemperature = np.where(temp_corrected < 0, 0, temp_corrected)
-    biotemperature = np.where(biotemperature > 30, 0, biotemperature)
+    biotemperature = np.where(biotemperature > 30, 30, biotemperature)
     
     return biotemperature
 
