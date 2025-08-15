@@ -69,7 +69,12 @@ class ModelComparison:
                 if hasattr(model, 'get_aic'):
                     model_stat['aic'] = model.get_aic()
                 elif hasattr(model, 'aic'):
-                    model_stat['aic'] = model.aic
+                    # For H2O models, aic might be a method
+                    aic_val = model.aic
+                    if callable(aic_val):
+                        model_stat['aic'] = aic_val()
+                    else:
+                        model_stat['aic'] = aic_val
                 else:
                     logger.warning(f"Model {name} doesn't have AIC")
             
@@ -78,7 +83,12 @@ class ModelComparison:
                 if hasattr(model, 'get_bic'):
                     model_stat['bic'] = model.get_bic()
                 elif hasattr(model, 'bic'):
-                    model_stat['bic'] = model.bic
+                    # For H2O models, bic might be a method
+                    bic_val = model.bic
+                    if callable(bic_val):
+                        model_stat['bic'] = bic_val()
+                    else:
+                        model_stat['bic'] = bic_val
                 else:
                     logger.warning(f"Model {name} doesn't have BIC")
             
@@ -86,8 +96,19 @@ class ModelComparison:
             if 'deviance' in criteria:
                 if hasattr(model, 'get_deviance'):
                     model_stat['deviance'] = model.get_deviance()
+                elif hasattr(model, 'residual_deviance'):
+                    # H2O models use residual_deviance
+                    deviance_val = model.residual_deviance
+                    if callable(deviance_val):
+                        model_stat['deviance'] = deviance_val()
+                    else:
+                        model_stat['deviance'] = deviance_val
                 elif hasattr(model, 'deviance'):
-                    model_stat['deviance'] = model.deviance
+                    deviance_val = model.deviance
+                    if callable(deviance_val):
+                        model_stat['deviance'] = deviance_val()
+                    else:
+                        model_stat['deviance'] = deviance_val
                 else:
                     logger.warning(f"Model {name} doesn't have deviance")
             
@@ -95,7 +116,11 @@ class ModelComparison:
             if hasattr(model, 'get_num_parameters'):
                 model_stat['n_parameters'] = model.get_num_parameters()
             elif hasattr(model, 'n_parameters'):
-                model_stat['n_parameters'] = model.n_parameters
+                n_params_val = model.n_parameters
+                if callable(n_params_val):
+                    model_stat['n_parameters'] = n_params_val()
+                else:
+                    model_stat['n_parameters'] = n_params_val
             
             results['model_stats'][name] = model_stat
         
@@ -110,35 +135,52 @@ class ModelComparison:
                     valid_models.append(name)
             
             if len(values) > 0:
-                values = np.array(values)
+                # Convert to floats and handle string values
+                numeric_values = []
+                numeric_models = []
+                for i, val in enumerate(values):
+                    try:
+                        # Handle string 'NaN' or actual NaN
+                        if isinstance(val, str):
+                            if val.lower() == 'nan':
+                                continue
+                            val = float(val)
+                        numeric_values.append(float(val))
+                        numeric_models.append(valid_models[i])
+                    except (ValueError, TypeError):
+                        continue
                 
-                # Lower is better for AIC, BIC, deviance
-                sorted_idx = np.argsort(values)
-                
-                ranking = {
-                    'ranked_models': [valid_models[i] for i in sorted_idx],
-                    'values': [float(values[i]) for i in sorted_idx],
-                    'best_model': valid_models[sorted_idx[0]],
-                    'best_value': float(values[sorted_idx[0]])
-                }
-                
-                # Compute differences from best model
-                if len(values) > 1:
-                    best_val = values[sorted_idx[0]]
-                    differences = values - best_val
-                    ranking['delta_from_best'] = {
-                        model: float(diff) 
-                        for model, diff in zip(valid_models, differences)
+                if len(numeric_values) > 0:
+                    values = np.array(numeric_values)
+                    valid_models = numeric_models
+                    
+                    # Lower is better for AIC, BIC, deviance
+                    sorted_idx = np.argsort(values)
+                    
+                    ranking = {
+                        'ranked_models': [valid_models[i] for i in sorted_idx],
+                        'values': [float(values[i]) for i in sorted_idx],
+                        'best_model': valid_models[sorted_idx[0]],
+                        'best_value': float(values[sorted_idx[0]])
                     }
                     
+                    # Compute differences from best model
+                    if len(values) > 1:
+                        best_val = values[sorted_idx[0]]
+                        differences = values - best_val
+                        ranking['delta_from_best'] = {
+                            model: float(diff) 
+                            for model, diff in zip(valid_models, differences)
+                        }
+                    
                     # Interpret differences for AIC/BIC
-                    if criterion in ['aic', 'bic']:
+                    if criterion in ['aic', 'bic'] and 'delta_from_best' in ranking:
                         ranking['interpretation'] = ModelComparison._interpret_ic_differences(
                             ranking['delta_from_best']
                         )
-                
-                results['rankings'][criterion] = ranking
-                results['best_models'][criterion] = ranking['best_model']
+                    
+                    results['rankings'][criterion] = ranking
+                    results['best_models'][criterion] = ranking['best_model']
         
         # Add consensus best model if multiple criteria agree
         if len(results['best_models']) > 1:

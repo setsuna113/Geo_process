@@ -21,7 +21,7 @@ from sklearn.neighbors import NearestNeighbors
 
 # Import abstracted spatial computation modules
 from src.machine_learning.spatial.nystrom_eigensolver import NystromEigensolver
-from src.machine_learning.spatial.spatial_weights import compute_knn_weights
+# No spatial_weights - we inline the simple computation
 
 logger = logging.getLogger(__name__)
 
@@ -72,23 +72,26 @@ class MESFProcessor:
         if n_jobs is None:
             n_jobs = -1  # Default to all cores if not specified
         
-        # Set environment variable for haversine_distance_km to use
+        # Use configured core limit (H2O config specifies 80-120)
         import os
-        if n_jobs > 0:
-            os.environ['MESF_N_JOBS'] = str(n_jobs)
-            logger.info(f"Using {n_jobs} CPU cores for parallel computations")
-        else:
-            os.environ['MESF_N_JOBS'] = '80'  # Use config default
-            logger.info(f"Using all available CPU cores for parallel computations")
+        n_cores = min(120, os.cpu_count() or 120)  # Cap at 120 cores
+        
+        # Set JAX to use limited cores
+        os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={n_cores}'
+        
+        logger.info(f"Using {n_cores} CPU cores for parallel computations")
         
         # Generate cache key
         cache_key = self._get_cache_key(data_path, spatial_grid_step, n_eigenvectors, distance_threshold)
+        logger.info(f"Generated cache key: {cache_key}")
         
         # Try cache first
         cached = self._load_from_cache(cache_key)
         if cached is not None:
-            logger.info("Loaded MESF eigenvectors from cache")
+            logger.info("✅ Successfully loaded MESF eigenvectors from cache!")
             return cached
+        else:
+            logger.info("Cache not found or failed to load, will compute MESF")
         
         # Step 1: Count total rows efficiently
         n_total = self._count_total_rows(data_path, spatial_grid_step)
@@ -118,13 +121,18 @@ class MESFProcessor:
         if eigenvectors_landmark is None:
             return None
         
-        # Step 5: Extend eigenvectors to all samples
-        eigenvectors_sample = self._extend_to_samples(
-            coords_sample, coords_landmark, eigenvectors_landmark
-        )
+        # Step 5: Since landmarks = samples, no extension needed
+        if n_sample == n_landmark:
+            eigenvectors_sample = eigenvectors_landmark
+            logger.info("Using landmark eigenvectors directly (landmarks = samples)")
+        else:
+            # Fallback for old configuration
+            eigenvectors_sample = self._extend_to_samples(
+                coords_sample, coords_landmark, eigenvectors_landmark
+            )
         
-        # Step 6: Interpolate to full dataset using k-NN
-        eigenvectors_full = self._interpolate_to_full(
+        # Step 6: Interpolate to full dataset using RFF
+        eigenvectors_full = self._interpolate_to_full_rff(
             data_path, spatial_grid_step, n_total,
             coords_sample, eigenvectors_sample, n_jobs
         )
@@ -173,7 +181,7 @@ class MESFProcessor:
     def _calculate_nystrom_params(self, n_total: int) -> Tuple[int, int]:
         """Calculate optimal Nystrom parameters.
         
-        Uses √n rule for landmarks and 100× for samples.
+        Uses 4×√n landmarks and 200×√n samples for RFF.
         
         Args:
             n_total: Total number of data points
@@ -181,19 +189,20 @@ class MESFProcessor:
         Returns:
             (n_landmark, n_sample) tuple
         """
-        # √n rule for landmarks
-        n_landmark = int(np.sqrt(n_total))
+        # 4×√n landmarks for eigendecomposition
+        # With 51M points: 4×7204 = 28,816 landmarks
+        n_landmark = int(4 * np.sqrt(n_total))
         
-        # Use smaller multiplier for computational efficiency
-        # 10× landmarks is sufficient for good approximation
-        n_sample = min(10 * n_landmark, n_total // 2)
+        # 200×√n samples for RFF reference points
+        # With 51M points: 200×7204 = 1,440,800 samples
+        n_sample = int(200 * np.sqrt(n_total))
         
         # Apply reasonable bounds
-        n_landmark = max(500, min(2000, n_landmark))  # Cap at 2000 for speed
-        n_sample = max(5000, min(50000, n_sample))    # Cap at 50k for speed
+        n_landmark = max(1000, min(50000, n_landmark))  # Cap at 50k for memory
+        n_sample = max(10000, min(2000000, n_sample))  # Cap at 2M for memory
         
-        logger.info(f"Nystrom parameters: {n_landmark:,} landmarks (√{n_total:,}), "
-                   f"{n_sample:,} samples ({n_sample/n_landmark:.0f}× landmarks)")
+        logger.info(f"Nystrom parameters: {n_landmark:,} landmarks (4×√{n_total:,}), "
+                   f"{n_sample:,} samples (200×√{n_total:,}) for RFF")
         
         return n_landmark, n_sample
     
@@ -329,7 +338,7 @@ class MESFProcessor:
         )
         return eigenvectors_sample
     
-    def _interpolate_to_full(
+    def _interpolate_to_full_rff(
         self,
         data_path: str,
         spatial_grid_step: Optional[int],
@@ -338,9 +347,9 @@ class MESFProcessor:
         eigenvectors_sample: np.ndarray,
         n_jobs: int = -1
     ) -> Optional[np.ndarray]:
-        """Interpolate eigenvectors to full dataset using k-NN.
+        """Interpolate eigenvectors to full dataset using Random Fourier Features.
         
-        Process in batches to avoid memory issues.
+        Uses JAX-optimized RFF with precomputed projection matrix.
         
         Args:
             data_path: Path to parquet file
@@ -354,40 +363,69 @@ class MESFProcessor:
         """
         try:
             import psutil
-            logger.info(f"Interpolating to {n_total:,} points using k-NN...")
+            import jax
+            import jax.numpy as jnp
+            from jax import jit
             
-            # Build k-NN index from samples
-            k = min(50, len(coords_sample))
-            coords_sample_rad = np.radians(coords_sample[:, [1, 0]])  # [lat, lon] for sklearn
+            logger.info(f"Interpolating to {n_total:,} points using JAX-optimized RFF...")
             
-            # Use pynndescent for parallel k-NN construction
-            from pynndescent import NNDescent
-            logger.info(f"Building k-NN index with pynndescent using {n_jobs if n_jobs != -1 else 'all'} cores...")
+            # Configure JAX
+            import os
+            n_cores = min(120, os.cpu_count() or 120)
+            os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={n_cores}'
             
-            # Build parallel k-NN index
-            knn_index = NNDescent(
-                coords_sample_rad,
-                metric='haversine',
-                n_neighbors=k,
-                n_jobs=n_jobs if n_jobs > 0 else -1,
-                random_state=42,
-                verbose=False
-            )
-            logger.info(f"Built pynndescent k-NN index with {k} neighbors using {n_jobs if n_jobs != -1 else 'all'} cores")
+            # RFF parameters
+            n_features = 5000  # Number of random features
+            bandwidth = 100.0  # Gaussian kernel bandwidth in km
             
-            # Calculate memory-aware batch size
-            available_memory = psutil.virtual_memory().available
-            # Estimate memory per sample: k neighbors * 2 arrays (distances + indices) * 8 bytes * n_eigenvectors
+            # Convert to float32 for speed
+            coords_sample = coords_sample.astype(np.float32)
+            eigenvectors_sample = eigenvectors_sample.astype(np.float32)
             n_eigenvectors = eigenvectors_sample.shape[1]
-            memory_per_sample = k * 2 * 8 * n_eigenvectors
-            # Use at most 25% of available memory for safety
-            max_batch_from_memory = int((available_memory * 0.25) / memory_per_sample)
-            batch_size = min(100000, max_batch_from_memory, n_total)
             
-            logger.info(f"Using batch size {batch_size:,} based on {available_memory/(1024**3):.1f}GB available memory")
-            eigenvectors_full = np.zeros((n_total, n_eigenvectors), dtype=np.float32)
+            # Step 1: Generate random Fourier features (once!)
+            logger.info(f"Generating {n_features} random Fourier features...")
+            np.random.seed(42)  # For reproducibility
+            D = np.random.randn(2, n_features).astype(np.float32) / bandwidth
             
-            # Load all coordinates for interpolation
+            # Convert to JAX immediately for ALL operations
+            D_jax = jnp.array(D)
+            coords_sample_jax = jnp.array(coords_sample)
+            eigenvectors_sample_jax = jnp.array(eigenvectors_sample)
+            
+            # Step 2: Compute reference features using JAX (PARALLELIZED!)
+            logger.info(f"Computing RFF for {len(coords_sample):,} reference points using JAX...")
+            proj_ref = coords_sample_jax @ D_jax  # JAX auto-parallelizes this
+            
+            # Use sin/cos features for lower variance (JAX operations)
+            cos_features = jnp.cos(proj_ref)
+            sin_features = jnp.sin(proj_ref)
+            Z_ref = jnp.concatenate([cos_features, sin_features], axis=1)
+            Z_ref = Z_ref * jnp.sqrt(1.0 / n_features)
+            
+            # Step 3: Precompute projection matrix W using JAX
+            logger.info("Precomputing projection matrix W with JAX...")
+            W_jax = Z_ref.T @ eigenvectors_sample_jax  # JAX parallelizes this too
+            logger.info(f"Projection matrix W shape: {W_jax.shape}")
+            
+            # JIT-compile the RFF computation
+            @jit
+            def compute_rff_batch(batch_coords):
+                """JIT-compiled RFF computation for a batch."""
+                # Project coordinates
+                proj = batch_coords @ D_jax
+                
+                # Compute sin/cos features
+                cos_features = jnp.cos(proj)
+                sin_features = jnp.sin(proj)
+                Z = jnp.concatenate([cos_features, sin_features], axis=1)
+                Z = Z * jnp.sqrt(1.0 / n_features)
+                
+                # Apply projection matrix
+                return Z @ W_jax
+            
+            # Step 4: Load all coordinates
+            logger.info("Loading full coordinates...")
             coords_df = pl.read_parquet(
                 data_path,
                 columns=['x', 'y'],
@@ -396,34 +434,52 @@ class MESFProcessor:
             )
             
             if spatial_grid_step and spatial_grid_step > 1:
-                # Use slice notation instead of non-existent take_every method
                 coords_df = coords_df[::spatial_grid_step]
             
             coords_df = coords_df.drop_nulls()
             coords_full = coords_df.to_numpy().astype(np.float32)
-            coords_full_rad = np.radians(coords_full[:, [1, 0]])
             
-            # Process in batches
+            # Step 5: Process in smaller batches to avoid memory issues
+            available_memory = psutil.virtual_memory().available
+            batch_size = 2_000_000  # Reduced to 2M points per batch for stability
+            
+            logger.info(f"Processing {n_total:,} points in batches of {batch_size:,}")
+            logger.info(f"Available memory: {available_memory/(1024**3):.1f}GB")
+            
+            # Process batches and accumulate results
+            eigenvectors_batches = []
+            
             for start_idx in range(0, n_total, batch_size):
                 end_idx = min(start_idx + batch_size, n_total)
-                batch_coords = coords_full_rad[start_idx:end_idx]
+                batch_size_actual = end_idx - start_idx
                 
-                # Find nearest samples using pynndescent
-                indices, distances = knn_index.query(batch_coords, k=k)
+                # Get batch of coordinates (no JAX conversion yet)
+                batch_coords_np = coords_full[start_idx:end_idx]
                 
-                # Use abstracted weight computation
-                weights = compute_knn_weights(distances, method='inverse_distance')
+                # Convert to JAX, compute, and immediately convert back
+                batch_coords_jax = jnp.array(batch_coords_np)
+                eigenvectors_batch_jax = compute_rff_batch(batch_coords_jax)
+                eigenvectors_batch_np = np.array(eigenvectors_batch_jax)
                 
-                # Weighted interpolation
-                for i in range(n_eigenvectors):
-                    eigenvectors_full[start_idx:end_idx, i] = np.sum(
-                        weights * eigenvectors_sample[indices, i], axis=1
-                    )
+                # Free JAX memory immediately
+                del batch_coords_jax, eigenvectors_batch_jax
                 
-                if (end_idx - start_idx) >= batch_size:
-                    logger.info(f"  Processed {end_idx:,}/{n_total:,} points...")
+                # Store numpy result
+                eigenvectors_batches.append(eigenvectors_batch_np)
+                
+                # Log progress
+                logger.info(f"  Processed {end_idx:,}/{n_total:,} points ({100*end_idx/n_total:.1f}%)")
+                
+                # Force garbage collection every few batches
+                if len(eigenvectors_batches) % 5 == 0:
+                    import gc
+                    gc.collect()
             
-            logger.info(f"Interpolation complete: {n_total:,} × {n_eigenvectors} matrix")
+            # Concatenate all batches
+            logger.info("Concatenating batch results...")
+            eigenvectors_full = np.vstack(eigenvectors_batches)
+            
+            logger.info(f"RFF interpolation complete: {n_total:,} × {n_eigenvectors} matrix")
             return eigenvectors_full
             
         except Exception as e:
@@ -433,22 +489,47 @@ class MESFProcessor:
     def _create_h2o_frame(self, eigenvectors: np.ndarray) -> h2o.H2OFrame:
         """Create H2O frame with proper column names.
         
+        LINUS FIX: Use parquet->H2O for parallel import instead of slow numpy->H2O.
+        
         Args:
             eigenvectors: Eigenvectors array (n_total, n_eigenvectors)
             
         Returns:
             H2O frame with ME1, ME2, ..., ME10 columns
         """
+        import pandas as pd
+        import tempfile
+        import os
+        
         n_eigenvectors = eigenvectors.shape[1]
-        
-        # Create H2O frame
-        mesf_h2o = h2o.H2OFrame(eigenvectors)
-        
-        # Set column names
         col_names = [f'ME{i+1}' for i in range(n_eigenvectors)]
-        mesf_h2o.set_names(col_names)
         
-        return mesf_h2o
+        # FAST PATH: Use pandas->parquet->H2O for parallel import
+        logger.info(f"Converting {eigenvectors.shape[0]:,} MESF eigenvectors to H2O using parallel import...")
+        
+        # Create temporary parquet file
+        with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        try:
+            # Convert to pandas DataFrame (fast)
+            df = pd.DataFrame(eigenvectors, columns=col_names)
+            
+            # Write to parquet (fast, compressed)
+            df.to_parquet(tmp_path, compression='snappy', engine='pyarrow')
+            logger.info(f"Wrote MESF to temporary parquet: {os.path.getsize(tmp_path)/1e9:.2f} GB")
+            
+            # Import using H2O's parallel reader (USES ALL CORES!)
+            mesf_h2o = h2o.import_file(tmp_path)
+            mesf_h2o.set_names(col_names)
+            logger.info("MESF imported to H2O successfully using parallel import")
+            
+            return mesf_h2o
+            
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
     
     def _get_cache_key(
         self,
@@ -496,17 +577,22 @@ class MESFProcessor:
             H2O frame or None if not cached
         """
         cache_file = self.cache_dir / f"{cache_key}.npz"
+        logger.info(f"Looking for cache file: {cache_file}")
         
         if not cache_file.exists():
+            logger.info(f"Cache file does not exist: {cache_file}")
             return None
         
         try:
+            logger.info(f"Loading cache file: {cache_file} ({cache_file.stat().st_size / 1024 / 1024:.1f} MB)")
             data = np.load(cache_file)
             eigenvectors = data['eigenvectors']
-            logger.info(f"Loaded cache: {eigenvectors.shape}")
-            return self._create_h2o_frame(eigenvectors)
+            logger.info(f"Loaded numpy array from cache: {eigenvectors.shape}")
+            h2o_frame = self._create_h2o_frame(eigenvectors)
+            logger.info(f"Created H2O frame: {h2o_frame.shape}")
+            return h2o_frame
         except Exception as e:
-            logger.warning(f"Cache load failed: {e}")
+            logger.error(f"Cache load failed: {e}", exc_info=True)
             return None
     
     def _save_to_cache(self, cache_key: str, eigenvectors: np.ndarray) -> None:

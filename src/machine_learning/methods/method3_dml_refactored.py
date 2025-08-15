@@ -12,9 +12,8 @@ import h2o
 from typing import Dict, Any, Optional, Union, Tuple, List
 from pathlib import Path
 
-from src.base.ml import BaseRegressionMethod
-from src.abstractions.types.ml_types import ModelType, ModelMetadata
-from ..models.gbm.h2o_gbm import H2OGBM
+# No base class - each method stands alone
+from h2o.estimators.gbm import H2OGradientBoostingEstimator
 from ..config_loader import MLRegressionConfig
 from ..evaluation.dml import DMLParameterCalculator
 from ..evaluation.dml_comparison import DMLModelComparison
@@ -28,7 +27,7 @@ from ..utils import H2OManager
 logger = logging.getLogger(__name__)
 
 
-class Method3DML(BaseRegressionMethod):
+class Method3DML:
     """Method 3 - Double Machine Learning for causal inference.
     
     Tests H0 vs H1 (biodiversity begets biodiversity) using DML.
@@ -49,8 +48,10 @@ class Method3DML(BaseRegressionMethod):
         Args:
             config: ML regression configuration
         """
-        super().__init__(config)
-        self.dml_config = self.config.get_dml_config()
+        self.config = config
+        # Get config dict once
+        config_dict = config.config if hasattr(config, 'config') else {}
+        self.dml_config = config_dict.get('dml', {})
         
         # DML parameters
         self.n_folds = self.dml_config.get('n_folds', 5)
@@ -107,25 +108,27 @@ class Method3DML(BaseRegressionMethod):
                 train = h2o_data[h2o_data['fold'] != k]
                 test = h2o_data[h2o_data['fold'] == k]
                 
-                # Fit outcome nuisance model
-                g_model = H2OGBM(is_dml_nuisance=True, n_threads=4)
+                # Fit outcome nuisance model - Direct H2O
+                g_model = H2OGradientBoostingEstimator(
+                    ntrees=100,
+                    max_depth=5,
+                    learn_rate=0.1,
+                    nfolds=0  # No CV for DML nuisance
+                )
                 g_features = confounders + treatments
-                # H2OGBM expects dict format for train_set
-                g_train_set = {
-                    'data': train[g_features],
-                    'label': train[outcome].as_data_frame().values.ravel() if hasattr(train[outcome], 'as_data_frame') else train[outcome]
-                }
-                g_model.train(g_train_set)
+                g_model.train(x=g_features, y=outcome, training_frame=train)
                 
                 # Fit treatment nuisance models
                 m_models = {}
                 for treatment in treatments:
-                    m_model = H2OGBM(is_dml_nuisance=True, n_threads=4)
-                    m_train_set = {
-                        'data': train[confounders],
-                        'label': train[treatment].as_data_frame().values.ravel() if hasattr(train[treatment], 'as_data_frame') else train[treatment]
-                    }
-                    m_model.train(m_train_set)
+                    # Direct H2O GBM for treatment model
+                    m_model = H2OGradientBoostingEstimator(
+                        ntrees=100,
+                        max_depth=5,
+                        learn_rate=0.1,
+                        nfolds=0
+                    )
+                    m_model.train(x=confounders, y=treatment, training_frame=train)
                     m_models[treatment] = m_model
                 
                 # Predict on test
@@ -245,12 +248,41 @@ class Method3DML(BaseRegressionMethod):
         }
         
         if 'classical' in hypothesis_tests:
-            results['hypothesis_tests']['classical'] = DMLClassicalTest.test_biodiversity_hypothesis(
+            # Get pure classical test result
+            classical_result = DMLClassicalTest.test_biodiversity_hypothesis(
                 theta_plants=params['theta1']['estimate'],
                 se_plants=params['theta1']['standard_error'],
                 theta_vertebrates=params['theta2']['estimate'],
                 se_vertebrates=params['theta2']['standard_error']
             )
+            
+            # Add practical significance interpretation for large samples
+            from src.machine_learning.hypothesis.practical_significance import PracticalSignificance
+            n_obs = h2o_data.nrows
+            
+            # Enhance plants effect with practical significance
+            if 'plants' in classical_result:
+                classical_result['plants'] = PracticalSignificance.interpret_dml_with_practical_significance(
+                    dml_result=classical_result['plants'],
+                    treatment_effect=params['theta1']['estimate'],
+                    standard_error=params['theta1']['standard_error'],
+                    n_obs=n_obs,
+                    sesoi=0.1,  # 0.1 log-unit change as meaningful causal effect
+                    effect_type="Plants ATE"
+                )
+            
+            # Enhance vertebrates effect with practical significance  
+            if 'vertebrates' in classical_result:
+                classical_result['vertebrates'] = PracticalSignificance.interpret_dml_with_practical_significance(
+                    dml_result=classical_result['vertebrates'],
+                    treatment_effect=params['theta2']['estimate'],
+                    standard_error=params['theta2']['standard_error'],
+                    n_obs=n_obs,
+                    sesoi=0.1,  # 0.1 log-unit change as meaningful causal effect
+                    effect_type="Vertebrates ATE"
+                )
+            
+            results['hypothesis_tests']['classical'] = classical_result
         
         if 'effect_size' in hypothesis_tests:
             results['hypothesis_tests']['effect_size'] = DMLEffectSize.evaluate_biodiversity_effects(
@@ -365,10 +397,14 @@ class Method3DML(BaseRegressionMethod):
                 train = h2o_data[h2o_data['fold'] != k]
                 test = h2o_data[h2o_data['fold'] == k]
                 
-                # Fit outcome model without treatments
-                g_model = H2OGBM(self.config.config)
-                g_data = train[confounders + [outcome]]
-                g_model.fit(g_data, y=outcome)
+                # Fit outcome model without treatments - Direct H2O
+                g_model = H2OGradientBoostingEstimator(
+                    ntrees=100,
+                    max_depth=5,
+                    learn_rate=0.1,
+                    nfolds=0
+                )
+                g_model.train(x=confounders, y=outcome, training_frame=train)
                 
                 # Predict and compute residuals
                 g_pred = g_model.predict(test)

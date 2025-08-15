@@ -5,7 +5,7 @@ This module provides a clean interface to R's emmeans package using coefficients
 and variance-covariance matrices extracted from H2O models.
 
 Usage:
-    1. Extract vcov from H2O model using utils/vcov_extractor.py
+    1. Extract vcov from H2O model using utils/vcov.py
     2. Pass coefficients and vcov to this wrapper
     3. Get proper EMMs with standard errors and contrasts
 """
@@ -20,18 +20,28 @@ logger = logging.getLogger(__name__)
 # Check if rpy2 is available
 try:
     import rpy2.robjects as ro
-    from rpy2.robjects import pandas2ri
+    from rpy2.robjects import pandas2ri, numpy2ri
     from rpy2.robjects.packages import importr
-    from rpy2.robjects import conversion
+    from rpy2.robjects.conversion import localconverter
     
-    # Use the new conversion context method instead of deprecated activate()
-    with conversion.localconverter(ro.default_converter + pandas2ri.converter):
-        pass  # Just testing the import
+    # Add user R library path for emmeans
+    ro.r('.libPaths(c("~/R/libs", .libPaths()))')
     
-    R_AVAILABLE = True
+    # Create converter for pandas and numpy
+    pandas_numpy_converter = ro.default_converter + pandas2ri.converter + numpy2ri.converter
+    
+    # Try to import emmeans
+    try:
+        emmeans_pkg = importr('emmeans')
+        R_AVAILABLE = True
+        logger.info("R emmeans package loaded successfully")
+    except Exception as e:
+        R_AVAILABLE = False
+        logger.warning(f"R emmeans package not available: {e}")
 except (ImportError, Exception) as e:
     logger.warning(f"rpy2 not available or failed to initialize: {e}")
     R_AVAILABLE = False
+    pandas_numpy_converter = None
 
 
 class REMmeansWrapper:
@@ -86,8 +96,16 @@ class REMmeansWrapper:
         """Create reference grid using R's qdrg function."""
         logger.info("Creating reference grid from H2O model components")
         
-        # Convert data to R
-        r_data = pandas2ri.py2rpy(self.data)
+        # Convert data to R - ensure numeric types are properly converted
+        # Convert integer columns to float to avoid conversion issues
+        data_for_r = self.data.copy()
+        for col in data_for_r.columns:
+            if data_for_r[col].dtype in ['int64', 'int32', 'int16', 'int8']:
+                data_for_r[col] = data_for_r[col].astype(float)
+        
+        # Convert data to R using conversion context
+        with localconverter(pandas_numpy_converter):
+            r_data = ro.conversion.py2rpy(data_for_r)
         
         # Create R coefficient vector with names
         r_coef = ro.FloatVector(self.coefficients)
@@ -95,11 +113,14 @@ class REMmeansWrapper:
         
         # Convert vcov matrix to R
         n = len(self.coefficients)
-        r_vcov = ro.r.matrix(self.vcov_matrix.flatten(), nrow=n, ncol=n, byrow=True)
+        # Convert to list for R matrix function
+        vcov_list = self.vcov_matrix.flatten().tolist()
+        r_vcov = ro.r.matrix(ro.FloatVector(vcov_list), nrow=n, ncol=n, byrow=True)
         
-        # Set row and column names for vcov
-        r_vcov.rownames = ro.StrVector(self.coefficient_names)
-        r_vcov.colnames = ro.StrVector(self.coefficient_names)
+        # Set row and column names for vcov using R assignment
+        ro.r.assign("vcov_matrix", r_vcov)
+        ro.r.assign("coef_names", ro.StrVector(self.coefficient_names))
+        r_vcov = ro.r("rownames(vcov_matrix) <- coef_names; colnames(vcov_matrix) <- coef_names; vcov_matrix")
         
         # Create reference grid using qdrg
         try:
@@ -162,7 +183,8 @@ class REMmeansWrapper:
         
         # Convert to pandas DataFrame
         summary = self.base.summary(emmeans_result)
-        emmeans_df = pandas2ri.rpy2py(summary)
+        with localconverter(pandas_numpy_converter):
+            emmeans_df = ro.conversion.rpy2py(summary)
         
         return emmeans_df
     
@@ -268,7 +290,8 @@ class REMmeansWrapper:
         
         # Convert to pandas
         summary = self.base.summary(contrasts)
-        contrasts_df = pandas2ri.rpy2py(summary)
+        with localconverter(pandas_numpy_converter):
+            contrasts_df = ro.conversion.rpy2py(summary)
         
         return contrasts_df
     
