@@ -84,7 +84,9 @@ class MLOrchestrator:
         self.data_loader = DataLoader(max_file_size_mb=10000)
         # MESF processor gets config at initialization
         cache_dir = config_dict.get('spatial', {}).get('cache_dir', None)
-        self.mesf_processor = MESFProcessor(cache_dir=cache_dir)
+        # Get thread count from H2O config
+        h2o_nthreads = config_dict.get('h2o', {}).get('nthreads', 150)
+        self.mesf_processor = MESFProcessor(cache_dir=cache_dir, n_jobs=h2o_nthreads)
         self.h2o_initialized = False
         
         # Get H2O configuration from config file

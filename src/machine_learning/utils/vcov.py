@@ -39,6 +39,7 @@ def extract_vcov(h2o_model, data, x_names, y_name, method='sandwich', **kwargs):
     
     # Delegate to specific implementation
     if method == 'sandwich':
+        # Use JAX-accelerated implementation for full dataset processing
         from .vcov_sandwich import compute_sandwich_vcov
         vcov = compute_sandwich_vcov(h2o_model, data, x_names, y_name)
         

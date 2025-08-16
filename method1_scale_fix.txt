@@ -1,0 +1,43 @@
+
+# Add this import at the top of method1_continuous_refactored.py
+from src.machine_learning.hypothesis.scale_reporter import ScaleAwareReporter
+
+# Replace the Wald test section (around line 320-340) with:
+
+# Wald tests with proper scale handling
+logger.info("Performing Wald tests with scale-aware reporting...")
+biotic_cols = ['fungi_richness', 'bacteria_richness', 'protist_richness']
+
+# Extract coefficients and SEs
+coefficients_dict = {}
+se_dict = {}
+for coef_name in biotic_cols:
+    if coef_name in coef_table.columns:
+        coefficients_dict[coef_name] = float(coef_table[coef_name].values[0])
+        # Get SE from model (this needs proper extraction from H2O)
+        se_dict[coef_name] = 0.1  # Placeholder - extract from vcov
+
+# Generate scale-aware report
+scale_report = ScaleAwareReporter.report_multiple_coefficients(
+    coefficients=coefficients_dict,
+    standard_errors=se_dict,
+    sesoi_log_scale=0.1,  # SESOI on log scale
+    link='log',  # Negative binomial uses log link
+    perform_tost=True,
+    equivalence_bounds=(-0.1, 0.1)
+)
+
+# Update wald_results with scale-aware results
+wald_results = {}
+for var_name, var_results in scale_report['coefficients'].items():
+    wald_results[f'{var_name}_sesoi'] = var_results['sesoi_test']
+    wald_results[f'{var_name}_tost'] = var_results.get('tost', {})
+    wald_results[f'{var_name}_scale'] = var_results.get('scale_transformation', {})
+
+# In the interpretation section, add:
+logger.info("Scale transformation summary:")
+for var_name, var_results in scale_report['coefficients'].items():
+    if 'scale_transformation' in var_results:
+        pct = var_results['scale_transformation']['percent_change']
+        logger.info(f"  {var_name}: {pct['estimate']:+.1f}% change "
+                   f"(95% CI: [{pct['ci_lower']:.1f}%, {pct['ci_upper']:.1f}%])")

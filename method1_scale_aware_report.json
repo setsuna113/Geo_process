@@ -1,0 +1,444 @@
+{
+  "link_function": "log",
+  "sesoi_threshold": 0.1,
+  "coefficients": {
+    "fungi_richness": {
+      "variable": "fungi_richness",
+      "link_function": "log",
+      "traditional_test": {
+        "coefficient": 0.12,
+        "standard_error": 0.03,
+        "wald_statistic": 4.0,
+        "p_value": 6.334248366623996e-05,
+        "null_value": 0.0,
+        "ci_lower": 0.06120108046379838,
+        "ci_upper": 0.1787989195362016,
+        "significant": true,
+        "test_type": "wald_traditional",
+        "alternative": "two-sided",
+        "interpretation": "Coefficient 0.120 \u00b1 0.030 significantly different from 0.000"
+      },
+      "sesoi_test": {
+        "coefficient": 0.12,
+        "standard_error": 0.03,
+        "wald_statistic": 0.6666666666666664,
+        "p_value": 0.252492537546923,
+        "null_value": 0.1,
+        "ci_lower": 0.06120108046379838,
+        "ci_upper": 0.1787989195362016,
+        "significant": false,
+        "test_type": "wald_sesoi",
+        "alternative": "greater",
+        "exceeds_sesoi": false,
+        "interpretation": "Effect (0.120) does not exceed meaningful threshold (0.100)"
+      },
+      "scale_transformation": {
+        "log_scale": {
+          "coefficient": 0.12,
+          "se": 0.03,
+          "ci_lower": 0.06120108046379838,
+          "ci_upper": 0.1787989195362016
+        },
+        "response_scale": {
+          "multiplicative_effect": 1.1274968515793757,
+          "se_approx": 0.03382490554738127,
+          "ci_lower": 1.0631126638835546,
+          "ci_upper": 1.1957802719398776
+        },
+        "percent_change": {
+          "estimate": 12.749685157937574,
+          "ci_lower": 6.311266388355463,
+          "ci_upper": 19.578027193987758
+        },
+        "interpretation": "Moderate increase of 12.7% (95% CI: [6.3%, 19.6%])"
+      },
+      "sesoi_scales": {
+        "log_scale": 0.1,
+        "multiplicative": 1.1051709180756477,
+        "percent_change": 10.517091807564771,
+        "interpretation": "SESOI: 0.10 on log scale = 10.5% change on response scale"
+      },
+      "practical_significance": {
+        "log_scale": {
+          "coefficient": 0.12,
+          "sesoi": 0.1,
+          "exceeds": true,
+          "interpretation": "|\u03b2| = 0.120 > 0.1"
+        },
+        "response_scale": {
+          "percent_change": 12.749685157937574,
+          "sesoi_percent": 10.517091807564771,
+          "exceeds": true,
+          "interpretation": "12.7% change > 10.5% threshold"
+        }
+      },
+      "conclusion": "Both statistically and practically significant",
+      "summary": "Variable: fungi_richness\nStatistical: p = 0.0001 (significant)\nEffect: +12.7% (95% CI: [6.3%, 19.6%])\nPractical: 12.7% change > 10.5% threshold\nConclusion: Both statistically and practically significant",
+      "tost": {
+        "method": "TOST",
+        "effect_estimate": 0.12,
+        "standard_error": 0.03,
+        "bounds": {
+          "lower": -0.1,
+          "upper": 0.1
+        },
+        "test1_above_lower": {
+          "h0": "\u03b8 \u2264 -0.1",
+          "p_value": 1.1224354778960333e-13,
+          "reject": true,
+          "result": {
+            "coefficient": 0.12,
+            "standard_error": 0.03,
+            "wald_statistic": 7.333333333333334,
+            "p_value": 1.1224354778960333e-13,
+            "null_value": -0.1,
+            "ci_lower": 0.06120108046379838,
+            "ci_upper": 0.1787989195362016,
+            "significant": true,
+            "test_type": "wald_traditional",
+            "alternative": "greater",
+            "interpretation": "Coefficient 0.120 \u00b1 0.030 significantly different from -0.100"
+          }
+        },
+        "test2_below_upper": {
+          "h0": "\u03b8 \u2265 0.1",
+          "p_value": 0.747507462453077,
+          "reject": false,
+          "result": {
+            "coefficient": 0.12,
+            "standard_error": 0.03,
+            "wald_statistic": 0.6666666666666664,
+            "p_value": 0.747507462453077,
+            "null_value": 0.1,
+            "ci_lower": 0.06120108046379838,
+            "ci_upper": 0.1787989195362016,
+            "significant": false,
+            "test_type": "wald_traditional",
+            "alternative": "less",
+            "interpretation": "Coefficient 0.120 \u00b1 0.030 not significantly different from 0.100"
+          }
+        },
+        "test0_vs_zero": {
+          "h0": "\u03b8 = 0",
+          "p_value": 6.334248366623996e-05,
+          "reject": true,
+          "result": {
+            "coefficient": 0.12,
+            "standard_error": 0.03,
+            "wald_statistic": 4.0,
+            "p_value": 6.334248366623996e-05,
+            "null_value": 0,
+            "ci_lower": 0.06120108046379838,
+            "ci_upper": 0.1787989195362016,
+            "significant": true,
+            "test_type": "wald_traditional",
+            "alternative": "two-sided",
+            "interpretation": "Coefficient 0.120 \u00b1 0.030 significantly different from 0.000"
+          }
+        },
+        "tost_p_value": 0.747507462453077,
+        "alpha": 0.05,
+        "is_equivalent": false,
+        "is_different_from_zero": true,
+        "conclusion": "Statistically and practically significant",
+        "interpretation": "The effect (0.120) is statistically significant and outside the equivalence bounds [-0.1, 0.1]. Clear evidence of a meaningful effect."
+      }
+    },
+    "bacteria_richness": {
+      "variable": "bacteria_richness",
+      "link_function": "log",
+      "traditional_test": {
+        "coefficient": 0.08,
+        "standard_error": 0.02,
+        "wald_statistic": 4.0,
+        "p_value": 6.334248366623996e-05,
+        "null_value": 0.0,
+        "ci_lower": 0.04080072030919892,
+        "ci_upper": 0.11919927969080107,
+        "significant": true,
+        "test_type": "wald_traditional",
+        "alternative": "two-sided",
+        "interpretation": "Coefficient 0.080 \u00b1 0.020 significantly different from 0.000"
+      },
+      "sesoi_test": {
+        "coefficient": 0.08,
+        "standard_error": 0.02,
+        "wald_statistic": -1.0000000000000002,
+        "p_value": 0.841344746068543,
+        "null_value": 0.1,
+        "ci_lower": 0.04080072030919892,
+        "ci_upper": 0.11919927969080107,
+        "significant": false,
+        "test_type": "wald_sesoi",
+        "alternative": "greater",
+        "exceeds_sesoi": false,
+        "interpretation": "Effect (0.080) does not exceed meaningful threshold (0.100)"
+      },
+      "scale_transformation": {
+        "log_scale": {
+          "coefficient": 0.08,
+          "se": 0.02,
+          "ci_lower": 0.04080072030919892,
+          "ci_upper": 0.11919927969080107
+        },
+        "response_scale": {
+          "multiplicative_effect": 1.0832870676749586,
+          "se_approx": 0.021665741353499173,
+          "ci_lower": 1.0416445062658732,
+          "ci_upper": 1.1265944033043065
+        },
+        "percent_change": {
+          "estimate": 8.328706767495863,
+          "ci_lower": 4.164450626587324,
+          "ci_upper": 12.659440330430648
+        },
+        "interpretation": "Small increase of 8.3% (95% CI: [4.2%, 12.7%])"
+      },
+      "sesoi_scales": {
+        "log_scale": 0.1,
+        "multiplicative": 1.1051709180756477,
+        "percent_change": 10.517091807564771,
+        "interpretation": "SESOI: 0.10 on log scale = 10.5% change on response scale"
+      },
+      "practical_significance": {
+        "log_scale": {
+          "coefficient": 0.08,
+          "sesoi": 0.1,
+          "exceeds": false,
+          "interpretation": "|\u03b2| = 0.080 \u2264 0.1"
+        },
+        "response_scale": {
+          "percent_change": 8.328706767495863,
+          "sesoi_percent": 10.517091807564771,
+          "exceeds": false,
+          "interpretation": "8.3% change \u2264 10.5% threshold"
+        }
+      },
+      "conclusion": "Statistically significant but not practically meaningful",
+      "summary": "Variable: bacteria_richness\nStatistical: p = 0.0001 (significant)\nEffect: +8.3% (95% CI: [4.2%, 12.7%])\nPractical: 8.3% change \u2264 10.5% threshold\nConclusion: Statistically significant but not practically meaningful",
+      "tost": {
+        "method": "TOST",
+        "effect_estimate": 0.08,
+        "standard_error": 0.02,
+        "bounds": {
+          "lower": -0.1,
+          "upper": 0.1
+        },
+        "test1_above_lower": {
+          "h0": "\u03b8 \u2264 -0.1",
+          "p_value": 0.0,
+          "reject": true,
+          "result": {
+            "coefficient": 0.08,
+            "standard_error": 0.02,
+            "wald_statistic": 9.0,
+            "p_value": 0.0,
+            "null_value": -0.1,
+            "ci_lower": 0.04080072030919892,
+            "ci_upper": 0.11919927969080107,
+            "significant": true,
+            "test_type": "wald_traditional",
+            "alternative": "greater",
+            "interpretation": "Coefficient 0.080 \u00b1 0.020 significantly different from -0.100"
+          }
+        },
+        "test2_below_upper": {
+          "h0": "\u03b8 \u2265 0.1",
+          "p_value": 0.15865525393145702,
+          "reject": false,
+          "result": {
+            "coefficient": 0.08,
+            "standard_error": 0.02,
+            "wald_statistic": -1.0000000000000002,
+            "p_value": 0.15865525393145702,
+            "null_value": 0.1,
+            "ci_lower": 0.04080072030919892,
+            "ci_upper": 0.11919927969080107,
+            "significant": false,
+            "test_type": "wald_traditional",
+            "alternative": "less",
+            "interpretation": "Coefficient 0.080 \u00b1 0.020 not significantly different from 0.100"
+          }
+        },
+        "test0_vs_zero": {
+          "h0": "\u03b8 = 0",
+          "p_value": 6.334248366623996e-05,
+          "reject": true,
+          "result": {
+            "coefficient": 0.08,
+            "standard_error": 0.02,
+            "wald_statistic": 4.0,
+            "p_value": 6.334248366623996e-05,
+            "null_value": 0,
+            "ci_lower": 0.04080072030919892,
+            "ci_upper": 0.11919927969080107,
+            "significant": true,
+            "test_type": "wald_traditional",
+            "alternative": "two-sided",
+            "interpretation": "Coefficient 0.080 \u00b1 0.020 significantly different from 0.000"
+          }
+        },
+        "tost_p_value": 0.15865525393145702,
+        "alpha": 0.05,
+        "is_equivalent": false,
+        "is_different_from_zero": true,
+        "conclusion": "Statistically and practically significant",
+        "interpretation": "The effect (0.080) is statistically significant and outside the equivalence bounds [-0.1, 0.1]. Clear evidence of a meaningful effect."
+      }
+    },
+    "protist_richness": {
+      "variable": "protist_richness",
+      "link_function": "log",
+      "traditional_test": {
+        "coefficient": -0.05,
+        "standard_error": 0.04,
+        "wald_statistic": -1.25,
+        "p_value": 0.2112995473337107,
+        "null_value": 0.0,
+        "ci_lower": -0.12839855938160216,
+        "ci_upper": 0.028398559381602156,
+        "significant": false,
+        "test_type": "wald_traditional",
+        "alternative": "two-sided",
+        "interpretation": "Coefficient -0.050 \u00b1 0.040 not significantly different from 0.000"
+      },
+      "sesoi_test": {
+        "coefficient": 0.05,
+        "standard_error": 0.04,
+        "wald_statistic": -1.25,
+        "p_value": 0.8943502263331446,
+        "null_value": 0.1,
+        "ci_lower": -0.028398559381602156,
+        "ci_upper": 0.12839855938160216,
+        "significant": false,
+        "test_type": "wald_sesoi",
+        "alternative": "greater",
+        "exceeds_sesoi": false,
+        "interpretation": "Effect (0.050) does not exceed meaningful threshold (0.100)"
+      },
+      "scale_transformation": {
+        "log_scale": {
+          "coefficient": -0.05,
+          "se": 0.04,
+          "ci_lower": -0.12839855938160216,
+          "ci_upper": 0.028398559381602156
+        },
+        "response_scale": {
+          "multiplicative_effect": 0.951229424500714,
+          "se_approx": 0.03804917698002856,
+          "ci_lower": 0.8795027751988383,
+          "ci_upper": 1.0288056428604144
+        },
+        "percent_change": {
+          "estimate": -4.877057549928598,
+          "ci_lower": -12.049722480116165,
+          "ci_upper": 2.8805642860414427
+        },
+        "interpretation": "No significant effect (CI includes 0: [-12.0%, 2.9%])"
+      },
+      "sesoi_scales": {
+        "log_scale": 0.1,
+        "multiplicative": 1.1051709180756477,
+        "percent_change": 10.517091807564771,
+        "interpretation": "SESOI: 0.10 on log scale = 10.5% change on response scale"
+      },
+      "practical_significance": {
+        "log_scale": {
+          "coefficient": -0.05,
+          "sesoi": 0.1,
+          "exceeds": false,
+          "interpretation": "|\u03b2| = 0.050 \u2264 0.1"
+        },
+        "response_scale": {
+          "percent_change": -4.877057549928598,
+          "sesoi_percent": 10.517091807564771,
+          "exceeds": false,
+          "interpretation": "4.9% change \u2264 10.5% threshold"
+        }
+      },
+      "conclusion": "Neither statistically nor practically significant",
+      "summary": "Variable: protist_richness\nStatistical: p = 0.2113 (NS)\nEffect: -4.9% (95% CI: [-12.0%, 2.9%])\nPractical: 4.9% change \u2264 10.5% threshold\nConclusion: Neither statistically nor practically significant",
+      "tost": {
+        "method": "TOST",
+        "effect_estimate": -0.05,
+        "standard_error": 0.04,
+        "bounds": {
+          "lower": -0.1,
+          "upper": 0.1
+        },
+        "test1_above_lower": {
+          "h0": "\u03b8 \u2264 -0.1",
+          "p_value": 0.10564977366685535,
+          "reject": false,
+          "result": {
+            "coefficient": -0.05,
+            "standard_error": 0.04,
+            "wald_statistic": 1.25,
+            "p_value": 0.10564977366685535,
+            "null_value": -0.1,
+            "ci_lower": -0.12839855938160216,
+            "ci_upper": 0.028398559381602156,
+            "significant": false,
+            "test_type": "wald_traditional",
+            "alternative": "greater",
+            "interpretation": "Coefficient -0.050 \u00b1 0.040 not significantly different from -0.100"
+          }
+        },
+        "test2_below_upper": {
+          "h0": "\u03b8 \u2265 0.1",
+          "p_value": 8.84172852008036e-05,
+          "reject": true,
+          "result": {
+            "coefficient": -0.05,
+            "standard_error": 0.04,
+            "wald_statistic": -3.7500000000000004,
+            "p_value": 8.84172852008036e-05,
+            "null_value": 0.1,
+            "ci_lower": -0.12839855938160216,
+            "ci_upper": 0.028398559381602156,
+            "significant": true,
+            "test_type": "wald_traditional",
+            "alternative": "less",
+            "interpretation": "Coefficient -0.050 \u00b1 0.040 significantly different from 0.100"
+          }
+        },
+        "test0_vs_zero": {
+          "h0": "\u03b8 = 0",
+          "p_value": 0.2112995473337107,
+          "reject": false,
+          "result": {
+            "coefficient": -0.05,
+            "standard_error": 0.04,
+            "wald_statistic": -1.25,
+            "p_value": 0.2112995473337107,
+            "null_value": 0,
+            "ci_lower": -0.12839855938160216,
+            "ci_upper": 0.028398559381602156,
+            "significant": false,
+            "test_type": "wald_traditional",
+            "alternative": "two-sided",
+            "interpretation": "Coefficient -0.050 \u00b1 0.040 not significantly different from 0.000"
+          }
+        },
+        "tost_p_value": 0.10564977366685535,
+        "alpha": 0.05,
+        "is_equivalent": false,
+        "is_different_from_zero": false,
+        "conclusion": "Inconclusive",
+        "interpretation": "The effect (-0.050) is neither statistically significant nor demonstrably within the equivalence bounds [-0.1, 0.1]. Insufficient evidence to conclude equivalence or difference."
+      }
+    }
+  },
+  "sesoi_info": {
+    "log_scale": 0.1,
+    "multiplicative": 1.1051709180756477,
+    "percent_change": 10.517091807564771,
+    "interpretation": "SESOI: 0.10 on log scale = 10.5% change on response scale"
+  },
+  "summary": {
+    "n_coefficients": 3,
+    "n_statistically_significant": 2,
+    "n_practically_significant": 1,
+    "interpretation": "2/3 statistically significant, 1/3 practically meaningful"
+  }
+}

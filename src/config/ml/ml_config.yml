@@ -4,8 +4,8 @@
 # H2O Configuration
 h2o:
   enabled: true
-  max_mem_size: "128G"  # Increase for large datasets (52M rows)
-  nthreads: 120  # Using 120 cores for faster processing
+  max_mem_size: "256G"  # Increase for large datasets (52M rows)
+  nthreads: 150  # Using 150 cores for faster processing
   ice_root: "/tmp/h2o_tmp"
   
 regression_analysis:
@@ -56,13 +56,14 @@ regression_analysis:
       bagging_fraction: 0.8
       bagging_freq: 5
       min_data_in_leaf: 100
-      num_threads: 80
+      num_threads: 120
       log_message: "Configuring LightGBM for DML nuisance models"
   
   # Spatial analysis (JAX-optimized Nystrom)
   spatial:
     n_eigenvectors: 10  # Number of MESF eigenvectors to compute
     distance_threshold: 100.0  # Distance threshold in km for spatial weights
+    cache_dir: "/home/yl998/.cache/mesf"  # Enable MESF caching
     # JAX will automatically use all available CPU cores
     # Note: Nystrom parameters are auto-calculated using 100×√n rule
   
@@ -77,7 +78,7 @@ regression_analysis:
   # Cross-validation for DML (lines 792-828)
   dml:
     k_folds: 5
-    threads_per_fold: 80
+    threads_per_fold: 120
     save_residuals: true
     log_message: "Running 5-fold cross-fitting for DML"
   

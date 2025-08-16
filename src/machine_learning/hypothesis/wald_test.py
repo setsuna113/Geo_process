@@ -108,6 +108,93 @@ class WaldTest:
         return result
     
     @staticmethod
+    def test_single_coefficient_with_scale(
+        coefficient: float,
+        standard_error: float,
+        null_value: float = 0.0,
+        h0_definition: Optional[Dict[str, Any]] = None,
+        alternative: str = 'two-sided',
+        link: str = None,
+        confidence_level: float = 0.95
+    ) -> Dict[str, Any]:
+        """Test a single coefficient with optional scale transformations.
+        
+        This ENHANCES the existing test by adding scale transformations when link='log'.
+        It doesn't duplicate the test logic, just adds scale interpretation.
+        
+        Args:
+            coefficient: Estimated coefficient value
+            standard_error: Standard error of the coefficient
+            null_value: Traditional null hypothesis value
+            h0_definition: Optional H0 definition from h0_definitions module
+            alternative: 'two-sided', 'greater', or 'less'
+            link: Link function ('log', 'identity', None). If 'log', adds scale transformations
+            confidence_level: Confidence level for intervals
+            
+        Returns:
+            Dictionary with test results, optionally including scale transformations
+        """
+        # First, run the standard test
+        result = WaldTest.test_single_coefficient(
+            coefficient=coefficient,
+            standard_error=standard_error,
+            null_value=null_value,
+            h0_definition=h0_definition,
+            alternative=alternative
+        )
+        
+        # Adjust CI if different confidence level requested
+        if confidence_level != 0.95:
+            z_critical = stats.norm.ppf((1 + confidence_level) / 2)
+            result['ci_lower'] = coefficient - z_critical * standard_error
+            result['ci_upper'] = coefficient + z_critical * standard_error
+            result['confidence_level'] = confidence_level
+        
+        # If log link, add scale transformations
+        if link == 'log':
+            from ..hypothesis.scale_utils import ScaleTransformation
+            
+            # Transform coefficient and CI to response scale
+            scale_info = ScaleTransformation.log_to_response_scale(
+                coefficient=coefficient,
+                standard_error=standard_error,
+                confidence_level=confidence_level
+            )
+            
+            # Add scale transformation to result
+            result['scale_transformation'] = scale_info
+            result['link_function'] = 'log'
+            
+            # Add percent change interpretation
+            pct = scale_info['percent_change']
+            result['response_scale_interpretation'] = (
+                f"{pct['estimate']:+.1f}% change "
+                f"({int(confidence_level*100)}% CI: [{pct['ci_lower']:.1f}%, {pct['ci_upper']:.1f}%])"
+            )
+            
+            # If SESOI test, also transform the threshold
+            if h0_definition and h0_definition.get('type') == 'sesoi':
+                sesoi_log = h0_definition.get('null_value', 0.1)
+                sesoi_info = ScaleTransformation.adjust_sesoi_for_scale(sesoi_log, 'log')
+                result['sesoi_response_scale'] = sesoi_info
+                
+                # Check if effect exceeds SESOI on response scale
+                exceeds_response = abs(pct['estimate']) > sesoi_info['percent_change']
+                result['exceeds_sesoi_response_scale'] = exceeds_response
+                
+                # Add practical significance interpretation
+                if result.get('significant') and exceeds_response:
+                    result['practical_significance'] = "Both statistically and practically significant"
+                elif result.get('significant') and not exceeds_response:
+                    result['practical_significance'] = "Statistically significant but not practically meaningful"
+                elif not result.get('significant') and exceeds_response:
+                    result['practical_significance'] = "Large effect but not statistically significant"
+                else:
+                    result['practical_significance'] = "Neither statistically nor practically significant"
+        
+        return result
+    
+    @staticmethod
     def test_multiple_coefficients(
         coefficients: Union[List[float], np.ndarray],
         covariance_matrix: np.ndarray,

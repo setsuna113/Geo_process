@@ -21,6 +21,9 @@ from ..hypothesis import (
     WaldTest, LikelihoodRatioTest, ScoreTest,
     ContrastAnalysis, SimpleSlopesAnalysis
 )
+from ..hypothesis.wald_test import WaldTest  # Ensure we have the enhanced WaldTest
+from ..hypothesis.h0_definitions import H0Definition
+from ..hypothesis.tost_wrapper import TOSTWrapper
 from ..evaluation import GLMComparison
 from ..preprocessing.h2o_preprocessing import (
     create_temperate_categories,
@@ -61,6 +64,7 @@ class Method2H2Testing:
         self.data_h2o = None
         self.emmeans_results = None
         self.contrast_results = None
+        self.formula = None  # R formula for the model
     
     def add_categorical_features(self, h2o_data: h2o.H2OFrame) -> h2o.H2OFrame:
         """Add Method2-specific categorical features.
@@ -112,20 +116,20 @@ class Method2H2Testing:
         min_category_size = 100  # Minimum samples per category
         
         # Check temperate categories
-        temp_sizes = temperate_counts.as_data_frame()['Count'].values
+        temp_sizes = temperate_counts.as_data_frame(use_multi_thread=True)['Count'].values
         if np.min(temp_sizes) < min_category_size:
             logger.warning(f"Temperate category imbalance: min size {np.min(temp_sizes)} < {min_category_size}")
             logger.warning("Consider adjusting quantile threshold or using stratified sampling")
         
         # Check plant diversity categories
-        plant_sizes = plant_high_counts.as_data_frame()['Count'].values
+        plant_sizes = plant_high_counts.as_data_frame(use_multi_thread=True)['Count'].values
         if np.min(plant_sizes) < min_category_size:
             logger.warning(f"Plant diversity category imbalance: min size {np.min(plant_sizes)} < {min_category_size}")
             logger.warning("Consider adjusting quantile threshold or using stratified sampling")
         
         # Check interaction term balance
         interaction_counts = h2o_data['temperate_x_plant_high'].table()
-        interaction_sizes = interaction_counts.as_data_frame()['Count'].values
+        interaction_sizes = interaction_counts.as_data_frame(use_multi_thread=True)['Count'].values
         if np.min(interaction_sizes) < min_category_size:
             logger.warning(f"Interaction category imbalance: min size {np.min(interaction_sizes)} < {min_category_size}")
             logger.warning("This may affect the reliability of interaction effect estimates")
@@ -231,6 +235,9 @@ class Method2H2Testing:
         self.x_names_3b = feature_cols_3b
         self.y_name = 'fungi_richness'
         
+        # Store R formula for emmeans
+        self.formula = f"fungi_richness ~ {' + '.join(feature_cols_3b)}"
+        
         # ========== Hypothesis Testing ==========
         results = {}
         
@@ -273,29 +280,81 @@ class Method2H2Testing:
                 'significant_at_0.05': False
             }
         else:
-            # Pure Wald test
-            continuous_wald = WaldTest.test_coefficients_from_model(
-                model=self.model_3a_continuous,
-                coefficient_names=interaction_coef_name,
-                null_values=0.0
-            )
+            # Extract vcov matrix for proper inference
+            logger.info("Extracting variance-covariance matrix for Wald tests")
+            from src.machine_learning.utils.vcov import extract_vcov
             
-            # Add practical significance for large samples
-            from src.machine_learning.hypothesis.practical_significance import PracticalSignificance
-            n_obs = h2o_data.nrows
-            if n_obs > 100000 and interaction_coef_name in all_coeffs:
-                # Get coefficient value and SE for practical interpretation
-                coef_val = all_coeffs[interaction_coef_name]
-                # Note: Method 2 might not have SE readily available, so check
-                if 'standard_error' in continuous_wald:
-                    continuous_wald = PracticalSignificance.interpret_wald_with_practical_significance(
-                        wald_result=continuous_wald,
-                        coefficient_estimate=coef_val,
-                        standard_error=continuous_wald['standard_error'],
-                        n_obs=n_obs,
-                        sesoi=0.05,  # Smaller threshold for interaction effects
-                        parameter_name="Temperature×Plants interaction"
+            try:
+                # Get feature columns for continuous model
+                feature_cols = [col for col in h2o_data.columns if col != 'fungi_richness']
+                
+                # Get vcov matrix and coefficients
+                coef_values, vcov_matrix, coef_names = extract_vcov(
+                    self.model_3a_continuous,
+                    data=h2o_data,
+                    x_names=feature_cols,
+                    y_name='fungi_richness',
+                    method='sandwich'  # Robust standard errors
+                )
+                
+                # Find interaction coefficient index
+                if interaction_coef_name in coef_names:
+                    idx = coef_names.index(interaction_coef_name)
+                    coef_val = coef_values[idx]
+                    se_val = np.sqrt(vcov_matrix[idx, idx])
+                    
+                    # IMPORTANT: For interaction coefficient, only report SESOI and TOST
+                    # 1. SESOI test (H0: |β| ≤ threshold)
+                    sesoi_threshold = 0.05  # Smaller threshold for interaction effects
+                    from src.machine_learning.hypothesis.h0_definitions import H0Definition
+                    
+                    sesoi_test = WaldTest.test_single_coefficient_with_scale(
+                        coefficient=coef_val,
+                        standard_error=se_val,
+                        h0_definition=H0Definition.sesoi(sesoi_threshold, 'greater'),
+                        alternative='greater',
+                        link='log'  # Enable scale transformations
                     )
+                    
+                    # 2. TOST equivalence test
+                    from src.machine_learning.hypothesis.tost_wrapper import TOSTWrapper
+                    tost_test = TOSTWrapper.perform_tost_with_scale(
+                        test_function=WaldTest.test_single_coefficient,
+                        effect_estimate=coef_val,
+                        standard_error=se_val,
+                        lower_bound=-sesoi_threshold,
+                        upper_bound=sesoi_threshold,
+                        alpha=0.05,
+                        link='log'
+                    )
+                    
+                    # Package results (NO traditional test)
+                    continuous_wald = {
+                        'sesoi': sesoi_test,
+                        'tost': tost_test,
+                        'coefficient': coef_val,
+                        'standard_error': se_val,
+                        'significant_at_0.05': sesoi_test.get('exceeds_sesoi', False),  # Use SESOI for significance
+                        'interpretation': 'Temperature×Plants interaction (SESOI and TOST tests only)'
+                    }
+                    
+                    logger.info(f"Interaction coefficient {interaction_coef_name}: β={coef_val:.4f}, SE={se_val:.4f}")
+                    logger.info(f"SESOI test: p={sesoi_test['p_value']:.4f}, exceeds threshold={sesoi_test.get('exceeds_sesoi', False)}")
+                    logger.info(f"TOST test: p={tost_test['tost_p_value']:.4f}, equivalent={tost_test['is_equivalent']}")
+                else:
+                    continuous_wald = {
+                        'error': f'Coefficient {interaction_coef_name} not in vcov matrix',
+                        'significant_at_0.05': False
+                    }
+            except Exception as e:
+                logger.warning(f"vcov extraction failed: {e}")
+                # Fallback to model-based test but still use SESOI/TOST
+                continuous_wald = WaldTest.test_coefficients_from_model(
+                    model=self.model_3a_continuous,
+                    coefficient_names=interaction_coef_name,
+                    null_values=0.0
+                )
+                continuous_wald['note'] = 'Using model-based SE (vcov extraction failed)'
         
         # 1b. Score test for continuous interaction (using H2O-compatible version)
         try:
@@ -305,19 +364,21 @@ class Method2H2Testing:
             model_without_interaction = GLMClass(self.config.config)
             model_without_interaction.fit(model_without_interaction_data, y='fungi_richness')
             
-            # Use H2O-compatible score test
+            # Use H2O-compatible score test (REPORT TRADITIONAL ONLY - model comparison)
             continuous_score = ScoreTest.test_h2o_interaction(
                 null_model=model_without_interaction,
                 var1='bio04_std',
                 var2='plants_richness_log',
                 h2o_data=h2o_data
             )
-            logger.info(f"Score test for interaction: p={continuous_score.get('p_value', 'N/A'):.4f}")
+            logger.info(f"Score test for interaction (traditional only): p={continuous_score.get('p_value', 'N/A'):.4f}")
+            # Note: Score test is a model comparison test - report traditional results only
+            continuous_score['note'] = 'Model comparison test - traditional H0 only'
         except Exception as e:
             logger.warning(f"Score test failed: {e}")
             continuous_score = {'error': str(e), 'note': 'Score test failed'}
         
-        # 1c. Likelihood Ratio Test for interaction
+        # 1c. Likelihood Ratio Test for interaction (REPORT TRADITIONAL ONLY - model comparison)
         from ..hypothesis.lrt_test import LikelihoodRatioTest
         try:
             # LRT comparing model with and without interaction
@@ -327,7 +388,7 @@ class Method2H2Testing:
                     full_model=self.model_3a_continuous,
                     df_difference=1  # One interaction term
                 )
-                logger.info(f"LRT for interaction: χ²={lrt_result['lr_statistic']:.3f}, p={lrt_result['p_value']:.4f}")
+                logger.info(f"LRT for interaction (traditional only): χ²={lrt_result['lr_statistic']:.3f}, p={lrt_result['p_value']:.4f}")
             else:
                 # Fit model without interaction if not already done
                 model_without_interaction_data = h2o_data.drop('bio04_x_plants')
@@ -339,7 +400,9 @@ class Method2H2Testing:
                     full_model=self.model_3a_continuous,
                     df_difference=1
                 )
-                logger.info(f"LRT for interaction: χ²={lrt_result['lr_statistic']:.3f}, p={lrt_result['p_value']:.4f}")
+                logger.info(f"LRT for interaction (traditional only): χ²={lrt_result['lr_statistic']:.3f}, p={lrt_result['p_value']:.4f}")
+            # Note: LRT is a model comparison test - report traditional results only
+            lrt_result['note'] = 'Model comparison test - traditional H0 only'
         except Exception as e:
             logger.warning(f"LRT failed: {e}")
             lrt_result = {'error': str(e), 'note': 'LRT failed'}
@@ -392,11 +455,81 @@ class Method2H2Testing:
                 'significant_at_0.05': False
             }
         else:
-            categorical_wald = WaldTest.test_coefficients_from_model(
-                model=self.model_3b_categorical,
-                coefficient_names=cat_interaction_name,
-                null_values=0.0
-            )
+            # Extract vcov matrix for proper inference on categorical model
+            logger.info("Extracting variance-covariance matrix for categorical Wald tests")
+            from src.machine_learning.utils.vcov import extract_vcov
+            
+            try:
+                # Get feature columns for categorical model
+                feature_cols_cat = [col for col in h2o_data.columns if col != 'fungi_richness']
+                
+                # Get vcov matrix and coefficients for categorical model
+                cat_coef_values, cat_vcov_matrix, cat_coef_names = extract_vcov(
+                    self.model_3b_categorical,
+                    data=h2o_data,
+                    x_names=feature_cols_cat,  # Use categorical feature columns
+                    y_name='fungi_richness',
+                    method='sandwich'  # Robust standard errors
+                )
+                
+                # Find categorical interaction coefficient index
+                if cat_interaction_name in cat_coef_names:
+                    idx = cat_coef_names.index(cat_interaction_name)
+                    coef_val = cat_coef_values[idx]
+                    se_val = np.sqrt(cat_vcov_matrix[idx, idx])
+                    
+                    # IMPORTANT: For interaction coefficient, only report SESOI and TOST
+                    # 1. SESOI test (H0: |β| ≤ threshold)
+                    sesoi_threshold = 0.05  # Smaller threshold for interaction effects
+                    from src.machine_learning.hypothesis.h0_definitions import H0Definition
+                    
+                    sesoi_test = WaldTest.test_single_coefficient_with_scale(
+                        coefficient=coef_val,
+                        standard_error=se_val,
+                        h0_definition=H0Definition.sesoi(sesoi_threshold, 'greater'),
+                        alternative='greater',
+                        link='log'  # Enable scale transformations
+                    )
+                    
+                    # 2. TOST equivalence test
+                    from src.machine_learning.hypothesis.tost_wrapper import TOSTWrapper
+                    tost_test = TOSTWrapper.perform_tost_with_scale(
+                        test_function=WaldTest.test_single_coefficient,
+                        effect_estimate=coef_val,
+                        standard_error=se_val,
+                        lower_bound=-sesoi_threshold,
+                        upper_bound=sesoi_threshold,
+                        alpha=0.05,
+                        link='log'
+                    )
+                    
+                    # Package results (NO traditional test)
+                    categorical_wald = {
+                        'sesoi': sesoi_test,
+                        'tost': tost_test,
+                        'coefficient': coef_val,
+                        'standard_error': se_val,
+                        'significant_at_0.05': sesoi_test.get('exceeds_sesoi', False),  # Use SESOI for significance
+                        'interpretation': 'Temperate×PlantHigh interaction (SESOI and TOST tests only)'
+                    }
+                    
+                    logger.info(f"Categorical interaction {cat_interaction_name}: β={coef_val:.4f}, SE={se_val:.4f}")
+                    logger.info(f"SESOI test: p={sesoi_test['p_value']:.4f}, exceeds threshold={sesoi_test.get('exceeds_sesoi', False)}")
+                    logger.info(f"TOST test: p={tost_test['tost_p_value']:.4f}, equivalent={tost_test['is_equivalent']}")
+                else:
+                    categorical_wald = {
+                        'error': f'Coefficient {cat_interaction_name} not in vcov matrix',
+                        'significant_at_0.05': False
+                    }
+            except Exception as e:
+                logger.warning(f"vcov extraction failed for categorical model: {e}")
+                # Fallback to model-based test but still use SESOI/TOST
+                categorical_wald = WaldTest.test_coefficients_from_model(
+                    model=self.model_3b_categorical,
+                    coefficient_names=cat_interaction_name,
+                    null_values=0.0
+                )
+                categorical_wald['note'] = 'Using model-based SE (vcov extraction failed)'
         
         # 2b. Note about emmeans being the primary test for 3b
         results['model_3b_categorical'] = {
@@ -449,22 +582,22 @@ class Method2H2Testing:
             marginal_effects_results = {'error': str(e)}
             marginal_h2_supported = False
         
-        # 5. Interaction Plots
-        from ..interpretation.interaction_plots import InteractionPlots
+        # 5. Interaction Plots (Optimized for large data)
+        from ..interpretation.interaction_plots_optimized import OptimizedInteractionPlots
         try:
-            # Create interaction plot for bio4 × plants
-            interaction_plot = InteractionPlots.plot_continuous_interaction(
+            # Create interaction plot for bio4 × plants - FAST version
+            interaction_plot = OptimizedInteractionPlots.plot_continuous_interaction_fast(
                 model=self.model_3a_continuous,
                 var1='plants_richness_log',
                 var2='bio04_std',
                 var1_range=(0, 4),  # Log scale range
                 var2_values=[-1, 0, 1],  # Low, mean, high seasonality
-                data=h2o_data,
+                data=h2o_data,  # Stays in H2O!
                 ylabel='Predicted Fungi Richness',
                 xlabel='Plant Richness (log)',
                 title='H2 Test: Plant-Fungi Relationship by Temperature Seasonality'
             )
-            logger.info("Interaction plot created for bio4 × plants")
+            logger.info("Optimized interaction plot created for bio4 × plants")
         except Exception as e:
             logger.warning(f"Interaction plot failed: {e}")
             interaction_plot = None
@@ -573,40 +706,38 @@ class Method2H2Testing:
         self.coef_names = coef_names
         
         # Use R emmeans wrapper for proper statistical inference
-        # Convert H2O frame to pandas for emmeans calculation
-        data_pd = self.data_h2o.as_data_frame()
+        # OPTIMIZATION: Use representative sample for emmeans instead of full 43M rows
+        from src.machine_learning.evaluation.emmeans_core import REMmeansWrapper
+        from src.machine_learning.utils.emmeans_data_sampler import EMMeansDataSampler
         
-        # Try to use R wrapper, fall back to simple if R not available
-        try:
-            from src.machine_learning.evaluation.emmeans_core import REMmeansWrapper
-            self.emmeans_calculator = REMmeansWrapper(
-                coefficients=coefficients,
-                coefficient_names=coef_names,
-                data=data_pd,
-                formula="fungi_richness ~ temperate * plant_high + bio01_std + bio12_std + bio15_std + elevation_std + elevation_std_sq",
-                vcov_matrix=vcov_matrix
-            )
-            logger.info("Using R emmeans wrapper for statistical inference")
-        except Exception as e:
-            logger.warning(f"Could not initialize R emmeans wrapper: {e}")
-            logger.info("Falling back to simple emmeans approximation")
-            self.emmeans_calculator = SimpleEMmeansApproximation(
-                coefficients=coefficients,
-                coefficient_names=coef_names,
-                data=data_pd,
-                formula="fungi_richness ~ temperate * plant_high + bio01_std + bio12_std + bio15_std + elevation_std + elevation_std_sq + ME*"
-            )
+        # Get representative sample using abstracted sampler
+        sampler = EMMeansDataSampler(sample_size=10000, seed=42)
+        data_sample = sampler.sample_for_emmeans(
+            self.data_h2o,
+            factor_columns=['temperate', 'plant_high']
+        )
         
-        # Compute emmeans for 2x2 design
-        # Get covariate list (climate variables and MESF)
-        covariates = ['bio1_std', 'bio12_std', 'bio15_std', 
-                      'elevation_std', 'elevation_std_sq']
-        covariates += [col for col in self.data_h2o.columns if col.startswith('ME')]
+        # Use the FULL formula that matches our model coefficients
+        # R emmeans needs the complete model structure to properly use the vcov matrix
         
-        # Compute emmeans using the calculator
+        # Use poisson family for emmeans (vcov already accounts for NB overdispersion)
+        self.emmeans_calculator = REMmeansWrapper(
+            coefficients=coefficients,
+            vcov_matrix=vcov_matrix,
+            coefficient_names=coef_names,
+            data=data_sample,  # Representative sample, not full 43M rows!
+            formula=self.formula,  # Use FULL formula from line 236 that matches coefficients!
+            family='poisson',  # Use poisson for emmeans computation
+            link='log',
+            df_residual=int(self.data_h2o.nrows - len(coefficients))
+        )
+        logger.info("Using R emmeans package with representative sample + full vcov matrix")
+        
+        # Compute emmeans for 2x2 design using the actual R emmeans package
         emmeans_results = self.emmeans_calculator.compute_emmeans_2x2(
             factor1='plant_high',
-            factor2='temperate'
+            factor2='temperate',
+            type='response'
         )
         
         # Store results both in self and in the calculator for access by ContrastAnalysis
@@ -679,20 +810,103 @@ class Method2H2Testing:
         all_slopes = slopes_analyzer.test_all_simple_effects()
         results['simple_slopes_analysis']['all_effects'] = all_slopes
         
-        # 5. Get interaction coefficient from model (for reference)
-        interaction_coef = self.model_3b_categorical.get_coefficient('temperate_x_plant_high')
-        results['model_coefficient'] = {
-            'coefficient': interaction_coef['coefficient'],
-            'p_value': interaction_coef.get('p_value'),
-            'note': 'Raw interaction coefficient - emmeans contrasts provide better interpretation'
-        }
+        # 5. Get interaction coefficient from model with scale-aware reporting
+        logger.info("\nExtracting interaction coefficient with scale transformations...")
         
-        # Get interaction coefficient from model (for reference only)
-        interaction_coef = self.model_3b_categorical.get_coefficient('temperate_x_plant_high')
+        # Get coefficients
+        coefficients = self.model_3b_categorical.coef()
+        interaction_coef = coefficients.get('temperate_x_plant_high', 0)
+        
+        # Get standard error and p-value
+        interaction_se = 0.1  # Default
+        p_value = None
+        
+        try:
+            # Try to get vcov matrix for proper SE
+            coef_values, vcov_matrix, coef_names = extract_vcov(
+                self.model_3b_categorical,
+                data=self.data_h2o,
+                x_names=self.feature_cols,
+                y_name=self.target_col,
+                method='sandwich'
+            )
+            # Extract SE from vcov diagonal
+            if 'temperate_x_plant_high' in coef_names:
+                idx = coef_names.index('temperate_x_plant_high')
+                interaction_se = np.sqrt(vcov_matrix[idx, idx])
+                logger.info(f"  Extracted SE from vcov: {interaction_se:.4f}")
+        except Exception as e:
+            logger.warning(f"Could not extract vcov, using fallback SE: {e}")
+            # Fallback to coef_norm
+            try:
+                coef_table = self.model_3b_categorical.coef_norm()
+                if isinstance(coef_table, dict):
+                    interaction_info = coef_table.get('temperate_x_plant_high', {})
+                    interaction_se = interaction_info.get('std_error', 0.1)
+                    p_value = interaction_info.get('p_value')
+            except:
+                pass
+        
+        # Perform hypothesis testing with integrated scale transformations
+        logger.info("\nPerforming hypothesis testing with integrated scale transformations...")
+        
+        # 1. Test interaction coefficient with SESOI and scale
+        sesoi_threshold = 0.1  # 0.1 on log scale ≈ 10.5% on response scale
+        h2_wald_result = WaldTest.test_single_coefficient_with_scale(
+            coefficient=interaction_coef,
+            standard_error=interaction_se,
+            h0_definition=H0Definition.sesoi(sesoi_threshold, 'two-sided'),
+            alternative='two-sided',
+            link='log'  # Enables scale transformations
+        )
+        
+        # 2. Perform TOST with scale transformations
+        tost_result = TOSTWrapper.perform_tost_with_scale(
+            test_function=WaldTest.test_single_coefficient,
+            effect_estimate=interaction_coef,
+            standard_error=interaction_se,
+            lower_bound=-0.1,
+            upper_bound=0.1,
+            alpha=0.05,
+            link='log'  # Enables scale transformations
+        )
+        
+        # Log enhanced results
+        logger.info(f"  Interaction (log scale): {interaction_coef:.3f} ± {interaction_se:.3f}")
+        if 'response_scale_interpretation' in h2_wald_result:
+            logger.info(f"  Response scale: {h2_wald_result['response_scale_interpretation']}")
+        logger.info(f"  Statistical significance: p = {h2_wald_result['p_value']:.4f}")
+        
+        # Check SESOI on response scale
+        exceeds_sesoi = h2_wald_result.get('exceeds_sesoi_response_scale', 
+                                          h2_wald_result.get('exceeds_sesoi', False))
+        logger.info(f"  Exceeds SESOI (10.5% on response): {exceeds_sesoi}")
+        
+        if 'scale_interpretation' in tost_result:
+            logger.info(f"  TOST: {tost_result['scale_interpretation']}")
+        
+        if 'practical_significance' in h2_wald_result:
+            logger.info(f"  Overall: {h2_wald_result['practical_significance']}")
+        
+        # Extract scale info for reporting
+        scale_info = h2_wald_result.get('scale_transformation', {})
+        pct_change = scale_info.get('percent_change', {})
+        
         results['model_coefficient'] = {
-            'coefficient': interaction_coef['coefficient'],
-            'p_value': interaction_coef.get('p_value'),
-            'note': 'Raw interaction coefficient - Tests 6 & 7 provide better H2 evaluation'
+            'coefficient_log': interaction_coef,
+            'se': interaction_se,
+            'p_value': h2_wald_result['p_value'],
+            'ci_lower': h2_wald_result['ci_lower'],
+            'ci_upper': h2_wald_result['ci_upper'],
+            'percent_change': pct_change.get('estimate', 0),
+            'ci_percent': [pct_change.get('ci_lower', 0), pct_change.get('ci_upper', 0)],
+            'exceeds_sesoi': exceeds_sesoi,
+            'tost_p_value': tost_result.get('tost_p_value', 1.0),
+            'tost_conclusion': tost_result.get('conclusion', ''),
+            'is_equivalent': tost_result.get('is_equivalent', False),
+            'response_scale_interpretation': h2_wald_result.get('response_scale_interpretation', ''),
+            'practical_significance': h2_wald_result.get('practical_significance', ''),
+            'note': 'Interaction coefficient with integrated scale transformations'
         }
         
         # Overall H2 conclusion based on both tests

@@ -1,0 +1,13 @@
+{
+  "method": "Method 2 - Categorical",
+  "hypothesis": "H2 - Interaction Effect",
+  "interaction_result": {
+    "coefficient_log": -0.15,
+    "se": 0.105,
+    "percent_change": -13.92920235749422,
+    "ci_percent": [
+      -29.938462177188907,
+      5.738218672173856
+    ],
+    "p_value": 0.15312745101966962,
+    "exceeds_sesoi": 
