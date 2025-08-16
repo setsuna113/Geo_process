@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib import cm
-from typing import Tuple, Optional, List, Union
+from typing import Tuple, Optional, List, Union, Dict, Any
 import logging
 from tqdm import tqdm
 
@@ -33,68 +33,118 @@ class PartialDependence:
     """Static methods for partial dependence computation."""
     
     @staticmethod
-    def compute_pdp_interaction(model, features: List[str], data, grid_resolution: int = 20):
-        """Compute partial dependence for feature interaction.
+    def compute_pdp_interaction(model, features: List[str], data, grid_resolution: int = 20, sample_size: Optional[int] = 10000):
+        """Compute partial dependence for feature interaction - OPTIMIZED.
         
         For H2: Shows how the combined effect of bio4 and plants affects fungi.
+        
+        Key optimizations:
+        1. Sample data if too large
+        2. Use means for other covariates instead of copying full dataset
+        3. Batch all predictions in one call
         
         Args:
             model: Fitted model
             features: List of two features [var1, var2]
             data: Data frame (H2O or pandas)
             grid_resolution: Number of grid points per feature
+            sample_size: Max rows to use for computing means (None = use all)
             
         Returns:
             Dictionary with PDP results
         """
         import h2o
         
+        logger.info(f"Computing optimized PDP for {features} interaction")
+        
         # Access the actual model
         if hasattr(model, 'model'):
             h2o_model = model.model
         else:
             h2o_model = model
-            
-        # Get data as dataframe
-        if hasattr(data, 'as_data_frame'):
-            df = data.as_data_frame()
-        else:
-            df = data.copy()
-            
-        # Create grid for both features
-        var1, var2 = features
-        var1_min, var1_max = df[var1].quantile([0.05, 0.95])
-        var2_min, var2_max = df[var2].quantile([0.05, 0.95])
         
+        # OPTIMIZATION 1: Sample if dataset is too large
+        if isinstance(data, h2o.H2OFrame):
+            n_rows = data.nrows
+            if sample_size and n_rows > sample_size:
+                logger.info(f"Sampling {sample_size:,} from {n_rows:,} rows for PDP")
+                sample_frac = sample_size / n_rows
+                data_sample = data.split_frame(ratios=[sample_frac], seed=42)[0]
+            else:
+                data_sample = data
+            
+            # Get means for other variables (in H2O, no conversion!)
+            logger.info("Computing covariate means in H2O...")
+            means_list = data_sample.mean()
+            col_names = data_sample.columns
+            means_dict = {col: float(means_list[i]) for i, col in enumerate(col_names)}
+            
+            # Get ranges for grid variables
+            var1, var2 = features
+            var1_stats = data_sample[var1].quantile([0.05, 0.95])
+            var2_stats = data_sample[var2].quantile([0.05, 0.95])
+            var1_min, var1_max = float(var1_stats[0,0]), float(var1_stats[1,0])
+            var2_min, var2_max = float(var2_stats[0,0]), float(var2_stats[1,0])
+        else:
+            # Pandas path
+            if sample_size and len(data) > sample_size:
+                data_sample = data.sample(n=sample_size, random_state=42)
+            else:
+                data_sample = data
+                
+            means_dict = data_sample.mean().to_dict()
+            var1, var2 = features
+            var1_min, var1_max = data_sample[var1].quantile([0.05, 0.95])
+            var2_min, var2_max = data_sample[var2].quantile([0.05, 0.95])
+        
+        # Create grid
         var1_grid = np.linspace(var1_min, var1_max, grid_resolution)
         var2_grid = np.linspace(var2_min, var2_max, grid_resolution)
         
-        # Calculate partial dependence
-        pd_matrix = np.zeros((grid_resolution, grid_resolution))
+        # OPTIMIZATION 2: Create all prediction points at once (just means + grid values)
+        logger.info(f"Creating {grid_resolution**2} prediction points...")
+        pred_data = []
+        for v1 in var1_grid:
+            for v2 in var2_grid:
+                row = means_dict.copy()  # Just copy the small means dict!
+                row[var1] = v1
+                row[var2] = v2
+                pred_data.append(row)
         
-        for i, v1 in enumerate(var1_grid):
-            for j, v2 in enumerate(var2_grid):
-                # Create prediction data
-                pred_df = df.copy()
-                pred_df[var1] = v1
-                pred_df[var2] = v2
-                
-                # Get predictions
-                if isinstance(data, h2o.H2OFrame):
-                    pred_h2o = h2o.H2OFrame(pred_df)
-                    preds = h2o_model.predict(pred_h2o)
-                    mean_pred = float(preds.mean().as_data_frame().values[0][0])
-                else:
-                    preds = h2o_model.predict(pred_df)
-                    mean_pred = np.mean(preds)
-                
-                pd_matrix[i, j] = mean_pred
+        # OPTIMIZATION 3: Batch predict all at once
+        logger.info("Batch predicting all grid points...")
+        pred_df = pd.DataFrame(pred_data)
+        
+        if isinstance(data, h2o.H2OFrame):
+            pred_h2o = h2o.H2OFrame(pred_df)
+            preds = h2o_model.predict(pred_h2o)
+            # Get predictions as dataframe and extract the 'predict' column
+            preds_df = preds.as_data_frame(use_multi_thread=True)
+            # H2O GLM returns 'predict' column for regression
+            if 'predict' in preds_df.columns:
+                pred_values = preds_df['predict'].values
+            else:
+                # Fallback to first column
+                pred_values = preds_df.iloc[:, 0].values
+        else:
+            pred_values = h2o_model.predict(pred_df)
+        
+        # Ensure we have the right number of predictions
+        expected_size = grid_resolution * grid_resolution
+        if len(pred_values) != expected_size:
+            logger.warning(f"Got {len(pred_values)} predictions, expected {expected_size}")
+        
+        # Reshape to matrix
+        pd_matrix = pred_values.reshape(grid_resolution, grid_resolution)
+        
+        logger.info(f"PDP complete. Range: [{pd_matrix.min():.3f}, {pd_matrix.max():.3f}]")
         
         return {
             'features': features,
             'var1_grid': var1_grid,
             'var2_grid': var2_grid,
             'pd_matrix': pd_matrix,
+            'sample_size_used': data_sample.nrows if isinstance(data_sample, h2o.H2OFrame) else len(data_sample),
             'interpretation': PartialDependence._interpret_pdp(pd_matrix, var1, var2)
         }
     

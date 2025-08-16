@@ -72,9 +72,12 @@ class MESFProcessor:
         if n_jobs is None:
             n_jobs = -1  # Default to all cores if not specified
         
-        # Use configured core limit (H2O config specifies 80-120)
+        # Use configured core limit from n_jobs
         import os
-        n_cores = min(120, os.cpu_count() or 120)  # Cap at 120 cores
+        if n_jobs == -1:
+            n_cores = os.cpu_count() or 150
+        else:
+            n_cores = n_jobs  # Use the configured value
         
         # Set JAX to use limited cores
         os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={n_cores}'
@@ -371,7 +374,7 @@ class MESFProcessor:
             
             # Configure JAX
             import os
-            n_cores = min(120, os.cpu_count() or 120)
+            n_cores = self.n_jobs if self.n_jobs else (os.cpu_count() or 150)
             os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={n_cores}'
             
             # RFF parameters

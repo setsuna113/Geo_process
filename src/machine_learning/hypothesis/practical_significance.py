@@ -17,7 +17,7 @@ Note: Because p-values are garbage with 43 million observations
 import numpy as np
 import pandas as pd
 from scipy import stats
-from typing import Dict, Tuple, Optional, Union, List
+from typing import Dict, Tuple, Optional, Union, List, Any
 import logging
 
 logger = logging.getLogger(__name__)

@@ -14,6 +14,7 @@ Usage:
 """
 
 import sys
+import os
 import argparse
 import logging
 from pathlib import Path
@@ -143,6 +144,11 @@ def run_ml_pipeline(
     
     # Get H2O config values
     h2o_config = config.config.get('h2o', {})
+    
+    # Set thread count as environment variable for JAX and Polars
+    nthreads = h2o_config.get('nthreads', 150)
+    os.environ['H2O_NTHREADS'] = str(nthreads)
+    logger.info(f"Set H2O_NTHREADS={nthreads} for JAX and Polars")
     
     # Ensure ice_root directory exists
     ice_root = h2o_config.get('ice_root', '/tmp/h2o_tmp')

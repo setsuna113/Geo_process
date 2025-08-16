@@ -72,7 +72,7 @@ class InteractionPlots:
         
         # Get baseline data
         if hasattr(data, 'as_data_frame'):
-            base_df = data.as_data_frame()
+            base_df = data.as_data_frame(use_multi_thread=True)
         else:
             base_df = data.copy()
         
@@ -93,7 +93,7 @@ class InteractionPlots:
                 if isinstance(data, h2o.H2OFrame):
                     pred_h2o = h2o.H2OFrame(pred_df)
                     pred = h2o_model.predict(pred_h2o)
-                    pred_val = float(pred.as_data_frame().values[0][0])
+                    pred_val = float(pred.as_data_frame(use_multi_thread=True).values[0][0])
                 else:
                     pred = h2o_model.predict(pred_df)
                     pred_val = float(pred)
@@ -149,7 +149,7 @@ class InteractionPlots:
         """
         # Convert data if needed
         if hasattr(data, 'as_data_frame'):
-            df = data.as_data_frame()
+            df = data.as_data_frame(use_multi_thread=True)
         else:
             df = data.copy()
         
@@ -173,7 +173,7 @@ class InteractionPlots:
                 if hasattr(self.model, 'predict'):
                     preds = self.model.predict(pred_data)
                     if hasattr(preds, 'as_data_frame'):
-                        preds = preds.as_data_frame().values.flatten()
+                        preds = preds.as_data_frame(use_multi_thread=True).values.flatten()
                     predictions_matrix[i, j] = np.mean(preds)
         
         # Create plots based on type
@@ -222,7 +222,7 @@ class InteractionPlots:
         """
         # Convert data if needed
         if hasattr(data, 'as_data_frame'):
-            df = data.as_data_frame()
+            df = data.as_data_frame(use_multi_thread=True)
         else:
             df = data.copy()
         
@@ -249,7 +249,7 @@ class InteractionPlots:
                 if hasattr(self.model, 'predict'):
                     preds = self.model.predict(pred_data)
                     if hasattr(preds, 'as_data_frame'):
-                        preds = preds.as_data_frame().values.flatten()
+                        preds = preds.as_data_frame(use_multi_thread=True).values.flatten()
                     predictions.append(np.mean(preds))
             
             predictions_by_category[category] = predictions
@@ -303,7 +303,7 @@ class InteractionPlots:
         """
         # Convert data if needed
         if hasattr(data, 'as_data_frame'):
-            df = data.as_data_frame()
+            df = data.as_data_frame(use_multi_thread=True)
         else:
             df = data.copy()
         
@@ -325,7 +325,7 @@ class InteractionPlots:
                 if hasattr(self.model, 'predict'):
                     preds = self.model.predict(pred_data)
                     if hasattr(preds, 'as_data_frame'):
-                        preds = preds.as_data_frame().values.flatten()
+                        preds = preds.as_data_frame(use_multi_thread=True).values.flatten()
                     predictions[i, j] = np.mean(preds)
         
         # Plot lines

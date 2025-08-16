@@ -19,6 +19,8 @@ from ..config_loader import MLRegressionConfig
 from h2o.estimators.glm import H2OGeneralizedLinearEstimator
 from ..hypothesis import WaldTest, LikelihoodRatioTest, ScoreTest
 from ..evaluation.glm_comparison import ModelComparison
+from ..hypothesis.h0_definitions import H0Definition
+from ..hypothesis.tost_wrapper import TOSTWrapper
 # vcov import moved to where it's used for cleaner separation
 
 logger = logging.getLogger(__name__)
@@ -312,63 +314,100 @@ class Method1H0H1GLM:
             std_errors = np.sqrt(np.diag(vcov_matrix))
             se_dict = dict(zip(coef_names, std_errors))
             
-            # Import H0 definitions and TOST wrapper
-            from src.machine_learning.hypothesis.h0_definitions import H0Definition
-            from src.machine_learning.hypothesis.tost_wrapper import TOSTWrapper
+            # Use enhanced Wald and TOST tests with scale transformations
+            logger.info("Performing Wald tests with integrated scale transformations")
+            logger.info("Using vcov-derived standard errors for proper inference")
             
-            # Perform Wald tests for each biodiversity coefficient
+            # Perform tests for each biodiversity coefficient
+            # IMPORTANT: For Wald tests, only report SESOI and TOST, never traditional
             for coef_name in biotic_cols:
                 if coef_name in coef_dict:
                     coef = coef_dict[coef_name]
                     se = se_dict[coef_name]
+                    logger.info(f"\nTesting {coef_name}: β={coef:.4f}, SE={se:.4f}")
                     
-                    # 1. SESOI version (H0: |β| ≤ 0.1)
-                    sesoi_threshold = 0.1  # 0.1 log-unit change as meaningful
-                    wald_sesoi = WaldTest.test_single_coefficient(
+                    # 1. SESOI test with scale transformations (REPORT THIS)
+                    sesoi_threshold = 0.1  # 0.1 on log scale ≈ 10.5% on response scale
+                    wald_sesoi = WaldTest.test_single_coefficient_with_scale(
                         coefficient=coef,
                         standard_error=se,
                         h0_definition=H0Definition.sesoi(sesoi_threshold, 'greater'),
-                        alternative='greater'
+                        alternative='greater',
+                        link='log'  # Enables scale transformations
                     )
                     
-                    # 2. TOST version (test if β within [-0.1, 0.1])
-                    tost_result = TOSTWrapper.perform_tost(
+                    # 2. TOST test with scale transformations (REPORT THIS)
+                    tost_result = TOSTWrapper.perform_tost_with_scale(
                         test_function=WaldTest.test_single_coefficient,
                         effect_estimate=coef,
                         standard_error=se,
                         lower_bound=-0.1,
                         upper_bound=0.1,
-                        alpha=0.05
+                        alpha=0.05,
+                        link='log'  # Enables scale transformations
                     )
                     
-                    # Combine results
+                    # DO NOT run traditional test - only SESOI and TOST
+                    logger.info(f"  SESOI Test: p={wald_sesoi['p_value']:.4f}, exceeds={wald_sesoi.get('exceeds_sesoi', False)}")
+                    logger.info(f"  TOST Test: p={tost_result['tost_p_value']:.4f}, equivalent={tost_result['is_equivalent']}")
+                    if 'response_scale_interpretation' in wald_sesoi:
+                        logger.info(f"  Response scale: {wald_sesoi['response_scale_interpretation']}")
+                    if 'practical_significance' in wald_sesoi:
+                        logger.info(f"  Practical significance: {wald_sesoi['practical_significance']}")
+                    
+                    # Store results
                     wald_results[coef_name] = {
                         'sesoi': wald_sesoi,
                         'tost': tost_result,
                         'summary': {
                             'coefficient': coef,
                             'se': se,
-                            'sesoi_p': wald_sesoi['p_value'],
-                            'exceeds_sesoi': wald_sesoi.get('exceeds_sesoi', False),
+                            'p_value': wald_sesoi['p_value'],
+                            'ci_lower': wald_sesoi['ci_lower'],
+                            'ci_upper': wald_sesoi['ci_upper'],
+                            'exceeds_sesoi': wald_sesoi.get('exceeds_sesoi_response_scale', 
+                                                           wald_sesoi.get('exceeds_sesoi', False)),
                             'is_equivalent': tost_result.get('is_equivalent', False),
-                            'interpretation': self._interpret_wald_results(wald_sesoi, tost_result)
+                            'response_scale_interpretation': wald_sesoi.get('response_scale_interpretation', ''),
+                            'practical_significance': wald_sesoi.get('practical_significance', '')
                         }
                     }
                 else:
                     logger.warning(f"Coefficient {coef_name} not found in model")
             
-            # Also test biodiversity coefficients jointly
+            # Joint Wald test for biodiversity coefficients
+            # This is a joint test, but we apply SESOI logic to it
             bio_indices = [coef_names.index(name) for name in biotic_cols if name in coef_names]
             if len(bio_indices) >= 2:
                 bio_coefs = coef_values[bio_indices]
                 bio_vcov = vcov_matrix[np.ix_(bio_indices, bio_indices)]
-                joint_wald = WaldTest.test_multiple_coefficients(
+                
+                # Test joint hypothesis with SESOI thresholds
+                # For joint test, use null values of 0.1 for SESOI interpretation
+                sesoi_nulls = np.ones(len(bio_coefs)) * 0.1  # All coefficients at SESOI threshold
+                
+                # Joint SESOI test: H0: all |βi| ≤ 0.1
+                joint_sesoi = WaldTest.test_multiple_coefficients(
                     coefficients=bio_coefs,
                     covariance_matrix=bio_vcov,
-                    null_values=None
+                    null_values=sesoi_nulls  # Test against SESOI thresholds
                 )
-                wald_results['joint_biodiversity'] = joint_wald
-                logger.info(f"Joint Wald test for biodiversity: chi2={joint_wald['wald_statistic']:.2f}, p={joint_wald['p_value']:.4f}")
+                joint_sesoi['interpretation'] = 'Joint test for practical significance (H0: all |βi| ≤ 0.1)'
+                
+                # Traditional joint test for comparison (but don't report in final)
+                joint_traditional = WaldTest.test_multiple_coefficients(
+                    coefficients=bio_coefs,
+                    covariance_matrix=bio_vcov,
+                    null_values=None  # Traditional H0: all βi = 0
+                )
+                
+                wald_results['joint_biodiversity'] = {
+                    'sesoi': joint_sesoi,
+                    'traditional_for_reference': joint_traditional  # Keep for internal use only
+                }
+                
+                logger.info(f"Joint SESOI test: chi2={joint_sesoi['wald_statistic']:.2f}, p={joint_sesoi['p_value']:.4f}")
+                logger.info(f"Joint test interpretation: Testing if any biodiversity effect exceeds SESOI threshold")
             
             # Extract z-values for reporting from SESOI test
             for coef_name in biotic_cols:
@@ -473,10 +512,21 @@ class Method1H0H1GLM:
                 full_coeffs = self.model_full.coef()
                 # H2O provides coefficient table with p-values
                 coef_table = self.model_full._model_json['output']['coefficients_table']
-                full_std_errors = {name: se for name, se in 
-                                 zip(coef_table['names'], coef_table.get('std_error', []))}
-                full_p_values = {name: pval for name, pval in 
-                               zip(coef_table['names'], coef_table.get('p_value', []))}
+                
+                # Extract names and values from H2OTwoDimTable
+                if hasattr(coef_table, 'cell_values'):
+                    # H2OTwoDimTable format
+                    names = [row[0] for row in coef_table.cell_values]
+                    std_errors = [row[2] if len(row) > 2 else None for row in coef_table.cell_values]
+                    p_values = [row[4] if len(row) > 4 else None for row in coef_table.cell_values]
+                    full_std_errors = {name: se for name, se in zip(names, std_errors) if se is not None}
+                    full_p_values = {name: pval for name, pval in zip(names, p_values) if pval is not None}
+                else:
+                    # Try dictionary format
+                    full_std_errors = {name: se for name, se in 
+                                     zip(coef_table.get('names', []), coef_table.get('std_error', []))}
+                    full_p_values = {name: pval for name, pval in 
+                                   zip(coef_table.get('names', []), coef_table.get('p_value', []))}
             except Exception as e:
                 logger.warning(f"Could not extract full model coefficients: {e}")
                 full_coeffs = {}
@@ -670,16 +720,18 @@ class Method1H0H1GLM:
                 'n_parameters': metrics.get('n_parameters')
             }
         
-        # Generate report from Score Test if available
+        # Score Test - REPORT TRADITIONAL ONLY (model comparison test)
         if 'score' in self.hypothesis_results:
             score_result = self.hypothesis_results['score']
+            # Score test is a model comparison test - report traditional results only
             score_report = ScoreTest.generate_publication_report(
                 score_result,
-                test_name="Score Test",
+                test_name="Score Test (Traditional H0: No effect)",
                 hypothesis="biodiversity effects",
                 variable_names=['plants_richness_log', 'vertebrates_richness_log']
             )
             report['tests']['score_test'] = score_report
+            logger.info("Score Test: Reporting traditional results only (model comparison test)")
             
             # Generate visualization if output directory provided
             if output_dir:
@@ -695,16 +747,18 @@ class Method1H0H1GLM:
                 except Exception as e:
                     logger.warning(f"Failed to create score test visualization: {e}")
         
-        # LRT results with full report
+        # LRT results - REPORT TRADITIONAL ONLY (model comparison test)
         if 'lrt' in self.hypothesis_results:
             lrt_result = self.hypothesis_results['lrt']
+            # LRT is a model comparison test - report traditional results only
             lrt_report = LikelihoodRatioTest.generate_publication_report(
                 lrt_result,
-                test_name="Likelihood Ratio Test",
+                test_name="Likelihood Ratio Test (Traditional H0: No improvement)",
                 hypothesis="biodiversity improves model fit",
                 model_description="Comparing climate-only model (null) with climate + biodiversity model (full)"
             )
             report['tests']['lrt'] = lrt_report
+            logger.info("LRT: Reporting traditional results only (model comparison test)")
             
             # Generate LRT visualization if output directory provided
             if output_dir:
@@ -721,20 +775,40 @@ class Method1H0H1GLM:
                 except Exception as e:
                     logger.warning(f"Failed to create LRT visualization: {e}")
         
-        # Wald test results with visualization
+        # Wald test results - REPORT SESOI AND TOST ONLY (coefficient test)
         if 'wald' in self.hypothesis_results and self.hypothesis_results['wald']:
             wald_results = self.hypothesis_results['wald']
             
             # Generate Wald test report for individual coefficients
+            # IMPORTANT: Only report SESOI and TOST, never traditional
             for var_name, wald_result in wald_results.items():
-                if var_name != 'joint_biodiversity' and isinstance(wald_result, dict):
-                    wald_report = WaldTest.generate_publication_report(
-                        wald_result,
-                        test_name=f"Wald Test - {var_name}",
-                        hypothesis=f"effect of {var_name}",
-                        variable_names=[var_name]
-                    )
-                    report['tests'][f'wald_{var_name}'] = wald_report
+                if isinstance(wald_result, dict):
+                    if var_name == 'joint_biodiversity':
+                        # Report joint SESOI test only
+                        if 'sesoi' in wald_result:
+                            joint_report = {
+                                'test_name': "Joint SESOI Test - All Biodiversity Predictors",
+                                'hypothesis': "Joint practical significance (H0: all |βi| ≤ 0.1)",
+                                'results': wald_result['sesoi']
+                            }
+                            report['tests']['joint_sesoi_biodiversity'] = joint_report
+                            logger.info("Joint Wald: Reporting SESOI version only (coefficient test)")
+                    else:
+                        # Extract SESOI and TOST results for individual coefficients
+                        if 'sesoi' in wald_result and 'tost' in wald_result:
+                            sesoi_report = {
+                                'test_name': f"SESOI Test - {var_name}",
+                                'hypothesis': f"Practical significance of {var_name} (H0: |β| ≤ 0.1)",
+                                'results': wald_result['sesoi']
+                            }
+                            tost_report = {
+                                'test_name': f"TOST Equivalence Test - {var_name}",
+                                'hypothesis': f"Equivalence test for {var_name} (bounds: ±0.1)",
+                                'results': wald_result['tost']
+                            }
+                            report['tests'][f'sesoi_{var_name}'] = sesoi_report
+                            report['tests'][f'tost_{var_name}'] = tost_report
+                            logger.info(f"Wald {var_name}: Reporting SESOI and TOST only (coefficient test)")
             
             # Generate visualization if output directory provided
             if output_dir:
@@ -748,12 +822,15 @@ class Method1H0H1GLM:
                     
                     for var_name, wald_result in wald_results.items():
                         if var_name != 'joint_biodiversity' and isinstance(wald_result, dict):
-                            if 'coefficient' in wald_result:
-                                viz_data['coefficients'][var_name] = wald_result['coefficient']
-                            if 'standard_error' in wald_result:
-                                viz_data['std_errors'][var_name] = wald_result['standard_error']
-                            if 'p_value' in wald_result:
-                                viz_data['p_values'][var_name] = wald_result['p_value']
+                            # Use SESOI results for visualization
+                            if 'sesoi' in wald_result:
+                                sesoi_data = wald_result['sesoi']
+                                if 'coefficient' in sesoi_data:
+                                    viz_data['coefficients'][var_name] = sesoi_data['coefficient']
+                                if 'standard_error' in sesoi_data:
+                                    viz_data['std_errors'][var_name] = sesoi_data['standard_error']
+                                if 'p_value' in sesoi_data:
+                                    viz_data['p_values'][var_name] = sesoi_data['p_value']
                     
                     if viz_data['coefficients']:  # Only create viz if we have data
                         fig = WaldTest.visualize_wald_test(

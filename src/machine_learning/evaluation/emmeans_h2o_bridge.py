@@ -102,7 +102,7 @@ class H2OEMMeansBridge:
         
         # Convert data to R format
         if isinstance(self.data, h2o.H2OFrame):
-            df_pandas = self.data.as_data_frame()
+            df_pandas = self.data.as_data_frame(use_multi_thread=True)
         else:
             df_pandas = self.data
         

@@ -68,19 +68,18 @@ class TOSTWrapper:
         }
         
         # Run both one-sided tests
+        # Note: WaldTest uses 'coefficient' not 'effect_estimate'
         test1_result = test_function(
-            effect_estimate=effect_estimate,
+            coefficient=effect_estimate,  # Map to correct parameter name
             standard_error=standard_error,
             h0_definition=test1_h0,
-            alpha=alpha,
             **test_kwargs
         )
         
         test2_result = test_function(
-            effect_estimate=effect_estimate,
+            coefficient=effect_estimate,  # Map to correct parameter name
             standard_error=standard_error,
             h0_definition=test2_h0,
-            alpha=alpha,
             **test_kwargs
         )
         
@@ -102,10 +101,9 @@ class TOSTWrapper:
         }
         
         test0_result = test_function(
-            effect_estimate=effect_estimate,
+            coefficient=effect_estimate,  # Map to correct parameter name
             standard_error=standard_error,
             h0_definition=test0_h0,
-            alpha=alpha,
             **test_kwargs
         )
         
@@ -174,6 +172,95 @@ class TOSTWrapper:
             'conclusion': conclusion,
             'interpretation': interpretation
         }
+    
+    @staticmethod
+    def perform_tost_with_scale(
+        test_function: Callable,
+        effect_estimate: float,
+        standard_error: float,
+        lower_bound: float,
+        upper_bound: float,
+        alpha: float = 0.05,
+        link: str = None,
+        **test_kwargs
+    ) -> Dict[str, Any]:
+        """
+        Perform TOST with optional scale transformations for GLM models.
+        
+        This ENHANCES the existing TOST by adding scale transformations when link='log'.
+        It doesn't duplicate the test logic, just adds scale interpretation.
+        
+        Args:
+            test_function: The hypothesis test function to use
+            effect_estimate: The estimated effect
+            standard_error: Standard error of the estimate
+            lower_bound: Lower equivalence bound (on link scale)
+            upper_bound: Upper equivalence bound (on link scale)
+            alpha: Significance level
+            link: Link function ('log', 'identity', None). If 'log', adds scale transformations
+            **test_kwargs: Additional arguments for the test function
+            
+        Returns:
+            TOST results with optional scale transformations
+        """
+        # First, run the standard TOST
+        result = TOSTWrapper.perform_tost(
+            test_function=test_function,
+            effect_estimate=effect_estimate,
+            standard_error=standard_error,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+            alpha=alpha,
+            **test_kwargs
+        )
+        
+        # If log link, add scale transformations
+        if link == 'log':
+            from ..hypothesis.scale_utils import ScaleTransformation
+            
+            # Transform bounds to response scale
+            lower_pct = (np.exp(lower_bound) - 1) * 100
+            upper_pct = (np.exp(upper_bound) - 1) * 100
+            
+            result['bounds_response_scale'] = {
+                'lower_percent': lower_pct,
+                'upper_percent': upper_pct,
+                'interpretation': f"Equivalence bounds: [{lower_pct:.1f}%, {upper_pct:.1f}%]"
+            }
+            
+            # Transform effect to response scale
+            from .scale_utils import ScaleTransformation
+            scale_info = ScaleTransformation.log_to_response_scale(
+                coefficient=effect_estimate,
+                standard_error=standard_error,
+                confidence_level=1 - alpha
+            )
+            result['effect_response_scale'] = scale_info['percent_change']
+            result['scale_transformation'] = scale_info
+            result['link_function'] = 'log'
+            
+            # Check equivalence on response scale
+            pct_change = scale_info['percent_change']['estimate']
+            within_bounds_response = lower_pct <= pct_change <= upper_pct
+            result['equivalent_response_scale'] = within_bounds_response
+            
+            # Enhanced interpretation
+            if result['is_equivalent'] and within_bounds_response:
+                result['scale_interpretation'] = (
+                    f"Effect ({pct_change:.1f}%) is within equivalence bounds "
+                    f"[{lower_pct:.1f}%, {upper_pct:.1f}%] on response scale"
+                )
+            elif not result['is_equivalent'] and not within_bounds_response:
+                result['scale_interpretation'] = (
+                    f"Effect ({pct_change:.1f}%) exceeds equivalence bounds "
+                    f"[{lower_pct:.1f}%, {upper_pct:.1f}%] on response scale"
+                )
+            else:
+                result['scale_interpretation'] = (
+                    f"Inconsistent results between scales - check model assumptions"
+                )
+        
+        return result
     
     @staticmethod
     def validate_tost_setup(

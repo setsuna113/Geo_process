@@ -1,25 +1,39 @@
 """
-Sandwich estimator for robust variance-covariance matrix.
+JAX-accelerated sandwich estimator for robust variance-covariance matrix.
 
-LINUS: The right default. Robust, fast, proven.
-No fallbacks to diagonal. This IS the standard.
+Uses full dataset (no subsampling) for proper statistical inference.
+Leverages JAX's JIT compilation and optimized matrix operations.
 """
 
 import numpy as np
+import jax
+import jax.numpy as jnp
 import h2o
 import logging
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
+# Configure JAX for maximum performance
+jax.config.update('jax_enable_x64', True)  # Use float64 for precision
+jax.config.update('jax_platform_name', 'cpu')  # Explicit CPU backend
 
-def compute_sandwich_vcov(h2o_model, data, x_names, y_name):
+# Set JAX CPU threading based on config
+import os
+# Read from config or use default
+n_threads = int(os.environ.get('H2O_NTHREADS', '150'))
+os.environ['XLA_FLAGS'] = f'--xla_cpu_multi_thread_eigen=true intra_op_parallelism_threads={n_threads}'
+logger.info(f"JAX configured with {n_threads} threads")
+
+
+def compute_sandwich_vcov_jax(h2o_model, data, x_names, y_name) -> np.ndarray:
     """
-    Compute sandwich (robust) variance-covariance matrix for H2O GLM.
+    Compute sandwich (robust) variance-covariance matrix using JAX.
+    
+    Uses FULL dataset for proper inference - no subsampling.
     
     The sandwich estimator is:
     V = (X'X)^{-1} * X'diag(e^2)X * (X'X)^{-1}
-    
-    Where e are the residuals. This is robust to heteroscedasticity.
     
     Args:
         h2o_model: Fitted H2O GLM model
@@ -28,18 +42,14 @@ def compute_sandwich_vcov(h2o_model, data, x_names, y_name):
         y_name: Target column name
         
     Returns:
-        Robust variance-covariance matrix
+        Robust variance-covariance matrix as numpy array
     """
-    logger.info("Computing sandwich estimator for robust vcov...")
+    logger.info("Computing JAX-accelerated sandwich estimator using FULL dataset...")
     
-    # Get predictions and residuals
+    # Get predictions and residuals in H2O
     preds = h2o_model.predict(data)
     y_actual = data[y_name]
     residuals = y_actual - preds
-    
-    # For negative binomial, use Pearson residuals
-    # residual_i = (y_i - mu_i) / sqrt(mu_i + alpha * mu_i^2)
-    # But for simplicity, we'll use squared residuals
     residuals_sq = residuals ** 2
     
     # Get the design matrix X
@@ -47,166 +57,195 @@ def compute_sandwich_vcov(h2o_model, data, x_names, y_name):
     n = X.nrows
     p = len(x_names) + 1  # +1 for intercept
     
+    logger.info(f"Processing {n:,} rows × {p} features for full sandwich computation")
+    
     # Add intercept column
     ones = h2o.H2OFrame([[1.0]] * n)
     ones.set_names(['intercept'])
     X_with_intercept = ones.cbind(X)
     
-    # Convert to numpy for matrix operations (subsample if too large)
-    if n > 100000:
-        logger.info(f"Subsampling 100k from {n:,} rows for sandwich computation")
-        # Use H2O's split_frame for clean subsampling
-        sample_frac = 100000 / n
-        splits = X_with_intercept.split_frame(ratios=[sample_frac], seed=42)
-        X_sample = splits[0]
+    # Convert to numpy with multi-threading
+    logger.info("Converting H2O frames to numpy arrays with multi-threading...")
+    X_np = X_with_intercept.as_data_frame(use_multi_thread=True).values
+    r2_np = residuals_sq.as_data_frame(use_multi_thread=True).values.ravel()
+    
+    logger.info(f"Data converted: X shape {X_np.shape}, residuals shape {r2_np.shape}")
+    
+    # Convert to JAX arrays
+    logger.info("Converting to JAX arrays...")
+    X_jax = jnp.array(X_np)
+    r2_jax = jnp.array(r2_np)
+    
+    # JIT compile the sandwich computation for maximum performance
+    @jax.jit
+    def _compute_sandwich_jax(X: jnp.ndarray, r2: jnp.ndarray) -> jnp.ndarray:
+        """JIT-compiled sandwich computation."""
+        # Compute (X'X)
+        XtX = X.T @ X
         
-        # Get corresponding residuals
-        sample_indices = X_sample.get_frame_data()  # Get row indices
-        splits_r = residuals_sq.split_frame(ratios=[sample_frac], seed=42)
-        r2_sample = splits_r[0]
+        # Add ridge regularization for numerical stability
+        XtX_reg = XtX + jnp.eye(p) * 1e-8
         
-        X_np = X_sample.as_data_frame().values
-        r2_np = r2_sample.as_data_frame().values.ravel()
-    else:
-        X_np = X_with_intercept.as_data_frame().values
-        r2_np = residuals_sq.as_data_frame().values.ravel()
-    
-    # Compute (X'X)^{-1}
-    XtX = X_np.T @ X_np
-    XtX_inv = np.linalg.inv(XtX + np.eye(p) * 1e-8)  # Ridge for stability
-    
-    # Compute the "meat": X'diag(e^2)X
-    # This is sum over i of e_i^2 * x_i * x_i'
-    meat = np.zeros((p, p))
-    for i in range(len(r2_np)):
-        xi = X_np[i, :].reshape(-1, 1)
-        meat += r2_np[i] * (xi @ xi.T)
-    
-    # Sandwich: (X'X)^{-1} * meat * (X'X)^{-1}
-    vcov_sandwich = XtX_inv @ meat @ XtX_inv
-    
-    # Scale by n/(n-p) for small sample correction
-    vcov_sandwich *= n / (n - p)
-    
-    logger.info(f"Sandwich vcov computed: shape {vcov_sandwich.shape}")
-    
-    return vcov_sandwich
-
-
-def compute_hac_vcov(h2o_model, data, x_names, y_name, max_lag=10):
-    """
-    Compute HAC (Heteroscedasticity and Autocorrelation Consistent) vcov.
-    
-    This is like sandwich but also handles autocorrelation.
-    Uses Newey-West estimator with automatic bandwidth selection.
-    
-    Args:
-        h2o_model: Fitted H2O GLM model
-        data: H2O DataFrame with training data  
-        x_names: List of predictor column names
-        y_name: Target column name
-        max_lag: Maximum lag for autocorrelation
+        # Compute (X'X)^{-1}
+        XtX_inv = jnp.linalg.inv(XtX_reg)
         
-    Returns:
-        HAC variance-covariance matrix
-    """
-    logger.info(f"Computing HAC vcov with max_lag={max_lag}...")
+        # Compute the "meat": X'diag(e^2)X
+        # Efficient computation: X.T @ (X * r2[:, None])
+        meat = X.T @ (X * r2[:, jnp.newaxis])
+        
+        # Sandwich: (X'X)^{-1} * meat * (X'X)^{-1}
+        vcov_sandwich = XtX_inv @ meat @ XtX_inv
+        
+        # Scale by n/(n-p) for small sample correction
+        scale = n / (n - p)
+        vcov_sandwich = vcov_sandwich * scale
+        
+        return vcov_sandwich
     
-    # Start with sandwich estimator
-    vcov = compute_sandwich_vcov(h2o_model, data, x_names, y_name)
+    # Compute with JAX
+    logger.info("Computing sandwich vcov with JAX (JIT compiled)...")
+    vcov_jax = _compute_sandwich_jax(X_jax, r2_jax)
     
-    # For spatial data, we might have spatial autocorrelation
-    # But for simplicity, we'll just return the sandwich estimator
-    # A full HAC would require spatial weights matrix
+    # Block until computation is complete
+    vcov_jax = vcov_jax.block_until_ready()
     
-    logger.info("HAC computation complete (using sandwich for spatial data)")
+    # Convert back to numpy
+    vcov_np = np.array(vcov_jax)
     
-    return vcov
+    logger.info(f"JAX sandwich vcov computed: shape {vcov_np.shape}")
+    logger.info(f"Using FULL {n:,} observations - no subsampling!")
+    
+    return vcov_np
 
 
-def compute_clustered_vcov(h2o_model, data, x_names, y_name, cluster_var):
+def compute_sandwich_vcov_chunked_jax(h2o_model, data, x_names, y_name, 
+                                      chunk_size: int = 1_000_000) -> np.ndarray:
     """
-    Compute clustered variance-covariance matrix.
+    Compute sandwich estimator using chunked processing for memory efficiency.
     
-    Clusters standard errors by a grouping variable (e.g., region).
+    Processes data in chunks but uses ALL data - no subsampling.
+    Useful when full dataset doesn't fit in memory at once.
     
     Args:
         h2o_model: Fitted H2O GLM model
         data: H2O DataFrame with training data
         x_names: List of predictor column names
         y_name: Target column name
-        cluster_var: Column name for clustering
+        chunk_size: Number of rows to process at once
         
     Returns:
-        Clustered variance-covariance matrix
+        Robust variance-covariance matrix as numpy array
     """
-    logger.info(f"Computing clustered vcov by {cluster_var}...")
+    logger.info(f"Computing JAX sandwich estimator in chunks of {chunk_size:,} rows...")
     
-    # Get unique clusters
-    clusters = data[cluster_var].unique()
-    n_clusters = clusters.nrows
-    
-    logger.info(f"Found {n_clusters} clusters")
-    
-    # Get predictions and residuals
+    # Get predictions and residuals in H2O
     preds = h2o_model.predict(data)
-    residuals = data[y_name] - preds
+    y_actual = data[y_name]
+    residuals = y_actual - preds
+    residuals_sq = residuals ** 2
     
-    # Add intercept to X
+    # Get the design matrix X
     X = data[x_names]
     n = X.nrows
-    p = len(x_names) + 1
+    p = len(x_names) + 1  # +1 for intercept
     
+    logger.info(f"Processing {n:,} rows × {p} features in chunks")
+    
+    # Add intercept column
     ones = h2o.H2OFrame([[1.0]] * n)
     ones.set_names(['intercept'])
     X_with_intercept = ones.cbind(X)
     
-    # If too many rows, subsample
-    if n > 100000:
-        logger.info(f"Subsampling for clustered vcov computation")
-        # Take stratified sample by cluster
-        sample_frac = 100000 / n
-        splits = data.split_frame(ratios=[sample_frac], seed=42)
-        sample_data = splits[0]
-        X_sample = sample_data[x_names]
-        cluster_sample = sample_data[cluster_var]
-        residuals_sample = sample_data[y_name] - h2o_model.predict(sample_data)
+    # Initialize accumulators using JAX
+    XtX_acc = jnp.zeros((p, p))
+    meat_acc = jnp.zeros((p, p))
+    
+    # Process in chunks
+    n_chunks = (n + chunk_size - 1) // chunk_size
+    
+    @jax.jit
+    def _update_accumulators(XtX_acc, meat_acc, X_chunk, r2_chunk):
+        """JIT-compiled chunk processing."""
+        # Update X'X
+        XtX_acc = XtX_acc + X_chunk.T @ X_chunk
         
-        # Work with sample
-        X_np = X_sample.as_data_frame().values
-        cluster_np = cluster_sample.as_data_frame().values
-        residuals_np = residuals_sample.as_data_frame().values.ravel()
+        # Update meat matrix
+        meat_chunk = X_chunk.T @ (X_chunk * r2_chunk[:, jnp.newaxis])
+        meat_acc = meat_acc + meat_chunk
+        
+        return XtX_acc, meat_acc
+    
+    for i in range(n_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, n)
+        chunk_rows = end_idx - start_idx
+        
+        logger.info(f"Processing chunk {i+1}/{n_chunks} (rows {start_idx:,}-{end_idx:,}, size: {chunk_rows:,})")
+        
+        # Get chunk from H2O - fix the slicing issue
+        X_chunk_h2o = X_with_intercept[start_idx:end_idx, :]
+        r2_chunk_h2o = residuals_sq[start_idx:end_idx, 0]  # Explicitly get first column
+        
+        # Convert to numpy then JAX
+        X_chunk = jnp.array(X_chunk_h2o.as_data_frame(use_multi_thread=True).values)
+        r2_chunk_values = r2_chunk_h2o.as_data_frame(use_multi_thread=True).values
+        
+        # Ensure r2_chunk is the right shape
+        if len(r2_chunk_values.shape) > 1:
+            r2_chunk_values = r2_chunk_values.ravel()
+        r2_chunk = jnp.array(r2_chunk_values)
+        
+        # Verify shapes match
+        if X_chunk.shape[0] != r2_chunk.shape[0]:
+            logger.error(f"Shape mismatch: X_chunk {X_chunk.shape}, r2_chunk {r2_chunk.shape}")
+            raise ValueError(f"Chunk size mismatch: X has {X_chunk.shape[0]} rows, residuals has {r2_chunk.shape[0]} rows")
+        
+        # Update accumulators
+        XtX_acc, meat_acc = _update_accumulators(XtX_acc, meat_acc, X_chunk, r2_chunk)
+    
+    # Compute final sandwich estimator
+    # Remove JIT here since p needs to be concrete for jnp.eye()
+    def _finalize_sandwich(XtX, meat, n, p):
+        """Compute final sandwich from accumulated matrices."""
+        # Add regularization
+        XtX_reg = XtX + jnp.eye(p) * 1e-8
+        
+        # Compute inverse
+        XtX_inv = jnp.linalg.inv(XtX_reg)
+        
+        # Sandwich
+        vcov = XtX_inv @ meat @ XtX_inv
+        
+        # Small sample correction
+        scale = n / (n - p)
+        return vcov * scale
+    
+    logger.info("Finalizing sandwich computation...")
+    vcov_jax = _finalize_sandwich(XtX_acc, meat_acc, n, p)
+    vcov_jax = vcov_jax.block_until_ready()
+    
+    # Convert to numpy
+    vcov_np = np.array(vcov_jax)
+    
+    logger.info(f"JAX chunked sandwich vcov computed: shape {vcov_np.shape}")
+    logger.info(f"Used ALL {n:,} observations across {n_chunks} chunks")
+    
+    return vcov_np
+
+
+# Backward compatibility wrapper
+def compute_sandwich_vcov(h2o_model, data, x_names, y_name) -> np.ndarray:
+    """
+    Wrapper that automatically selects best method based on data size.
+    
+    For datasets > 10M rows, uses chunked processing for memory efficiency.
+    For smaller datasets, processes all at once for speed.
+    """
+    n_rows = data.nrows
+    
+    if n_rows > 10_000_000:  # 10M rows
+        logger.info(f"Large dataset ({n_rows:,} rows) - using chunked JAX processing")
+        return compute_sandwich_vcov_chunked_jax(h2o_model, data, x_names, y_name)
     else:
-        X_np = X_with_intercept.as_data_frame().values
-        cluster_np = data[cluster_var].as_data_frame().values
-        residuals_np = residuals.as_data_frame().values.ravel()
-    
-    # Compute clustered meat matrix
-    XtX_inv = np.linalg.inv(X_np.T @ X_np + np.eye(p) * 1e-8)
-    
-    # Sum scores within clusters
-    meat = np.zeros((p, p))
-    unique_clusters = np.unique(cluster_np)
-    
-    for c in unique_clusters:
-        cluster_mask = cluster_np.ravel() == c
-        X_c = X_np[cluster_mask]
-        r_c = residuals_np[cluster_mask]
-        
-        # Cluster score: sum of x_i * e_i for all i in cluster
-        score_c = X_c.T @ r_c
-        score_c = score_c.reshape(-1, 1)
-        
-        # Add outer product to meat
-        meat += score_c @ score_c.T
-    
-    # Clustered sandwich
-    vcov_clustered = XtX_inv @ meat @ XtX_inv
-    
-    # Finite sample correction
-    G = len(unique_clusters)  # number of clusters
-    vcov_clustered *= (G / (G - 1)) * ((n - 1) / (n - p))
-    
-    logger.info(f"Clustered vcov computed with {G} clusters")
-    
-    return vcov_clustered
+        logger.info(f"Dataset size ({n_rows:,} rows) - using direct JAX processing")
+        return compute_sandwich_vcov_jax(h2o_model, data, x_names, y_name)
