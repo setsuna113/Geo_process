@@ -507,35 +507,33 @@ class Method1H0H1GLM:
         if self.model_full is None:
             raise ValueError("Must fit models first")
         
-        # H2O models: Extract coefficients properly
-        coefficients = self.model_full.coef()
-        
-        # Get detailed coefficient info from H2O model
-        try:
-            coef_table = self.model_full._model_json['output']['coefficients_table']
-            names = coef_table['names']
-            coef_values = coef_table['coefficients']
-            std_errors = coef_table.get('std_error', [None] * len(names))
-            z_values = coef_table.get('z_value', [None] * len(names))
-            p_values = coef_table.get('p_value', [None] * len(names))
+        # Julia models: Extract coefficients from dictionary
+        if isinstance(self.model_full, dict):
+            # Julia GLM results
+            names = self.model_full.get('coef_names', [])
+            coef_values = self.model_full.get('coefficients', [])
+            std_errors = self.model_full.get('std_errors', [])
             
             # Build lookup
             coef_info = {}
             for i, name in enumerate(names):
-                coef_info[name] = {
-                    'coefficient': coef_values[i],
-                    'std_error': std_errors[i] if i < len(std_errors) else None,
-                    'z_value': z_values[i] if i < len(z_values) else None,
-                    'p_value': p_values[i] if i < len(p_values) else None
+                if i < len(coef_values):
+                    z_val = coef_values[i] / std_errors[i] if i < len(std_errors) and std_errors[i] != 0 else 0
+                    p_val = 2 * (1 - stats.norm.cdf(abs(z_val))) if z_val != 0 else 1.0
+                    coef_info[name] = {
+                        'coefficient': coef_values[i],
+                        'std_error': std_errors[i] if i < len(std_errors) else None,
+                        'z_value': z_val,
+                        'p_value': p_val
                 }
             
             plants_coef = coef_info.get('plants_richness_log', {})
             vertebrates_coef = coef_info.get('vertebrates_richness_log', {})
-            
-        except Exception as e:
-            logger.warning(f"Using basic coefficients: {e}")
-            plants_coef = {'coefficient': coefficients.get('plants_richness_log', 0)}
-            vertebrates_coef = {'coefficient': coefficients.get('vertebrates_richness_log', 0)}
+        else:
+            # H2O models (not used anymore, but kept for compatibility)
+            logger.warning("Using H2O model interface - this should not happen with Julia results")
+            plants_coef = {}
+            vertebrates_coef = {}
         
         # H1 is supported if either biodiversity predictor is significant
         supports_h1 = False
