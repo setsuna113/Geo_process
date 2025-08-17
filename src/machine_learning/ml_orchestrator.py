@@ -23,6 +23,13 @@ import numpy as np
 from src.machine_learning.config_loader import MLRegressionConfig
 from src.machine_learning.utils.security_utils import PathValidator
 
+# Import Method classes that have all reporters and visualizers
+from src.machine_learning.methods import (
+    Method1H0H1GLM,
+    Method2H2Testing,
+    Method3DML
+)
+
 # Hypothesis testing for Julia results
 from src.machine_learning.hypothesis.julia_hypothesis_tests import JuliaHypothesisTests
 
@@ -54,6 +61,11 @@ class MLOrchestrator:
         # Initialize components
         self.path_validator = PathValidator()
         self.hypothesis_tester = JuliaHypothesisTests()
+        
+        # Initialize Method classes
+        self.method1 = Method1H0H1GLM(self.config)
+        self.method2 = Method2H2Testing(self.config)
+        self.method3 = Method3DML(self.config)
         
         # Storage for loaded results
         self.julia_results = None
@@ -141,100 +153,121 @@ class MLOrchestrator:
         logger.info("HYPOTHESIS TESTING")
         logger.info("="*70)
         
+        # Create data metadata for Method classes
+        data_metadata = {
+            'n_samples': self.models.get('method1_full', {}).get('n_obs', 0),
+            'columns': self.models.get('method1_full', {}).get('coef_names', []),
+            'has_mesf': any('ME' in name for name in self.models.get('method1_full', {}).get('coef_names', [])),
+            'julia_models_loaded': True
+        }
+        
         # Method 1: H0-H1 Testing
         if 'method1_full' in self.models and 'method1_null' in self.models:
             logger.info("\nMethod 1: H0-H1 Testing (Biodiversity Begets Biodiversity)")
             
-            full_model = self.models['method1_full']
-            null_model = self.models['method1_null']
+            # Set the models directly on Method1 instance
+            self.method1.model_full = self.models['method1_full']
+            self.method1.model_null = self.models['method1_null']
+            self.method1.data_metadata = data_metadata
             
-            # Likelihood ratio test (already computed by Julia)
+            # Since models are already fitted in Julia, just extract the hypothesis test results
+            # Method1 expects hypothesis_results to be set for generate_report to work
             if 'method1_lr_test' in self.models:
                 lr_test = self.models['method1_lr_test']
+                # Add missing fields for compatibility
+                lr_test['significant_at_0.05'] = lr_test['p_value'] < 0.05
+                lr_test['test_type'] = 'likelihood_ratio'
+                
+                self.method1.hypothesis_results = {
+                    'lrt': lr_test,
+                    'supports_h1': lr_test['p_value'] < 0.05,
+                    'interpretation': 'Biodiversity begets biodiversity' if lr_test['p_value'] < 0.05 else 'No clear biodiversity effect',
+                    'model_metrics': {
+                        'null_model': self.models['method1_null'],
+                        'full_model': self.models['method1_full']
+                    }
+                }
+                
+                self.results['method1'] = self.method1.hypothesis_results
+                
                 logger.info(f"  LR Test: χ²={lr_test['lr_statistic']:.2f}, "
                           f"df={lr_test['df']}, p={lr_test['p_value']:.4e}")
-                self.results['method1']['lr_test'] = lr_test
-                self.results['method1']['h0_h1_conclusion'] = (
-                    "Reject H0: Biodiversity begets biodiversity" 
-                    if lr_test['p_value'] < 0.05 
-                    else "Fail to reject H0"
-                )
             
-            # Wald tests for biodiversity coefficients
-            biodiv_vars = ['plants_richness_log', 'vertebrates_richness_log']
-            self.results['method1']['coefficients'] = {}
-            
-            for var in biodiv_vars:
-                if var in full_model['coef_names']:
-                    idx = full_model['coef_names'].index(var)
-                    coef = full_model['coefficients'][idx]
-                    se = full_model['std_errors'][idx]
-                    
-                    wald_result = self.hypothesis_tester.wald_test_single_coefficient(
-                        coef, se, null_value=0.0
-                    )
-                    logger.info(f"  {var}: β={coef:.4f}±{se:.4f}, p={wald_result['p_value']:.4e}")
-                    
-                    self.results['method1']['coefficients'][var] = {
-                        'estimate': coef,
-                        'std_error': se,
-                        'wald_test': wald_result
-                    }
+            # Get biodiversity coefficients
+            biodiv_coefs = self.method1.get_biodiversity_coefficients()
+            if biodiv_coefs:
+                for var, info in biodiv_coefs.items():
+                    if isinstance(info, dict) and 'coefficient' in info:
+                        logger.info(f"  {var}: β={info['coefficient']:.4f}±{info.get('std_error', 0):.4f}")
         
         # Method 2: H2 Testing (Interactions)
         if 'method2_continuous' in self.models or 'method2_categorical' in self.models:
             logger.info("\nMethod 2: H2 Testing (Climate-Diversity Interactions)")
             
-            self.results['method2'] = {}
-            
-            # Continuous interaction
+            # Set the models directly on Method2 instance
             if 'method2_continuous' in self.models:
-                model = self.models['method2_continuous']
-                interaction_var = 'bio04_std_x_plants_log'
-                
-                if interaction_var in model['coef_names']:
-                    idx = model['coef_names'].index(interaction_var)
-                    coef = model['coefficients'][idx]
-                    se = model['std_errors'][idx]
-                    
-                    wald_result = self.hypothesis_tester.wald_test_single_coefficient(
-                        coef, se, null_value=0.0
-                    )
-                    logger.info(f"  Continuous interaction: β={coef:.4f}±{se:.4f}, p={wald_result['p_value']:.4e}")
-                    
-                    self.results['method2']['continuous_interaction'] = {
-                        'estimate': coef,
-                        'std_error': se,
-                        'wald_test': wald_result,
-                        'significant': wald_result['p_value'] < 0.05
-                    }
-            
-            # Categorical interaction
+                self.method2.model_3a_continuous = self.models['method2_continuous']
             if 'method2_categorical' in self.models:
-                model = self.models['method2_categorical']
-                interaction_var = 'temperate_x_plant_high'
-                
-                if interaction_var in model['coef_names']:
-                    idx = model['coef_names'].index(interaction_var)
-                    coef = model['coefficients'][idx]
-                    se = model['std_errors'][idx]
-                    
-                    wald_result = self.hypothesis_tester.wald_test_single_coefficient(
-                        coef, se, null_value=0.0
-                    )
-                    logger.info(f"  Categorical interaction: β={coef:.4f}±{se:.4f}, p={wald_result['p_value']:.4e}")
-                    
-                    self.results['method2']['categorical_interaction'] = {
-                        'estimate': coef,
-                        'std_error': se,
-                        'wald_test': wald_result,
-                        'significant': wald_result['p_value'] < 0.05
-                    }
+                self.method2.model_3b_categorical = self.models['method2_categorical']
+            
+            self.method2.data_metadata = data_metadata
+            
+            # Run Method 2's comprehensive testing
+            # Since models are already fitted, just run the tests
+            method2_results = {}
+            
+            # Test continuous interaction
+            if self.method2.model_3a_continuous:
+                # Remove intercept from coef_names to get feature columns
+                coef_names = self.method2.model_3a_continuous.get('coef_names', [])
+                feature_cols_3a = [name for name in coef_names if name != '(Intercept)']
+                method2_results['model_3a_continuous'] = self.method2._test_continuous_interaction(
+                    self.method2.model_3a_continuous,
+                    interaction_term='bio04_std_x_plants_log',
+                    feature_cols_3a=feature_cols_3a
+                )
+            
+            # Test categorical interaction
+            if self.method2.model_3b_categorical:
+                # Remove intercept from coef_names to get feature columns
+                coef_names = self.method2.model_3b_categorical.get('coef_names', [])
+                feature_cols_3b = [name for name in coef_names if name != '(Intercept)']
+                method2_results['model_3b_categorical'] = self.method2._test_categorical_interaction(
+                    self.method2.model_3b_categorical,
+                    feature_cols_3b=feature_cols_3b
+                )
+            
+            # Model comparison
+            if self.method2.model_3a_continuous and self.method2.model_3b_categorical:
+                method2_results['model_comparison'] = self.method2._compare_models()
+            
+            # Compute EMmeans for categorical model
+            if self.method2.model_3b_categorical:
+                try:
+                    emmeans_results = self.method2.compute_emmeans()
+                    method2_results['emmeans'] = emmeans_results
+                except Exception as e:
+                    logger.warning(f"EMmeans computation failed: {e}")
+            
+            # Test H2 contrast
+            h2_contrast = self.method2.test_h2_contrast()
+            method2_results['h2_contrast'] = h2_contrast
+            
+            self.results['method2'] = method2_results
+            
+            # Log summary
+            if 'model_3b_categorical' in method2_results:
+                cat_test = method2_results['model_3b_categorical'].get('interaction_test', {})
+                if cat_test:
+                    logger.info(f"  Categorical interaction: β={cat_test.get('coefficient', 0):.4f}, "
+                              f"p={cat_test.get('p_value', 1):.4e}")
         
         # Method 3: DML
         if 'method3_dml' in self.models:
             logger.info("\nMethod 3: Causal Effects (Simplified DML)")
             
+            # Set the model directly on Method3 instance
+            self.method3.model = self.models['method3_dml']
             model = self.models['method3_dml']
             self.results['method3'] = {'causal_effects': {}}
             
@@ -272,6 +305,112 @@ class MLOrchestrator:
         
         self.hypothesis_results = self.results
         return self.results
+    
+    def visualize_results(self, output_dir: Optional[Path] = None) -> None:
+        """Generate visualizations for all methods.
+        
+        Args:
+            output_dir: Directory to save visualizations
+        """
+        if output_dir is None:
+            output_dir = Path("results/visualizations")
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"\nGenerating visualizations in {output_dir}")
+        
+        # Method 1 visualizations
+        if self.method1.model_full and self.method1.model_null:
+            try:
+                method1_report = self.method1.generate_report(output_dir)
+                logger.info(f"Method 1 visualizations generated")
+            except Exception as e:
+                logger.warning(f"Method 1 visualization failed: {e}")
+        
+        # Method 2 visualizations  
+        if self.method2.model_3b_categorical or self.method2.model_3a_continuous:
+            try:
+                method2_report = self.method2.generate_report(output_dir)
+                logger.info(f"Method 2 visualizations generated")
+            except Exception as e:
+                logger.warning(f"Method 2 visualization failed: {e}")
+        
+        # Method 3 visualizations
+        if hasattr(self, 'method3') and hasattr(self.method3, 'generate_report'):
+            try:
+                method3_report = self.method3.generate_report(output_dir)
+                logger.info(f"Method 3 visualizations generated")
+            except Exception as e:
+                logger.warning(f"Method 3 visualization failed: {e}")
+    
+    def generate_reports(self, output_dir: Optional[Path] = None) -> Dict[str, Any]:
+        """Generate comprehensive reports for all methods.
+        
+        Args:
+            output_dir: Directory to save report files
+            
+        Returns:
+            Dictionary with all report data
+        """
+        if output_dir is None:
+            output_dir = Path("results/reports")
+        
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"\nGenerating reports in {output_dir}")
+        
+        all_reports = {}
+        
+        # Method 1 report
+        if self.method1.model_full and self.method1.model_null:
+            try:
+                all_reports['method1'] = self.method1.generate_report(output_dir)
+                logger.info("Method 1 report generated")
+            except Exception as e:
+                logger.error(f"Method 1 report failed: {e}")
+        
+        # Method 2 report
+        if self.method2.model_3b_categorical or self.method2.model_3a_continuous:
+            try:
+                all_reports['method2'] = self.method2.generate_report(output_dir)
+                logger.info("Method 2 report generated")
+            except Exception as e:
+                logger.error(f"Method 2 report failed: {e}")
+        
+        # Method 3 report
+        if hasattr(self.method3, 'model') and self.method3.model:
+            try:
+                all_reports['method3'] = self.method3.generate_report(output_dir)
+                logger.info("Method 3 report generated")
+            except Exception as e:
+                logger.error(f"Method 3 report failed: {e}")
+        
+        # Save combined report
+        summary_file = output_dir / "all_methods_summary.json"
+        with open(summary_file, 'w') as f:
+            json.dump(self._make_serializable(all_reports), f, indent=2)
+        logger.info(f"Combined report saved to {summary_file}")
+        
+        return all_reports
+    
+    def _make_serializable(self, obj):
+        """Convert numpy/pandas objects to serializable format."""
+        if isinstance(obj, dict):
+            return {k: self._make_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._make_serializable(v) for v in obj]
+        elif isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif hasattr(obj, 'to_dict'):
+            return obj.to_dict()
+        else:
+            return obj
     
     def synthesize_results(self) -> Dict[str, Any]:
         """Synthesize results across all methods.
