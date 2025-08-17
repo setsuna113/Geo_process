@@ -48,6 +48,13 @@ def compute_sandwich_vcov_jax(h2o_model, data, x_names, y_name) -> np.ndarray:
     
     # Get predictions and residuals in H2O
     preds = h2o_model.predict(data)
+    
+    # For GLM models, predict returns multiple columns - we need just the 'predict' column
+    # Check if preds has multiple columns
+    if preds.ncols > 1:
+        # H2O GLM returns 'predict' as the first column for regression
+        preds = preds[:, 0]  # Select first column which contains predictions
+    
     y_actual = data[y_name]
     residuals = y_actual - preds
     residuals_sq = residuals ** 2
@@ -140,6 +147,13 @@ def compute_sandwich_vcov_chunked_jax(h2o_model, data, x_names, y_name,
     
     # Get predictions and residuals in H2O
     preds = h2o_model.predict(data)
+    
+    # For GLM models, predict returns multiple columns - we need just the 'predict' column
+    # Check if preds has multiple columns
+    if preds.ncols > 1:
+        # H2O GLM returns 'predict' as the first column for regression
+        preds = preds[:, 0]  # Select first column which contains predictions
+    
     y_actual = data[y_name]
     residuals = y_actual - preds
     residuals_sq = residuals ** 2

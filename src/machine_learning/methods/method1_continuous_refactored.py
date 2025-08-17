@@ -101,6 +101,7 @@ class Method1H0H1GLM:
             lambda_=0.0,  # No penalty for fair nested model comparison
             solver='IRLSM',
             compute_p_values=True,
+            # calc_like=True causes H2O bug even with integer response
             remove_collinear_columns=True,  # Handle collinearity automatically
             intercept=True,
             seed=42
@@ -122,6 +123,7 @@ class Method1H0H1GLM:
             lambda_=0.0,  # No penalty for fair nested model comparison
             solver='IRLSM',
             compute_p_values=True,
+            # calc_like=True causes H2O bug even with integer response
             remove_collinear_columns=True,  # Handle collinearity automatically
             intercept=True,
             seed=42
@@ -236,8 +238,8 @@ class Method1H0H1GLM:
         # Add context about large sample size
         if n_obs > 100000:
             lrt_results['large_sample_warning'] = (
-                f"With {n_obs:,} observations, focus on McFadden R² ({lrt_results['mcfadden_r2']:.4f}) "
-                f"rather than p-value ({lrt_results['p_value']:.4f}) for practical significance."
+                f"With {n_obs:,} observations, focus on deviance change ({lrt_results['deviance_difference']:.2f}) "
+                f"and effect sizes rather than p-value ({lrt_results['p_value']:.4f}) for practical significance."
             )
         
         results['likelihood_ratio_test'] = lrt_results
@@ -357,8 +359,8 @@ class Method1H0H1GLM:
                     
                     # Store results
                     wald_results[coef_name] = {
-                        'sesoi': wald_sesoi,
-                        'tost': tost_result,
+                        'sesoi_test': wald_sesoi,
+                        'tost_test': tost_result,
                         'summary': {
                             'coefficient': coef,
                             'se': se,
@@ -411,8 +413,8 @@ class Method1H0H1GLM:
             
             # Extract z-values for reporting from SESOI test
             for coef_name in biotic_cols:
-                if coef_name in wald_results and 'sesoi' in wald_results[coef_name]:
-                    wald_results[coef_name]['z_value'] = wald_results[coef_name]['sesoi']['wald_statistic']
+                if coef_name in wald_results and 'sesoi_test' in wald_results[coef_name]:
+                    wald_results[coef_name]['z_value'] = wald_results[coef_name]['sesoi_test']['wald_statistic']
                 
         except Exception as e:
             logger.warning(f"Could not perform proper Wald tests: {e}")
@@ -440,10 +442,10 @@ class Method1H0H1GLM:
         results['wald_tests'] = wald_results
         
         # Overall H0 vs H1 conclusion based on new architecture
-        # LRT: Check if McFadden R² shows meaningful improvement
-        mcfadden_r2 = lrt_results.get('mcfadden_r2', 0)
-        r2_interpretation = lrt_results.get('r2_interpretation', '')
-        h1_supported_by_lrt = mcfadden_r2 >= 0.05  # At least modest improvement
+        # LRT: Check if deviance reduced (positive LR statistic means improvement)
+        deviance_difference = lrt_results.get('deviance_difference', 0)
+        deviance_interpretation = lrt_results.get('deviance_interpretation', '')
+        h1_supported_by_lrt = deviance_difference > 0 and lrt_results.get('significant', False)
         
         # Wald: Check SESOI and TOST results
         h1_supported_by_sesoi = False
@@ -462,13 +464,13 @@ class Method1H0H1GLM:
         h1_supported_by_aic = model_comparison['best_models'].get('aic') == 'full_model'
         h1_supported_by_bic = model_comparison['best_models'].get('bic') == 'full_model'
         
-        # Overall decision: LRT McFadden R² is primary, SESOI/TOST confirm
+        # Overall decision: LRT deviance reduction is primary, SESOI/TOST confirm
         h1_supported = h1_supported_by_lrt and (h1_supported_by_sesoi or not h1_supported_by_tost)
         
         # Store detailed support evidence with new metrics
         results['h1_support_evidence'] = {
-            'lrt_mcfadden_r2': mcfadden_r2,
-            'lrt_interpretation': r2_interpretation,
+            'lrt_deviance_difference': deviance_difference,
+            'lrt_interpretation': deviance_interpretation,
             'lrt_meaningful': h1_supported_by_lrt,
             'wald_sesoi': h1_supported_by_sesoi,
             'wald_tost_not_equivalent': h1_supported_by_tost,
@@ -477,9 +479,9 @@ class Method1H0H1GLM:
             'overall': h1_supported
         }
         
-        # Enhanced conclusion with McFadden R² and SESOI/TOST
+        # Enhanced conclusion with deviance change and SESOI/TOST
         conclusion_text = (
-            f"LRT McFadden R² = {mcfadden_r2:.4f} ({r2_interpretation}). "
+            f"LRT deviance change = {deviance_difference:.2f} ({deviance_interpretation}). "
         )
         if h1_supported_by_sesoi:
             conclusion_text += "SESOI: Effects exceed meaningful threshold (0.1). "
@@ -795,55 +797,193 @@ class Method1H0H1GLM:
                             logger.info("Joint Wald: Reporting SESOI version only (coefficient test)")
                     else:
                         # Extract SESOI and TOST results for individual coefficients
-                        if 'sesoi' in wald_result and 'tost' in wald_result:
+                        if 'sesoi_test' in wald_result:
                             sesoi_report = {
                                 'test_name': f"SESOI Test - {var_name}",
                                 'hypothesis': f"Practical significance of {var_name} (H0: |β| ≤ 0.1)",
-                                'results': wald_result['sesoi']
+                                'results': wald_result['sesoi_test']
                             }
+                            report['tests'][f'sesoi_{var_name}'] = sesoi_report
+                        if 'tost_test' in wald_result:
                             tost_report = {
                                 'test_name': f"TOST Equivalence Test - {var_name}",
                                 'hypothesis': f"Equivalence test for {var_name} (bounds: ±0.1)",
-                                'results': wald_result['tost']
+                                'results': wald_result['tost_test']
                             }
-                            report['tests'][f'sesoi_{var_name}'] = sesoi_report
                             report['tests'][f'tost_{var_name}'] = tost_report
                             logger.info(f"Wald {var_name}: Reporting SESOI and TOST only (coefficient test)")
             
             # Generate visualization if output directory provided
             if output_dir:
                 try:
-                    # Prepare data for visualization
-                    viz_data = {
-                        'coefficients': {},
-                        'std_errors': {},
-                        'p_values': {}
-                    }
+                    import matplotlib.pyplot as plt
+                    import seaborn as sns
+                    import numpy as np
+                    
+                    # Create scientifically correct visualization
+                    fig = plt.figure(figsize=(14, 8))
+                    gs = fig.add_gridspec(2, 2, width_ratios=[2, 1], height_ratios=[1, 1])
+                    
+                    # Collect data for visualization
+                    coef_names = []
+                    coefficients = []
+                    std_errors = []
+                    response_scale_effects = []
+                    response_scale_cis = []
+                    interpretations = []
                     
                     for var_name, wald_result in wald_results.items():
                         if var_name != 'joint_biodiversity' and isinstance(wald_result, dict):
-                            # Use SESOI results for visualization
-                            if 'sesoi' in wald_result:
-                                sesoi_data = wald_result['sesoi']
-                                if 'coefficient' in sesoi_data:
-                                    viz_data['coefficients'][var_name] = sesoi_data['coefficient']
-                                if 'standard_error' in sesoi_data:
-                                    viz_data['std_errors'][var_name] = sesoi_data['standard_error']
-                                if 'p_value' in sesoi_data:
-                                    viz_data['p_values'][var_name] = sesoi_data['p_value']
+                            if 'sesoi_test' in wald_result and 'summary' in wald_result:
+                                coef_names.append(var_name.replace('_log', '').replace('_', ' ').title())
+                                coefficients.append(wald_result['summary']['coefficient'])
+                                std_errors.append(wald_result['summary']['se'])
+                                
+                                # Get response scale effects if available
+                                if 'effect_on_response_scale' in wald_result['sesoi_test']:
+                                    resp_scale = wald_result['sesoi_test']['effect_on_response_scale']
+                                    response_scale_effects.append(resp_scale['percent_change'])
+                                    response_scale_cis.append((
+                                        resp_scale['ci_lower_percent'],
+                                        resp_scale['ci_upper_percent']
+                                    ))
+                                else:
+                                    # Convert log scale to response scale manually
+                                    coef = wald_result['summary']['coefficient']
+                                    se = wald_result['summary']['se']
+                                    pct_change = (np.exp(coef) - 1) * 100
+                                    ci_lower = (np.exp(coef - 1.96*se) - 1) * 100
+                                    ci_upper = (np.exp(coef + 1.96*se) - 1) * 100
+                                    response_scale_effects.append(pct_change)
+                                    response_scale_cis.append((ci_lower, ci_upper))
+                                
+                                # Determine interpretation based on CI
+                                ci_low, ci_high = response_scale_cis[-1]
+                                if ci_low > 10.5:
+                                    interpretations.append('positive')
+                                elif ci_high < -10.5:
+                                    interpretations.append('negative')
+                                elif ci_low > -10.5 and ci_high < 10.5:
+                                    interpretations.append('equivalent')
+                                else:
+                                    interpretations.append('inconclusive')
                     
-                    if viz_data['coefficients']:  # Only create viz if we have data
-                        fig = WaldTest.visualize_wald_test(
-                            viz_data,
-                            variable_names=list(viz_data['coefficients'].keys()),
-                            title="Biodiversity Effects (Wald Test)"
-                        )
-                        viz_path = output_dir / "method1_wald_test.png"
+                    if coef_names:
+                        # Main panel: Effect sizes with decision regions
+                        ax_main = fig.add_subplot(gs[:, 0])
+                        y_pos = np.arange(len(coef_names))
+                        
+                        # Add decision region backgrounds
+                        ax_main.axvspan(-100, -10.5, alpha=0.1, color='red', label='Practically Negative')
+                        ax_main.axvspan(-10.5, 10.5, alpha=0.1, color='gray', label='Practically Equivalent')
+                        ax_main.axvspan(10.5, 100, alpha=0.1, color='green', label='Practically Positive')
+                        
+                        # Plot effects with CIs using appropriate colors
+                        for i, (effect, (ci_low, ci_high), interp) in enumerate(zip(
+                            response_scale_effects, response_scale_cis, interpretations
+                        )):
+                            # Choose color based on interpretation
+                            if interp == 'positive':
+                                color = 'darkgreen'
+                                marker = '>'
+                            elif interp == 'negative':
+                                color = 'darkred'
+                                marker = '<'
+                            elif interp == 'equivalent':
+                                color = 'dimgray'
+                                marker = 'o'
+                            else:  # inconclusive
+                                color = 'orange'
+                                marker = 'd'
+                            
+                            # Plot CI as error bar
+                            ax_main.errorbar(effect, i, xerr=[[effect-ci_low], [ci_high-effect]], 
+                                           fmt=marker, color=color, markersize=8, 
+                                           capsize=5, capthick=2, linewidth=2)
+                        
+                        # Add threshold lines
+                        ax_main.axvline(x=-10.5, color='black', linestyle='--', alpha=0.5, linewidth=1)
+                        ax_main.axvline(x=10.5, color='black', linestyle='--', alpha=0.5, linewidth=1)
+                        ax_main.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
+                        
+                        # Labels and formatting
+                        ax_main.set_yticks(y_pos)
+                        ax_main.set_yticklabels(coef_names)
+                        ax_main.set_xlabel('Percent Change in Fungi Richness (%)', fontsize=12)
+                        ax_main.set_title('Biodiversity Effects on Fungi Richness\nwith Practical Significance Threshold (±10.5%)', 
+                                         fontsize=14, fontweight='bold')
+                        ax_main.grid(True, alpha=0.2, axis='x')
+                        ax_main.set_xlim([-50, 50])
+                        
+                        # Add value labels
+                        for i, (effect, (ci_low, ci_high)) in enumerate(zip(response_scale_effects, response_scale_cis)):
+                            ax_main.text(min(48, max(-48, effect)), i+0.3, 
+                                       f'{effect:.1f}%', ha='center', va='bottom', fontsize=9)
+                        
+                        # Legend panel
+                        ax_legend = fig.add_subplot(gs[0, 1])
+                        ax_legend.axis('off')
+                        
+                        # Create legend content
+                        legend_text = "Interpretation Guide:\n\n"
+                        legend_text += "Decision Rules:\n"
+                        legend_text += "• CI entirely > +10.5%:\n  → Practically positive\n\n"
+                        legend_text += "• CI entirely < -10.5%:\n  → Practically negative\n\n"
+                        legend_text += "• CI within ±10.5%:\n  → Practically equivalent\n\n"
+                        legend_text += "• CI crosses threshold:\n  → Inconclusive\n\n"
+                        legend_text += "Symbols:\n"
+                        legend_text += "> Positive effect\n"
+                        legend_text += "< Negative effect\n"
+                        legend_text += "○ Equivalent to zero\n"
+                        legend_text += "◊ Inconclusive"
+                        
+                        ax_legend.text(0.1, 0.95, legend_text, transform=ax_legend.transAxes,
+                                     fontsize=10, verticalalignment='top')
+                        
+                        # Summary panel
+                        ax_summary = fig.add_subplot(gs[1, 1])
+                        ax_summary.axis('off')
+                        
+                        # Count interpretations
+                        n_positive = interpretations.count('positive')
+                        n_negative = interpretations.count('negative')
+                        n_equivalent = interpretations.count('equivalent')
+                        n_inconclusive = interpretations.count('inconclusive')
+                        
+                        summary_text = "Summary:\n\n"
+                        summary_text += f"Total predictors: {len(coef_names)}\n\n"
+                        summary_text += f"Practically positive: {n_positive}\n"
+                        summary_text += f"Practically negative: {n_negative}\n"
+                        summary_text += f"Practically equivalent: {n_equivalent}\n"
+                        summary_text += f"Inconclusive: {n_inconclusive}\n\n"
+                        
+                        # Overall conclusion
+                        if n_positive > 0 or n_negative > 0:
+                            summary_text += "Conclusion:\n"
+                            summary_text += "H1 SUPPORTED\n"
+                            summary_text += "Biodiversity has\n"
+                            summary_text += "practically significant\n"
+                            summary_text += "effects on fungi richness"
+                        else:
+                            summary_text += "Conclusion:\n"
+                            summary_text += "H1 NOT SUPPORTED\n"
+                            summary_text += "No practically significant\n"
+                            summary_text += "biodiversity effects"
+                        
+                        ax_summary.text(0.1, 0.95, summary_text, transform=ax_summary.transAxes,
+                                      fontsize=11, verticalalignment='top', 
+                                      bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.5))
+                        
+                        plt.suptitle('Method 1: Practical Significance Analysis', fontsize=16, fontweight='bold', y=1.02)
+                        plt.tight_layout()
+                        viz_path = output_dir / "method1_practical_significance.png"
                         fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        plt.close(fig)
                         report['visualizations'].append(str(viz_path))
-                        logger.info(f"Wald test visualization saved to {viz_path}")
+                        logger.info(f"Practical significance visualization saved to {viz_path}")
+                        
                 except Exception as e:
-                    logger.warning(f"Failed to create Wald test visualization: {e}")
+                    logger.warning(f"Failed to create SESOI/TOST visualization: {e}")
         
         # Model comparison using ModelComparison
         if self.model_null and self.model_full:
@@ -883,18 +1023,18 @@ class Method1H0H1GLM:
         # Format conclusion following reporting guidelines
         conclusion_text = "Model Evaluation Summary:\n\n"
         
-        # Report McFadden R² (primary metric)
-        if 'lrt_mcfadden_r2' in evidence:
-            r2 = evidence['lrt_mcfadden_r2']
+        # Report deviance change (primary metric)
+        if 'lrt_deviance_difference' in evidence:
+            deviance_diff = evidence['lrt_deviance_difference']
             interpretation = evidence.get('lrt_interpretation', '')
             conclusion_text += f"1. Model Improvement (LRT):\n"
-            conclusion_text += f"   McFadden pseudo-R² = {r2:.4f} ({interpretation})\n"
-            if r2 >= 0.2:
-                conclusion_text += "   This indicates EXCELLENT model fit (McFadden 1979 criterion: >0.2)\n"
-            elif r2 >= 0.05:
-                conclusion_text += "   This indicates meaningful model improvement\n"
+            conclusion_text += f"   Deviance change = {deviance_diff:.2f} ({interpretation})\n"
+            if deviance_diff > 0:
+                conclusion_text += f"   Full model REDUCES deviance by {abs(deviance_diff):.2f} (better fit)\n"
+            elif deviance_diff < 0:
+                conclusion_text += f"   Full model INCREASES deviance by {abs(deviance_diff):.2f} (worse fit)\n"
             else:
-                conclusion_text += "   This indicates negligible model improvement\n"
+                conclusion_text += "   Models have identical deviance\n"
             conclusion_text += "\n"
         
         # Report SESOI and TOST results

@@ -79,23 +79,14 @@ class PracticalSignificance:
         lrt_statistic = null_deviance - full_deviance
         effect_sizes['per_observation_lrt'] = lrt_statistic / n_obs
         
-        # 4. McFadden's Pseudo R² (if log-likelihoods available)
-        # Deviance = -2 * log-likelihood (up to constant)
-        # So we can approximate: LL ≈ -deviance/2
-        ll_null = -null_deviance / 2
-        ll_full = -full_deviance / 2
-        if ll_null != 0:
-            mcfadden_r2 = 1 - (ll_full / ll_null)
-            effect_sizes['mcfadden_pseudo_r2'] = mcfadden_r2
-            
-        # 5. Nagelkerke's Pseudo R² (bounded between 0 and 1)
-        # Based on likelihood ratio
-        lr = np.exp((ll_full - ll_null) * 2 / n_obs)
-        cox_snell_r2 = 1 - lr
-        max_cox_snell = 1 - np.exp(ll_null * 2 / n_obs)
-        if max_cox_snell > 0:
-            nagelkerke_r2 = cox_snell_r2 / max_cox_snell
-            effect_sizes['nagelkerke_pseudo_r2'] = nagelkerke_r2
+        # Note: McFadden's and other pseudo R² measures are not calculated
+        # because they are invalid when comparing negative binomial models 
+        # with different dispersion parameters (theta). Each model estimates
+        # its own theta, leading to different baseline deviances that make
+        # ratio-based measures like R² meaningless.
+        
+        # Instead, we focus on raw deviance differences and percentage changes
+        # which are more interpretable for model comparison.
             
         # 6. AIC/BIC differences (if provided)
         if null_aic is not None and full_aic is not None:

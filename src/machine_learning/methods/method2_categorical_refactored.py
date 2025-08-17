@@ -1130,8 +1130,7 @@ class Method2H2Testing:
                 h2_test = self.contrast_results['contrast_analysis']['h2_test']
                 contrast_report = contrast_analyzer.generate_publication_report(
                     h2_test,
-                    method_number=2,
-                    hypothesis_description="H2: Temperate mismatch hypothesis"
+                    hypothesis_name="H2: Temperate mismatch hypothesis"
                 )
                 report['tests']['contrast_analysis'] = contrast_report
                 
@@ -1159,7 +1158,7 @@ class Method2H2Testing:
                 slopes_test = self.contrast_results['simple_slopes_analysis']['h2_test']
                 slopes_report = slopes_analyzer.generate_publication_report(
                     slopes_test,
-                    method_number=2
+                    hypothesis_name="H2: Temperate mismatch hypothesis"
                 )
                 report['tests']['simple_slopes'] = slopes_report
                 
@@ -1176,6 +1175,135 @@ class Method2H2Testing:
                         logger.info(f"Simple slopes visualization saved to {viz_path}")
                     except Exception as e:
                         logger.warning(f"Failed to create slopes visualization: {e}")
+        
+        # Add interaction visualizations if available
+        if output_dir and hasattr(self, 'h2_results'):
+            # Save interaction plot if available
+            if self.h2_results.get('model_3a_continuous', {}).get('interaction_plot'):
+                try:
+                    viz_path = output_dir / "method2_interaction_plot.png"
+                    self.h2_results['model_3a_continuous']['interaction_plot'].savefig(
+                        viz_path, dpi=300, bbox_inches='tight'
+                    )
+                    report['visualizations'].append(str(viz_path))
+                    logger.info(f"Interaction plot saved to {viz_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save interaction plot: {e}")
+            
+            # Generate SESOI/TOST visualizations for interaction coefficients
+            if self.h2_results.get('model_3a_continuous', {}).get('coefficient_tests'):
+                try:
+                    from ..hypothesis.wald_test import WaldTest
+                    import matplotlib.pyplot as plt
+                    
+                    # Visualize practical significance for interaction term
+                    coef_tests = self.h2_results['model_3a_continuous']['coefficient_tests']
+                    interaction_coef = coef_tests.get('bio1:plants_richness_log', {})
+                    
+                    # Create unified practical significance visualization for interaction
+                    if interaction_coef.get('sesoi_test') or interaction_coef.get('tost_test'):
+                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), height_ratios=[2, 1])
+                        
+                        # Get effect data from either test
+                        test_data = interaction_coef.get('sesoi_test') or interaction_coef.get('tost_test')
+                        effect = test_data.get('coefficient', 0)
+                        se = test_data.get('standard_error', 0.1)
+                        
+                        # Convert to response scale if available
+                        if 'effect_on_response_scale' in test_data:
+                            resp = test_data['effect_on_response_scale']
+                            effect_pct = resp['percent_change']
+                            ci_low = resp['ci_lower_percent']
+                            ci_high = resp['ci_upper_percent']
+                        else:
+                            effect_pct = (np.exp(effect) - 1) * 100
+                            ci_low = (np.exp(effect - 1.96*se) - 1) * 100
+                            ci_high = (np.exp(effect + 1.96*se) - 1) * 100
+                        
+                        # Determine interpretation
+                        if ci_low > 10.5:
+                            interpretation = 'Practically Positive'
+                            color = 'darkgreen'
+                            conclusion = 'H2 SUPPORTED: High-plant temperate regions have significantly MORE fungi'
+                        elif ci_high < -10.5:
+                            interpretation = 'Practically Negative'
+                            color = 'darkred'
+                            conclusion = 'H2 SUPPORTED: High-plant temperate regions have significantly FEWER fungi'
+                        elif ci_low > -10.5 and ci_high < 10.5:
+                            interpretation = 'Practically Equivalent'
+                            color = 'dimgray'
+                            conclusion = 'H2 NOT SUPPORTED: Interaction effect is negligible'
+                        else:
+                            interpretation = 'Inconclusive'
+                            color = 'orange'
+                            conclusion = 'H2 INCONCLUSIVE: CI crosses practical significance threshold'
+                        
+                        # Panel 1: Effect with decision regions
+                        ax1.axvspan(-100, -10.5, alpha=0.1, color='red')
+                        ax1.axvspan(-10.5, 10.5, alpha=0.1, color='gray')
+                        ax1.axvspan(10.5, 100, alpha=0.1, color='green')
+                        
+                        # Plot effect with CI
+                        ax1.errorbar(effect_pct, 0, xerr=[[effect_pct-ci_low], [ci_high-effect_pct]], 
+                                    fmt='o', color=color, markersize=12, 
+                                    capsize=10, capthick=3, linewidth=3)
+                        
+                        # Add threshold lines and labels
+                        ax1.axvline(x=-10.5, color='black', linestyle='--', alpha=0.5, linewidth=1)
+                        ax1.axvline(x=10.5, color='black', linestyle='--', alpha=0.5, linewidth=1)
+                        ax1.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=0.5)
+                        
+                        # Add text annotations
+                        ax1.text(-30, 0.4, 'Fewer Fungi\nin Temperate', ha='center', fontsize=10, style='italic')
+                        ax1.text(0, 0.4, 'No Effect', ha='center', fontsize=10, style='italic')
+                        ax1.text(30, 0.4, 'More Fungi\nin Temperate', ha='center', fontsize=10, style='italic')
+                        
+                        # Format
+                        ax1.set_xlim([-50, 50])
+                        ax1.set_ylim([-0.5, 0.5])
+                        ax1.set_xlabel('Interaction Effect: Percent Change in Fungi Richness (%)', fontsize=12)
+                        ax1.set_title(f'H2 Test: Temperate × High Plant Interaction\nEffect: {effect_pct:.1f}% (95% CI: [{ci_low:.1f}%, {ci_high:.1f}%])', 
+                                     fontsize=14, fontweight='bold')
+                        ax1.set_yticks([])
+                        ax1.grid(True, alpha=0.2, axis='x')
+                        
+                        # Panel 2: Interpretation
+                        ax2.axis('off')
+                        
+                        # Create interpretation text
+                        interp_text = f"Statistical Results:\n"
+                        interp_text += f"• Log-scale coefficient: {effect:.3f} (SE: {se:.3f})\n"
+                        interp_text += f"• Response-scale effect: {effect_pct:.1f}%\n"
+                        interp_text += f"• 95% CI: [{ci_low:.1f}%, {ci_high:.1f}%]\n"
+                        interp_text += f"• Practical significance threshold: ±10.5%\n\n"
+                        
+                        interp_text += f"Interpretation: {interpretation}\n\n"
+                        interp_text += f"Conclusion:\n{conclusion}"
+                        
+                        # Add colored box for conclusion
+                        bbox_props = dict(boxstyle="round,pad=0.5", alpha=0.3)
+                        if 'SUPPORTED' in conclusion:
+                            bbox_props['facecolor'] = 'lightgreen' if 'MORE' in conclusion else 'lightcoral'
+                        elif 'NOT SUPPORTED' in conclusion:
+                            bbox_props['facecolor'] = 'lightgray'
+                        else:
+                            bbox_props['facecolor'] = 'lightyellow'
+                        
+                        ax2.text(0.5, 0.5, interp_text, transform=ax2.transAxes,
+                                fontsize=11, ha='center', va='center', bbox=bbox_props)
+                        
+                        plt.suptitle('Method 2: H2 Hypothesis Test - Temperate Mismatch', 
+                                    fontsize=16, fontweight='bold', y=1.02)
+                        plt.tight_layout()
+                        
+                        viz_path = output_dir / "method2_h2_interaction_test.png"
+                        fig.savefig(viz_path, dpi=300, bbox_inches='tight')
+                        plt.close(fig)
+                        report['visualizations'].append(str(viz_path))
+                        logger.info(f"H2 interaction test visualization saved to {viz_path}")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to create interaction coefficient visualizations: {e}")
         
         # Overall conclusion
         report['conclusion'] = self.contrast_results.get('overall_conclusion', {})
