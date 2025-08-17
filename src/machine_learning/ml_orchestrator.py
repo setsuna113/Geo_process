@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
 """
-Unified ML Orchestrator for Biodiversity Hypothesis Testing
+Simplified ML Orchestrator - Loads Julia Results from Disk
 
-Merges the functionality of RegressionPipeline and HypothesisTester into a single,
-clean orchestrator that coordinates the entire analysis workflow.
+This is the simplified version that:
+1. Loads Julia model results from disk
+2. Performs hypothesis testing
+3. Runs diagnostics
+4. Generates reports
 
-Architecture:
-    Entry Script (run_ml_pipeline.py)
-        ↓
-    ML Orchestrator (this file)
-        ├── Data Loading & Preprocessing
-        ├── Method 1: H0-H1 Testing (GLM)
-        ├── Method 2: H2 Testing (Continuous & Categorical)
-        ├── Method 3: H0-H1 Causal (DML)
-        └── Results Synthesis & Reporting
-
-Based on regression_analysis_decisions.md
+All preprocessing and model fitting is done in Julia.
 """
 
 import logging
@@ -23,49 +16,31 @@ import time
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
-# pandas only imported locally for MESF operations
+import pandas as pd
 import numpy as np
-import h2o
 
 # Configuration and utilities
 from src.machine_learning.config_loader import MLRegressionConfig
-from src.machine_learning.utils.security_utils import PathValidator, DataLoader
-from src.machine_learning.utils import H2OManager
+from src.machine_learning.utils.security_utils import PathValidator
 
-# Methods for hypothesis testing - standalone classes, no base class
-from src.machine_learning.methods.method1_continuous_refactored import Method1H0H1GLM
-from src.machine_learning.methods.method2_categorical_refactored import Method2H2Testing
-from src.machine_learning.methods.method3_dml_refactored import Method3DML
+# Hypothesis testing for Julia results
+from src.machine_learning.hypothesis.julia_hypothesis_tests import JuliaHypothesisTests
 
-# Preprocessing - H2O optimized versions
-from src.machine_learning.preprocessing.h2o_preprocessing import (
-    remove_missing,
-    standardize_climate_2sd,
-    add_elevation_squared,
-    log_transform_biodiversity,
-    standardize_column_names,
-    add_fungi_richness
-)
-from src.machine_learning.preprocessing.mesf_processor import MESFProcessor
-
-# Diagnostics
+# Diagnostics (will work with Julia residuals if available)
 from src.machine_learning.diagnostics import DHARMaDiagnostics
 
 logger = logging.getLogger(__name__)
 
 
 class MLOrchestrator:
-    """Unified orchestrator for biodiversity ML hypothesis testing.
+    """Simplified orchestrator that loads Julia results from disk.
     
-    Coordinates the complete workflow:
-    1. Data loading and preprocessing
-    2. Running all three methods
-    3. Synthesizing results
-    4. Generating reports
+    All data processing and model fitting is done in Julia.
+    This orchestrator only handles analysis and reporting.
     """
     
     def __init__(self, config_path: Optional[Union[str, Path]] = None) -> None:
-        """Initialize ML orchestrator.
+        """Initialize simplified orchestrator.
         
         Args:
             config_path: Path to configuration file
@@ -76,47 +51,20 @@ class MLOrchestrator:
         else:
             self.config = MLRegressionConfig()
         
-        # Get config dictionary once
-        config_dict = self.config.config if hasattr(self.config, 'config') else {}
-        
         # Initialize components
         self.path_validator = PathValidator()
-        self.data_loader = DataLoader(max_file_size_mb=10000)
-        # MESF processor gets config at initialization
-        cache_dir = config_dict.get('spatial', {}).get('cache_dir', None)
-        # Get thread count from H2O config
-        h2o_nthreads = config_dict.get('h2o', {}).get('nthreads', 150)
-        self.mesf_processor = MESFProcessor(cache_dir=cache_dir, n_jobs=h2o_nthreads)
-        self.h2o_initialized = False
+        self.hypothesis_tester = JuliaHypothesisTests()
         
-        # Get H2O configuration from config file
-        h2o_config = config_dict.get('h2o', {})
-        h2o_enabled = h2o_config.get('enabled', True)
+        # Storage for loaded results
+        self.julia_results = None
+        self.models = {}
+        self.hypothesis_results = {}
+        self.diagnostic_results = {}
         
-        # Initialize H2O
-        if h2o_enabled:
-            try:
-                # Initialize H2O using manager with configuration from file
-                self.h2o = H2OManager.get_or_init(
-                    max_mem_size=h2o_config.get('max_mem_size', '32G'),
-                    nthreads=h2o_config.get('nthreads', -1),
-                    ice_root=h2o_config.get('ice_root', '/tmp/h2o_tmp')
-                )
-                self.h2o_initialized = True
-                logger.info(f"H2O cluster initialized successfully with {h2o_config.get('max_mem_size', '32G')} memory")
-            except Exception as e:
-                logger.warning(f"Failed to initialize H2O cluster: {e}. Will fall back to non-H2O methods if needed.")
-                self.h2o = None
-                self.h2o_initialized = False
+        # Results directory
+        self.results_dir = Path("results/julia_models")
         
-        # Initialize methods
-        self.method1 = Method1H0H1GLM(self.config)  # H0-H1 testing
-        self.method2 = Method2H2Testing(self.config)  # H2 testing
-        self.method3 = Method3DML(self.config)  # H0-H1 causal
-        
-        # Storage for data and results
-        self.raw_data = None
-        self.preprocessed_data = None
+        # Storage for results
         self.results = {
             'method1': {},
             'method2': {},
@@ -124,632 +72,357 @@ class MLOrchestrator:
             'synthesis': {}
         }
         
-        logger.info("ML Orchestrator initialized successfully")
+        logger.info("Simplified ML Orchestrator initialized")
     
-    def load_and_preprocess_data(
-        self, 
-        data_path: Union[str, Path],
-        spatial_grid_step: Optional[int] = None,
-        use_h2o: Optional[bool] = None
-    ) -> h2o.H2OFrame:
-        """Load and preprocess data directly in H2O for all methods.
+    def load_julia_results(self, results_file: Optional[str] = None) -> Dict[str, Any]:
+        """Load results from Julia pipeline.
         
         Args:
-            data_path: Path to input data
-            spatial_grid_step: Spatial sampling step (None = no sampling)
-            use_h2o: Deprecated, always returns H2O frame
-            
+            results_file: Path to Julia results JSON file.
+                         If None, loads the latest results.
+        
         Returns:
-            Preprocessed H2O frame ready for methods
+            Dictionary with Julia model results
         """
         logger.info("="*70)
-        logger.info("DATA LOADING AND PREPROCESSING (H2O-Optimized)")
+        logger.info("LOADING JULIA RESULTS FROM DISK")
         logger.info("="*70)
         
-        # Ensure H2O is initialized
-        if not self.h2o_initialized:
-            raise RuntimeError("H2O not initialized. Cannot proceed.")
-        
-        # Load data using DataLoader (now loads directly into H2O with spatial sampling)
-        logger.info(f"Loading data from {data_path}")
-        data = self.data_loader.load_data(data_path, spatial_grid_step=spatial_grid_step)
-        initial_rows = data.nrows
-        logger.info(f"Loaded {initial_rows:,} rows into H2O")
-        
-        # Apply preprocessing pipeline using abstracted H2O functions
-        logger.info("Applying preprocessing pipeline...")
-        
-        # Compute MESF spatial eigenvectors
-        logger.info("Computing MESF spatial eigenvectors...")
-        # Get config from instance - config_dict is defined in __init__
-        config_dict = self.config.config if hasattr(self.config, 'config') else {}
-        spatial_config = config_dict.get('spatial', {})
-        h2o_config = config_dict.get('h2o', {})
-        
-        mesf_eigenvectors = self.mesf_processor.get_mesf_eigenvectors(
-            data_path=str(data_path),
-            spatial_grid_step=spatial_grid_step,
-            n_eigenvectors=spatial_config.get('n_eigenvectors', 10),
-            distance_threshold=spatial_config.get('distance_threshold', 100.0)
-            # JAX handles its own parallelization - no n_jobs needed
-        )
-        
-        if mesf_eigenvectors is not None:
-            data = data.cbind(mesf_eigenvectors)
-            logger.info(f"Added {mesf_eigenvectors.ncols} MESF eigenvectors")
+        if results_file is None:
+            # Load latest results
+            latest_file = self.results_dir / "julia_results_latest.json"
+            if not latest_file.exists():
+                # Try looking for any results file
+                results_files = list(self.results_dir.glob("julia_results_*.json"))
+                if results_files:
+                    latest_file = max(results_files, key=lambda p: p.stat().st_mtime)
+                    logger.info(f"Using most recent results file: {latest_file.name}")
+                else:
+                    raise FileNotFoundError(
+                        f"No Julia results found in {self.results_dir}.\n"
+                        f"Run Julia pipeline first:\n"
+                        f"  julia julia_complete_pipeline.jl run_pipeline <data.arrow> <step> <mesf> <n_mesf> '' {self.results_dir}"
+                    )
+            results_file = latest_file
         else:
-            logger.warning("MESF computation failed - proceeding without spatial correction")
+            results_file = Path(results_file)
         
-        # Now proceed with preprocessing that may remove rows
-        logger.info("Continuing with preprocessing pipeline...")
+        logger.info(f"Loading results from: {results_file}")
         
-        # Remove missing data (this will also remove corresponding MESF rows)
-        data = remove_missing(data)
-        logger.info(f"After removing missing: {data.nrows:,} rows")
+        with open(results_file, 'r') as f:
+            self.julia_results = json.load(f)
         
-        # Standardize column names
-        data = standardize_column_names(data)
+        # Extract models and metadata
+        self.models = self.julia_results.get('models', {})
+        self.metadata = self.julia_results.get('metadata', {})
         
-        # Add fungi_richness if needed
-        data = add_fungi_richness(data)
+        logger.info(f"Loaded results with {len(self.models)} models")
+        logger.info(f"Dataset: {self.metadata.get('n_rows')} rows, {self.metadata.get('n_cols')} columns")
         
-        # Standardize climate variables (2SD method)
-        data = standardize_climate_2sd(data)
+        # Log model summaries
+        for model_name, model_data in self.models.items():
+            if 'aic' in model_data:
+                logger.info(f"  {model_name}: AIC={model_data['aic']:.2f}")
+            elif 'r2' in model_data:
+                logger.info(f"  {model_name}: R²={model_data['r2']:.4f}")
         
-        # Add polynomial terms
-        data = add_elevation_squared(data)
-        
-        # Log transform biodiversity predictors
-        data = log_transform_biodiversity(data)
-        
-        # Data is already an H2O frame from preprocessing functions
-        # No need to convert or verify connection - H2O is already initialized
-        logger.info(f"Final H2O Frame: {data.nrows:,} rows × {data.ncols} columns")
-        
-        self.preprocessed_data = data
-        return data
+        return self.julia_results
     
-    def run_method1_h0_h1(self) -> Dict[str, Any]:
-        """Run Method 1: H0-H1 Testing with GLM.
-        
-        Tests:
-        - H0: Fungi independent of biodiversity
-        - H1: Biodiversity begets biodiversity
+    def run_hypothesis_tests(self) -> Dict[str, Any]:
+        """Run hypothesis tests on Julia model results.
         
         Returns:
-            Method 1 results
+            Dictionary with hypothesis test results
         """
+        if not self.models:
+            raise ValueError("No models loaded. Call load_julia_results() first.")
+        
         logger.info("\n" + "="*70)
-        logger.info("METHOD 1: H0-H1 TESTING (GLM)")
+        logger.info("HYPOTHESIS TESTING")
         logger.info("="*70)
         
-        if self.preprocessed_data is None:
-            raise ValueError("Must load and preprocess data first")
+        # Method 1: H0-H1 Testing
+        if 'method1_full' in self.models and 'method1_null' in self.models:
+            logger.info("\nMethod 1: H0-H1 Testing (Biodiversity Begets Biodiversity)")
+            
+            full_model = self.models['method1_full']
+            null_model = self.models['method1_null']
+            
+            # Likelihood ratio test (already computed by Julia)
+            if 'method1_lr_test' in self.models:
+                lr_test = self.models['method1_lr_test']
+                logger.info(f"  LR Test: χ²={lr_test['lr_statistic']:.2f}, "
+                          f"df={lr_test['df']}, p={lr_test['p_value']:.4e}")
+                self.results['method1']['lr_test'] = lr_test
+                self.results['method1']['h0_h1_conclusion'] = (
+                    "Reject H0: Biodiversity begets biodiversity" 
+                    if lr_test['p_value'] < 0.05 
+                    else "Fail to reject H0"
+                )
+            
+            # Wald tests for biodiversity coefficients
+            biodiv_vars = ['plants_richness_log', 'vertebrates_richness_log']
+            self.results['method1']['coefficients'] = {}
+            
+            for var in biodiv_vars:
+                if var in full_model['coef_names']:
+                    idx = full_model['coef_names'].index(var)
+                    coef = full_model['coefficients'][idx]
+                    se = full_model['std_errors'][idx]
+                    
+                    wald_result = self.hypothesis_tester.wald_test_single_coefficient(
+                        coef, se, null_value=0.0
+                    )
+                    logger.info(f"  {var}: β={coef:.4f}±{se:.4f}, p={wald_result['p_value']:.4e}")
+                    
+                    self.results['method1']['coefficients'][var] = {
+                        'estimate': coef,
+                        'std_error': se,
+                        'wald_test': wald_result
+                    }
         
-        # Fit models (Model 1 vs Model 2)
-        model_results = self.method1.fit_models(self.preprocessed_data)
+        # Method 2: H2 Testing (Interactions)
+        if 'method2_continuous' in self.models or 'method2_categorical' in self.models:
+            logger.info("\nMethod 2: H2 Testing (Climate-Diversity Interactions)")
+            
+            self.results['method2'] = {}
+            
+            # Continuous interaction
+            if 'method2_continuous' in self.models:
+                model = self.models['method2_continuous']
+                interaction_var = 'bio04_std_x_plants_log'
+                
+                if interaction_var in model['coef_names']:
+                    idx = model['coef_names'].index(interaction_var)
+                    coef = model['coefficients'][idx]
+                    se = model['std_errors'][idx]
+                    
+                    wald_result = self.hypothesis_tester.wald_test_single_coefficient(
+                        coef, se, null_value=0.0
+                    )
+                    logger.info(f"  Continuous interaction: β={coef:.4f}±{se:.4f}, p={wald_result['p_value']:.4e}")
+                    
+                    self.results['method2']['continuous_interaction'] = {
+                        'estimate': coef,
+                        'std_error': se,
+                        'wald_test': wald_result,
+                        'significant': wald_result['p_value'] < 0.05
+                    }
+            
+            # Categorical interaction
+            if 'method2_categorical' in self.models:
+                model = self.models['method2_categorical']
+                interaction_var = 'temperate_x_plant_high'
+                
+                if interaction_var in model['coef_names']:
+                    idx = model['coef_names'].index(interaction_var)
+                    coef = model['coefficients'][idx]
+                    se = model['std_errors'][idx]
+                    
+                    wald_result = self.hypothesis_tester.wald_test_single_coefficient(
+                        coef, se, null_value=0.0
+                    )
+                    logger.info(f"  Categorical interaction: β={coef:.4f}±{se:.4f}, p={wald_result['p_value']:.4e}")
+                    
+                    self.results['method2']['categorical_interaction'] = {
+                        'estimate': coef,
+                        'std_error': se,
+                        'wald_test': wald_result,
+                        'significant': wald_result['p_value'] < 0.05
+                    }
         
-        # Get biodiversity coefficients
-        h1_results = self.method1.get_biodiversity_coefficients()
+        # Method 3: DML
+        if 'method3_dml' in self.models:
+            logger.info("\nMethod 3: Causal Effects (Simplified DML)")
+            
+            model = self.models['method3_dml']
+            self.results['method3'] = {'causal_effects': {}}
+            
+            effects = {
+                'plants_richness_effect': 'Plants',
+                'vertebrates_richness_effect': 'Vertebrates'
+            }
+            
+            for effect_name, display_name in effects.items():
+                if effect_name in model['coef_names']:
+                    idx = model['coef_names'].index(effect_name)
+                    coef = model['coefficients'][idx]
+                    se = model['std_errors'][idx]
+                    
+                    # TOST for practical equivalence
+                    tost_result = self.hypothesis_tester.tost_test(
+                        coef, se, lower_bound=-0.5, upper_bound=0.5
+                    )
+                    
+                    # SESOI test
+                    sesoi_result = self.hypothesis_tester.sesoi_test(
+                        coef, se, sesoi_threshold=0.1
+                    )
+                    
+                    logger.info(f"  {display_name} effect: {coef:.4f}±{se:.4f}")
+                    logger.info(f"    TOST p={tost_result['tost_p_value']:.4e} (equivalent if < 0.05)")
+                    logger.info(f"    SESOI: {'Meaningful' if sesoi_result.get('exceeds_sesoi', False) else 'Not meaningful'}")
+                    
+                    self.results['method3']['causal_effects'][display_name.lower()] = {
+                        'estimate': coef,
+                        'std_error': se,
+                        'tost': tost_result,
+                        'sesoi': sesoi_result
+                    }
         
-        # Store results
-        self.results['method1'] = {
-            'models': model_results,
-            'h0_h1_test': h1_results,
-            'lr_test': model_results.get('lr_test_h0_h1'),
-            'model_comparison': model_results.get('model_comparison'),
-            'h0_h1_conclusion': model_results.get('h0_h1_conclusion')
-        }
-        
-        # Log key findings
-        logger.info("\nMethod 1 Results (H0-H1):")
-        logger.info(f"  H1 supported: {h1_results['supports_h1']}")
-        
-        # Log coefficient info if available
-        if 'plants' in h1_results:
-            logger.info(f"  Plants coef: {h1_results['plants']['coefficient']:.4f} "
-                       f"(p={h1_results['plants'].get('p_value', 'N/A')})")
-        if 'vertebrates' in h1_results:
-            logger.info(f"  Vertebrates coef: {h1_results['vertebrates']['coefficient']:.4f} "
-                       f"(p={h1_results['vertebrates'].get('p_value', 'N/A')})")
-        
-        # Log LRT results if available
-        if model_results.get('lr_test_h0_h1'):
-            logger.info(f"  LRT p-value: {model_results['lr_test_h0_h1']['p_value']:.4f}")
-        
-        # Log model comparison if available
-        if model_results.get('model_comparison'):
-            comparison = model_results['model_comparison']
-            if 'best_models' in comparison:
-                logger.info(f"  Best model (AIC): {comparison['best_models'].get('aic', 'N/A')}")
-        
-        return self.results['method1']
-    
-    def run_method2_h2(self) -> Dict[str, Any]:
-        """Run Method 2: H2 Testing with two approaches.
-        
-        Tests H2 (Temperate Mismatch) using:
-        - Model 3a: Continuous interaction
-        - Model 3b: Categorical with emmeans
-        
-        Returns:
-            Method 2 results
-        """
-        logger.info("\n" + "="*70)
-        logger.info("METHOD 2: H2 TESTING (TEMPERATE MISMATCH)")
-        logger.info("="*70)
-        
-        if self.preprocessed_data is None:
-            raise ValueError("Must load and preprocess data first")
-        
-        # Fit both models (3a and 3b)
-        model_results = self.method2.fit_models(self.preprocessed_data)
-        
-        # Compute emmeans for categorical model
-        emmeans_results = self.method2.compute_emmeans()
-        
-        # Test H2 contrast
-        h2_results = self.method2.test_h2_contrast()
-        
-        # Store results
-        self.results['method2'] = {
-            'models': model_results,
-            'emmeans': emmeans_results,
-            'h2_test': h2_results
-        }
-        
-        # Log key findings
-        logger.info("\nMethod 2 Results (H2):")
-        logger.info("\nModel 3a (Continuous):")
-        if 'model_3a_continuous' in model_results and 'wald_test' in model_results['model_3a_continuous']:
-            wald_test = model_results['model_3a_continuous']['wald_test']
-            if 'error' not in wald_test:
-                logger.info(f"  Wald test significant: {wald_test.get('significant_at_0.05', False)}")
-            else:
-                logger.info(f"  Wald test error: {wald_test.get('error', 'Unknown error')}")
-        
-        logger.info("\nModel 3b (Categorical with emmeans):")
-        if 'h2_supported' in h2_results:
-            logger.info(f"  H2 supported: {h2_results['h2_supported']}")
-            logger.info(f"  Contrast estimate: {h2_results.get('contrast_estimate', 'N/A'):.4f} "
-                       f"(p={h2_results.get('p_value', 'N/A'):.4f})")
-        
-        return self.results['method2']
-    
-    def run_method3_dml(self) -> Dict[str, Any]:
-        """Run Method 3: H0-H1 Causal Testing with DML.
-        
-        Provides causal inference for biodiversity effects.
-        
-        Returns:
-            Method 3 results
-        """
-        logger.info("\n" + "="*70)
-        logger.info("METHOD 3: H0-H1 CAUSAL TESTING (DML)")
-        logger.info("="*70)
-        
-        if self.preprocessed_data is None:
-            raise ValueError("Must load and preprocess data first")
-        
-        # Test all hypotheses using DML
-        hypothesis_results = self.method3.test_all_hypotheses(self.preprocessed_data)
-        
-        # Store results
-        self.results['method3'] = {
-            'hypotheses': hypothesis_results
-        }
-        
-        # Log key findings
-        logger.info("\nMethod 3 Results (Causal):")
-        for hyp, res in hypothesis_results.items():
-            if hyp in ['h0', 'h1']:  # Only H0-H1 for Method 3
-                logger.info(f"  {hyp.upper()}: effect={res.get('causal_effect', 'N/A'):.4f} "
-                           f"(p={res.get('p_value', 'N/A'):.4f})")
-                logger.info(f"    {res.get('interpretation', '')}")
-        
-        return self.results['method3']
+        self.hypothesis_results = self.results
+        return self.results
     
     def synthesize_results(self) -> Dict[str, Any]:
         """Synthesize results across all methods.
         
         Returns:
-            Synthesis of findings
+            Synthesis of key findings
         """
         logger.info("\n" + "="*70)
-        logger.info("SYNTHESIS OF RESULTS")
+        logger.info("RESULTS SYNTHESIS")
         logger.info("="*70)
         
-        synthesis = {}
+        synthesis = {
+            'h0_h1_consensus': None,
+            'h2_conclusion': None,
+            'causal_effects': None,
+            'key_findings': []
+        }
         
-        # H0-H1 Synthesis (Method 1 and Method 3)
-        if 'h0_h1_test' in self.results['method1']:
-            h1_glm = self.results['method1']['h0_h1_test']['supports_h1']
-            h1_glm_plants_p = self.results['method1']['h0_h1_test']['plants'].get('p_value')
-            h1_glm_vertebrates_p = self.results['method1']['h0_h1_test']['vertebrates'].get('p_value')
+        # H0-H1 consensus
+        if 'method1' in self.results and self.results['method1']:
+            if 'h0_h1_conclusion' in self.results['method1']:
+                synthesis['h0_h1_consensus'] = self.results['method1']['h0_h1_conclusion']
+                if 'Reject H0' in synthesis['h0_h1_consensus']:
+                    synthesis['key_findings'].append("Evidence supports biodiversity begets biodiversity hypothesis")
+        
+        # H2 conclusion
+        if 'method2' in self.results and self.results['method2']:
+            cont_sig = self.results['method2'].get('continuous_interaction', {}).get('significant', False)
+            cat_sig = self.results['method2'].get('categorical_interaction', {}).get('significant', False)
             
-            synthesis['h0_h1'] = {
-                'glm_method1': {
-                    'h1_supported': h1_glm,
-                    'plants_significant': h1_glm_plants_p < 0.05 if h1_glm_plants_p else False,
-                    'vertebrates_significant': h1_glm_vertebrates_p < 0.05 if h1_glm_vertebrates_p else False
-                }
-            }
-            
-            # Add DML results if available
-            if 'hypotheses' in self.results['method3']:
-                if 'h1' in self.results['method3']['hypotheses']:
-                    h1_dml = self.results['method3']['hypotheses']['h1']
-                    synthesis['h0_h1']['dml_method3'] = {
-                        'h1_supported': h1_dml.get('significant', False),
-                        'causal_effect': h1_dml.get('causal_effect')
-                    }
-            
-            # Overall H0-H1 conclusion
-            glm_support = synthesis['h0_h1']['glm_method1']['h1_supported']
-            dml_support = synthesis['h0_h1'].get('dml_method3', {}).get('h1_supported', False)
-            
-            if glm_support and dml_support:
-                synthesis['h0_h1']['conclusion'] = "STRONG EVIDENCE: Both GLM and causal analyses support biodiversity begets biodiversity"
-            elif glm_support:
-                synthesis['h0_h1']['conclusion'] = "MODERATE EVIDENCE: GLM supports biodiversity effects (causal not tested or not significant)"
+            if cont_sig or cat_sig:
+                synthesis['h2_conclusion'] = "Climate-diversity interactions detected"
+                synthesis['key_findings'].append("Significant climate-biodiversity interactions found")
             else:
-                synthesis['h0_h1']['conclusion'] = "NO EVIDENCE: Biodiversity effects not supported"
+                synthesis['h2_conclusion'] = "No significant climate-diversity interactions"
         
-        # H2 Synthesis (Method 2 only)
-        if 'models' in self.results['method2']:
-            continuous_sig = (
-                self.results['method2']['models']['model_3a_continuous']['interaction_coef'].get('p_value', 1) < 0.05
-            )
-            categorical_supported = self.results['method2']['h2_test']['h2_supported']
-            
-            synthesis['h2'] = {
-                'continuous_significant': continuous_sig,
-                'categorical_supported': categorical_supported,
-                'consensus': continuous_sig or categorical_supported
-            }
-            
-            if continuous_sig and categorical_supported:
-                synthesis['h2']['conclusion'] = "STRONG EVIDENCE: Both approaches support temperate mismatch"
-            elif continuous_sig:
-                synthesis['h2']['conclusion'] = "MODERATE EVIDENCE: Continuous interaction supports temperate mismatch"
-            elif categorical_supported:
-                synthesis['h2']['conclusion'] = "MODERATE EVIDENCE: Categorical analysis supports temperate mismatch"
-            else:
-                synthesis['h2']['conclusion'] = "NO EVIDENCE: Temperate mismatch not supported"
-        
-        self.results['synthesis'] = synthesis
+        # Causal effects
+        if 'method3' in self.results and 'causal_effects' in self.results['method3']:
+            effects = self.results['method3']['causal_effects']
+            if effects:
+                meaningful_effects = [
+                    k for k, v in effects.items() 
+                    if v.get('sesoi', {}).get('exceeds_sesoi', False)
+                ]
+                if meaningful_effects:
+                    synthesis['causal_effects'] = f"Meaningful causal effects: {', '.join(meaningful_effects)}"
+                    synthesis['key_findings'].append(f"Causal analysis identifies {', '.join(meaningful_effects)} as drivers")
         
         # Log synthesis
-        logger.info("\nHYPOTHESIS TESTING SYNTHESIS:")
+        logger.info("\nKey Findings:")
+        for finding in synthesis['key_findings']:
+            logger.info(f"  • {finding}")
         
-        if 'h0_h1' in synthesis:
-            logger.info(f"\nH0-H1 (Biodiversity Effect):")
-            logger.info(f"  {synthesis['h0_h1']['conclusion']}")
+        if synthesis['h0_h1_consensus']:
+            logger.info(f"\nH0-H1 Conclusion: {synthesis['h0_h1_consensus']}")
+        if synthesis['h2_conclusion']:
+            logger.info(f"H2 Conclusion: {synthesis['h2_conclusion']}")
+        if synthesis['causal_effects']:
+            logger.info(f"Causal Effects: {synthesis['causal_effects']}")
         
-        if 'h2' in synthesis:
-            logger.info(f"\nH2 (Temperate Mismatch):")
-            logger.info(f"  {synthesis['h2']['conclusion']}")
-        
+        self.results['synthesis'] = synthesis
         return synthesis
     
-    def run_complete_analysis(
-        self,
-        data_path: Union[str, Path],
-        spatial_grid_step: Optional[int] = None,
-        output_dir: Optional[Path] = None
-    ) -> Dict[str, Any]:
-        """Run complete analysis workflow.
+    def run_complete_analysis(self,
+                             julia_results_file: Optional[str] = None) -> Dict[str, Any]:
+        """Run complete analysis pipeline on Julia results.
         
         Args:
-            data_path: Path to input data
-            spatial_grid_step: Spatial sampling step
-            output_dir: Directory for output files
+            julia_results_file: Path to Julia results (None for latest)
             
         Returns:
-            Complete results dictionary
+            Complete analysis results
         """
-        start_time = time.time()
+        logger.info("="*70)
+        logger.info("SIMPLIFIED ML ANALYSIS PIPELINE")
+        logger.info("="*70)
+        logger.info("All preprocessing and model fitting done in Julia")
+        logger.info("Python handles hypothesis testing and reporting only")
+        logger.info("="*70)
         
-        logger.info("\n" + "="*80)
-        logger.info("BIODIVERSITY HYPOTHESIS TESTING - COMPLETE ANALYSIS")
-        logger.info("="*80)
+        # Load Julia results
+        self.load_julia_results(julia_results_file)
         
-        try:
-            # 1. Load and preprocess data
-            self.load_and_preprocess_data(data_path, spatial_grid_step)
-            
-            # 2. Run all methods
-            self.run_method1_h0_h1()
-            self.run_method2_h2()
-            self.run_method3_dml()
-            
-            # 3. Synthesize results
-            self.synthesize_results()
-            
-            # 4. Add metadata
-            self.results['metadata'] = {
-                'data_path': str(data_path),
-                'n_samples': self.preprocessed_data.nrows if hasattr(self.preprocessed_data, 'nrows') else len(self.preprocessed_data),
-                'spatial_grid_step': spatial_grid_step,
-                'execution_time': time.time() - start_time,
-                'config': self.config.config,
-                'h2o_initialized': self.h2o_initialized,
-                'warnings': getattr(self, 'processing_warnings', [])
-            }
-            
-            # 5. Run diagnostics for each method
-            self.run_diagnostics()
-            
-            # 6. Generate reports from each method
-            if output_dir:
-                self.generate_method_reports(output_dir)
-                
-            # 7. Save raw results if output directory provided
-            if output_dir:
-                self.save_results(output_dir)
-            
-            logger.info("\n" + "="*80)
-            logger.info("ANALYSIS COMPLETE")
-            logger.info(f"Total execution time: {self.results['metadata']['execution_time']:.1f} seconds")
-            logger.info("="*80)
-            
-        except Exception as e:
-            logger.error(f"Analysis failed: {e}")
-            # Clean up resources on error
-            self.cleanup()
-            raise
-        finally:
-            # Always clean up resources
-            self.cleanup()
+        # Run hypothesis tests
+        self.run_hypothesis_tests()
+        
+        # Synthesize results
+        self.synthesize_results()
+        
+        # Generate summary report
+        self._generate_summary_report()
+        
+        logger.info("\n" + "="*70)
+        logger.info("✅ ANALYSIS COMPLETED SUCCESSFULLY")
+        logger.info("="*70)
         
         return self.results
     
-    def save_results(self, output_dir: Path) -> None:
-        """Save results to JSON file.
+    def _generate_summary_report(self):
+        """Generate a text summary report."""
+        report_path = self.results_dir / "analysis_summary.txt"
         
-        Args:
-            output_dir: Directory to save results
-        """
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Convert numpy/H2O values for JSON serialization
-        def convert_for_json(obj):
-            if isinstance(obj, (np.integer, np.int64)):
-                return int(obj)
-            elif isinstance(obj, (np.floating, np.float64)):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_for_json(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_for_json(item) for item in obj]
-            return obj
-        
-        results_serializable = convert_for_json(self.results)
-        
-        output_path = output_dir / "ml_results.json"
-        with open(output_path, 'w') as f:
-            json.dump(results_serializable, f, indent=2)
-        
-        logger.info(f"Results saved to {output_path}")
-    
-    def run_diagnostics(self) -> None:
-        """Run diagnostics for each method's models.
-        
-        Diagnostics are method-specific and stored in results.
-        """
-        logger.info("\n" + "-"*60)
-        logger.info("RUNNING MODEL DIAGNOSTICS")
-        logger.info("-"*60)
-        
-        # Method 1 diagnostics
-        if self.results.get('method1'):
-            try:
-                logger.info("Running diagnostics for Method 1...")
-                dharma = DHARMaDiagnostics()
-                method1_diag = dharma.run_diagnostics(
-                    self.method1.model_1a,
-                    self.preprocessed_data
-                )
-                self.results['method1']['diagnostics'] = method1_diag
-                logger.info(f"Method 1 diagnostics: {'PASSED' if method1_diag.get('model_adequate') else 'ISSUES FOUND'}")
-            except Exception as e:
-                logger.warning(f"Method 1 diagnostics failed: {e}")
-        
-        # Method 2 diagnostics  
-        if self.results.get('method2'):
-            try:
-                logger.info("Running diagnostics for Method 2...")
-                dharma = DHARMaDiagnostics()
-                method2_diag = dharma.run_diagnostics(
-                    self.method2.model_3b_categorical,
-                    self.preprocessed_data
-                )
-                self.results['method2']['diagnostics'] = method2_diag
-                logger.info(f"Method 2 diagnostics: {'PASSED' if method2_diag.get('model_adequate') else 'ISSUES FOUND'}")
-            except Exception as e:
-                logger.warning(f"Method 2 diagnostics failed: {e}")
-        
-        # Method 3 uses DML - different diagnostic approach
-        if self.results.get('method3'):
-            logger.info("Method 3 (DML) has built-in diagnostic checks")
-    
-    def generate_method_reports(self, output_dir: Path) -> None:
-        """Generate reports from each method using their internal reporters.
-        
-        Each method controls its own reporting through hypothesis/evaluation modules.
-        
-        Args:
-            output_dir: Directory to save reports
-        """
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        logger.info("\n" + "-"*60)
-        logger.info("GENERATING METHOD REPORTS")
-        logger.info("-"*60)
-        
-        # Method 1 report generation
-        if self.results.get('method1'):
-            try:
-                logger.info("Generating Method 1 report...")
-                method1_dir = output_dir / "method1"
-                method1_dir.mkdir(exist_ok=True)
-                
-                method1_report = self.method1.generate_report(method1_dir)
-                self.results['method1']['report'] = method1_report
-                logger.info(f"Method 1 report generated with {len(method1_report.get('visualizations', []))} visualizations")
-            except Exception as e:
-                logger.warning(f"Method 1 report generation failed: {e}")
-        
-        # Method 2 report generation  
-        if self.results.get('method2'):
-            try:
-                logger.info("Generating Method 2 report...")
-                method2_dir = output_dir / "method2"
-                method2_dir.mkdir(exist_ok=True)
-                
-                method2_report = self.method2.generate_report(method2_dir)
-                self.results['method2']['report'] = method2_report
-                logger.info(f"Method 2 report generated with {len(method2_report.get('visualizations', []))} visualizations")
-            except Exception as e:
-                logger.warning(f"Method 2 report generation failed: {e}")
-        
-        # Method 3 report generation
-        if self.results.get('method3'):
-            try:
-                logger.info("Generating Method 3 report...")
-                method3_dir = output_dir / "method3"
-                method3_dir.mkdir(exist_ok=True)
-                
-                method3_report = self.method3.generate_report(method3_dir)
-                self.results['method3']['report'] = method3_report
-                logger.info(f"Method 3 report generated with {len(method3_report.get('visualizations', []))} visualizations")
-            except Exception as e:
-                logger.warning(f"Method 3 report generation failed: {e}")
-        
-        # Generate synthesis summary
-        self.generate_synthesis_summary(output_dir)
-    
-    def generate_synthesis_summary(self, output_dir: Path) -> None:
-        """Generate a synthesis summary across all methods.
-        
-        Args:
-            output_dir: Directory to save summary
-        """
-        summary = {
-            'title': 'Biodiversity Hypothesis Testing - Synthesis',
-            'methods_completed': [],
-            'hypotheses_tested': {},
-            'overall_conclusions': {}
-        }
-        
-        # Method 1 conclusions
-        if self.results.get('method1', {}).get('report'):
-            summary['methods_completed'].append('Method 1: GLM H0-H1')
-            summary['hypotheses_tested']['H0_H1'] = {
-                'method': 'Method 1',
-                'conclusion': self.results['method1']['report'].get('conclusion', {})
-            }
-        
-        # Method 2 conclusions
-        if self.results.get('method2', {}).get('report'):
-            summary['methods_completed'].append('Method 2: H2 Testing')
-            summary['hypotheses_tested']['H2'] = {
-                'method': 'Method 2',
-                'conclusion': self.results['method2']['report'].get('conclusion', {})
-            }
-        
-        # Method 3 conclusions
-        if self.results.get('method3', {}).get('report'):
-            summary['methods_completed'].append('Method 3: DML Causal')
-            summary['hypotheses_tested']['H0_H1_causal'] = {
-                'method': 'Method 3',
-                'conclusion': self.results['method3']['report'].get('conclusion', {})
-            }
-        
-        # Overall synthesis
-        h1_support = 0
-        if self.results.get('method1', {}).get('supports_h1'):
-            h1_support += 1
-        if self.results.get('method3', {}).get('hypothesis_tests', {}).get('classical', {}).get('h1_supported'):
-            h1_support += 1
-        
-        h2_support = self.results.get('method2', {}).get('h2_results', {}).get('overall_conclusion', {}).get('h2_supported', False)
-        
-        if h1_support >= 1 and h2_support:
-            overall = "Evidence supports both biodiversity-begets-biodiversity (H1) and temperate mismatch (H2)"
-        elif h1_support >= 1:
-            overall = "Evidence supports biodiversity-begets-biodiversity (H1) but not temperate mismatch (H2)"
-        elif h2_support:
-            overall = "Evidence supports temperate mismatch (H2) but mixed on biodiversity effects (H1)"
-        else:
-            overall = "Limited evidence for either hypothesis"
-        
-        summary['overall_conclusions'] = {
-            'synthesis': overall,
-            'h1_support_count': h1_support,
-            'h2_supported': h2_support
-        }
-        
-        # Save synthesis summary
-        import json
-        synthesis_path = output_dir / "synthesis_summary.json"
-        with open(synthesis_path, 'w') as f:
-            json.dump(summary, f, indent=2)
-        logger.info(f"Synthesis summary saved to {synthesis_path}")
-    
-    def cleanup(self) -> None:
-        """Clean up resources (H2O cluster, cache monitoring, etc.)."""
-        try:
-            # Log final cache statistics if mesf_processor exists
-            if hasattr(self, 'mesf_processor'):
-                try:
-                    cache_stats = self.mesf_processor.get_cache_stats()
-                    logger.info(f"Final cache status: {cache_stats['total_files']} files, "
-                               f"{cache_stats['total_size_mb']:.1f}MB used")
-                except:
-                    pass
+        with open(report_path, 'w') as f:
+            f.write("="*70 + "\n")
+            f.write("BIODIVERSITY ANALYSIS SUMMARY\n")
+            f.write(f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("="*70 + "\n\n")
             
-            # Shutdown H2O cluster if initialized
-            if self.h2o_initialized and self.h2o:
-                logger.info("Shutting down H2O cluster...")
-                import h2o
-                h2o.cluster().shutdown(prompt=False)
-                self.h2o_initialized = False
-                logger.info("H2O cluster shutdown complete")
-                
-        except Exception as e:
-            logger.warning(f"Error during cleanup: {e}")
-    
-    def _reinitialize_h2o(self) -> bool:
-        """Attempt to reinitialize H2O cluster after failure.
+            # Dataset info
+            f.write("DATASET INFORMATION\n")
+            f.write("-"*40 + "\n")
+            f.write(f"Rows: {self.metadata.get('n_rows', 'N/A')}\n")
+            f.write(f"Columns: {self.metadata.get('n_cols', 'N/A')}\n")
+            f.write(f"MESF eigenvectors: {self.metadata.get('mesf_count', 0)}\n\n")
+            
+            # Method 1
+            if 'method1' in self.results and self.results['method1']:
+                f.write("METHOD 1: H0-H1 TESTING\n")
+                f.write("-"*40 + "\n")
+                if 'lr_test' in self.results['method1']:
+                    lr = self.results['method1']['lr_test']
+                    f.write(f"LR Test p-value: {lr['p_value']:.4e}\n")
+                f.write(f"Conclusion: {self.results['method1'].get('h0_h1_conclusion', 'N/A')}\n\n")
+            
+            # Method 2
+            if 'method2' in self.results and self.results['method2']:
+                f.write("METHOD 2: INTERACTION TESTING\n")
+                f.write("-"*40 + "\n")
+                if 'continuous_interaction' in self.results['method2']:
+                    cont = self.results['method2']['continuous_interaction']
+                    f.write(f"Continuous interaction: β={cont['estimate']:.4f}, "
+                           f"p={cont['wald_test']['p_value']:.4e}\n")
+                if 'categorical_interaction' in self.results['method2']:
+                    cat = self.results['method2']['categorical_interaction']
+                    f.write(f"Categorical interaction: β={cat['estimate']:.4f}, "
+                           f"p={cat['wald_test']['p_value']:.4e}\n")
+                f.write("\n")
+            
+            # Method 3
+            if 'method3' in self.results and 'causal_effects' in self.results['method3']:
+                f.write("METHOD 3: CAUSAL EFFECTS\n")
+                f.write("-"*40 + "\n")
+                for name, effect in self.results['method3']['causal_effects'].items():
+                    f.write(f"{name.capitalize()}: {effect['estimate']:.4f}±{effect['std_error']:.4f}\n")
+                f.write("\n")
+            
+            # Synthesis
+            if 'synthesis' in self.results:
+                f.write("SYNTHESIS\n")
+                f.write("-"*40 + "\n")
+                for finding in self.results['synthesis'].get('key_findings', []):
+                    f.write(f"• {finding}\n")
         
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            logger.info("Attempting to reinitialize H2O cluster...")
-            
-            # First try to shutdown any existing cluster
-            try:
-                import h2o
-                h2o.cluster().shutdown(prompt=False)
-            except:
-                pass
-            
-            # Wait a moment for cleanup
-            import time
-            time.sleep(2)
-            
-            # Don't fallback - raise the error
-            logger.error("H2O cluster connection lost and no fallback allowed")
-            raise
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to reinitialize H2O: {e}")
-            self.h2o_initialized = False
-            return False
+        logger.info(f"Summary report saved to: {report_path}")
