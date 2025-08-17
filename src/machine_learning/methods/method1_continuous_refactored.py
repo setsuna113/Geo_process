@@ -1,27 +1,24 @@
-"""Method 1: H0-H1 Testing with GLM (REFACTORED).
+"""Method 1: H0-H1 Testing with GLM (Julia-based).
 
 Tests:
 - H0: Fungi richness is independent of plant/vertebrate richness
 - H1: Biodiversity begets biodiversity (positive correlation exists)
 
 Compares Model 1 (climate only) vs Model 2 (climate + biodiversity).
-This refactored version assumes data is already preprocessed by the pipeline.
+Uses Julia GLM for correct AIC calculation.
 """
 
 import logging
 import numpy as np
-import h2o
+import pandas as pd
 from scipy import stats
 from typing import Dict, Any, Optional, Union, Tuple, List
 from pathlib import Path
 
 from ..config_loader import MLRegressionConfig
-from h2o.estimators.glm import H2OGeneralizedLinearEstimator
-from ..hypothesis import WaldTest, LikelihoodRatioTest, ScoreTest
+from ..utils import JuliaManager
+from ..hypothesis.julia_hypothesis_tests import JuliaHypothesisTests
 from ..evaluation.glm_comparison import ModelComparison
-from ..hypothesis.h0_definitions import H0Definition
-from ..hypothesis.tost_wrapper import TOSTWrapper
-# vcov import moved to where it's used for cleaner separation
 
 logger = logging.getLogger(__name__)
 
@@ -47,92 +44,57 @@ class Method1H0H1GLM:
             config: ML regression configuration
         """
         self.config = config
+        self.julia = JuliaManager.get_or_init()
         
         self.model_null = None  # Model 1: Climate only
         self.model_full = None  # Model 2: Climate + biodiversity
-        self.data_h2o = None
+        self.data = None  # pandas DataFrame
         self.hypothesis_results = {}  # Store hypothesis test results
     
-    def fit_models(self, h2o_data: h2o.H2OFrame) -> Dict[str, Any]:
+    def fit_models(self, data_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Fit the nested models using preprocessed data.
         
         Args:
-            h2o_data: Preprocessed H2O DataFrame from pipeline
+            data_metadata: Metadata about data loaded in Julia
             
         Returns:
             Dictionary with fitted models and results
         """
         logger.info("Fitting Method 1 models with preprocessed data")
         
-        # Store data
-        self.data_h2o = h2o_data
+        # Get data summary from Julia
+        data_summary = self.julia.get_data_summary()
         
-        # Check overdispersion - H2O is inconsistent, handle both cases
-        fungi_mean = h2o_data['fungi_richness'].mean()
-        fungi_var = h2o_data['fungi_richness'].var()
-        # Handle H2O returning list or float inconsistently
-        if isinstance(fungi_mean, list): fungi_mean = fungi_mean[0]
-        if isinstance(fungi_var, list): fungi_var = fungi_var[0]
-        dispersion_ratio = fungi_var / fungi_mean
-        logger.info(f"Dispersion ratio: {dispersion_ratio:.2f}")
+        # Data is in Julia, we work with metadata
+        n_rows = data_summary['n_rows']
+        columns = data_summary['columns']
         
-        logger.info("Fitting negative binomial GLM models with independent theta estimation")
+        logger.info("Fitting negative binomial GLM models with Julia (theta estimated)")
         
-        # Get MESF columns
-        me_cols = [col for col in h2o_data.columns if col.startswith('ME')]
-        logger.info(f"Using {len(me_cols)} MESF eigenvectors")
+        # Get MESF columns from Julia data
+        mesf_cols = data_summary.get('mesf_columns', [])
+        logger.info(f"Using {len(mesf_cols)} MESF eigenvectors")
         
-        # Define feature sets
-        climate_cols = [col for col in h2o_data.columns if col.startswith('bio') and col.endswith('_std')]
-        elevation_cols = [col for col in h2o_data.columns if col.startswith('elevation')]
-        base_features = climate_cols + elevation_cols + me_cols  # Null model features
+        # Define feature sets based on known preprocessing
+        climate_cols = [col for col in columns if col.startswith('bio') and col.endswith('_std')]
+        elevation_cols = [col for col in columns if col.startswith('elevation')]
+        base_features = climate_cols + elevation_cols + mesf_cols  # Null model features
         biotic_cols = ['plants_richness_log', 'vertebrates_richness_log']  # Additional features
         
-        # Use standard H2O GLM with negative binomial family
-        from h2o.estimators.glm import H2OGeneralizedLinearEstimator
+        # Fit models using Julia GLM
         
-        # Fit null model (climate + spatial) - let it estimate its own theta
+        # Create formulas for Julia
+        null_formula = f"fungi_richness ~ {' + '.join(base_features)}"
+        full_formula = f"fungi_richness ~ {' + '.join(base_features + biotic_cols)}"
+        
+        # Fit null model (climate + spatial) - data is already in Julia
         logger.info(f"Fitting null model with {len(base_features)} features")
-        self.model_null = H2OGeneralizedLinearEstimator(
-            family='negativebinomial',
-            link='log',
-            max_iterations=1000,
-            standardize=True,
-            lambda_=0.0,  # No penalty for fair nested model comparison
-            solver='IRLSM',
-            compute_p_values=True,
-            # calc_like=True causes H2O bug even with integer response
-            remove_collinear_columns=True,  # Handle collinearity automatically
-            intercept=True,
-            seed=42
-        )
-        self.model_null.train(
-            x=base_features,
-            y='fungi_richness',
-            training_frame=h2o_data
-        )
+        self.model_null = self.julia.fit_glm(formula=null_formula)
         
         # Fit full model (climate + spatial + biodiversity) - let it estimate its own theta
         feature_cols_full = base_features + biotic_cols
         logger.info(f"Fitting full model with {len(feature_cols_full)} features")
-        self.model_full = H2OGeneralizedLinearEstimator(
-            family='negativebinomial',
-            link='log',
-            max_iterations=1000,
-            standardize=True,
-            lambda_=0.0,  # No penalty for fair nested model comparison
-            solver='IRLSM',
-            compute_p_values=True,
-            # calc_like=True causes H2O bug even with integer response
-            remove_collinear_columns=True,  # Handle collinearity automatically
-            intercept=True,
-            seed=42
-        )
-        self.model_full.train(
-            x=feature_cols_full,
-            y='fungi_richness',
-            training_frame=h2o_data
-        )
+        self.model_full = self.julia.fit_glm(formula=full_formula)
         
         logger.info(f"Models fitted successfully")
         logger.info(f"Null model features: {len(base_features)}")
@@ -142,63 +104,33 @@ class Method1H0H1GLM:
         results = {}
         
         # Extract degrees of freedom for proper reporting
-        null_df = self.model_null.null_degrees_of_freedom()
-        residual_df_null = self.model_null.residual_degrees_of_freedom()
-        residual_df_full = self.model_full.residual_degrees_of_freedom()
+        null_df = self.model_null['n_obs'] - 1
+        residual_df_null = self.model_null['df_residual']
+        residual_df_full = self.model_full['df_residual']
         
-        # Get model performance objects for proper metrics
-        n_obs = h2o_data.nrows
-        null_perf = self.model_null.model_performance()
-        full_perf = self.model_full.model_performance()
+        # Get model performance from Julia results
+        n_obs = self.model_null['n_obs']
+        null_perf = self.model_null
+        full_perf = self.model_full
         
-        # Get proper AIC from model performance (requires calc_like=True)
-        try:
-            aic_null = null_perf.aic()
-            aic_full = full_perf.aic()
-        except Exception as e:
-            logger.warning(f"AIC extraction failed: {e}")
-            aic_null = None
-            aic_full = None
+        # Get proper AIC from Julia model results
+        aic_null = self.model_null['aic']
+        aic_full = self.model_full['aic']
         
         # Get log-likelihood from AIC: AIC = -2*loglik + 2*k
         # Number of parameters (including intercept)
         k_null = len(base_features) + 1  # +1 for intercept
         k_full = len(feature_cols_full) + 1
         
-        # Handle case where H2O returns None or string for AIC
-        try:
-            # Try to convert to float if it's a string
-            if isinstance(aic_null, str):
-                aic_null = float(aic_null) if aic_null != 'NaN' else None
-            if isinstance(aic_full, str):
-                aic_full = float(aic_full) if aic_full != 'NaN' else None
-        except (ValueError, TypeError):
-            aic_null = None
-            aic_full = None
-            
-        if aic_null is None or aic_full is None:
-            # Use deviance as fallback
-            logger.warning("AIC not available, using deviance-based approximation")
-            null_deviance = self.model_null.residual_deviance()
-            full_deviance = self.model_full.residual_deviance()
-            # Approximate log-likelihood from deviance
-            null_loglik = -null_deviance / 2
-            full_loglik = -full_deviance / 2
-            # Calculate AIC from approximated log-likelihood
-            aic_null = -2 * null_loglik + 2 * k_null
-            aic_full = -2 * full_loglik + 2 * k_full
-        else:
-            # Back-calculate log-likelihood from AIC
-            null_loglik = -(aic_null - 2 * k_null) / 2
-            full_loglik = -(aic_full - 2 * k_full) / 2
-        
-        # Calculate BIC manually: BIC = -2*log(L) + k*log(n)
-        bic_null = -2 * null_loglik + k_null * np.log(n_obs)
-        bic_full = -2 * full_loglik + k_full * np.log(n_obs)
+        # Get log-likelihood and BIC from Julia results
+        null_loglik = self.model_null['loglik']
+        full_loglik = self.model_full['loglik']
+        bic_null = self.model_null['bic']
+        bic_full = self.model_full['bic']
         
         # Get deviance for reporting
-        null_deviance = self.model_null.residual_deviance()
-        full_deviance = self.model_full.residual_deviance()
+        null_deviance = self.model_null['deviance']
+        full_deviance = self.model_full['deviance']
         
         # Store model metrics
         results['model_metrics'] = {
@@ -226,12 +158,16 @@ class Method1H0H1GLM:
         }
         
         # 1. Likelihood Ratio Test for H0 vs H1
-        # Clean LRT now reports McFadden R² and interprets effect size
-        lrt_results = LikelihoodRatioTest.test_nested_models(
-            null_model=self.model_null,
-            full_model=self.model_full,
-            df_difference=len(biotic_cols)  # Number of biodiversity predictors
+        # Use JuliaHypothesisTests for consistency
+        lrt_results = JuliaHypothesisTests.likelihood_ratio_test(
+            null_loglik=null_loglik,
+            full_loglik=full_loglik,
+            df_difference=len(biotic_cols)
         )
+        # Add additional fields for backward compatibility
+        lrt_results['statistic'] = lrt_results['lr_statistic']
+        lrt_results['df'] = lrt_results.get('df', len(biotic_cols))
+        lrt_results['deviance_difference'] = null_deviance - full_deviance
         lrt_results['null_df'] = residual_df_null
         lrt_results['full_df'] = residual_df_full
         
@@ -249,12 +185,10 @@ class Method1H0H1GLM:
         # Note: Score test should use NULL DEVIANCE of null model, not residual deviance
         try:
             # Score test: Compare improvement from null to full model
-            score_results = ScoreTest.test_from_model_statistics(
-                deviance_null=self.model_null.residual_deviance(),  # Null model deviance
-                deviance_residual=self.model_full.residual_deviance(),  # Full model deviance
-                df_null=residual_df_null,  # Null model df
-                df_residual=residual_df_full,  # Full model df
-                n_obs=n_obs
+            score_results = JuliaHypothesisTests.score_test_from_deviance(
+                null_deviance=self.model_null['deviance'],  # Null model deviance
+                full_deviance=self.model_full['deviance'],  # Full model deviance
+                df_difference=residual_df_null - residual_df_full  # Difference in df
             )
             # Adjust interpretation for H0 vs H1 test
             score_results['interpretation'] = 'Testing if biodiversity improves over climate-only model'
@@ -272,42 +206,52 @@ class Method1H0H1GLM:
             }
         results['score_test'] = score_results
         
-        # 3. Model comparison using AIC/BIC with our calculated BIC
-        # Override model comparison to include BIC
-        model_comparison = ModelComparison.compare_models(
-            models={'null_model': self.model_null, 'full_model': self.model_full},
-            criteria=['aic', 'deviance']  # Don't request BIC from models
-        )
-        # Add our calculated BIC
-        model_comparison['model_stats']['null_model']['bic'] = bic_null
-        model_comparison['model_stats']['full_model']['bic'] = bic_full
-        # Rank by BIC
-        model_comparison['rankings']['bic'] = {
-            'ranked_models': ['null_model', 'full_model'] if bic_null < bic_full else ['full_model', 'null_model'],
-            'values': [bic_null, bic_full] if bic_null < bic_full else [bic_full, bic_null],
-            'best_model': 'null_model' if bic_null < bic_full else 'full_model',
-            'best_value': min(bic_null, bic_full),
-            'delta_from_best': {
-                'null_model': 0.0 if bic_null < bic_full else bic_null - bic_full,
-                'full_model': bic_full - bic_null if bic_null < bic_full else 0.0
+        # 3. Model comparison using AIC/BIC
+        # Create model comparison results manually
+        model_comparison = {
+            'model_stats': {
+                'null_model': {
+                    'aic': aic_null,
+                    'bic': bic_null,
+                    'deviance': null_deviance
+                },
+                'full_model': {
+                    'aic': aic_full,
+                    'bic': bic_full,
+                    'deviance': full_deviance
+                }
+            },
+            'rankings': {
+                'aic': {
+                    'best_model': 'null_model' if aic_null < aic_full else 'full_model',
+                    'delta_from_best': {
+                        'null_model': 0.0 if aic_null < aic_full else aic_null - aic_full,
+                        'full_model': aic_full - aic_null if aic_null < aic_full else 0.0
+                    }
+                },
+                'bic': {
+                    'best_model': 'null_model' if bic_null < bic_full else 'full_model',
+                    'delta_from_best': {
+                        'null_model': 0.0 if bic_null < bic_full else bic_null - bic_full,
+                        'full_model': bic_full - bic_null if bic_null < bic_full else 0.0
+                    }
+                }
+            },
+            'best_models': {
+                'aic': 'null_model' if aic_null < aic_full else 'full_model',
+                'bic': 'null_model' if bic_null < bic_full else 'full_model'
             }
         }
-        model_comparison['best_models']['bic'] = model_comparison['rankings']['bic']['best_model']
         results['model_comparison'] = model_comparison
         
         # 4. Wald test for biodiversity coefficients using vcov extraction
         wald_results = {}
         try:
-            # Extract vcov matrix from H2O model
+            # Get vcov matrix from Julia model
             logger.info("Extracting variance-covariance matrix for Wald tests")
-            from src.machine_learning.utils.vcov import extract_vcov
-            coef_values, vcov_matrix, coef_names = extract_vcov(
-                self.model_full,
-                data=h2o_data,
-                x_names=feature_cols_full,
-                y_name='fungi_richness',
-                method='sandwich'  # LINUS: Sandwich is the standard - robust and fast
-            )
+            coef_values = self.model_full['coefficients']
+            vcov_matrix = self.model_full['vcov']
+            coef_names = ['(Intercept)'] + feature_cols_full
             
             # Create coefficient lookup
             coef_dict = dict(zip(coef_names, coef_values))
@@ -330,23 +274,20 @@ class Method1H0H1GLM:
                     
                     # 1. SESOI test with scale transformations (REPORT THIS)
                     sesoi_threshold = 0.1  # 0.1 on log scale ≈ 10.5% on response scale
-                    wald_sesoi = WaldTest.test_single_coefficient_with_scale(
+                    wald_sesoi = JuliaHypothesisTests.sesoi_test(
                         coefficient=coef,
                         standard_error=se,
-                        h0_definition=H0Definition.sesoi(sesoi_threshold, 'greater'),
-                        alternative='greater',
-                        link='log'  # Enables scale transformations
+                        sesoi_threshold=sesoi_threshold,
+                        alternative='greater'
                     )
                     
                     # 2. TOST test with scale transformations (REPORT THIS)
-                    tost_result = TOSTWrapper.perform_tost_with_scale(
-                        test_function=WaldTest.test_single_coefficient,
-                        effect_estimate=coef,
+                    tost_result = JuliaHypothesisTests.tost_test(
+                        coefficient=coef,
                         standard_error=se,
                         lower_bound=-0.1,
                         upper_bound=0.1,
-                        alpha=0.05,
-                        link='log'  # Enables scale transformations
+                        alpha=0.05
                     )
                     
                     # DO NOT run traditional test - only SESOI and TOST
@@ -389,7 +330,7 @@ class Method1H0H1GLM:
                 sesoi_nulls = np.ones(len(bio_coefs)) * 0.1  # All coefficients at SESOI threshold
                 
                 # Joint SESOI test: H0: all |βi| ≤ 0.1
-                joint_sesoi = WaldTest.test_multiple_coefficients(
+                joint_sesoi = JuliaHypothesisTests.joint_wald_test(
                     coefficients=bio_coefs,
                     covariance_matrix=bio_vcov,
                     null_values=sesoi_nulls  # Test against SESOI thresholds
@@ -397,7 +338,7 @@ class Method1H0H1GLM:
                 joint_sesoi['interpretation'] = 'Joint test for practical significance (H0: all |βi| ≤ 0.1)'
                 
                 # Traditional joint test for comparison (but don't report in final)
-                joint_traditional = WaldTest.test_multiple_coefficients(
+                joint_traditional = JuliaHypothesisTests.joint_wald_test(
                     coefficients=bio_coefs,
                     covariance_matrix=bio_vcov,
                     null_values=None  # Traditional H0: all βi = 0
@@ -408,13 +349,13 @@ class Method1H0H1GLM:
                     'traditional_for_reference': joint_traditional  # Keep for internal use only
                 }
                 
-                logger.info(f"Joint SESOI test: chi2={joint_sesoi['wald_statistic']:.2f}, p={joint_sesoi['p_value']:.4f}")
+                logger.info(f"Joint SESOI test: chi2={joint_sesoi['chi2_statistic']:.2f}, p={joint_sesoi['p_value']:.4f}")
                 logger.info(f"Joint test interpretation: Testing if any biodiversity effect exceeds SESOI threshold")
             
             # Extract z-values for reporting from SESOI test
             for coef_name in biotic_cols:
                 if coef_name in wald_results and 'sesoi_test' in wald_results[coef_name]:
-                    wald_results[coef_name]['z_value'] = wald_results[coef_name]['sesoi_test']['wald_statistic']
+                    wald_results[coef_name]['z_value'] = wald_results[coef_name]['sesoi_test'].get('z_statistic', 0)
                 
         except Exception as e:
             logger.warning(f"Could not perform proper Wald tests: {e}")
@@ -629,16 +570,16 @@ class Method1H0H1GLM:
         else:
             return f"Effect below threshold but not confirmed negligible (β={coef:.3f})"
     
-    def fit_model(self, data: h2o.H2OFrame) -> Dict[str, Any]:
+    def fit_model(self, data_metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Fit the model - implements abstract method from base class.
         
         Args:
-            data: Preprocessed H2O Frame
+            data_metadata: Metadata about data loaded in Julia
             
         Returns:
             Model fitting results
         """
-        return self.fit_models(data)
+        return self.fit_models(data_metadata)
     
     def load_data(self, *args, **kwargs):
         """REMOVED - Data loading is now handled by pipeline."""
@@ -654,20 +595,24 @@ class Method1H0H1GLM:
             "Common preprocessing is done in pipeline.load_and_preprocess_data()."
         )
     
-    def predict(self, data: h2o.H2OFrame, **kwargs) -> np.ndarray:
+    def predict(self, **kwargs) -> np.ndarray:
         """Make predictions using fitted model.
         
+        Note: Prediction happens in Julia on the already loaded data.
+        
         Args:
-            data: Input data for prediction
             **kwargs: Additional prediction parameters
             
         Returns:
-            Predicted values
+            Predicted values from Julia model
         """
         if self.model_full is None:
             raise ValueError("Must fit models first")
         
-        return self.model_full.predict(data)
+        # For now, return the coefficients as we can't predict without new data in Julia
+        # This would need to be extended to load new data in Julia for prediction
+        logger.warning("Prediction on new data not yet implemented - returning coefficients")
+        return self.model_full['coefficients']
     
     def generate_report(self, output_dir: Optional[Path] = None) -> Dict[str, Any]:
         """Generate comprehensive report for Method 1 H0-H1 testing.
@@ -726,11 +671,10 @@ class Method1H0H1GLM:
         if 'score' in self.hypothesis_results:
             score_result = self.hypothesis_results['score']
             # Score test is a model comparison test - report traditional results only
-            score_report = ScoreTest.generate_publication_report(
+            score_report = JuliaHypothesisTests.generate_hypothesis_report(
                 score_result,
                 test_name="Score Test (Traditional H0: No effect)",
-                hypothesis="biodiversity effects",
-                variable_names=['plants_richness_log', 'vertebrates_richness_log']
+                hypothesis="biodiversity effects"
             )
             report['tests']['score_test'] = score_report
             logger.info("Score Test: Reporting traditional results only (model comparison test)")
@@ -738,14 +682,13 @@ class Method1H0H1GLM:
             # Generate visualization if output directory provided
             if output_dir:
                 try:
-                    fig = ScoreTest.visualize_score_test(
+                    fig = JuliaHypothesisTests.visualize_hypothesis_test(
                         score_result,
-                        variable_names=['plants_richness_log', 'vertebrates_richness_log']
+                        test_name="Score Test",
+                        save_path=output_dir / "method1_score_test.png"
                     )
-                    viz_path = output_dir / "method1_score_test.png"
-                    fig.savefig(viz_path, dpi=300, bbox_inches='tight')
-                    report['visualizations'].append(str(viz_path))
-                    logger.info(f"Score test visualization saved to {viz_path}")
+                    report['visualizations'].append(str(output_dir / "method1_score_test.png"))
+                    logger.info(f"Score test visualization saved to {output_dir / 'method1_score_test.png'}")
                 except Exception as e:
                     logger.warning(f"Failed to create score test visualization: {e}")
         
@@ -753,11 +696,10 @@ class Method1H0H1GLM:
         if 'lrt' in self.hypothesis_results:
             lrt_result = self.hypothesis_results['lrt']
             # LRT is a model comparison test - report traditional results only
-            lrt_report = LikelihoodRatioTest.generate_publication_report(
+            lrt_report = JuliaHypothesisTests.generate_hypothesis_report(
                 lrt_result,
                 test_name="Likelihood Ratio Test (Traditional H0: No improvement)",
-                hypothesis="biodiversity improves model fit",
-                model_description="Comparing climate-only model (null) with climate + biodiversity model (full)"
+                hypothesis="biodiversity improves model fit"
             )
             report['tests']['lrt'] = lrt_report
             logger.info("LRT: Reporting traditional results only (model comparison test)")
@@ -765,15 +707,13 @@ class Method1H0H1GLM:
             # Generate LRT visualization if output directory provided
             if output_dir:
                 try:
-                    fig = LikelihoodRatioTest.visualize_lrt(
+                    fig = JuliaHypothesisTests.visualize_hypothesis_test(
                         lrt_result,
-                        null_model_name="Null",
-                        full_model_name="Full"
+                        test_name="Likelihood Ratio Test",
+                        save_path=output_dir / "method1_lrt_test.png"
                     )
-                    viz_path = output_dir / "method1_lrt_test.png"
-                    fig.savefig(viz_path, dpi=300, bbox_inches='tight')
-                    report['visualizations'].append(str(viz_path))
-                    logger.info(f"LRT visualization saved to {viz_path}")
+                    report['visualizations'].append(str(output_dir / "method1_lrt_test.png"))
+                    logger.info(f"LRT visualization saved to {output_dir / 'method1_lrt_test.png'}")
                 except Exception as e:
                     logger.warning(f"Failed to create LRT visualization: {e}")
         

@@ -14,7 +14,6 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
-import h2o
 import numpy as np
 import polars as pl
 from sklearn.neighbors import NearestNeighbors
@@ -48,7 +47,7 @@ class MESFProcessor:
         n_eigenvectors: int = 10,
         distance_threshold: float = 100.0,
         n_jobs: Optional[int] = None
-    ) -> Optional[h2o.H2OFrame]:
+    ) -> Optional[np.ndarray]:
         """Compute MESF eigenvectors using Nystrom approximation.
         
         This is the main entry point called by the orchestrator.
@@ -143,14 +142,11 @@ class MESFProcessor:
         if eigenvectors_full is None:
             return None
         
-        # Convert to H2O frame with proper column names
-        mesf_h2o = self._create_h2o_frame(eigenvectors_full)
-        
         # Cache the result
         self._save_to_cache(cache_key, eigenvectors_full)
         
         logger.info(f"MESF computation complete: {n_total:,} rows × {n_eigenvectors} eigenvectors")
-        return mesf_h2o
+        return eigenvectors_full
     
     def _count_total_rows(self, data_path: str, spatial_grid_step: Optional[int]) -> int:
         """Count total rows efficiently using Polars.
@@ -489,10 +485,99 @@ class MESFProcessor:
             logger.error(f"Interpolation failed: {e}")
             return None
     
-    def _create_h2o_frame(self, eigenvectors: np.ndarray) -> h2o.H2OFrame:
-        """Create H2O frame with proper column names.
+    def get_mesf_eigenvectors_for_dataframe(
+        self,
+        df: 'pd.DataFrame',
+        n_eigenvectors: int = 10,
+        distance_threshold: float = 100.0
+    ) -> Optional[np.ndarray]:
+        """Compute MESF eigenvectors for a pandas DataFrame.
         
-        LINUS FIX: Use parquet->H2O for parallel import instead of slow numpy->H2O.
+        This method is for Julia integration - takes a DataFrame with x,y columns
+        and returns numpy array of eigenvectors.
+        
+        Args:
+            df: DataFrame with x, y columns
+            n_eigenvectors: Number of eigenvectors
+            distance_threshold: Distance threshold in km
+            
+        Returns:
+            Numpy array of eigenvectors (n_rows, n_eigenvectors) or None
+        """
+        import pandas as pd
+        
+        if not isinstance(df, pd.DataFrame):
+            logger.error("Input must be a pandas DataFrame")
+            return None
+        
+        if 'x' not in df.columns or 'y' not in df.columns:
+            logger.error("DataFrame must have 'x' and 'y' columns")
+            return None
+        
+        # Extract coordinates
+        coords = df[['x', 'y']].values.astype(np.float32)
+        n_total = len(coords)
+        
+        logger.info(f"Computing MESF for DataFrame with {n_total:,} rows")
+        
+        # Use simplified computation for DataFrame input
+        n_landmark = min(5000, n_total)  # Limit landmarks for memory
+        n_sample = min(50000, n_total)   # Limit samples
+        
+        # Random sampling
+        if n_sample < n_total:
+            sample_idx = np.random.choice(n_total, n_sample, replace=False)
+            coords_sample = coords[sample_idx]
+        else:
+            coords_sample = coords
+        
+        # Landmarks are subset of samples
+        coords_landmark = coords_sample[:n_landmark]
+        
+        # Compute eigenvectors on landmarks
+        eigenvectors_landmark = self._compute_landmark_eigenvectors(
+            coords_landmark, n_eigenvectors, distance_threshold
+        )
+        
+        if eigenvectors_landmark is None:
+            return None
+        
+        # Extend to samples if needed
+        if n_sample > n_landmark:
+            eigenvectors_sample = self._extend_to_samples(
+                coords_sample, coords_landmark, eigenvectors_landmark
+            )
+        else:
+            eigenvectors_sample = eigenvectors_landmark
+        
+        # Interpolate to full dataset using k-NN
+        if n_total > n_sample:
+            from sklearn.neighbors import NearestNeighbors
+            
+            # Fit k-NN on samples
+            knn = NearestNeighbors(n_neighbors=min(10, n_sample))
+            knn.fit(coords_sample)
+            
+            # Find nearest neighbors for all points
+            distances, indices = knn.kneighbors(coords)
+            
+            # Weighted average of eigenvectors
+            weights = 1.0 / (distances + 1e-10)
+            weights = weights / weights.sum(axis=1, keepdims=True)
+            
+            eigenvectors_full = np.zeros((n_total, n_eigenvectors), dtype=np.float32)
+            for i in range(n_total):
+                eigenvectors_full[i] = (weights[i:i+1] @ eigenvectors_sample[indices[i]]).squeeze()
+        else:
+            eigenvectors_full = eigenvectors_sample
+        
+        logger.info(f"MESF computation complete: {eigenvectors_full.shape}")
+        return eigenvectors_full
+    
+    def _create_numpy_array(self, eigenvectors: np.ndarray) -> np.ndarray:
+        """Return numpy array with proper shape.
+        
+        For Julia integration, we return numpy arrays instead of H2O frames.
         
         Args:
             eigenvectors: Eigenvectors array (n_total, n_eigenvectors)
@@ -570,14 +655,14 @@ class MESFProcessor:
         key_str = json.dumps(key_data, sort_keys=True)
         return hashlib.sha256(key_str.encode()).hexdigest()[:16]
     
-    def _load_from_cache(self, cache_key: str) -> Optional[h2o.H2OFrame]:
+    def _load_from_cache(self, cache_key: str) -> Optional[np.ndarray]:
         """Load cached result if exists.
         
         Args:
             cache_key: Cache key
             
         Returns:
-            H2O frame or None if not cached
+            Numpy array or None if not cached
         """
         cache_file = self.cache_dir / f"{cache_key}.npz"
         logger.info(f"Looking for cache file: {cache_file}")
@@ -591,9 +676,7 @@ class MESFProcessor:
             data = np.load(cache_file)
             eigenvectors = data['eigenvectors']
             logger.info(f"Loaded numpy array from cache: {eigenvectors.shape}")
-            h2o_frame = self._create_h2o_frame(eigenvectors)
-            logger.info(f"Created H2O frame: {h2o_frame.shape}")
-            return h2o_frame
+            return eigenvectors
         except Exception as e:
             logger.error(f"Cache load failed: {e}", exc_info=True)
             return None

@@ -1,5 +1,8 @@
 """Utility modules for machine learning."""
 
-from .h2o_manager import H2OManager
+from .julia_manager import JuliaManager
 
-__all__ = ['H2OManager']
+# Alias for backward compatibility during transition
+H2OManager = JuliaManager
+
+__all__ = ['JuliaManager', 'H2OManager']

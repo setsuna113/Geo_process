@@ -284,8 +284,8 @@ class DataLoader:
     def load_data(self, 
                   file_path: Union[str, Path],
                   validate_shape: bool = True,
-                  spatial_grid_step: Optional[int] = None) -> 'h2o.H2OFrame':
-        """Load data directly into H2O with security validation.
+                  spatial_grid_step: Optional[int] = None) -> 'pd.DataFrame':
+        """Load data using Julia with security validation.
         
         Args:
             file_path: Path to data file
@@ -293,41 +293,39 @@ class DataLoader:
             spatial_grid_step: Spatial sampling step (e.g., 100 = take every 100th row)
             
         Returns:
-            Loaded H2O Frame
+            Loaded pandas DataFrame (processed via Julia)
             
         Raises:
             ValueError: If data validation fails
         """
-        import h2o
+        import pandas as pd
+        from src.machine_learning.utils import JuliaManager
         
         # Validate path
         path = self.path_validator.validate_path(file_path)
         
-        # Load directly into H2O
-        logger.info(f"Loading data into H2O from {path}")
-        
-        # H2O.import_file supports parquet, csv, tsv, and more
+        # Check file type
         if path.suffix not in ['.parquet', '.csv', '.tsv', '.txt']:
-            raise ValueError(f"Unsupported file type for H2O: {path.suffix}")
+            raise ValueError(f"Unsupported file type: {path.suffix}")
         
-        # Load with H2O
-        data = h2o.import_file(str(path))
+        # Get Julia manager instance
+        julia = JuliaManager.get_or_init()
         
-        # Apply spatial grid sampling if specified (take every Nth row)
+        logger.info(f"Loading data via Julia from {path}")
+        
+        # Load with Julia (includes preprocessing)
         if spatial_grid_step and spatial_grid_step > 1:
             logger.info(f"Applying spatial grid sampling (step={spatial_grid_step})")
-            original_rows = data.nrows
-            # Take every Nth row
-            row_indices = list(range(0, data.nrows, spatial_grid_step))
-            data = data[row_indices, :]
-            logger.info(f"Sampled {data.nrows} rows from {original_rows} total rows")
+            data = julia.import_file_with_sampling(str(path), spatial_grid_step)
+        else:
+            data = julia.import_file(str(path))
         
         # Validate shape
         if validate_shape:
-            if data.nrows == 0:
-                raise ValueError("Loaded H2O Frame has no rows")
+            if len(data) == 0:
+                raise ValueError("Loaded DataFrame has no rows")
             
-            logger.info(f"Loaded data shape: ({data.nrows}, {data.ncols})")
+            logger.info(f"Loaded data shape: ({len(data)}, {len(data.columns)})")
         
         # Validate columns
         if self.required_columns:
@@ -347,7 +345,7 @@ class DataLoader:
                 if pattern in col.lower():
                     raise ValueError(f"Suspicious column name detected: {col}")
         
-        logger.info(f"Data loaded successfully: {data.nrows} rows, {data.ncols} columns")
+        logger.info(f"Data loaded successfully: {len(data)} rows, {len(data.columns)} columns")
         return data
 
 
