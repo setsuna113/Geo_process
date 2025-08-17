@@ -26,11 +26,18 @@ def get_fungi_richness(am_fungi: h2o.H2OFrame, ecm_fungi: h2o.H2OFrame) -> h2o.H
     # Create fungi_richness as new frame
     logger.info("Computing fungi_richness...")
     fungi_richness = am_fungi + ecm_fungi
+    
+    # Round to nearest integer for negative binomial GLM
+    # Species richness must be integer counts
+    logger.info("Rounding fungi_richness to integers for negative binomial modeling")
+    fungi_richness = fungi_richness.round()
     fungi_richness.set_name(0, 'fungi_richness')
     
     # Log statistics
     mean_val = fungi_richness.mean()[0]
     std_val = fungi_richness.sd()[0]
-    logger.info(f"Created fungi_richness: mean={mean_val:.2f}, std={std_val:.2f}")
+    min_val = fungi_richness.min()
+    max_val = fungi_richness.max()
+    logger.info(f"Created fungi_richness (rounded): mean={mean_val:.2f}, std={std_val:.2f}, min={min_val:.0f}, max={max_val:.0f}")
     
     return fungi_richness

@@ -613,7 +613,12 @@ class ScoreTest:
         
         # Panel 1: Chi-square distribution with test statistic
         ax1 = axes[0]
-        x = np.linspace(0, max(statistic * 1.5, stats.chi2.ppf(0.999, df)), 1000)
+        # Ensure we have a reasonable x range for visualization
+        max_x = max(statistic * 1.5, stats.chi2.ppf(0.999, df), 10)
+        # For very large statistics, limit the range for better visualization
+        if statistic > 100:
+            max_x = min(max_x, statistic * 1.2)
+        x = np.linspace(0, max_x, 1000)
         y = stats.chi2.pdf(x, df)
         
         # Plot distribution
@@ -639,7 +644,14 @@ class ScoreTest:
         ax1.set_title('Score Test Distribution', fontsize=12, fontweight='bold')
         ax1.legend(loc='upper right', fontsize=9)
         ax1.grid(True, alpha=0.3)
-        ax1.set_xlim(0, x[-1])
+        ax1.set_xlim(0, max_x)
+        
+        # Add note if statistic is very large
+        if statistic > stats.chi2.ppf(0.9999, df):
+            ax1.text(max_x * 0.5, max(y) * 0.8, 
+                    f'Note: Test statistic ({statistic:.0f})\nis extremely significant',
+                    ha='center', fontsize=10, style='italic',
+                    bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.3))
         
         # Panel 2: P-value visualization
         ax2 = axes[1]
