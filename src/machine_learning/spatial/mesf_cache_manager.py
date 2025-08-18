@@ -1,11 +1,11 @@
-"""MESF Cache Manager for spatial sampling-aware caching.
+"""MESF Cache Manager with robust caching for eigenvectors only.
 
 This manager ensures:
-1. Original data files are never modified
-2. MESF is cached per (file, sampling_rate, params) combination
-3. Efficient reuse of computed MESF values
-4. Thread-safe atomic operations
-5. Comprehensive error handling
+1. Efficient NPZ storage of eigenvectors only (not full data)
+2. Thread-safe atomic operations with file locking
+3. Cache invalidation on file changes (mtime/size)
+4. Robust error handling and corruption recovery
+5. Minimal storage overhead
 """
 
 import os
@@ -16,9 +16,7 @@ import tempfile
 import fcntl
 import shutil
 import numpy as np
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+# Removed pandas and pyarrow - we only store numpy arrays
 import tempfile
 import fcntl
 import threading
@@ -153,15 +151,16 @@ class MESFCacheManager:
         return cache_key
     
     def get_cached_path(self, cache_key: str) -> Path:
-        """Get the path for cached MESF-augmented data.
+        """Get the path for cached MESF eigenvectors.
         
         Args:
             cache_key: Unique cache key
             
         Returns:
-            Path to cached parquet file
+            Path to cached NPZ file
         """
-        return self.cache_dir / f"mesf_{cache_key}.parquet"
+        # Use same naming as simple cache for compatibility
+        return self.cache_dir / f"{cache_key}.npz"
     
     def get_metadata_path(self, cache_key: str) -> Path:
         """Get the path for cache metadata.
@@ -172,7 +171,7 @@ class MESFCacheManager:
         Returns:
             Path to metadata JSON file
         """
-        return self.cache_dir / f"mesf_{cache_key}_metadata.json"
+        return self.cache_dir / f"{cache_key}_metadata.json"
     
     def is_cached(self, cache_key: str) -> bool:
         """Check if MESF data is cached.
@@ -229,15 +228,15 @@ class MESFCacheManager:
 
     def save_to_cache(self,
                       cache_key: str,
-                      data_table: pa.Table,
+                      eigenvectors: np.ndarray,
                       metadata: Dict[str, Any]) -> str:
-        """Save MESF-augmented data to cache atomically.
+        """Save MESF eigenvectors to cache atomically.
         
         Uses atomic file operations to prevent race conditions.
         
         Args:
             cache_key: Unique cache key
-            data_table: PyArrow table with MESF columns
+            eigenvectors: MESF eigenvectors array (n_points, n_eigenvectors)
             metadata: Metadata about the computation
             
         Returns:
@@ -259,22 +258,22 @@ class MESFCacheManager:
                 return str(cached_path)
             
             # Use atomic write with temporary files
-            temp_data_path = cached_path.with_suffix('.tmp')
-            temp_meta_path = metadata_path.with_suffix('.tmp')
+            temp_data_path = self.cache_dir / f"tmp_{cache_key}.npz"
+            temp_meta_path = self.cache_dir / f"tmp_{cache_key}_metadata.json"
             
             try:
                 # Check available disk space first
                 stat = os.statvfs(self.cache_dir)
                 free_bytes = stat.f_bavail * stat.f_frsize
-                # Estimate size (rough estimate: current table size * 1.2 for safety)
-                estimated_size = data_table.nbytes * 1.2 if hasattr(data_table, 'nbytes') else 100 * 1024 * 1024
+                # Estimate compressed size (NPZ typically achieves 5-10x compression)
+                estimated_size = eigenvectors.nbytes * 0.3  # Conservative estimate
                 
                 if free_bytes < estimated_size:
                     raise OSError(f"Insufficient disk space. Need ~{estimated_size/(1024*1024):.1f}MB, "
                                 f"have {free_bytes/(1024*1024):.1f}MB")
                 
-                # Save data to temporary file
-                pq.write_table(data_table, temp_data_path)
+                # Save eigenvectors to temporary NPZ file - exact same format as simple cache
+                np.savez_compressed(temp_data_path, eigenvectors=eigenvectors)
                 # Set restrictive permissions
                 os.chmod(temp_data_path, 0o644)
                 
@@ -302,14 +301,14 @@ class MESFCacheManager:
                 logger.error(f"Failed to save cache: {e}")
                 raise OSError(f"Failed to save cache for key {cache_key}") from e
     
-    def load_from_cache(self, cache_key: str) -> Tuple[str, Dict[str, Any]]:
-        """Load MESF-augmented data from cache with error handling.
+    def load_from_cache(self, cache_key: str) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Load MESF eigenvectors from cache with error handling.
         
         Args:
             cache_key: Unique cache key
             
         Returns:
-            Tuple of (cached_file_path, metadata)
+            Tuple of (eigenvectors_array, metadata)
             
         Raises:
             ValueError: If cache doesn't exist
@@ -344,18 +343,22 @@ class MESFCacheManager:
                     self._cleanup_cache(cache_key)
                     raise OSError(f"Corrupted cache metadata for key: {cache_key}") from e
                 
-                # Verify data file is readable
+                # Load and verify eigenvectors
                 try:
-                    # Quick check that parquet file is valid
-                    pq_file = pq.ParquetFile(cached_path)
-                    _ = pq_file.metadata
+                    with np.load(cached_path) as data:
+                        eigenvectors = data['eigenvectors']
+                        # Verify shape matches metadata
+                        if 'eigenvector_shape' in metadata:
+                            expected_shape = tuple(metadata['eigenvector_shape'])
+                            if eigenvectors.shape != expected_shape:
+                                raise ValueError(f"Shape mismatch: {eigenvectors.shape} != {expected_shape}")
                 except Exception as e:
-                    logger.error(f"Failed to verify cache data: {e}")
+                    logger.error(f"Failed to load cache data: {e}")
                     self._cleanup_cache(cache_key)
                     raise OSError(f"Corrupted cache data for key: {cache_key}") from e
                 
-                # Return the cached path and metadata
-                return str(cached_path), metadata
+                # Return the eigenvectors and metadata
+                return eigenvectors, metadata
         except TimeoutError:
             logger.warning(f"Timeout waiting for cache lock, proceeding without lock")
             # Fall back to reading without lock with validation
@@ -368,17 +371,21 @@ class MESFCacheManager:
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
                 
-                # Quick validation of parquet file
+                # Quick validation of NPZ file
                 try:
-                    pq_file = pq.ParquetFile(cached_path)
-                    _ = pq_file.metadata
+                    with np.load(cached_path) as data:
+                        eigenvectors = data['eigenvectors']
+                        if 'eigenvector_shape' in metadata:
+                            expected_shape = tuple(metadata['eigenvector_shape'])
+                            if eigenvectors.shape != expected_shape:
+                                raise ValueError(f"Shape mismatch")
                 except Exception as e:
                     logger.error(f"Cache data appears corrupted: {e}")
                     self._cleanup_cache(cache_key)
                     raise OSError(f"Corrupted cache data for key: {cache_key}") from e
                 
                 logger.info(f"Successfully read cache without lock: {cached_path}")
-                return str(cached_path), metadata
+                return eigenvectors, metadata
                 
             except (json.JSONDecodeError, IOError, ValueError) as e:
                 logger.error(f"Failed to read cache without lock: {e}")
@@ -407,36 +414,39 @@ class MESFCacheManager:
                            file_path: str,
                            spatial_grid_step: int,
                            mesf_params: Dict[str, Any],
-                           compute_fn: callable) -> str:
-        """Get cached MESF data or compute if not cached.
+                           compute_fn: callable) -> np.ndarray:
+        """Get cached MESF eigenvectors or compute if not cached.
         
         Args:
             file_path: Path to original data file
             spatial_grid_step: Spatial sampling rate
             mesf_params: MESF computation parameters
             compute_fn: Function to compute MESF if not cached
-                       Should return (augmented_table, metadata)
+                       Should return (eigenvectors, metadata)
             
         Returns:
-            Path to MESF-augmented parquet file
+            MESF eigenvectors array
         """
         # Generate cache key
         cache_key = self.get_cache_key(file_path, spatial_grid_step, mesf_params)
         
         # Check cache
         if self.is_cached(cache_key):
-            logger.info(f"Using cached MESF data for key: {cache_key}")
-            cached_path, metadata = self.load_from_cache(cache_key)
-            return cached_path
+            logger.info(f"Using cached MESF eigenvectors for key: {cache_key}")
+            eigenvectors, metadata = self.load_from_cache(cache_key)
+            return eigenvectors
         
         # Compute MESF
         logger.info(f"Computing MESF (not in cache): key={cache_key}")
-        augmented_table, metadata = compute_fn(file_path, spatial_grid_step, mesf_params)
+        eigenvectors, metadata = compute_fn(file_path, spatial_grid_step, mesf_params)
+        
+        # Add shape to metadata for validation
+        metadata['eigenvector_shape'] = eigenvectors.shape
         
         # Save to cache
-        cached_path = self.save_to_cache(cache_key, augmented_table, metadata)
+        self.save_to_cache(cache_key, eigenvectors, metadata)
         
-        return cached_path
+        return eigenvectors
     
     def clear_cache(self, older_than_days: Optional[int] = None):
         """Clear cache files safely with proper locking.
@@ -458,7 +468,7 @@ class MESFCacheManager:
                        f"{free / 1024 / 1024 / 1024:.1f}GB free")
             
             try:
-                for cache_file in self.cache_dir.glob("mesf_*.parquet"):
+                for cache_file in self.cache_dir.glob("*.npz"):
                     try:
                         if older_than_days is not None:
                             file_age_days = (time.time() - cache_file.stat().st_mtime) / 86400
@@ -512,7 +522,7 @@ class MESFCacheManager:
         Returns:
             Dictionary with cache statistics
         """
-        cache_files = list(self.cache_dir.glob("mesf_*.parquet"))
+        cache_files = list(self.cache_dir.glob("*.npz"))
         
         total_size = sum(f.stat().st_size for f in cache_files)
         
@@ -550,11 +560,14 @@ class MESFCacheManager:
                 logger.warning(f"Cache metadata missing required fields: {cache_key}")
                 return False
             
-            # Quick schema validation
-            df = pq.read_table(cached_path, columns=['x', 'y']).to_pandas()
-            if len(df) != metadata['n_samples']:
-                logger.warning(f"Cache size mismatch: expected {metadata['n_samples']}, got {len(df)}")
-                return False
+            # Quick array validation
+            with np.load(cached_path) as data:
+                eigenvectors = data['eigenvectors']
+                if 'eigenvector_shape' in metadata:
+                    expected_shape = tuple(metadata['eigenvector_shape'])
+                    if eigenvectors.shape != expected_shape:
+                        logger.warning(f"Cache shape mismatch: expected {expected_shape}, got {eigenvectors.shape}")
+                        return False
             
             return True
             
