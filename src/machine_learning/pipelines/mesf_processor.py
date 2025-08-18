@@ -1,27 +1,41 @@
-"""Clean MESF processor with Nystrom-only implementation.
+#!/usr/bin/env python
+"""MESF processor for Julia hybrid pipeline integration.
 
-Key design decisions:
-1. Always use Nystrom (no fallback to exact MESF)
-2. Use 100×√n samples for optimal quality/memory balance
-3. Load only samples' x,y coordinates with Polars
-4. Efficient k-NN interpolation to full dataset
-5. No redundant configs or logic
+Direct CLI interface for Julia to compute MESF eigenvectors.
+Can be called from command line or imported as a module.
+
+Usage:
+    python mesf_processor.py <data_path> [options]
+    
+Example:
+    python mesf_processor.py /data/bio.parquet --spatial-step 10 --n-eigenvectors 10
 """
 
+import sys
+import os
+import argparse
 import logging
 import hashlib
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
+# Add project root to path BEFORE any project imports  
+# mesf_processor.py is at src/machine_learning/pipelines/mesf_processor.py
+# Go up 3 levels: pipelines -> machine_learning -> src -> [project_root]
+project_root = Path(__file__).resolve().parents[3]  # Use parents[3] for clarity
+sys.path.insert(0, str(project_root))
+
 import numpy as np
 import polars as pl
 from sklearn.neighbors import NearestNeighbors
 
-# Import abstracted spatial computation modules
+# Now import spatial modules
 from src.machine_learning.spatial.nystrom_eigensolver import NystromEigensolver
-# No spatial_weights - we inline the simple computation
+from src.machine_learning.spatial.mesf_cache_manager import MESFCacheManager
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +52,10 @@ class MESFProcessor:
         self.cache_dir = Path(cache_dir) if cache_dir else Path.home() / '.cache' / 'mesf'
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.n_jobs = n_jobs  # Will be set from config in get_mesf_eigenvectors
-        logger.info(f"MESF processor initialized with cache at {self.cache_dir}")
+        
+        # Initialize robust cache manager (always use it)
+        self.cache_manager = MESFCacheManager(cache_dir=str(self.cache_dir))
+        logger.info(f"MESF processor initialized with robust cache at {self.cache_dir}")
     
     def get_mesf_eigenvectors(
         self,
@@ -83,17 +100,31 @@ class MESFProcessor:
         
         logger.info(f"Using {n_cores} CPU cores for parallel computations")
         
-        # Generate cache key
-        cache_key = self._get_cache_key(data_path, spatial_grid_step, n_eigenvectors, distance_threshold)
-        logger.info(f"Generated cache key: {cache_key}")
+        # Use robust cache manager
+        mesf_params = {
+            'n_eigenvectors': n_eigenvectors,
+            'distance_threshold': distance_threshold
+        }
         
-        # Try cache first
-        cached = self._load_from_cache(cache_key)
-        if cached is not None:
-            logger.info("✅ Successfully loaded MESF eigenvectors from cache!")
-            return cached
-        else:
-            logger.info("Cache not found or failed to load, will compute MESF")
+        def compute_mesf_fn(file_path, grid_step, params):
+            # Compute MESF and return eigenvectors + metadata
+            eigenvectors = self._compute_mesf_internal(
+                file_path, grid_step, params['n_eigenvectors'], 
+                params['distance_threshold'], n_jobs
+            )
+            metadata = {
+                'n_eigenvectors': params['n_eigenvectors'],
+                'distance_threshold': params['distance_threshold'],
+                'spatial_grid_step': grid_step,
+                'computed_at': str(np.datetime64('now')),
+                'n_samples': eigenvectors.shape[0] if eigenvectors is not None else 0
+            }
+            return eigenvectors, metadata
+        
+        # Get or compute MESF using robust cache
+        return self.cache_manager.get_or_compute_mesf(
+            data_path, spatial_grid_step or 1, mesf_params, compute_mesf_fn
+        )
         
         # Step 1: Count total rows efficiently
         n_total = self._count_total_rows(data_path, spatial_grid_step)
@@ -142,10 +173,64 @@ class MESFProcessor:
         if eigenvectors_full is None:
             return None
         
-        # Cache the result
-        self._save_to_cache(cache_key, eigenvectors_full)
-        
         logger.info(f"MESF computation complete: {n_total:,} rows × {n_eigenvectors} eigenvectors")
+        return eigenvectors_full
+    
+    def _compute_mesf_internal(self, data_path: str, spatial_grid_step: Optional[int], 
+                              n_eigenvectors: int, distance_threshold: float, 
+                              n_jobs: Optional[int]) -> Optional[np.ndarray]:
+        """Internal MESF computation without caching, for use by cache manager.
+        
+        Args:
+            data_path: Path to data file
+            spatial_grid_step: Spatial sampling step
+            n_eigenvectors: Number of eigenvectors
+            distance_threshold: Distance threshold in km
+            n_jobs: Number of parallel jobs
+            
+        Returns:
+            MESF eigenvectors or None if error
+        """
+        # Count total rows
+        n_total = self._count_total_rows(data_path, spatial_grid_step)
+        if n_total == 0:
+            logger.error("No data found")
+            return None
+        
+        # Calculate Nystrom parameters
+        n_landmark, n_sample = self._calculate_nystrom_params(n_total)
+        
+        # Select indices
+        sample_indices, landmark_indices = self._select_indices(n_total, n_landmark, n_sample)
+        
+        # Load coordinates
+        coords_sample = self._load_coordinates(data_path, sample_indices, spatial_grid_step)
+        if coords_sample is None:
+            return None
+        
+        coords_landmark = coords_sample[:n_landmark]
+        
+        # Compute eigenvectors on landmarks
+        eigenvectors_landmark = self._compute_landmark_eigenvectors(
+            coords_landmark, n_eigenvectors, distance_threshold
+        )
+        if eigenvectors_landmark is None:
+            return None
+        
+        # Extend to samples
+        eigenvectors_sample = self._extend_to_samples(
+            coords_sample, coords_landmark, eigenvectors_landmark
+        )
+        if eigenvectors_sample is None:
+            return None
+        
+        # Interpolate to full dataset
+        eigenvectors_full = self._interpolate_to_full_rff(
+            data_path, spatial_grid_step, n_total,
+            coords_sample, eigenvectors_sample,
+            n_jobs or self.n_jobs or -1
+        )
+        
         return eigenvectors_full
     
     def _count_total_rows(self, data_path: str, spatial_grid_step: Optional[int]) -> int:
@@ -619,93 +704,116 @@ class MESFProcessor:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
     
-    def _get_cache_key(
-        self,
-        data_path: str,
-        spatial_grid_step: Optional[int],
-        n_eigenvectors: int,
-        distance_threshold: float
-    ) -> str:
-        """Generate unique cache key.
-        
-        Args:
-            data_path: Path to data file
-            spatial_grid_step: Sampling parameter
-            n_eigenvectors: Number of eigenvectors
-            distance_threshold: Distance threshold
-            
-        Returns:
-            Unique cache key string
-        """
-        key_data = {
-            'file': str(Path(data_path).resolve()),
-            'sampling': spatial_grid_step or 0,
-            'n_eigen': n_eigenvectors,
-            'dist_thresh': distance_threshold
-        }
-        
-        # Add file modification time
-        try:
-            stat = Path(data_path).stat()
-            key_data['mtime'] = stat.st_mtime
-            key_data['size'] = stat.st_size
-        except:
-            pass
-        
-        key_str = json.dumps(key_data, sort_keys=True)
-        return hashlib.sha256(key_str.encode()).hexdigest()[:16]
-    
-    def _load_from_cache(self, cache_key: str) -> Optional[np.ndarray]:
-        """Load cached result if exists.
-        
-        Args:
-            cache_key: Cache key
-            
-        Returns:
-            Numpy array or None if not cached
-        """
-        cache_file = self.cache_dir / f"{cache_key}.npz"
-        logger.info(f"Looking for cache file: {cache_file}")
-        
-        if not cache_file.exists():
-            logger.info(f"Cache file does not exist: {cache_file}")
-            return None
-        
-        try:
-            logger.info(f"Loading cache file: {cache_file} ({cache_file.stat().st_size / 1024 / 1024:.1f} MB)")
-            data = np.load(cache_file)
-            eigenvectors = data['eigenvectors']
-            logger.info(f"Loaded numpy array from cache: {eigenvectors.shape}")
-            return eigenvectors
-        except Exception as e:
-            logger.error(f"Cache load failed: {e}", exc_info=True)
-            return None
-    
-    def _save_to_cache(self, cache_key: str, eigenvectors: np.ndarray) -> None:
-        """Save result to cache.
-        
-        Args:
-            cache_key: Cache key
-            eigenvectors: Eigenvectors to cache
-        """
-        try:
-            cache_file = self.cache_dir / f"{cache_key}.npz"
-            np.savez_compressed(cache_file, eigenvectors=eigenvectors)
-            logger.info(f"Cached result: {cache_file.name}")
-        except Exception as e:
-            logger.warning(f"Cache save failed: {e}")
-    
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics.
         
         Returns:
             Dictionary with cache stats
         """
-        cache_files = list(self.cache_dir.glob("*.npz"))
-        total_size = sum(f.stat().st_size for f in cache_files)
+        # Delegate to cache manager
+        return self.cache_manager.get_cache_info()
+
+
+def compute_mesf_cli(
+    data_path: str,
+    spatial_grid_step: int = 1,
+    n_eigenvectors: int = 10,
+    n_jobs: int = 120,
+    output_dir: str = 'results/mesf_cache'
+) -> str:
+    """CLI-friendly MESF computation for Julia integration.
+    
+    Args:
+        data_path: Path to parquet file
+        spatial_grid_step: Spatial sampling (1 = no sampling)
+        n_eigenvectors: Number of MESF eigenvectors
+        n_jobs: Number of CPU cores to use
+        output_dir: Directory to save results
         
-        return {
-            'cache_dir': str(self.cache_dir),
-            'total_files': len(cache_files),
-            'total_size_mb': total_size / (1024 * 1024)
-        }
+    Returns:
+        Path to saved MESF file
+    """
+    print("="*60)
+    print(f"COMPUTING MESF WITH SPATIAL_STEPS={spatial_grid_step}")
+    print("="*60)
+    print(f"Data: {data_path}")
+    print(f"Parameters: n_eigenvectors={n_eigenvectors}, n_jobs={n_jobs}")
+    
+    # Set environment variable for parallelization
+    os.environ['MESF_N_JOBS'] = str(n_jobs)
+    
+    # Initialize processor
+    processor = MESFProcessor(n_jobs=n_jobs)
+    
+    # Compute MESF (will use cache if available)
+    mesf_eigenvectors = processor.get_mesf_eigenvectors(
+        data_path=data_path,
+        spatial_grid_step=spatial_grid_step,
+        n_eigenvectors=n_eigenvectors,
+        distance_threshold=100.0,
+        n_jobs=n_jobs
+    )
+    
+    if mesf_eigenvectors is not None:
+        # Save result
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        output_file = output_dir / f'mesf_step{spatial_grid_step}_n{n_eigenvectors}.npy'
+        np.save(output_file, mesf_eigenvectors)
+        
+        print(f"\n✓ MESF computation complete!")
+        print(f"✓ Saved to: {output_file}")
+        print(f"Shape: {mesf_eigenvectors.shape}")
+        print(f"File size: {output_file.stat().st_size / 1024**3:.2f} GB")
+        
+        # Print the path for Julia to read
+        print(output_file)  # Last line is the file path
+        return str(output_file)
+    else:
+        print("ERROR: MESF computation failed")
+        sys.exit(1)
+
+
+def main():
+    """Main entry point for CLI usage from Julia."""
+    parser = argparse.ArgumentParser(
+        description='Compute MESF eigenvectors for Julia hybrid pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage with defaults
+  python mesf_processor.py /data/bio.parquet
+  
+  # With spatial sampling and custom parameters
+  python mesf_processor.py /data/bio.parquet --spatial-step 10 --n-eigenvectors 15
+  
+  # Specify output directory
+  python mesf_processor.py /data/bio.parquet --output-dir /cache/mesf
+        """
+    )
+    
+    parser.add_argument('data_path', help='Path to parquet data file')
+    parser.add_argument('--spatial-step', type=int, default=1,
+                       help='Spatial grid sampling step (default: 1)')
+    parser.add_argument('--n-eigenvectors', type=int, default=10,
+                       help='Number of eigenvectors (default: 10)')
+    parser.add_argument('--n-jobs', type=int, default=120,
+                       help='Number of CPU cores (default: 120)')
+    parser.add_argument('--output-dir', default='results/mesf_cache',
+                       help='Output directory (default: results/mesf_cache)')
+    
+    args = parser.parse_args()
+    
+    # Compute MESF
+    output_file = compute_mesf_cli(
+        data_path=args.data_path,
+        spatial_grid_step=args.spatial_step,
+        n_eigenvectors=args.n_eigenvectors,
+        n_jobs=args.n_jobs,
+        output_dir=args.output_dir
+    )
+
+
+if __name__ == "__main__":
+    main()
