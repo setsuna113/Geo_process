@@ -127,7 +127,7 @@ convergence:
   logic: 'or'                        # 'or' = either TE or GC, 'weighted' = combine scores
   
   # Early stopping patience
-  patience: 500                     # Stop after N epochs without meaningful QE improvement (>0.1%) - set to 500 to force full training
+  patience: 1000                    # Stop after N epochs without meaningful QE improvement (>0.1%) - set to 1000 to ensure full training
 
 # ============================================================================
 # TERMINATION - Additional termination criteria
