@@ -18,7 +18,7 @@ global data_id = ""
 global mesf_columns = String[]
 global fitted_models = Dict{String, Any}()
 global config = Dict{String, Any}()
-global cache_dir = "/home/yl998/.cache/mesf"
+global cache_dir = "/scratch/yl998/.cache/mesf"
 global output_dir = "results/julia_models"
 
 # ============================================================================
@@ -32,30 +32,11 @@ Load configuration from YAML file.
 """
 function load_config(config_path::String)
     global config
-    if isfile(config_path)
-        println("Loading configuration from: $config_path")
-        config = YAML.load_file(config_path)
-    else
-        println("Config file not found, using defaults")
-        config = Dict(
-            "preprocessing" => Dict(
-                "standardization" => "2sd",
-                "log_transform" => true
-            ),
-            "spatial" => Dict(
-                "mesf" => Dict(
-                    "max_eigenvectors" => 10,
-                    "distance_threshold" => 100.0
-                )
-            ),
-            "models" => Dict(
-                "glm" => Dict(
-                    "family" => "negative_binomial",
-                    "maxiter" => 100
-                )
-            )
-        )
+    if !isfile(config_path)
+        error("Config file not found: $config_path - Configuration is required!")
     end
+    println("Loading configuration from: $config_path")
+    config = YAML.load_file(config_path)
     return config
 end
 
@@ -64,12 +45,18 @@ end
 # ============================================================================
 
 """
-    load_with_python_mesf(data_path, mesf_path, spatial_grid_step=1)
+    load_with_python_mesf(data_path, mesf_path, spatial_grid_step=1; method="method1")
 
 Load data and integrate pre-computed Python MESF eigenvectors.
 This is the core of the hybrid approach - use Python's optimized MESF.
+
+Args:
+    data_path: Path to data file
+    mesf_path: Path to MESF eigenvectors
+    spatial_grid_step: Spatial sampling step
+    method: "method1"/"method2" for GLM (log transform), "method3"/"dml" for DML (raw counts)
 """
-function load_with_python_mesf(data_path::String, mesf_path::String, spatial_grid_step::Int=1)
+function load_with_python_mesf(data_path::String, mesf_path::String, spatial_grid_step::Int=1; method::String="method1")
     global current_data, data_id, mesf_columns
     
     println("="^60)
@@ -96,8 +83,29 @@ function load_with_python_mesf(data_path::String, mesf_path::String, spatial_gri
         println("Sampled to $(nrow(df)) rows (step=$spatial_grid_step)")
     end
     
-    # Load MESF eigenvectors from Python
-    if isfile(mesf_path)
+    # Convert all numeric columns to Float32 for memory efficiency
+    println("Converting numeric columns to Float32...")
+    for col in names(df)
+        if eltype(df[!, col]) <: Number && !(eltype(df[!, col]) <: AbstractString)
+            df[!, col] = Float32.(df[!, col])
+        end
+    end
+    
+    # Handle MESF eigenvectors
+    # First check for cached MESF file with matching spatial_grid_step
+    cached_mesf_path = joinpath(cache_dir, "mesf_step$(spatial_grid_step)_n10.npy")
+    
+    if isfile(cached_mesf_path)
+        # Found cached MESF for this spatial_grid_step
+        println("Found cached MESF for step=$spatial_grid_step: $cached_mesf_path")
+        mesf_path = cached_mesf_path
+    elseif !isempty(mesf_path) && !isfile(mesf_path)
+        println("Warning: Provided MESF path doesn't exist: $mesf_path")
+        mesf_path = ""
+    end
+    
+    if !isempty(mesf_path) && isfile(mesf_path)
+        # Load MESF (either from cache or provided path)
         println("Loading MESF eigenvectors from: $mesf_path")
         
         if endswith(mesf_path, ".npy")
@@ -110,9 +118,9 @@ function load_with_python_mesf(data_path::String, mesf_path::String, spatial_gri
                 error("MESF dimensions mismatch: $(size(mesf_array, 1)) vs $(nrow(df)) data rows")
             end
             
-            # Add MESF columns to dataframe
+            # Add MESF columns to dataframe (as Float32)
             for i in 1:n_mesf
-                df[!, Symbol("mesf_$i")] = mesf_array[:, i]
+                df[!, Symbol("mesf_$i")] = Float32.(mesf_array[:, i])
             end
             mesf_columns = ["mesf_$i" for i in 1:n_mesf]
             println("✓ Added $n_mesf MESF eigenvectors from Python")
@@ -135,12 +143,42 @@ function load_with_python_mesf(data_path::String, mesf_path::String, spatial_gri
             error("Unsupported MESF format. Use .npy or .arrow")
         end
     else
-        println("Warning: MESF file not found, proceeding without spatial features")
-        mesf_columns = String[]
+        # MESF not provided or doesn't exist - compute it
+        println("MESF file not found. Computing MESF eigenvectors...")
+        
+        # Save current dataframe temporarily for MESF computation (as Arrow)
+        temp_data_path = "/tmp/temp_for_mesf_$(hash(data_path))_$(spatial_grid_step).arrow"
+        Arrow.write(temp_data_path, df)
+        
+        # Compute MESF using Python (data already sampled in Julia)
+        mesf_file = compute_mesf_with_python(
+            temp_data_path,
+            spatial_grid_step=spatial_grid_step,  # For filename only
+            n_mesf=10
+        )
+        
+        # Load the computed MESF
+        if isfile(mesf_file)
+            mesf_array = npzread(mesf_file)
+            n_mesf = size(mesf_array, 2)
+            
+            # Add MESF columns to dataframe (as Float32)
+            for i in 1:n_mesf
+                df[!, Symbol("mesf_$i")] = Float32.(mesf_array[:, i])
+            end
+            mesf_columns = ["mesf_$i" for i in 1:n_mesf]
+            println("✓ Computed and added $n_mesf MESF eigenvectors")
+        else
+            println("Warning: MESF computation failed, proceeding without spatial features")
+            mesf_columns = String[]
+        end
+        
+        # Clean up temp file
+        rm(temp_data_path, force=true)
     end
     
-    # Preprocess the data
-    df = preprocess_data!(df)
+    # Preprocess the data based on the method
+    df = preprocess_data!(df, method=method)
     
     # Store processed data
     current_data = df
@@ -160,25 +198,46 @@ function load_with_python_mesf(data_path::String, mesf_path::String, spatial_gri
 end
 
 """
-    preprocess_data!(df::DataFrame)
+    preprocess_data!(df::DataFrame; method::String="method1")
 
 Preprocess the dataframe with standardization and transformations.
+
+Args:
+    df: DataFrame to preprocess
+    method: Determines preprocessing - "method1"/"method2" use log transform,
+            "method3"/"dml" keep raw counts
 """
-function preprocess_data!(df::DataFrame)
+function preprocess_data!(df::DataFrame; method::String="method1")
     # Remove missing values
     initial_rows = nrow(df)
     dropmissing!(df)
     println("Removed $(initial_rows - nrow(df)) rows with missing values")
     
-    # Create fungi_richness
+    # Create fungi_richness (always from AM + ECM)
     if :am_fungi_richness in propertynames(df) && :ecm_fungi_richness in propertynames(df)
-        df.fungi_richness = round.(Int, df.am_fungi_richness .+ df.ecm_fungi_richness)
+        df.fungi_richness = df.am_fungi_richness .+ df.ecm_fungi_richness  # Will be converted to Float32
         println("Created fungi_richness from AM + ECM")
     elseif !(:fungi_richness in propertynames(df))
         error("Cannot create fungi_richness: required columns missing")
     end
     
-    # Standardize climate variables (2SD method)
+    # Ensure we have raw richness columns (before any transformations)
+    # Handle different possible column names
+    if :plant_richness in propertynames(df)
+        df.plants_richness = df.plant_richness  # Standardize naming
+    elseif !(:plants_richness in propertynames(df))
+        error("Cannot find plants richness data")
+    end
+    
+    if :animal_richness in propertynames(df)
+        df.vertebrates_richness = df.animal_richness  # Standardize naming
+    elseif :terrestrial_richness in propertynames(df)
+        df.vertebrates_richness = df.terrestrial_richness
+    elseif !(:vertebrates_richness in propertynames(df))
+        error("Cannot find vertebrates/animal richness data")
+    end
+    
+    # Standardize climate variables (2SD method) - same for all methods
     climate_vars = [:bio01, :bio04, :bio12, :bio15, :elevation]
     for var in climate_vars
         if var in propertynames(df)
@@ -190,26 +249,29 @@ function preprocess_data!(df::DataFrame)
     end
     println("✓ Standardized climate variables (2SD method)")
     
-    # Add elevation squared
+    # Add elevation squared - same for all methods
     if :elevation_std in propertynames(df)
         df.elevation_std_sq = df.elevation_std .^ 2
         println("✓ Added elevation_std_sq")
     end
     
-    # Log transform biodiversity variables
-    if :plant_richness in propertynames(df)
-        df.plants_richness_log = log.(df.plant_richness .+ 1)
-    elseif :plants_richness in propertynames(df)
+    # Method-specific transformations
+    if method in ["method3", "dml"]
+        # Method 3 (DML): Keep raw counts as Float64 for causal interpretation
+        println("✓ Keeping raw counts as Float64 for DML (Method 3)")
+        println("  Plants: $(minimum(df.plants_richness))-$(maximum(df.plants_richness)) species")
+        println("  Vertebrates: $(minimum(df.vertebrates_richness))-$(maximum(df.vertebrates_richness)) species")
+        println("  Fungi: $(minimum(df.fungi_richness))-$(maximum(df.fungi_richness)) species")
+    else
+        # Methods 1-2: GLM requires integer counts for negative binomial
+        # Round fungi to nearest integer for count models
+        df.fungi_richness = round.(Int, df.fungi_richness)
+        
+        # Log transform predictors for GLM
         df.plants_richness_log = log.(df.plants_richness .+ 1)
-    end
-    
-    if :animal_richness in propertynames(df)
-        df.vertebrates_richness_log = log.(df.animal_richness .+ 1)
-    elseif :vertebrates_richness in propertynames(df)
         df.vertebrates_richness_log = log.(df.vertebrates_richness .+ 1)
+        println("✓ Rounded fungi to integers and log-transformed biodiversity predictors for GLM (Methods 1-2)")
     end
-    
-    println("✓ Log-transformed biodiversity variables")
     
     return df
 end
@@ -235,14 +297,23 @@ function compute_mesf_with_python(data_path::String;
     # Call mesf_processor directly via CLI
     println("Calling MESF processor...")
     
-    # Build command with arguments
+    # Build command with arguments  
     mesf_processor_path = joinpath(dirname(@__FILE__), "mesf_processor.py")
-    python_cmd = `$(homedir())/anaconda3/envs/geo/bin/python $(mesf_processor_path) 
+    
+    # Get n_jobs from config (lightgbm.num_threads)
+    n_jobs = config["regression_analysis"]["models"]["lightgbm"]["num_threads"]
+    
+    # Use taskset to hard-limit CPU cores - no environment variables needed
+    # Libraries will auto-detect available cores within taskset limits
+    cpu_list = "0-$(n_jobs-1)"  # Use cores 0 to n_jobs-1
+    
+    # Build command with taskset only
+    python_cmd = `taskset -c $(cpu_list) $(homedir())/anaconda3/envs/geo/bin/python $(mesf_processor_path) 
         $(data_path) 
         --spatial-step $(spatial_grid_step) 
         --n-eigenvectors $(n_mesf) 
-        --n-jobs 120 
-        --output-dir results/mesf_cache`
+        --n-jobs $(n_jobs) 
+        --output-dir $(cache_dir)`
     
     # Run the command
     result = read(python_cmd, String)
@@ -471,9 +542,33 @@ function fit_method2_models()
 end
 
 """
+    prepare_data_for_dml()
+
+Prepare data specifically for DML (Method 3) with proper preprocessing.
+Returns a properly formatted DataFrame for DML.
+"""
+function prepare_data_for_dml()
+    global current_data, mesf_columns
+    
+    # Check if we need to reload with DML-specific preprocessing
+    if !(:plants_richness in propertynames(current_data)) || 
+       !(:vertebrates_richness in propertynames(current_data))
+        println("⚠ Data needs DML-specific preprocessing, reloading...")
+        
+        # We need to reload the original data and preprocess for DML
+        # This is a bit inefficient but ensures correctness
+        # In production, you'd want to cache both versions
+        return nothing  # Signal that we need special handling
+    end
+    
+    # Data already has raw counts, we can use it
+    return current_data
+end
+
+"""
     fit_method3_dml()
 
-Fit Method 3: Simplified Double Machine Learning.
+Fit Method 3: TRUE Double Machine Learning using multivariable_dml.jl
 """
 function fit_method3_dml()
     global current_data, mesf_columns, fitted_models
@@ -486,60 +581,92 @@ function fit_method3_dml()
     println("METHOD 3: DOUBLE MACHINE LEARNING")
     println("="^60)
     
-    # Define variables
-    outcome = :fungi_richness
-    treatments = [:plants_richness_log, :vertebrates_richness_log]
+    # Load the proper DML implementation (check if not already loaded)
+    if !isdefined(Main, :MultivariableDML)
+        include(joinpath(@__DIR__, "multivariable_dml.jl"))
+    end
     
-    # Confounders
+    # Check if data has raw counts (from DML preprocessing)
+    dml_data = prepare_data_for_dml()
+    
+    if isnothing(dml_data)
+        # Data was preprocessed for GLM (log-transformed), not DML
+        error("Cannot run DML: data was preprocessed with log transformation for GLM. " *
+              "Please run: julia julia_hybrid_pipeline.jl method3 <data_path> " *
+              "to load data with raw counts for DML.")
+    end
+    
+    # Verify we have all required columns
+    required_cols = ["fungi_richness", "plants_richness", "vertebrates_richness",
+                     "bio01_std", "bio04_std", "bio12_std", "bio15_std",
+                     "elevation_std", "elevation_std_sq"]
+    
+    for col in required_cols
+        if !(Symbol(col) in propertynames(dml_data))
+            error("Missing required column for DML: $col")
+        end
+    end
+    
+    # Verify MESF columns exist
+    for mesf_col in mesf_columns
+        if !(Symbol(mesf_col) in propertynames(dml_data))
+            error("Missing MESF column: $mesf_col")
+        end
+    end
+    
+    # Define confounders and treatments
     climate_features = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
     elevation_features = ["elevation_std", "elevation_std_sq"]
     confounders = vcat(climate_features, elevation_features, mesf_columns)
     
-    println("Implementing simplified DML with residualization...")
-    
-    # Ensure numeric columns are Float64
-    for col in names(current_data)
-        if eltype(current_data[!, col]) <: Number && !(eltype(current_data[!, col]) <: Integer)
-            current_data[!, col] = Float64.(current_data[!, col])
-        end
-    end
-    
-    # Step 1: Residualize outcome
-    formula_y = Term(outcome) ~ sum(Term.(Symbol.(confounders)))
-    model_y = lm(formula_y, current_data)
-    residuals_y = Float64.(residuals(model_y))
-    
-    # Step 2: Residualize treatments
-    residuals_treatments = Dict()
-    for treatment in treatments
-        formula_t = Term(treatment) ~ sum(Term.(Symbol.(confounders)))
-        model_t = lm(formula_t, current_data)
-        residuals_treatments[treatment] = Float64.(residuals(model_t))
-    end
-    
-    # Step 3: Final regression
-    df_residuals = DataFrame(
-        y_resid = residuals_y,
-        plants_resid = residuals_treatments[:plants_richness_log],
-        vertebrates_resid = residuals_treatments[:vertebrates_richness_log]
+    treatments = Dict(
+        "plants" => "plants_richness",       # Raw counts for causal interpretation
+        "vertebrates" => "vertebrates_richness"   # Raw counts
     )
     
-    model_dml = lm(@formula(y_resid ~ plants_resid + vertebrates_resid), df_residuals)
+    outcome = "fungi_richness"  # Raw counts (created in preprocessing)
     
-    # Store results
-    fitted_models["method3_dml"] = Dict(
-        "coefficients" => coef(model_dml),
-        "coef_names" => ["intercept", "plants_richness_effect", "vertebrates_richness_effect"],
-        "std_errors" => stderror(model_dml),
-        "vcov" => vcov(model_dml),
-        "r2" => r2(model_dml),
-        "n_obs" => nrow(current_data),
-        "method_note" => "Simplified DML using residualization"
-    )
+    # Initialize and fit TRUE DML with cross-fitting and LightGBM
+    println("\nRunning TRUE DML with:")
+    println("  Outcome: $outcome (raw counts)")
+    println("  Treatments: plants_richness, vertebrates_richness (raw counts)")
+    println("  Confounders: $(length(confounders)) variables including $(length(mesf_columns)) MESF")
+    println("  Method: Cross-fitting with 5 folds, LightGBM nuisance functions")
     
-    println("\n✓ Method 3 DML fitted successfully")
-    println("  Plants effect: $(round(coef(model_dml)[2], digits=4))")
-    println("  Vertebrates effect: $(round(coef(model_dml)[3], digits=4))")
+    # Use ML config for DML parameters
+    ml_config_path = "src/config/ml/ml_config.yml"
+    dml = MultivariableDML(n_folds=5, config_path=ml_config_path, verbose=true)
+    
+    try
+        fit_dml!(dml, dml_data, confounders, treatments, outcome)
+        
+        # Store results in consistent format
+        fitted_models["method3_dml"] = Dict(
+            "coefficients" => dml.coefficients,
+            "coef_names" => dml.treatment_names,
+            "std_errors" => dml.std_errors,
+            "vcov" => dml.vcov,
+            "n_obs" => dml.n_obs,
+            "method_note" => "TRUE DML with cross-fitting and LightGBM"
+        )
+        
+        # Save detailed results
+        mkpath("results/julia_models")
+        save_results(dml, "results/julia_models/method3_dml_results.json")
+        
+        println("\n✓ Method 3 TRUE DML completed successfully")
+        
+    catch e
+        println("\n⚠ DML failed: $e")
+        println("Stack trace:")
+        println(stacktrace())
+        
+        # Store error information
+        fitted_models["method3_dml"] = Dict(
+            "error" => string(e),
+            "method_note" => "DML failed - check data preprocessing"
+        )
+    end
     
     return fitted_models
 end
@@ -650,8 +777,12 @@ function run_hybrid_pipeline(data_path::String;
     
     # Step 3: Fit all models
     println("\nStep 3: Fitting statistical models...")
+    
+    # Methods 1-2 use log-transformed data (already preprocessed)
     fit_method1_models()
     fit_method2_models()
+    
+    # Method 3 needs raw counts - check and handle
     fit_method3_dml()
     
     # Prepare results
@@ -713,14 +844,129 @@ if length(ARGS) > 0
         )
         println("MESF saved to: $mesf_file")
         
+    elseif command == "method1"
+        # Run Method 1 only (H0 vs H1)
+        data_path = ARGS[2]
+        
+        # Load config to get spatial_grid_step
+        config_path = joinpath(dirname(@__DIR__), "..", "config", "ml", "ml_config.yml")
+        config = load_config(config_path)
+        spatial_grid_step = config["regression_analysis"]["data"]["spatial_grid_step"]
+        
+        mesf_path = length(ARGS) > 2 ? ARGS[3] : ""
+        save_dir = length(ARGS) > 3 ? ARGS[4] : "results/julia_models"
+        
+        println("\n" * "="^70)
+        println("RUNNING METHOD 1 ONLY (H0-H1 TESTING)")
+        println("="^70)
+        
+        # Load data with log transforms for GLM
+        metadata = load_with_python_mesf(data_path, mesf_path, spatial_grid_step, method="method1")
+        
+        # Run Method 1 only
+        fit_method1_models()
+        
+        # Save results
+        results = Dict(
+            "metadata" => metadata,
+            "models" => fitted_models,
+            "config" => config
+        )
+        saved_file = save_results_to_disk(results)
+        
+        println("\n✅ Method 1 analysis complete. Results saved to: $save_dir")
+        
+    elseif command == "method2"
+        # Run Method 2 only (Interactions)
+        data_path = ARGS[2]
+        
+        # Load config to get spatial_grid_step
+        config_path = joinpath(dirname(@__DIR__), "..", "config", "ml", "ml_config.yml")
+        config = load_config(config_path)
+        spatial_grid_step = config["regression_analysis"]["data"]["spatial_grid_step"]
+        
+        mesf_path = length(ARGS) > 2 ? ARGS[3] : ""
+        save_dir = length(ARGS) > 3 ? ARGS[4] : "results/julia_models"
+        
+        println("\n" * "="^70)
+        println("RUNNING METHOD 2 ONLY (INTERACTIONS)")
+        println("="^70)
+        
+        # Load data with log transforms for GLM
+        metadata = load_with_python_mesf(data_path, mesf_path, spatial_grid_step, method="method2")
+        
+        # Run Method 2 only
+        fit_method2_models()
+        
+        # Save results
+        results = Dict(
+            "metadata" => metadata,
+            "models" => fitted_models,
+            "config" => config
+        )
+        saved_file = save_results_to_disk(results)
+        
+        println("\n✅ Method 2 analysis complete. Results saved to: $save_dir")
+        
+    elseif command == "method3" || command == "dml"
+        # Run Method 3 only (DML)
+        data_path = ARGS[2]
+        
+        # Load config to get spatial_grid_step
+        config_path = joinpath(dirname(@__DIR__), "..", "config", "ml", "ml_config.yml")
+        config = load_config(config_path)
+        spatial_grid_step = config["regression_analysis"]["data"]["spatial_grid_step"]
+        
+        mesf_path = length(ARGS) > 2 ? ARGS[3] : ""
+        save_dir = length(ARGS) > 3 ? ARGS[4] : "results/julia_models"
+        
+        # Load multivariable_dml.jl at top level to avoid world age issues
+        include(joinpath(@__DIR__, "multivariable_dml.jl"))
+        
+        println("\n" * "="^70)
+        println("RUNNING METHOD 3 ONLY (DML)")
+        println("="^70)
+        
+        # Load and preprocess data for DML (raw counts)
+        metadata = load_with_python_mesf(data_path, mesf_path, spatial_grid_step, method="method3")
+        
+        # Run Method 3 DML only
+        fit_method3_dml()
+        
+        # Save results
+        results = Dict(
+            "metadata" => metadata,
+            "models" => fitted_models,
+            "config" => config
+        )
+        saved_file = save_results_to_disk(results)
+        
+        println("\n✅ Method 3 (DML) analysis complete. Results saved to: $save_dir")
+        
     else
         println("Unknown command: $command")
-        println("Available commands: run, compute_mesf")
+        println("Available commands: run, method1, method2, method3/dml, compute_mesf")
     end
 else
     println("Hybrid Julia Pipeline for Biodiversity Analysis")
     println("Usage: julia julia_hybrid_pipeline.jl <command> [args...]")
     println("\nCommands:")
     println("  run <data_path> [spatial_step] [compute_mesf] [n_mesf] [mesf_path] [config_path] [save_dir]")
+    println("       Run all methods (1, 2, and 3)")
+    println()
+    println("  method1 <data_path> [spatial_step] [mesf_path] [save_dir]")
+    println("       Run Method 1 only: H0 vs H1 hypothesis testing")
+    println()
+    println("  method2 <data_path> [spatial_step] [mesf_path] [save_dir]")
+    println("       Run Method 2 only: Interaction analysis")
+    println()
+    println("  method3 <data_path> [spatial_step] [mesf_path] [save_dir]")
+    println("  dml <data_path> [spatial_step] [mesf_path] [save_dir]")
+    println("       Run Method 3 only: Double Machine Learning (DML)")
+    println()
     println("  compute_mesf <data_path> [spatial_step] [n_mesf]")
+    println("       Compute MESF eigenvectors only")
+    println()
+    println("Default spatial_step: 1000 (for individual methods)")
+    println("Default save_dir: results/julia_models")
 end

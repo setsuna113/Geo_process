@@ -30,8 +30,7 @@ from src.machine_learning.methods import (
     Method3DML
 )
 
-# Hypothesis testing for Julia results
-from src.machine_learning.hypothesis.julia_hypothesis_tests import JuliaHypothesisTests
+# Note: Hypothesis testing is now handled by Method classes directly
 
 # Diagnostics (will work with Julia residuals if available)
 from src.machine_learning.diagnostics import DHARMaDiagnostics
@@ -60,7 +59,6 @@ class MLOrchestrator:
         
         # Initialize components
         self.path_validator = PathValidator()
-        self.hypothesis_tester = JuliaHypothesisTests()
         
         # Initialize Method classes
         self.method1 = Method1H0H1GLM(self.config)
@@ -165,35 +163,31 @@ class MLOrchestrator:
         if 'method1_full' in self.models and 'method1_null' in self.models:
             logger.info("\nMethod 1: H0-H1 Testing (Biodiversity Begets Biodiversity)")
             
-            # Set the models directly on Method1 instance
-            self.method1.model_full = self.models['method1_full']
-            self.method1.model_null = self.models['method1_null']
-            self.method1.data_metadata = data_metadata
+            # Pass Julia results to Method1 using the new architecture
+            lr_test = self.models.get('method1_lr_test')
+            self.method1.set_julia_results(self.models, lr_test)
             
-            # Since models are already fitted in Julia, just extract the hypothesis test results
-            # Method1 expects hypothesis_results to be set for generate_report to work
-            if 'method1_lr_test' in self.models:
-                lr_test = self.models['method1_lr_test']
-                # Add missing fields for compatibility
-                lr_test['significant_at_0.05'] = lr_test['p_value'] < 0.05
-                lr_test['test_type'] = 'likelihood_ratio'
-                
-                self.method1.hypothesis_results = {
-                    'lrt': lr_test,
-                    'supports_h1': lr_test['p_value'] < 0.05,
-                    'interpretation': 'Biodiversity begets biodiversity' if lr_test['p_value'] < 0.05 else 'No clear biodiversity effect',
-                    'model_metrics': {
-                        'null_model': self.models['method1_null'],
-                        'full_model': self.models['method1_full']
-                    }
-                }
-                
-                self.results['method1'] = self.method1.hypothesis_results
-                
-                logger.info(f"  LR Test: χ²={lr_test['lr_statistic']:.2f}, "
-                          f"df={lr_test['df']}, p={lr_test['p_value']:.4e}")
+            # Run hypothesis tests with proper SESOI and TOST
+            method1_results = self.method1.run_hypothesis_tests()
+            self.results['method1'] = method1_results
             
-            # Get biodiversity coefficients
+            # Log summary results
+            conclusion = method1_results.get('conclusion', {})
+            logger.info(f"  Conclusion: {conclusion.get('hypothesis', 'Unknown')}")
+            logger.info(f"  Interpretation: {conclusion.get('interpretation', '')}")
+            
+            # Log test results
+            if 'likelihood_ratio_test' in method1_results:
+                lrt = method1_results['likelihood_ratio_test']
+                logger.info(f"  LRT: χ²={lrt.get('lr_statistic', 0):.2f}, p={lrt.get('p_value', 1):.4e}")
+            
+            # Log Wald test summaries
+            if 'wald_tests' in method1_results:
+                for name, result in method1_results['wald_tests'].items():
+                    if 'summary' in result:
+                        logger.info(f"  {name}: {result['summary'].get('interpretation', '')}")
+            
+            # Get biodiversity coefficients for additional reporting
             biodiv_coefs = self.method1.get_biodiversity_coefficients()
             if biodiv_coefs:
                 for var, info in biodiv_coefs.items():

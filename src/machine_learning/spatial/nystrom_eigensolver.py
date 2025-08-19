@@ -79,16 +79,26 @@ class NystromEigensolver:
         # Compute weights
         W = self._compute_weights_matrix(coords_jax)
         
-        # Eigendecomposition
-        eigenvalues, eigenvectors = jnp.linalg.eigh(W)
+        # Convert to numpy for scipy eigendecomposition
+        # This respects OMP_NUM_THREADS properly without thread explosion
+        W_numpy = np.array(W)
+        
+        # Use scipy for eigendecomposition - respects thread limits properly
+        from scipy.linalg import eigh
+        eigenvalues, eigenvectors = eigh(W_numpy)
+        
+        # Convert back to JAX for selection
+        eigenvalues = jnp.array(eigenvalues)
+        eigenvectors = jnp.array(eigenvectors)
         
         # Select largest (skip trivial)
         idx = jnp.argsort(eigenvalues)[::-1][1:self.n_eigenvectors+1]
         eigenvalues = eigenvalues[idx]
         eigenvectors = eigenvectors[:, idx]
         
-        # Moran's I
-        moran_i = jnp.diag(eigenvectors.T @ W @ eigenvectors)
+        # Moran's I (convert W back to JAX)
+        W_jax = jnp.array(W_numpy)
+        moran_i = jnp.diag(eigenvectors.T @ W_jax @ eigenvectors)
         
         logger.info(
             f"Selected {self.n_eigenvectors} eigenvectors with "

@@ -13,6 +13,11 @@ Example:
 
 import sys
 import os
+
+# No environment variable control - let taskset handle CPU limiting
+# Libraries will auto-detect available cores within taskset limits
+
+# NOW import other libraries
 import argparse
 import logging
 import hashlib
@@ -70,7 +75,7 @@ class MESFProcessor:
         This is the main entry point called by the orchestrator.
         
         Args:
-            data_path: Path to parquet file
+            data_path: Path to arrow file
             spatial_grid_step: Spatial sampling step (must match orchestrator)
             n_eigenvectors: Number of eigenvectors to compute (default 10)
             distance_threshold: Distance threshold in km for spatial weights
@@ -88,17 +93,9 @@ class MESFProcessor:
         if n_jobs is None:
             n_jobs = -1  # Default to all cores if not specified
         
-        # Use configured core limit from n_jobs
-        import os
-        if n_jobs == -1:
-            n_cores = os.cpu_count() or 150
-        else:
-            n_cores = n_jobs  # Use the configured value
-        
-        # Set JAX to use limited cores
-        os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={n_cores}'
-        
-        logger.info(f"Using {n_cores} CPU cores for parallel computations")
+        # No thread control - taskset will limit CPU cores
+        n_cores = n_jobs if n_jobs != -1 else 120
+        logger.info(f"Configured for {n_cores} CPU cores (enforced by taskset)")
         
         # Use robust cache manager
         mesf_params = {
@@ -237,16 +234,16 @@ class MESFProcessor:
         """Count total rows efficiently using Polars.
         
         Args:
-            data_path: Path to parquet file
+            data_path: Path to arrow file
             spatial_grid_step: Sampling step
             
         Returns:
             Total number of rows after sampling
         """
         try:
-            # Use Polars lazy evaluation to count rows efficiently
-            df = pl.scan_parquet(data_path)
-            total_rows = df.select(pl.count()).collect()[0, 0]
+            # Use Polars to load Arrow format
+            df = pl.scan_ipc(data_path)  # IPC = Arrow format in Polars
+            total_rows = df.select(pl.len()).collect()[0, 0]
             
             if spatial_grid_step and spatial_grid_step > 1:
                 # Calculate sampled count - match H2O's range(0, n, step) behavior
@@ -273,20 +270,20 @@ class MESFProcessor:
         Returns:
             (n_landmark, n_sample) tuple
         """
-        # 4×√n landmarks for eigendecomposition
-        # With 51M points: 4×7204 = 28,816 landmarks
-        n_landmark = int(4 * np.sqrt(n_total))
+        # 1×√n landmarks for eigendecomposition (reduced for feasibility)
+        # With 51M points: 1×7204 = 7,204 landmarks (manageable)
+        n_landmark = int(1 * np.sqrt(n_total))
         
-        # 200×√n samples for RFF reference points
-        # With 51M points: 200×7204 = 1,440,800 samples
-        n_sample = int(200 * np.sqrt(n_total))
+        # 50×√n samples for RFF reference points (reduced for speed)
+        # With 51M points: 50×7204 = 360,200 samples
+        n_sample = int(50 * np.sqrt(n_total))
         
         # Apply reasonable bounds
-        n_landmark = max(1000, min(50000, n_landmark))  # Cap at 50k for memory
-        n_sample = max(10000, min(2000000, n_sample))  # Cap at 2M for memory
+        n_landmark = max(1000, min(10000, n_landmark))  # Cap at 10k for feasibility
+        n_sample = max(10000, min(500000, n_sample))  # Cap at 500k for speed
         
-        logger.info(f"Nystrom parameters: {n_landmark:,} landmarks (4×√{n_total:,}), "
-                   f"{n_sample:,} samples (200×√{n_total:,}) for RFF")
+        logger.info(f"Nystrom parameters: {n_landmark:,} landmarks (1×√{n_total:,}), "
+                   f"{n_sample:,} samples (50×√{n_total:,}) for RFF")
         
         return n_landmark, n_sample
     
@@ -330,7 +327,7 @@ class MESFProcessor:
         """Load x,y coordinates for specified indices.
         
         Args:
-            data_path: Path to parquet file
+            data_path: Path to arrow file
             indices: Row indices to load (accounts for spatial sampling)
             spatial_grid_step: Sampling step
             
@@ -339,17 +336,11 @@ class MESFProcessor:
         """
         try:
             # Load all x,y coordinates with Polars
-            coords_df = pl.read_parquet(
+            coords_df = pl.read_ipc(
                 data_path,
                 columns=['x', 'y'],
-                use_pyarrow=True,
                 memory_map=True
             )
-            
-            # Apply spatial sampling if needed
-            if spatial_grid_step and spatial_grid_step > 1:
-                # For DataFrame, use slice with step
-                coords_df = coords_df[::spatial_grid_step]
             
             # Remove nulls
             coords_df = coords_df.drop_nulls()
@@ -357,7 +348,7 @@ class MESFProcessor:
             # Select only the sample indices using iloc-style indexing
             coords_df = coords_df[indices]
             
-            # Convert to numpy
+            # Convert to numpy float32 for efficiency
             coords_np = coords_df.to_numpy().astype(np.float32)
             
             logger.info(f"Loaded {len(coords_np):,} coordinate pairs")
@@ -436,7 +427,7 @@ class MESFProcessor:
         Uses JAX-optimized RFF with precomputed projection matrix.
         
         Args:
-            data_path: Path to parquet file
+            data_path: Path to arrow file
             spatial_grid_step: Sampling step
             n_total: Total number of points
             coords_sample: Sample coordinates (n_sample, 2)
@@ -453,10 +444,8 @@ class MESFProcessor:
             
             logger.info(f"Interpolating to {n_total:,} points using JAX-optimized RFF...")
             
-            # Configure JAX
-            import os
-            n_cores = self.n_jobs if self.n_jobs else (os.cpu_count() or 150)
-            os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={n_cores}'
+            # JAX should already be configured from the top of the file
+            # Don't reconfigure here as it causes nested threading
             
             # RFF parameters
             n_features = 5000  # Number of random features
@@ -510,18 +499,14 @@ class MESFProcessor:
             
             # Step 4: Load all coordinates
             logger.info("Loading full coordinates...")
-            coords_df = pl.read_parquet(
+            coords_df = pl.read_ipc(
                 data_path,
                 columns=['x', 'y'],
-                use_pyarrow=True,
                 memory_map=True
             )
             
-            if spatial_grid_step and spatial_grid_step > 1:
-                coords_df = coords_df[::spatial_grid_step]
-            
             coords_df = coords_df.drop_nulls()
-            coords_full = coords_df.to_numpy().astype(np.float32)
+            coords_full = coords_df.to_numpy().astype(np.float32)  # Use float32 for efficiency
             
             # Step 5: Process in smaller batches to avoid memory issues
             available_memory = psutil.virtual_memory().available
@@ -681,7 +666,7 @@ class MESFProcessor:
         logger.info(f"Converting {eigenvectors.shape[0]:,} MESF eigenvectors to H2O using parallel import...")
         
         # Create temporary parquet file
-        with tempfile.NamedTemporaryFile(suffix='.parquet', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix='.arrow', delete=False) as tmp:
             tmp_path = tmp.name
         
         try:
@@ -719,16 +704,18 @@ def compute_mesf_cli(
     spatial_grid_step: int = 1,
     n_eigenvectors: int = 10,
     n_jobs: int = 120,
-    output_dir: str = 'results/mesf_cache'
+    output_dir: str = 'results/mesf_cache',
+    filename_step: int = None
 ) -> str:
     """CLI-friendly MESF computation for Julia integration.
     
     Args:
-        data_path: Path to parquet file
+        data_path: Path to arrow file
         spatial_grid_step: Spatial sampling (1 = no sampling)
         n_eigenvectors: Number of MESF eigenvectors
         n_jobs: Number of CPU cores to use
         output_dir: Directory to save results
+        filename_step: Step to use in filename (if different from spatial_grid_step)
         
     Returns:
         Path to saved MESF file
@@ -739,11 +726,11 @@ def compute_mesf_cli(
     print(f"Data: {data_path}")
     print(f"Parameters: n_eigenvectors={n_eigenvectors}, n_jobs={n_jobs}")
     
-    # Set environment variable for parallelization
-    os.environ['MESF_N_JOBS'] = str(n_jobs)
+    # No thread control here - taskset enforces CPU limits
+    logger.info(f"Configured for {n_jobs} cores (taskset enforced)")
     
-    # Initialize processor
-    processor = MESFProcessor(n_jobs=n_jobs)
+    # Initialize processor with output directory as cache directory
+    processor = MESFProcessor(n_jobs=n_jobs, cache_dir=output_dir)
     
     # Compute MESF (will use cache if available)
     mesf_eigenvectors = processor.get_mesf_eigenvectors(
@@ -759,7 +746,9 @@ def compute_mesf_cli(
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        output_file = output_dir / f'mesf_step{spatial_grid_step}_n{n_eigenvectors}.npy'
+        # Use filename_step if provided, otherwise use spatial_grid_step
+        step_for_filename = filename_step if filename_step is not None else spatial_grid_step
+        output_file = output_dir / f'mesf_step{step_for_filename}_n{n_eigenvectors}.npy'
         np.save(output_file, mesf_eigenvectors)
         
         print(f"\n✓ MESF computation complete!")
@@ -805,13 +794,14 @@ Examples:
     
     args = parser.parse_args()
     
-    # Compute MESF
+    # Compute MESF (no sampling in Python, Julia handles it)
     output_file = compute_mesf_cli(
         data_path=args.data_path,
-        spatial_grid_step=args.spatial_step,
+        spatial_grid_step=1,  # No sampling in Python
         n_eigenvectors=args.n_eigenvectors,
         n_jobs=args.n_jobs,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        filename_step=args.spatial_step  # Use provided step for filename
     )
 
 
