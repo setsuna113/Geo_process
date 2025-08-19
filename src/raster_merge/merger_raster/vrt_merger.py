@@ -7,6 +7,7 @@ NO FALLBACKS - if VRT fails, it fails. No silent degradation to rioxarray.
 from typing import List, Optional, Tuple, Dict, Any
 from pathlib import Path
 import logging
+import dataclasses
 import rasterio
 from rasterio.vrt import WarpedVRT
 from rasterio.merge import merge
@@ -721,10 +722,13 @@ class VRTMerger:
                 shutil.move(str(batch_outputs[0]), str(output_path))
             else:
                 # Recursively merge batch outputs
-                final_config = self.config
-                final_config.input_paths = batch_outputs
-                final_config.output_dir = output_path.parent
-                final_config.output_name = output_path.stem
+                # Create a new config without mutating the original
+                final_config = dataclasses.replace(
+                    self.config,
+                    input_paths=batch_outputs,
+                    output_dir=output_path.parent,
+                    output_name=output_path.stem
+                )
                 
                 # Create new merger for final merge
                 final_merger = VRTMerger(final_config)
