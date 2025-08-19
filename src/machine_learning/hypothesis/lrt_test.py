@@ -293,22 +293,22 @@ class LikelihoodRatioTest:
         y = scipy_stats.chi2.pdf(x, df)
         
         # Plot the chi-squared distribution
-        ax3.fill_between(x, y, alpha=0.3, color='blue', label=f'χ²({df}) distribution')
-        ax3.plot(x, y, 'b-', linewidth=2)
+        ax2.fill_between(x, y, alpha=0.3, color='blue', label=f'χ²({df}) distribution')
+        ax2.plot(x, y, 'b-', linewidth=2)
         
         # Mark critical value at alpha=0.05
         critical_val = scipy_stats.chi2.ppf(0.95, df)
-        ax3.axvline(critical_val, color='orange', linestyle=':', linewidth=2, 
+        ax2.axvline(critical_val, color='orange', linestyle=':', linewidth=2, 
                    label=f'Critical value = {critical_val:.2f}')
         
         # Mark observed statistic
-        ax3.axvline(abs(lr_stat), color='red', linestyle='--', linewidth=2, 
+        ax2.axvline(abs(lr_stat), color='red', linestyle='--', linewidth=2, 
                    label=f'Observed LR = {abs(lr_stat):.1f}')
         
         # Shade rejection region (beyond critical value)
         x_reject = x[x >= critical_val]
         y_reject = scipy_stats.chi2.pdf(x_reject, df)
-        ax3.fill_between(x_reject, y_reject, alpha=0.3, color='red', label='Rejection region')
+        ax2.fill_between(x_reject, y_reject, alpha=0.3, color='red', label='Rejection region')
         
         # Add text with proper comparison
         if abs(lr_stat) > critical_val:
@@ -326,18 +326,18 @@ class LikelihoodRatioTest:
         
         # Position text appropriately
         text_y = max(y) * 0.6
-        ax3.text(abs(lr_stat), text_y, p_text, ha='center', fontsize=11, 
+        ax2.text(abs(lr_stat), text_y, p_text, ha='center', fontsize=11, 
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        ax3.text(max_x * 0.7, text_y * 0.8, decision_text, ha='center', fontsize=11,
+        ax2.text(max_x * 0.7, text_y * 0.8, decision_text, ha='center', fontsize=11,
                 fontweight='bold', color=decision_color,
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
-        ax3.set_xlabel('Test Statistic')
-        ax3.set_ylabel('Probability Density')
-        ax3.set_title('Chi-squared Test of Significance')
-        ax3.legend(loc='upper right', fontsize=9)
-        ax3.grid(True, alpha=0.3)
-        ax3.set_xlim(0, max_x)
+        ax2.set_xlabel('Test Statistic')
+        ax2.set_ylabel('Probability Density')
+        ax2.set_title('Chi-squared Test of Significance')
+        ax2.legend(loc='upper right', fontsize=9)
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xlim(0, max_x)
         
         plt.suptitle('Likelihood Ratio Test Results', fontsize=14, fontweight='bold')
         plt.tight_layout()

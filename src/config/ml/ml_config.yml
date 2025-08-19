@@ -1,124 +1,28 @@
-# ML Configuration for Biodiversity Regression Analysis
-# Based on regression_analysis_decisions.md requirements
-
-# H2O Configuration
-h2o:
-  enabled: true
-  max_mem_size: "256G"  # Increase for large datasets (52M rows)
-  nthreads: 150  # Using 150 cores for faster processing
-  ice_root: "/tmp/h2o_tmp"
-  
+# ML Configuration File
 regression_analysis:
-  # Data loading and sampling
-  data:
-    spatial_grid_step: 1  # Take every point (full dataset)
-    log_message: "Loading data with spatial grid sampling"
-  
-  # Data preprocessing (lines 199-277 from regression_analysis_decisions.md)
   preprocessing:
-    missing_data:
-      strategy: "complete_case"  # Drop rows with any missing (<0.1% data loss)
-      log_message: "Applying complete case analysis"
-    
-    standardization:
-      method: "gelman_2sd"  # Divide by 2 SDs for better interpretation (line 223)
-      apply_to: ["bio1", "bio4", "bio12", "bio15", "elevation"]
-      log_message: "Standardizing continuous predictors using 2SD method"
-    
-    response_variable:
-      transformation: "none"  # Keep raw counts for GLM (line 217)
-      log_message: "Using raw species richness counts"
-    
-    biotic_predictors:
-      transformation: "both"  # Test both raw and log (lines 235-257)
-      log_message: "Testing both raw and log-transformed biotic predictors"
+    drop_na: true
+    scale_features: false
   
-  # Model specifications (lines 284-384)
+  data:
+    spatial_grid_step: 1
+    
   models:
-    glm:
-      distribution:
-        decision_metric: "dispersion_ratio"  # var/mean (lines 16-24)
-        poisson_threshold: [0.8, 1.2]
-        use_negative_binomial: true  # Default for overdispersed data
-        log_message: "Checking overdispersion: var/mean ratio"
-      
-      alpha: 1.0  # For potential Ridge GLM
-      max_iter: 1000
-      solver: "auto"
-      fit_intercept: true
+    family: "negative_binomial"
+    theta_estimation: "ml"
+    target_column: "fungi_richness_log"
+    feature_columns:
+      - "bio01_mean"
+      - "bio12_annual"
+      - "plants_richness_log"
+      - "vertebrates_richness_log"
     
-    lightgbm:  # For DML (lines 849-859)
-      objective: "regression"  # Use standard regression for DML residuals
-      metric: "rmse"
-      num_leaves: 255
-      learning_rate: 0.05
-      feature_fraction: 0.8
-      bagging_fraction: 0.8
-      bagging_freq: 5
-      min_data_in_leaf: 100
-      num_threads: 120
-      log_message: "Configuring LightGBM for DML nuisance models"
-  
-  # Spatial analysis (JAX-optimized Nystrom)
-  spatial:
-    n_eigenvectors: 10  # Number of MESF eigenvectors to compute
-    distance_threshold: 100.0  # Distance threshold in km for spatial weights
-    cache_dir: "/home/yl998/.cache/mesf"  # Enable MESF caching
-    # JAX will automatically use all available CPU cores
-    # Note: Nystrom parameters are auto-calculated using 100×√n rule
-  
-  # Feature engineering for H2 testing (lines 53-67)
-  feature_engineering:
-    h2_testing:
-      temperate_threshold: 0.75  # Top 25% temperature seasonality
-      plant_high_threshold: 0.75  # Top 25% plant richness
-      alternative_thresholds: [0.5, 0.67]  # For sensitivity analysis
-      log_message: "Creating categorical variables for H2 testing"
-  
-  # Cross-validation for DML (lines 792-828)
-  dml:
-    k_folds: 5
-    threads_per_fold: 120
-    save_residuals: true
-    log_message: "Running 5-fold cross-fitting for DML"
-  
-  # Hypothesis testing thresholds
   hypothesis_testing:
     alpha: 0.05
-    aic_threshold: 2  # ΔAIC > 2 for model selection
-    log_messages:
-      h0: "Testing H0: Independence of fungi from plants/vertebrates"
-      h1: "Testing H1: Biodiversity begets biodiversity"
-      h2: "Testing H2: Temperate mismatch hypothesis"
-  
-  # Output configuration
+    sesoi_threshold: 0.1
+    tost_bounds: [-0.05, 0.05]
+    
   output:
-    save_diagnostics: true
-    save_predictions: true
-    save_visualizations: true
-    save_model: true
-    formats: ["parquet", "csv", "pickle"]
-    log_message: "Saving all outputs to {output_dir}"
-  
-  # Experiments
-  experiments:
-    regression_full:
-      description: "Full regression analysis with all three methods"
-      input_parquet: "/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet"
-      target_column: "fungi_richness"
-      methods: ["method1_continuous", "method2_categorical", "method3_dml"]
-      run_diagnostics: true
-      
-    h2_temperate:
-      description: "Focus on H2 temperate mismatch hypothesis"
-      input_parquet: "/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet"
-      target_column: "fungi_richness"
-      methods: ["method2_categorical"]  # Uses emmeans contrasts
-      run_diagnostics: true
-      
-    dml_only:
-      description: "DML causal inference only"
-      input_parquet: "/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet"
-      target_column: "fungi_richness"
-      methods: ["method3_dml"]
-      run_diagnostics: false
+    results_dir: "results"
+    figures_dir: "results/figures"
+    reports_dir: "results/reports"
