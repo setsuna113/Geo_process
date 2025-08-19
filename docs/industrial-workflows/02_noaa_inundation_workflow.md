@@ -24,9 +24,11 @@ import rasterio
 from rasterio import features
 import numpy as np
 
+# MISSING: load_dem_for_huc() function - this is fabricated, doesn't exist in repo
+# Actual implementation uses different structure in make_dem_dif_for_bridges.py
 def load_dem_for_huc(huc_id: str, dem_path: str) -> rasterio.DatasetReader:
-    """Load DEM raster for specific HUC (Hydrologic Unit Code)"""
-    # Construct DEM path based on HUC
+    """SPECULATIVE - NOT IN ACTUAL CODE"""
+    # This path structure is assumed, not verified
     dem_file = f"{dem_path}/{huc_id}/branches/0/dem_meters.tif"
     
     if not os.path.exists(dem_file):
@@ -80,15 +82,18 @@ def load_lidar_points(bridge_id: str, lidar_dir: str) -> gpd.GeoDataFrame:
 ### Point to Raster Coordinate Mapping
 ```python
 # From data/bridges/make_dem_dif_for_bridges.py (Lines 300-350)
-from rasterio.transform import rowcol
+# MISSING: No rowcol import from rasterio.transform found in actual code
+from rasterio.transform import rowcol  # UNVERIFIED
 from rasterio.warp import transform_bounds, transform_geom
 
+# MISSING: align_points_to_raster() - fabricated function name
+# Actual coordinate transformation exists but with different implementation
 def align_points_to_raster(
     points_gdf: gpd.GeoDataFrame,
     raster_transform,
     raster_crs
 ) -> list:
-    """Convert point coordinates to raster pixel indices"""
+    """SPECULATIVE - actual implementation differs"""
     
     # Reproject points if needed
     if points_gdf.crs != raster_crs:
@@ -204,7 +209,8 @@ def apply_correction_to_dem(
 ### Multi-HUC Processing
 ```python
 # From data/bridges/make_dem_dif_for_bridges.py (Lines 600-700)
-from utils.shared_functions import run_with_mp
+# MISSING: run_with_mp() - custom multiprocessing framework exists but details differ
+from utils.shared_functions import run_with_mp  # SPECULATIVE
 from multiprocessing import Pool
 import logging
 
@@ -308,17 +314,16 @@ def process_all_hucs_parallel(
 # From data/create_vrt_file.py
 from osgeo import gdal
 
-def create_vrt_file(
-    file_list: list,
-    output_vrt: str,
-    relative: bool = True
-) -> None:
-    """
-    Create VRT (Virtual Raster) from multiple raster files
-    VRT doesn't duplicate data, just references source files
-    """
+# ACTUAL CODE from data/create_vrt_file.py:
+def create_vrt_file(src_directory, vrt_file_name):
+    '''
+    Takes all .tif files in a given directory and creates a vrt from them.
+    Note: This assumes all .tifs share a common directory.
+    '''
+    # Uses osgeo.gdal directly, NOT the BuildVRTOptions approach shown
+    # MISSING: Actual implementation details of VRT creation
     
-    # Build VRT options
+    # SPECULATIVE CODE (not verified):
     vrt_options = gdal.BuildVRTOptions(
         relativeToVRT=relative,
         resolution='highest',  # Use finest resolution

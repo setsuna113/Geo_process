@@ -1,0 +1,68 @@
+# Advanced configuration for raster merging with per-dataset settings
+# Demonstrates the new target_resolution and per-dataset resampling features
+
+# Method 1: Simple paths with global settings
+# input_paths:
+#   - /data/sentinel2/tile1.tif
+#   - /data/sentinel2/tile2.tif
+#   - /data/sentinel2/tile3.tif
+
+# Method 2: Per-dataset configuration (NEW)
+input_paths:
+  # Dataset with bilinear resampling (good for continuous data like elevation)
+  - path: /data/elevation/dem_10m.tif
+    resampling: bilinear
+    
+  # Dataset with max resampling (good for categorical data like land cover)
+  - path: /data/landcover/landcover_20m.tif  
+    resampling: max
+    
+  # Dataset with nearest neighbor (good for preserving exact values)
+  - path: /data/classification/classes_30m.tif
+    resampling: nearest
+
+# Output configuration
+output_dir: /output/merged
+output_name: merged_multiresolution
+
+# Target resolution configuration (NEW)
+# Option 1: Use "coarse" to align with the coarsest (lowest resolution) input
+target_resolution: coarse
+
+# Option 2: Specify exact resolution in meters (will be used for both X and Y)
+# target_resolution: 30.0
+
+# Option 3: Leave null to compute from resolution_strategy (backward compatible)
+# target_resolution: null
+
+# Legacy resolution strategy (used when target_resolution is null)
+resolution_strategy: average  # equal, average, lowest, highest
+
+# Overlap method for merging
+overlap_method: first        # first, last, min, max, mean
+
+# Global default resampling (used when not specified per-dataset)
+resampling: bilinear         # nearest, bilinear, cubic, average, max
+
+# Band merging strategy
+band_merge_strategy: stack  # stack different band counts, or combine
+
+# Memory optimization
+chunk_size: 2048  # Process in 2048x2048 chunks
+use_dask: true    # Enable lazy loading
+n_workers: 4      # Parallel workers
+
+# Export options
+export_geotiff: true
+export_arrow: true
+compress: zstd          # FarmVibes standard
+compression_level: 9
+
+# Cloud-Optimized GeoTIFF settings
+build_overviews: true
+overview_levels: [2, 4, 8, 16, 32]
+blocksize: 512
+
+# Data handling
+nodata_value: -9999  # Or null to auto-detect
+dtype: null          # Preserve input dtype
