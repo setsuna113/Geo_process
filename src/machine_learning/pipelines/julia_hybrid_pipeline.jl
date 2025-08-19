@@ -3,12 +3,81 @@
 Hybrid Julia Pipeline for Biodiversity Analysis
 Uses Python's optimized MESF computation and Julia's GLM fitting.
 This is the pragmatic solution that leverages existing optimizations.
+
+EXPORT STRUCTURE for each model:
+=====================================
+Each fitted model exports the following structured dictionary:
+
+{
+    "core_stats": {           # ORIGINAL - Core model statistics
+        "coefficients",       # Model coefficients
+        "coef_names",        # Coefficient names
+        "std_errors",        # Standard errors
+        "vcov",              # Variance-covariance matrix
+        "aic", "bic",        # Information criteria
+        "loglik",            # Log-likelihood
+        "deviance",          # Model deviance
+        "df_residual",       # Residual degrees of freedom
+        "n_obs",             # Number of observations
+        "theta"              # NB dispersion parameter
+    },
+    
+    "residuals": {           # NEW - For diagnostic plots
+        "y_values",          # Actual response values
+        "fitted_values",     # Model predictions
+        "response_residuals", # Simple residuals (y - μ)
+        "deviance_residuals" # Deviance residuals (for diagnostics)
+    },
+    
+    "extended_stats": {      # NEW - Additional model metrics
+        "null_deviance",     # Deviance of null model
+        "null_loglik",       # Log-likelihood of null model
+        "dispersion"         # Dispersion parameter
+    },
+    
+    "inference": {           # NEW - For hypothesis testing
+        "coef_z_values",     # Z-statistics for coefficients
+        "coef_p_values",     # P-values for coefficients
+        "confint_95"         # 95% confidence intervals
+    },
+    
+    "multicollinearity": {   # NEW - Collinearity diagnostics
+        "gvif",              # Generalized VIF values
+        "max_gvif",          # Maximum GVIF
+        "high_collinearity"  # Boolean flag if max > 10
+    },
+    
+    "diagnostic_tests": {    # NEW - Statistical tests
+        "jarque_bera": {     # Normality test
+            "statistic",
+            "p_value",
+            "normal_residuals"
+        },
+        "anderson_darling": { # Alternative normality test
+            "statistic",
+            "p_value",
+            "normal_residuals"
+        },
+        "durbin_watson": {    # Autocorrelation test
+            "statistic",
+            "p_value",
+            "autocorrelation_present"
+        }
+    }
+}
+
+Additionally, likelihood ratio tests between models are stored separately:
+- "method1_lr_test": LRT between null and full models
+- "lrt_method1_vs_method2a": LRT between method1_full and method2_continuous
+- "lrt_method1_vs_method2b": LRT between method1_full and method2_categorical
 """
 
 using DataFrames, Arrow, Statistics, GLM, Distributions, JSON, StatsBase
 using LinearAlgebra, Random
 using YAML, JLD2, SHA, Dates
 using NPZ  # For loading numpy arrays
+using StatsModels  # For lrtest, coeftable, gvif
+using HypothesisTests  # For normality tests, Durbin-Watson
 
 # ============================================================================
 # GLOBAL DATA STORAGE
@@ -17,6 +86,7 @@ global current_data = nothing
 global data_id = ""
 global mesf_columns = String[]
 global fitted_models = Dict{String, Any}()
+global model_objects = Dict{String, Any}()  # Store actual model objects for LRT
 global config = Dict{String, Any}()
 global cache_dir = "/scratch/yl998/.cache/mesf"
 global output_dir = "results/julia_models"
@@ -336,12 +406,149 @@ end
 # ============================================================================
 
 """
+    calculate_deviance_residuals(model)
+
+Calculate deviance residuals for a negative binomial GLM.
+"""
+function calculate_deviance_residuals(model)
+    y = response(model)
+    μ = predict(model)
+    θ = model.model.rr.d.r  # Extract theta parameter
+    
+    # Calculate deviance residuals
+    dist = NegativeBinomial(θ)
+    dev_resid = sign.(y .- μ) .* sqrt.(devresid.(dist, y, μ))
+    
+    return dev_resid
+end
+
+"""
+    extract_model_diagnostics(model, model_name::String)
+
+Extract comprehensive diagnostics from a fitted GLM model.
+Returns a structured dictionary with clear sections.
+"""
+function extract_model_diagnostics(model, model_name::String)
+    # Structure output in clear sections
+    diagnostics = Dict(
+        # SECTION 1: Core model statistics (ORIGINAL - always exported)
+        "core_stats" => Dict(
+            "coefficients" => coef(model),
+            "coef_names" => coefnames(model),
+            "std_errors" => stderror(model),
+            "vcov" => vcov(model),
+            "aic" => aic(model),
+            "bic" => bic(model),
+            "loglik" => loglikelihood(model),
+            "deviance" => deviance(model),
+            "df_residual" => dof_residual(model),
+            "n_obs" => nobs(model),
+            "theta" => model.model.rr.d.r
+        ),
+        
+        # SECTION 2: Residuals for diagnostics (NEW - for diagnostic modules)
+        "residuals" => Dict(
+            "y_values" => response(model),
+            "fitted_values" => predict(model),
+            "response_residuals" => residuals(model),
+            "deviance_residuals" => calculate_deviance_residuals(model)
+        ),
+        
+        # SECTION 3: Extended model statistics (NEW)
+        "extended_stats" => Dict(
+            "null_deviance" => nulldeviance(model),
+            "null_loglik" => nullloglikelihood(model),
+            "dispersion" => dispersion(model)
+        )
+    )
+    
+    # SECTION 4: Inference statistics (NEW - for hypothesis testing)
+    diagnostics["inference"] = Dict()
+    
+    # Coefficient inference
+    try
+        ct = coeftable(model)
+        # Store as arrays since coeftable might not serialize well
+        diagnostics["inference"]["coef_z_values"] = ct.cols[3]  # z-values column
+        diagnostics["inference"]["coef_p_values"] = ct.cols[4]  # p-values column
+    catch e
+        println("Warning: Could not extract coeftable for $model_name: $e")
+    end
+    
+    # Confidence intervals
+    try
+        ci = confint(model, 0.95)
+        diagnostics["inference"]["confint_95"] = ci
+    catch e
+        println("Warning: Could not extract confidence intervals for $model_name: $e")
+    end
+    
+    # SECTION 5: Multicollinearity diagnostics (NEW)
+    diagnostics["multicollinearity"] = Dict()
+    try
+        vif_values = gvif(model)
+        diagnostics["multicollinearity"]["gvif"] = vif_values
+        diagnostics["multicollinearity"]["max_gvif"] = maximum(vif_values)
+        diagnostics["multicollinearity"]["high_collinearity"] = maximum(vif_values) > 10
+        
+        if maximum(vif_values) > 10
+            println("⚠ Warning: High multicollinearity detected (max GVIF = $(maximum(vif_values)))")
+        end
+    catch e
+        println("Note: GVIF calculation not available for $model_name: $e")
+        diagnostics["multicollinearity"]["available"] = false
+    end
+    
+    # SECTION 6: Residual diagnostic tests (NEW)
+    diagnostics["diagnostic_tests"] = Dict()
+    
+    # Normality tests on deviance residuals
+    try
+        dev_resid = diagnostics["residuals"]["deviance_residuals"]
+        
+        # Jarque-Bera test
+        jb_test = JarqueBeraTest(dev_resid)
+        diagnostics["diagnostic_tests"]["jarque_bera"] = Dict(
+            "statistic" => jb_test.JB,
+            "p_value" => pvalue(jb_test),
+            "normal_residuals" => pvalue(jb_test) > 0.05
+        )
+        
+        # Anderson-Darling test
+        ad_test = OneSampleADTest(dev_resid, Normal(0, 1))
+        diagnostics["diagnostic_tests"]["anderson_darling"] = Dict(
+            "statistic" => ad_test.A²,
+            "p_value" => pvalue(ad_test),
+            "normal_residuals" => pvalue(ad_test) > 0.05
+        )
+    catch e
+        println("Note: Normality tests not available for $model_name: $e")
+        diagnostics["diagnostic_tests"]["normality_tests_available"] = false
+    end
+    
+    # Durbin-Watson test for autocorrelation
+    try
+        dw_test = DurbinWatsonTest(diagnostics["residuals"]["deviance_residuals"])
+        diagnostics["diagnostic_tests"]["durbin_watson"] = Dict(
+            "statistic" => dw_test.DW,
+            "p_value" => pvalue(dw_test),
+            "autocorrelation_present" => dw_test.DW < 1.5 || dw_test.DW > 2.5
+        )
+    catch e
+        println("Note: Durbin-Watson test not available for $model_name: $e")
+        diagnostics["diagnostic_tests"]["durbin_watson_available"] = false
+    end
+    
+    return diagnostics
+end
+
+"""
     fit_method1_models()
 
 Fit Method 1 models: null (climate only) vs full (climate + biodiversity).
 """
 function fit_method1_models()
-    global current_data, mesf_columns, fitted_models
+    global current_data, mesf_columns, fitted_models, model_objects
     
     if isnothing(current_data)
         error("No data loaded")
@@ -368,46 +575,35 @@ function fit_method1_models()
     formula_full = Term(:fungi_richness) ~ sum(Term.(Symbol.(full_features)))
     model_full = negbin(formula_full, current_data, LogLink())
     
-    # Store results
-    glm_null = model_null.model
-    fitted_models["method1_null"] = Dict(
-        "coefficients" => coef(model_null),
-        "coef_names" => coefnames(model_null),
-        "std_errors" => stderror(model_null),
-        "vcov" => vcov(model_null),
-        "aic" => aic(model_null),
-        "bic" => bic(model_null),
-        "loglik" => loglikelihood(model_null),
-        "deviance" => deviance(model_null),
-        "df_residual" => dof_residual(model_null),
-        "n_obs" => nrow(current_data),
-        "theta" => glm_null.rr.d.r
-    )
+    # Store model objects for later LRT comparisons
+    model_objects["method1_null"] = model_null
+    model_objects["method1_full"] = model_full
     
-    glm_full = model_full.model
-    fitted_models["method1_full"] = Dict(
-        "coefficients" => coef(model_full),
-        "coef_names" => coefnames(model_full),
-        "std_errors" => stderror(model_full),
-        "vcov" => vcov(model_full),
-        "aic" => aic(model_full),
-        "bic" => bic(model_full),
-        "loglik" => loglikelihood(model_full),
-        "deviance" => deviance(model_full),
-        "df_residual" => dof_residual(model_full),
-        "n_obs" => nrow(current_data),
-        "theta" => glm_full.rr.d.r
-    )
+    # Store results with comprehensive diagnostics
+    fitted_models["method1_null"] = extract_model_diagnostics(model_null, "method1_null")
+    fitted_models["method1_full"] = extract_model_diagnostics(model_full, "method1_full")
     
-    # Likelihood ratio test
-    lr_stat = -2 * (loglikelihood(model_null) - loglikelihood(model_full))
-    df_diff = length(biotic_features)
-    
-    fitted_models["method1_lr_test"] = Dict(
-        "lr_statistic" => lr_stat,
-        "df" => df_diff,
-        "p_value" => 1 - cdf(Chisq(df_diff), lr_stat)
-    )
+    # Use lrtest instead of manual calculation
+    try
+        lrt_result = lrtest(model_null, model_full)
+        fitted_models["method1_lr_test"] = Dict(
+            "lr_statistic" => lrt_result.deviance[2],  # Difference in deviance
+            "df" => lrt_result.dof[2],  # Difference in df
+            "p_value" => lrt_result.pval[2],  # p-value for comparison
+            "test_type" => "Likelihood Ratio Test (lrtest)"
+        )
+    catch e
+        # Fallback to manual calculation if lrtest fails
+        println("Warning: lrtest failed, using manual calculation: $e")
+        lr_stat = -2 * (loglikelihood(model_null) - loglikelihood(model_full))
+        df_diff = length(biotic_features)
+        fitted_models["method1_lr_test"] = Dict(
+            "lr_statistic" => lr_stat,
+            "df" => df_diff,
+            "p_value" => 1 - cdf(Chisq(df_diff), lr_stat),
+            "test_type" => "Likelihood Ratio Test (manual)"
+        )
+    end
     
     println("\n✓ Method 1 models fitted successfully")
     println("  Null AIC: $(round(aic(model_null), digits=2))")
@@ -470,7 +666,7 @@ end
 Fit Method 2 models: continuous and categorical interactions.
 """
 function fit_method2_models()
-    global current_data, mesf_columns, fitted_models
+    global current_data, mesf_columns, fitted_models, model_objects
     
     if isnothing(current_data)
         error("No data loaded")
@@ -502,37 +698,43 @@ function fit_method2_models()
     formula_3b = Term(:fungi_richness) ~ sum(Term.(Symbol.(categorical_features)))
     model_3b = negbin(formula_3b, current_data, LogLink())
     
-    # Store results
-    glm_3a = model_3a.model
-    glm_3b = model_3b.model
+    # Store model objects
+    model_objects["method2_continuous"] = model_3a
+    model_objects["method2_categorical"] = model_3b
     
-    fitted_models["method2_continuous"] = Dict(
-        "coefficients" => coef(model_3a),
-        "coef_names" => coefnames(model_3a),
-        "std_errors" => stderror(model_3a),
-        "vcov" => vcov(model_3a),
-        "aic" => aic(model_3a),
-        "bic" => bic(model_3a),
-        "loglik" => loglikelihood(model_3a),
-        "deviance" => deviance(model_3a),
-        "df_residual" => dof_residual(model_3a),
-        "n_obs" => nrow(current_data),
-        "theta" => glm_3a.rr.d.r
-    )
+    # Store results with comprehensive diagnostics
+    fitted_models["method2_continuous"] = extract_model_diagnostics(model_3a, "method2_continuous")
+    fitted_models["method2_categorical"] = extract_model_diagnostics(model_3b, "method2_categorical")
     
-    fitted_models["method2_categorical"] = Dict(
-        "coefficients" => coef(model_3b),
-        "coef_names" => coefnames(model_3b),
-        "std_errors" => stderror(model_3b),
-        "vcov" => vcov(model_3b),
-        "aic" => aic(model_3b),
-        "bic" => bic(model_3b),
-        "loglik" => loglikelihood(model_3b),
-        "deviance" => deviance(model_3b),
-        "df_residual" => dof_residual(model_3b),
-        "n_obs" => nrow(current_data),
-        "theta" => glm_3b.rr.d.r
-    )
+    # Add LRT comparisons between models
+    if haskey(model_objects, "method1_full")
+        # Compare Method 1 full vs Method 2 models
+        try
+            println("\nPerforming LRT comparisons between models...")
+            
+            # Method 1 full vs Method 2 continuous
+            lrt_full_vs_3a = lrtest(model_objects["method1_full"], model_3a)
+            fitted_models["lrt_method1_vs_method2a"] = Dict(
+                "lr_statistic" => lrt_full_vs_3a.deviance[2],
+                "df" => lrt_full_vs_3a.dof[2],
+                "p_value" => lrt_full_vs_3a.pval[2],
+                "comparison" => "method1_full vs method2_continuous"
+            )
+            
+            # Method 1 full vs Method 2 categorical
+            lrt_full_vs_3b = lrtest(model_objects["method1_full"], model_3b)
+            fitted_models["lrt_method1_vs_method2b"] = Dict(
+                "lr_statistic" => lrt_full_vs_3b.deviance[2],
+                "df" => lrt_full_vs_3b.dof[2],
+                "p_value" => lrt_full_vs_3b.pval[2],
+                "comparison" => "method1_full vs method2_categorical"
+            )
+            
+            println("  ✓ LRT comparisons completed")
+        catch e
+            println("Warning: LRT comparisons failed: $e")
+        end
+    end
     
     println("\n✓ Method 2 models fitted successfully")
     println("  Model 3a AIC: $(round(aic(model_3a), digits=2))")
