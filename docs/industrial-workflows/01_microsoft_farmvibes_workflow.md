@@ -1,11 +1,12 @@
 # Microsoft FarmVibes-AI Raster Processing Workflow
 
-## Repository Structure
+## Repository Structure  
 ```
 microsoft/farmvibes-ai/
 ├── ops/
 │   ├── merge_rasters/           # Generic raster merging
-│   │   └── merge_rasters.py
+│   │   ├── merge_rasters.py
+│   │   └── merge_rasters.yaml
 │   ├── merge_sentinel2_orbits/  # Sentinel-2 specific merging
 │   │   └── merge_sentinel2_orbits.py
 │   ├── merge_sentinel1_orbits/  # Sentinel-1 SAR merging
@@ -14,134 +15,139 @@ microsoft/farmvibes-ai/
 │   │   └── chunk_raster.py
 │   └── download_cdl_data/       # Cropland data layer download & merge
 │       └── download_cdl_data.py
-└── vibe_lib/
-    └── raster.py                # Core raster utilities
+└── src/vibe_lib/
+    └── vibe_lib/
+        └── raster.py            # Core raster utilities
 
 ```
 
 ## 1. LOADING RASTERS
 
-### Basic Loading Pattern
+### Basic Loading Pattern (VERIFIED)
 ```python
-# From ops/chunk_raster/chunk_raster.py (Line 50)
+# From ops/chunk_raster/chunk_raster.py (Lines 146-148)
 import rioxarray
 
-# Simple loading with rioxarray
-raster_data = rioxarray.open_rasterio(
-    rasters[0].raster_asset.path_or_url,  # Can be local path or URL
-    masked=True,  # Handle nodata values
-    chunks={'band': 1, 'x': 2048, 'y': 2048}  # Dask chunking for memory efficiency
-)
+# ACTUAL CODE from repository:
+ref = rasters[0]
+shape = rioxarray.open_rasterio(ref.raster_asset.path_or_url).shape  # type: ignore
+chunks = make_chunks(shape, self.step_y, self.step_x, rasters)
 ```
 
-### Loading Multiple Rasters for Merging
+### Loading with Rasterio for Merging (VERIFIED)
 ```python
-# From ops/merge_rasters/merge_rasters.py
+# From ops/merge_rasters/merge_rasters.py (Lines 60-76)
 import rasterio
-from typing import List, Tuple
+from rasterio.merge import merge
 
-def load_rasters_for_merge(raster_paths: List[str]) -> List[rasterio.DatasetReader]:
-    """Load multiple rasters ensuring they're compatible for merging"""
-    rasters = []
-    for path in raster_paths:
-        src = rasterio.open(path)
-        rasters.append(src)
-    return rasters
+# ACTUAL IMPLEMENTATION:
+def merge_rasters(
+    raster_sequence: RasterSequence, output_dir: str, resampling: Resampling, resolution: str
+) -> Dict[str, Raster]:
+    out_id = gen_guid()
+    file_path = os.path.join(output_dir, f"{out_id}.tif")
+    
+    # All rasters should have the same CRS
+    with ExitStack() as stack:
+        rasters = [
+            stack.enter_context(rasterio.open(r.raster_asset.path_or_url, "r"))
+            for r in raster_sequence.rasters
+        ]
+        
+        # Validate compatibility
+        check_rasters_are_valid(rasters, resolution)
+        
+        # Get target resolution
+        target_resolution = compute_target_resolution(rasters, resolution)
 ```
 
 ## 2. ALIGNMENT AND RESAMPLING
 
-### CRS and Resolution Validation
+### CRS and Resolution Validation (VERIFIED - CORRECTED)
 ```python
-# From ops/merge_rasters/merge_rasters.py
-def validate_rasters_compatibility(rasters: List[rasterio.DatasetReader]) -> None:
-    """Ensure all rasters have same CRS before merging"""
-    crs_set = set()
-    dtype_set = set()
+# From ops/merge_rasters/merge_rasters.py (Lines 29-43)
+# ACTUAL CODE:
+def check_rasters_are_valid(rasters: List[rasterio.DatasetReader], resolution_method: str):
+    """Validate rasters for merging compatibility"""
+    assets_meta = defaultdict(set)
+    for r in rasters:
+        for field in FIELDS:  # FIELDS = ("crs", "dtype", "count")
+            assets_meta[field].add(r.meta[field])
     
-    for raster in rasters:
-        crs_set.add(raster.crs.to_string())
-        dtype_set.add(raster.dtypes[0])
-    
-    if len(crs_set) > 1:
-        raise ValueError(f"All rasters must have the same CRS. Found: {crs_set}")
-    
-    if len(dtype_set) > 1:
-        # Check if mixing int and float
-        if any('int' in str(dt) for dt in dtype_set) and any('float' in str(dt) for dt in dtype_set):
-            raise ValueError("Cannot mix integer and float rasters")
+    # Check all rasters have same CRS
+    if len(assets_meta["crs"]) > 1:
+        raise ValueError(
+            f"Cannot merge rasters with different CRS: {assets_meta['crs']}"
+        )
 ```
 
-### Resolution Strategy Selection
+### Resolution Strategy Implementation (VERIFIED)
 ```python
-# From ops/merge_rasters/merge_rasters.py
-from rasterio.enums import Resampling
+# From ops/merge_rasters/merge_rasters.py (Lines 17-26, 45-56)
+# ACTUAL CONSTANTS:
+FIELDS = ("crs", "dtype", "count")
+RESOLUTION_METHODS = {
+    "equal": None,
+    "average": lambda resolutions: tuple(np.mean(resolutions, axis=0)),
+    "lowest": lambda resolutions: tuple(np.min(resolutions, axis=0)),
+    "highest": lambda resolutions: tuple(np.max(resolutions, axis=0)),
+}
 
-def determine_target_resolution(
-    rasters: List[rasterio.DatasetReader], 
-    resolution_strategy: str
-) -> Tuple[float, float]:
-    """
-    Compute target resolution based on strategy:
-    - 'equal': All must be same (fails if different)
-    - 'average': Mean of all resolutions
-    - 'lowest': Minimum resolution (finest detail)
-    - 'highest': Maximum resolution (coarsest)
-    """
-    resolutions = [(r.res[0], r.res[1]) for r in rasters]
-    
-    if resolution_strategy == "equal":
+def compute_target_resolution(
+    rasters: List[rasterio.DatasetReader], resolution_method: str
+) -> Optional[Tuple[float, float]]:
+    if resolution_method == "equal":
+        resolutions = list({raster.res for raster in rasters})
+        if len(resolutions) > 1:
+            raise ValueError(f"Found different resolutions {resolutions}")
+        return None
+    else:
+        resolutions = [raster.res for raster in rasters]
         if len(set(resolutions)) > 1:
-            raise ValueError(f"Resolutions must be equal. Found: {resolutions}")
-        return resolutions[0]
-    
-    elif resolution_strategy == "average":
-        avg_x = sum(r[0] for r in resolutions) / len(resolutions)
-        avg_y = sum(r[1] for r in resolutions) / len(resolutions)
-        return (avg_x, avg_y)
-    
-    elif resolution_strategy == "lowest":
-        return (
-            min(r[0] for r in resolutions),
-            min(r[1] for r in resolutions)
-        )
-    
-    elif resolution_strategy == "highest":
-        return (
-            max(r[0] for r in resolutions),
-            max(r[1] for r in resolutions)
-        )
+            LOGGER.warning(
+                f"Found multiple resolutions when merging, using {resolution_method}"
+            )
+        return cast(Tuple[float, float], RESOLUTION_METHODS[resolution_method](resolutions))
 ```
 
-### Virtual Warping for Alignment (Sentinel-1 specific)
+### Virtual Warping for Alignment (Sentinel-1 specific - VERIFIED)
 ```python
-# From ops/merge_sentinel1_orbits/merge_sentinel1.py (Lines 80-100)
+# From ops/merge_sentinel1_orbits/merge_sentinel1.py (Lines 19-40)
 from rasterio.vrt import WarpedVRT
-from rasterio.enums import Resampling
+from rasterio.merge import merge
+from vibe_lib.raster import FLOAT_COMPRESSION_KWARGS, tile_to_utm
 
-def align_to_utm(raster: rasterio.DatasetReader, utm_crs) -> WarpedVRT:
-    """Create virtual aligned raster without loading data"""
-    return WarpedVRT(
-        raster,
-        crs=utm_crs,
-        resampling=Resampling.bilinear,  # Smooth resampling for continuous data
-        # Transform and dimensions calculated automatically
-    )
-
-# Usage pattern
-aligned_vrts = []
-for raster_path in raster_paths:
-    with rasterio.open(raster_path) as src:
-        # Determine appropriate UTM zone
-        utm_crs = tile_to_utm(src.bounds, src.crs)
-        
-        # Create virtual aligned raster
-        vrt = WarpedVRT(
-            src,
-            crs=utm_crs,
-            resampling=Resampling.bilinear
+# ACTUAL CODE:
+def merge_rasters(
+    filepaths: List[str],
+    bounds: Tuple[float, float, float, float],
+    resampling: Resampling,
+    out_path: str,
+    **kwargs: Any,
+) -> None:
+    src = []
+    vrt = []
+    try:
+        src = [rasterio.open(i) for i in filepaths]
+        vrt = [WarpedVRT(i, **kwargs) for i in src]
+        dst_kwds = FLOAT_COMPRESSION_KWARGS
+        dst_kwds["driver"] = "GTiff"
+        dst_kwds.update({"blockxsize": 512, "blockysize": 512})
+        return merge(
+            vrt,
+            bounds=bounds,
+            res=None,
+            nodata=None,
+            precision=None,
+            method="first",  # first is the default
+            target_aligned_pixels=False,
+            dst_path=out_path,
+            dst_kwds=dst_kwds,
+            resampling=resampling,
         )
-        aligned_vrts.append(vrt)
+    finally:
+        for i in vrt + src:
+            i.close()
 ```
 
 ## 3. MERGING RASTERS
@@ -164,11 +170,11 @@ def merge_rasters(
     # Open all rasters
     rasters = [rasterio.open(r.raster_asset.path_or_url) for r in raster_sequence.rasters]
     
-    # Validate compatibility
-    validate_rasters_compatibility(rasters)
+    # Validate compatibility - CORRECTED: actual function name
+    check_rasters_are_valid(rasters, resolution)
     
-    # Determine target resolution
-    target_res = determine_target_resolution(rasters, resolution)
+    # Determine target resolution - CORRECTED: actual function name
+    target_res = compute_target_resolution(rasters, resolution)
     
     # Perform merge with rasterio
     merged_array, merged_transform = merge(
@@ -188,7 +194,7 @@ def merge_rasters(
         "height": merged_array.shape[1],
         "width": merged_array.shape[2],
         "transform": merged_transform,
-        "compress": "deflate",  # Compression for output
+        "compress": "ZSTD",  # CORRECTED: Uses ZSTD not deflate
         "tiled": True,  # Tiled for efficient access
         "blockxsize": 512,
         "blockysize": 512
@@ -312,21 +318,21 @@ def export_merged_raster(
 
 ### Cloud-Optimized GeoTIFF (COG) Export
 ```python
-# From vibe_lib/raster.py
-FLOAT_COMPRESSION_KWARGS = {
-    "compress": "deflate",
-    "predictor": 3,  # Floating point predictor
-    "zlevel": 9,  # Maximum compression
+# From vibe_lib/raster.py - CORRECTED COMPRESSION SETTINGS
+# ACTUAL CODE uses ZSTD compression, not DEFLATE:
+COMPRESSION_KWARGS = {
+    "tiled": True,
+    "compress": "ZSTD",  # NOT deflate as originally claimed!
+    "zstd_level": 9,
+}
+FLOAT_COMPRESSION_KWARGS = {**COMPRESSION_KWARGS, "predictor": 3}  # Floating point predictor
     "tiled": True,
     "blockxsize": 512,
     "blockysize": 512,
     "interleave": "band"
 }
 
-INT_COMPRESSION_KWARGS = {
-    "compress": "deflate", 
-    "predictor": 2,  # Horizontal differencing
-    "zlevel": 9,
+INT_COMPRESSION_KWARGS = {**COMPRESSION_KWARGS, "predictor": 2}  # Horizontal differencing
     "tiled": True,
     "blockxsize": 512,
     "blockysize": 512,
@@ -351,7 +357,7 @@ def export_as_cog(
         'transform': transform,
         'BIGTIFF': 'IF_SAFER',  # Use BigTIFF for large files
         'COPY_SRC_OVERVIEWS': True,
-        'COMPRESS': 'DEFLATE',
+        'COMPRESS': 'ZSTD',  # CORRECTED: FarmVibes uses ZSTD throughout
         'TILED': True
     }
     

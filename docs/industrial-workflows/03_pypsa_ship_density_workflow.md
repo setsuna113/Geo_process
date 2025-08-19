@@ -48,22 +48,14 @@ def load_ship_density_from_zip(zip_path: str) -> xarray.DataArray:
 ### Cutout (Study Area) Definition
 ```python
 # From scripts/build_cutout.py (conceptual - referenced in build_ship_raster.py)
+# ACTUAL: determine_cutout_xXyY() function exists and is used for bounds
+# but implementation details not shown in original code snippet
 def determine_cutout_xXyY(cutout):
     """
     Determine the geographic extent for European study area
-    Returns bounds in the raster's coordinate system
+    MISSING: Actual implementation details not available in code review
     """
-    # Cutout defines the study area (e.g., Europe)
-    # Format: [min_lon, max_lon, min_lat, max_lat]
-    bounds = cutout.bounds
-    
-    # Convert to raster coordinate system if needed
-    # PyPSA uses standard lat/lon (EPSG:4326)
-    x = bounds[0]  # min longitude
-    X = bounds[1]  # max longitude  
-    y = bounds[2]  # min latitude
-    Y = bounds[3]  # max latitude
-    
+    # Returns x, X, y, Y for coordinate slicing
     return x, X, y, Y
 ```
 
@@ -145,41 +137,18 @@ def export_cropped_raster(
 
 ### Complete Workflow Implementation
 ```python
-# From scripts/build_ship_raster.py (Lines 65-75)
-if __name__ == "__main__":
-    """
-    Complete PyPSA ship density processing
-    """
-    # Input/output from Snakemake workflow
-    input_zip = snakemake.input.ship_density
-    output_raster = snakemake.output[0]
-    cutout = snakemake.input.cutout
-    
-    # Step 1: Extract from ZIP
-    with zipfile.ZipFile(input_zip) as zip_f:
-        resources = Path(output_raster).parent
-        fn = "shipdensity_global.tif"
-        zip_f.extract(fn, resources)
-    
-    # Step 2: Load and crop in one operation
-    with rioxarray.open_rasterio(resources / fn) as ship_density:
-        # Remove band dimension
-        ship_density = ship_density.drop_vars(["band"])
-        
-        # Get European bounds
-        x, X, y, Y = determine_cutout_xXyY(cutout)
-        
-        # Crop to Europe
-        ship_density_europe = ship_density.sel(
-            x=slice(x, X),
-            y=slice(Y, y)
-        )
-        
-        # Step 3: Export
-        ship_density_europe.rio.to_raster(output_raster)
-    
-    # Step 4: Clean up temporary file
-    (resources / fn).unlink()  # Delete extracted global file
+# ACTUAL COMPLETE IMPLEMENTATION from build_ship_raster.py (Lines 68-73):
+# The real code is even simpler than documented - just 5 lines!
+# ACTUAL CODE (simplified from what was documented):
+with zipfile.ZipFile(snakemake.input.ship_density) as zip_f:
+    resources = Path(snakemake.output[0]).parent
+    fn = "shipdensity_global.tif"
+    zip_f.extract(fn, resources)
+with rioxarray.open_rasterio(resources / fn) as ship_density:
+    ship_density = ship_density.drop_vars(["band"]).sel(
+        x=slice(x, X), y=slice(Y, y)
+    ).rio.to_raster(snakemake.output[0])
+    (resources / fn).unlink()  # Clean up extracted file
 ```
 
 ## 5. INTEGRATION WITH ENERGY MODELING

@@ -23,8 +23,9 @@ corteva/rioxarray/
 ### Core Loading Implementation
 ```python
 # From rioxarray/_io.py (Lines 800-900)
+# ACTUAL function signature from rioxarray:
 def open_rasterio(
-    filename,
+    filename: Union[str, os.PathLike, rasterio.io.DatasetReader, rasterio.vrt.WarpedVRT],
     parse_coordinates=None,
     chunks=None,
     cache=None,
@@ -38,7 +39,7 @@ def open_rasterio(
     decode_timedelta=None,
     band_as_variable=False,
     **open_kwargs,
-):
+):  # NOTE: Type hints more complex than shown
     """
     Open a rasterio dataset as xarray object
     
@@ -161,8 +162,9 @@ def open_rasterio(
 def _make_coords(transform, width, height, crs):
     """
     Generate coordinate arrays from transform
+    MISSING: Actual coordinate generation mechanism may differ
     """
-    # Generate 1D coordinate arrays
+    # SPECULATIVE: Coordinate generation details
     x_coords = np.arange(width) * transform[0] + transform[2] + transform[0] / 2
     y_coords = np.arange(height) * transform[4] + transform[5] + transform[4] / 2
     
@@ -300,6 +302,7 @@ def reproject(
 # From rioxarray/merge.py (Lines 84-200)
 def merge_arrays(
     dataarrays: Sequence[DataArray],
+    *,  # MISSING: Keyword-only arguments marker!
     bounds: Optional[tuple] = None,
     res: Optional[tuple] = None,
     nodata: Optional[float] = None,
@@ -307,7 +310,7 @@ def merge_arrays(
     method: Union[str, Callable] = "first",
     crs: Optional[CRS] = None,
     parse_coordinates: bool = True,
-) -> DataArray:
+) -> DataArray:  # Uses keyword-only args, important detail missing
     """
     Merge multiple raster DataArrays into single DataArray
     
@@ -556,7 +559,9 @@ def to_raster(
             dst.build_overviews(factors, Resampling.average)
 
 def _iter_windows(self, block_shapes=(512, 512)):
-    """Iterate over windows for windowed writing"""
+    """Iterate over windows for windowed writing
+    MISSING: Actual window iteration implementation may differ
+    """
     height, width = self.shape
     
     for row in range(0, height, block_shapes[0]):
