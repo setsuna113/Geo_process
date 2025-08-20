@@ -10,9 +10,7 @@ Accepts results from Julia GLM via orchestrator.
 
 import logging
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 import seaborn as sns
 from pathlib import Path
 from datetime import datetime
@@ -25,10 +23,7 @@ warnings.filterwarnings('ignore')
 
 # Import hypothesis test modules and visualization wrappers
 from .wald_method import WaldMethod
-from .model_comparison import ModelComparison
-from ..diagnostics.diagnostic_plots import DiagnosticPlots
-from ..hypothesis.score_test import ScoreTest
-from ..hypothesis.lrt_test import LikelihoodRatioTest
+from ..evaluation.model_comparison import ModelComparison
 from ..config_loader import MLRegressionConfig
 
 logger = logging.getLogger(__name__)
@@ -48,7 +43,7 @@ class Method1H0H1GLM:
     
     This class:
     1. Accepts fitted model results from Julia (via orchestrator)
-    2. Runs hypothesis tests (Wald-SESOI, Wald-TOST, Score)
+    2. Runs hypothesis tests (LRT, Wald-SESOI, Wald-TOST)
     3. Generates visualizations and reports
     """
     
@@ -72,21 +67,21 @@ class Method1H0H1GLM:
         # Initialize wrapped components
         self.wald_method = WaldMethod()  # Uses default SESOI and TOST thresholds
         self.model_comparator = ModelComparison()
-        self.diagnostic_plotter = DiagnosticPlots()
-        self.lrt_test = LikelihoodRatioTest()
-        self.score_test = ScoreTest()
         
         logger.info("Method 1 H0-H1 GLM initialized with wrapped components")
     
-    def set_julia_results(self, models: Dict[str, Any], lr_test: Optional[Dict] = None) -> None:
+    def set_julia_results(self, models: Dict[str, Any], lr_test: Dict[str, Any]) -> None:
         """Set the Julia model results for analysis.
         
         Called by orchestrator to pass Julia results to this method.
         
         Args:
             models: Dictionary containing 'method1_null' and 'method1_full' model results
-            lr_test: Optional pre-computed LRT result from Julia
+            lr_test: MANDATORY LRT result from Julia (THIS IS THE PRIMARY TEST!)
         """
+        if not lr_test:
+            raise ValueError("LRT result is MANDATORY. This is THE test for nested models!")
+        
         self.model_null = models.get('method1_null')
         self.model_full = models.get('method1_full')
         self.lr_test_result = lr_test
@@ -99,8 +94,13 @@ class Method1H0H1GLM:
                 'has_mesf': any('ME' in name for name in self.model_full.get('coef_names', []))
             }
         
-        logger.info(f"Julia results set: null model AIC={self.model_null.get('aic', 'N/A'):.2f}, "
-                   f"full model AIC={self.model_full.get('aic', 'N/A'):.2f}")
+        null_aic = self.model_null.get('aic', 'N/A') if self.model_null else 'N/A'
+        full_aic = self.model_full.get('aic', 'N/A') if self.model_full else 'N/A'
+        
+        if isinstance(null_aic, (int, float)) and isinstance(full_aic, (int, float)):
+            logger.info(f"Julia results set: null model AIC={null_aic:.2f}, full model AIC={full_aic:.2f}")
+        else:
+            logger.info(f"Julia results set: null model AIC={null_aic}, full model AIC={full_aic}")
     
     def run_hypothesis_tests(self) -> Dict[str, Any]:
         """Run all hypothesis tests on the loaded models.
@@ -117,43 +117,24 @@ class Method1H0H1GLM:
         
         results = {}
         
-        # 1. Likelihood Ratio Test (if not pre-computed)
-        if self.lr_test_result:
-            results['likelihood_ratio_test'] = self.lr_test_result
-            logger.info(f"LRT (from Julia): χ²={self.lr_test_result.get('lr_statistic', 0):.2f}, "
-                       f"p={self.lr_test_result.get('p_value', 0):.4e}")
-        else:
-            # Compute LRT from log-likelihoods
-            null_loglik = self.model_null.get('loglik', 0)
-            full_loglik = self.model_full.get('loglik', 0)
-            lr_statistic = 2 * (full_loglik - null_loglik)
-            df_diff = self.model_null.get('df_residual', 0) - self.model_full.get('df_residual', 0)
-            p_value = 1 - chi2.cdf(lr_statistic, df_diff) if df_diff > 0 else 1.0
-            
-            results['likelihood_ratio_test'] = {
-                'lr_statistic': lr_statistic,
-                'df': df_diff,
-                'p_value': p_value,
-                'reject_h0': p_value < 0.05
-            }
-            logger.info(f"LRT (computed): χ²={lr_statistic:.2f}, p={p_value:.4e}")
+        # 1. Likelihood Ratio Test (MANDATORY - this is THE test!)
+        # Fix LR statistic if it's actually the full model deviance
+        lrt_result = self.lr_test_result.copy()
         
-        # 2. Score Test (approximated from deviance)
-        null_deviance = self.model_null.get('deviance', 0)
-        full_deviance = self.model_full.get('deviance', 0)
-        deviance_diff = null_deviance - full_deviance
-        df_diff = self.model_null.get('df_residual', 0) - self.model_full.get('df_residual', 0)
+        # Check if lr_statistic is incorrectly the full model deviance
+        if (self.model_null and self.model_full and 
+            abs(lrt_result['lr_statistic'] - self.model_full.get('deviance', 0)) < 0.01):
+            # Calculate the correct LR statistic as deviance difference
+            null_dev = self.model_null.get('deviance', 0) 
+            full_dev = self.model_full.get('deviance', 0)
+            lrt_result['lr_statistic'] = null_dev - full_dev
+            logger.warning(f"Fixed LR statistic: {lrt_result['lr_statistic']:.2f} (was incorrectly full deviance)")
         
-        if df_diff > 0 and deviance_diff > 0:
-            score_p_value = 1 - chi2.cdf(deviance_diff, df_diff)
-            results['score_test'] = {
-                'statistic': deviance_diff,
-                'df': df_diff,
-                'p_value': score_p_value,
-                'reject_h0': score_p_value < 0.05,
-                'interpretation': 'Testing if biodiversity improves over climate-only model'
-            }
-            logger.info(f"Score Test: χ²={deviance_diff:.2f}, p={score_p_value:.4e}")
+        results['likelihood_ratio_test'] = lrt_result
+        logger.info(f"LRT (PRIMARY TEST): χ²={lrt_result.get('lr_statistic', 0):.2f}, "
+                   f"p={lrt_result.get('p_value', 0):.4e}")
+        
+        # Score Test removed - redundant with LRT for nested models
         
         # 3. Wald Tests with SESOI and TOST
         wald_results = self._run_wald_tests()
@@ -184,7 +165,7 @@ class Method1H0H1GLM:
         vcov = np.array(self.model_full.get('vcov', []))
         
         # Use WaldMethod wrapper to run tests
-        wald_results = self.wald_method.run_wald_tests(
+        wald_results = self.wald_method.run_all_tests(
             coefficients=coefs,
             std_errors=ses,
             coef_names=names,
@@ -198,48 +179,23 @@ class Method1H0H1GLM:
         """Compare null and full models using information criteria.
         
         Returns:
-            Model comparison results
+            Model comparison results from ModelComparison class
         """
-        null_aic = self.model_null.get('aic', 0)
-        full_aic = self.model_full.get('aic', 0)
-        null_bic = self.model_null.get('bic', 0)
-        full_bic = self.model_full.get('bic', 0)
-        
-        delta_aic = null_aic - full_aic
-        delta_bic = null_bic - full_bic
-        
-        # Calculate AIC weights
-        aic_values = np.array([full_aic, null_aic])
-        delta_aic_weights = aic_values - np.min(aic_values)
-        relative_likelihood = np.exp(-0.5 * delta_aic_weights)
-        aic_weights = relative_likelihood / np.sum(relative_likelihood)
-        
-        evidence_ratio = aic_weights[0] / aic_weights[1] if aic_weights[1] > 0 else np.inf
-        
-        comparison = {
-            'null_model': {
-                'aic': null_aic,
-                'bic': null_bic,
-                'n_parameters': self.model_null.get('n_parameters', 0)
-            },
-            'full_model': {
-                'aic': full_aic,
-                'bic': full_bic,
-                'n_parameters': self.model_full.get('n_parameters', 0)
-            },
-            'delta_aic': delta_aic,
-            'delta_bic': delta_bic,
-            'aic_weight_full': aic_weights[0],
-            'aic_weight_null': aic_weights[1],
-            'evidence_ratio': evidence_ratio,
-            'best_model_aic': 'full' if delta_aic > 0 else 'null',
-            'best_model_bic': 'full' if delta_bic > 0 else 'null'
+        # Use the external ModelComparison class - no duplication!
+        models = {
+            'null': self.model_null,
+            'full': self.model_full
         }
         
+        comparison = self.model_comparator.compare_models(models)
+        
+        # Log the results
+        best_aic = comparison['rankings']['aic'][0] if comparison.get('rankings', {}).get('aic') else 'unknown'
+        best_bic = comparison['rankings']['bic'][0] if comparison.get('rankings', {}).get('bic') else 'unknown'
+        
         logger.info(f"\nModel Comparison:")
-        logger.info(f"  ΔAIC: {delta_aic:.2f} ({'full' if delta_aic > 0 else 'null'} model preferred)")
-        logger.info(f"  ΔBIC: {delta_bic:.2f} ({'full' if delta_bic > 0 else 'null'} model preferred)")
-        logger.info(f"  Evidence ratio: {evidence_ratio:.2e}:1 in favor of full model")
+        logger.info(f"  Best model (AIC): {best_aic}")
+        logger.info(f"  Best model (BIC): {best_bic}")
         
         return comparison
     
@@ -252,35 +208,38 @@ class Method1H0H1GLM:
         Returns:
             Conclusion dictionary
         """
-        # Check LRT
-        lrt_supports_h1 = results.get('likelihood_ratio_test', {}).get('reject_h0', False)
+        # Check LRT (p < 0.05 means reject H0, support H1)
+        lrt_p = results.get('likelihood_ratio_test', {}).get('p_value', 1.0)
+        lrt_supports_h1 = lrt_p < 0.05
         
-        # Check Score test
-        score_supports_h1 = results.get('score_test', {}).get('reject_h0', False)
         
         # Check Wald tests
         wald_supports_h1 = False
         if 'wald_tests' in results:
-            for name, test in results['wald_tests'].items():
-                if 'summary' in test and test['summary'].get('exceeds_sesoi', False):
-                    wald_supports_h1 = True
-                    break
+            # Check if summary indicates meaningful effects
+            summary = results['wald_tests'].get('summary', {})
+            if summary.get('n_meaningful', 0) > 0:
+                wald_supports_h1 = True
+            # Also check joint test
+            elif 'joint_test' in results['wald_tests']:
+                joint_p = results['wald_tests']['joint_test'].get('p_value', 1.0)
+                wald_supports_h1 = joint_p < 0.05
         
         # Check model comparison
         comparison = results.get('model_comparison', {})
-        aic_supports_h1 = comparison.get('best_model_aic') == 'full'
-        bic_supports_h1 = comparison.get('best_model_bic') == 'full'
+        rankings = comparison.get('rankings', {})
+        aic_supports_h1 = rankings.get('aic', [None])[0] == 'full'
+        bic_supports_h1 = rankings.get('bic', [None])[0] == 'full'
         
         # Overall decision (majority vote with emphasis on LRT and Wald)
-        evidence_count = sum([lrt_supports_h1, score_supports_h1, wald_supports_h1, aic_supports_h1])
-        supports_h1 = evidence_count >= 2  # At least 2 out of 4 support H1
+        evidence_count = sum([lrt_supports_h1, wald_supports_h1, aic_supports_h1])
+        supports_h1 = evidence_count >= 2  # At least 2 out of 3 support H1
         
         conclusion = {
             'supports_h1': supports_h1,
             'hypothesis': 'H1: Biodiversity begets biodiversity' if supports_h1 else 'H0: No biodiversity effect',
             'evidence': {
                 'lrt': lrt_supports_h1,
-                'score': score_supports_h1,
                 'wald_sesoi': wald_supports_h1,
                 'aic': aic_supports_h1,
                 'bic': bic_supports_h1
@@ -321,6 +280,8 @@ class Method1H0H1GLM:
     def generate_visualizations(self, output_dir: Optional[Path] = None) -> List[Path]:
         """Generate all visualizations for Method 1.
         
+        Includes both hypothesis test visualizations AND model diagnostics.
+        
         Args:
             output_dir: Directory to save visualizations
             
@@ -338,40 +299,58 @@ class Method1H0H1GLM:
         
         generated_files = []
         
-        # 1. Forest Plot
+        # ========= HYPOTHESIS TEST VISUALIZATIONS =========
+        # Call all visualization functions - let them handle their own errors
+        
+        # 1. Forest Plot - Shows coefficients with CIs (ESSENTIAL)
         forest_path = self._create_forest_plot(output_dir)
         if forest_path:
             generated_files.append(forest_path)
         
-        # 2. Hypothesis Tests Visualization
-        tests_path = self._create_hypothesis_tests_viz(output_dir)
-        if tests_path:
-            generated_files.append(tests_path)
-        
-        # 3. Model Comparison Visualization
+        # 2. Model Comparison - AIC/BIC comparison (ESSENTIAL) 
         comparison_path = self._create_model_comparison_viz(output_dir)
         if comparison_path:
             generated_files.append(comparison_path)
         
-        # 4. Diagnostic Plots
-        diagnostic_path = self._create_diagnostic_plots(output_dir)
-        if diagnostic_path:
-            generated_files.append(diagnostic_path)
-        
-        # 5. LRT Visualization  
+        # 3. LRT Visualization
         lrt_path = self._create_lrt_viz(output_dir)
         if lrt_path:
             generated_files.append(lrt_path)
         
-        # 6. Score Test Visualization
-        score_path = self._create_score_test_viz(output_dir)
-        if score_path:
-            generated_files.append(score_path)
+        # Score Test removed - redundant with LRT
         
-        # 7. Feature Importance Plot
-        feature_path = self._create_feature_importance_viz(output_dir)
-        if feature_path:
-            generated_files.append(feature_path)
+        # ========= MODEL DIAGNOSTIC PLOTS (NEW) =========
+        # Add comprehensive model diagnostics
+        from ..diagnostics.diagnostic_plots import ResidualDiagnostics
+        diag = ResidualDiagnostics()
+        
+        # Generate diagnostics for null model
+        if self.model_null:
+            paths = diag.create_all_diagnostics(
+                model_results=self.model_null,
+                output_dir=output_dir,
+                model_name="method1_null"
+            )
+            generated_files.extend(paths)
+        
+        # Generate diagnostics for full model
+        if self.model_full:
+            paths = diag.create_all_diagnostics(
+                model_results=self.model_full,
+                output_dir=output_dir,
+                model_name="method1_full"
+            )
+            generated_files.extend(paths)
+        
+        # Deviance-df comparison plot
+        if self.model_null and self.model_full:
+            models = {'null': self.model_null, 'full': self.model_full}
+            path = diag.plot_deviance_df(
+                models=models,
+                save_path=output_dir / "model_comparison_deviance.png"
+            )
+            if path:
+                generated_files.append(output_dir / "model_comparison_deviance.png")
         
         logger.info(f"Generated {len(generated_files)} visualizations in {output_dir}")
         return generated_files
@@ -389,143 +368,10 @@ class Method1H0H1GLM:
             return None
         
         return self.wald_method.create_forest_plot(
-            wald_results=self.hypothesis_results['wald_tests'],
+            results=self.hypothesis_results['wald_tests'],
             output_dir=output_dir,
             filename="forest_plot_improved.png"
         )
-    
-    def _create_hypothesis_tests_viz(self, output_dir: Path) -> Optional[Path]:
-        """Create visualization for hypothesis test results.
-        
-        Args:
-            output_dir: Directory to save plot
-            
-        Returns:
-            Path to saved plot or None
-        """
-        try:
-            fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-            
-            # 1. Test Statistics Summary
-            ax = axes[0, 0]
-            tests = []
-            statistics = []
-            p_values = []
-            
-            if 'likelihood_ratio_test' in self.hypothesis_results:
-                tests.append('LRT')
-                statistics.append(self.hypothesis_results['likelihood_ratio_test'].get('lr_statistic', 0))
-                p_values.append(self.hypothesis_results['likelihood_ratio_test'].get('p_value', 1))
-            
-            if 'score_test' in self.hypothesis_results:
-                tests.append('Score')
-                statistics.append(self.hypothesis_results['score_test'].get('statistic', 0))
-                p_values.append(self.hypothesis_results['score_test'].get('p_value', 1))
-            
-            if tests:
-                colors = ['green' if p < 0.05 else 'red' for p in p_values]
-                bars = ax.bar(tests, statistics, color=colors, alpha=0.7)
-                ax.set_ylabel('Test Statistic', fontsize=11)
-                ax.set_title('Model Comparison Tests', fontsize=12, fontweight='bold')
-                
-                # Add p-values as text
-                for bar, p in zip(bars, p_values):
-                    height = bar.get_height()
-                    ax.text(bar.get_x() + bar.get_width()/2., height,
-                           f'p={p:.4f}', ha='center', va='bottom', fontsize=9)
-            
-            # 2. SESOI Results
-            ax = axes[0, 1]
-            wald_tests = self.hypothesis_results.get('wald_tests', {})
-            if wald_tests:
-                predictors = []
-                exceeds = []
-                for name, result in wald_tests.items():
-                    if 'joint' not in name and 'summary' in result:
-                        predictors.append(name.replace('_log', '').replace('_', ' ').title())
-                        exceeds.append(1 if result['summary'].get('exceeds_sesoi', False) else 0)
-                
-                if predictors:
-                    colors = ['green' if e else 'gray' for e in exceeds]
-                    ax.bar(predictors, exceeds, color=colors, alpha=0.7)
-                    ax.set_ylim([0, 1.2])
-                    ax.set_ylabel('Exceeds SESOI', fontsize=11)
-                    ax.set_title('SESOI Test Results', fontsize=12, fontweight='bold')
-                    ax.set_yticks([0, 1])
-                    ax.set_yticklabels(['No', 'Yes'])
-            
-            # 3. TOST Results
-            ax = axes[1, 0]
-            if wald_tests:
-                predictors = []
-                conclusions = []
-                for name, result in wald_tests.items():
-                    if 'joint' not in name and 'tost_test' in result:
-                        predictors.append(name.replace('_log', '').replace('_', ' ').title())
-                        tost = result['tost_test']
-                        if tost.get('is_equivalent'):
-                            conclusions.append('Equivalent')
-                        elif tost.get('is_different_from_zero'):
-                            conclusions.append('Different')
-                        else:
-                            conclusions.append('Inconclusive')
-                
-                if predictors:
-                    # Create stacked bar chart
-                    equiv_counts = [1 if c == 'Equivalent' else 0 for c in conclusions]
-                    diff_counts = [1 if c == 'Different' else 0 for c in conclusions]
-                    inconcl_counts = [1 if c == 'Inconclusive' else 0 for c in conclusions]
-                    
-                    x = np.arange(len(predictors))
-                    ax.bar(x, equiv_counts, label='Equivalent', color='gray', alpha=0.7)
-                    ax.bar(x, diff_counts, bottom=equiv_counts, label='Different', color='green', alpha=0.7)
-                    ax.bar(x, inconcl_counts, bottom=np.array(equiv_counts)+np.array(diff_counts), 
-                          label='Inconclusive', color='orange', alpha=0.7)
-                    
-                    ax.set_xticks(x)
-                    ax.set_xticklabels(predictors, rotation=45, ha='right')
-                    ax.set_ylabel('TOST Conclusion', fontsize=11)
-                    ax.set_title('TOST Equivalence Test Results', fontsize=12, fontweight='bold')
-                    ax.legend(loc='upper right')
-            
-            # 4. Evidence Summary
-            ax = axes[1, 1]
-            conclusion = self.hypothesis_results.get('conclusion', {})
-            evidence = conclusion.get('evidence', {})
-            
-            if evidence:
-                labels = []
-                values = []
-                colors_pie = []
-                for test, supports in evidence.items():
-                    labels.append(test.upper())
-                    values.append(1 if supports else 0)
-                    colors_pie.append('green' if supports else 'lightgray')
-                
-                if sum(values) > 0:
-                    ax.pie(values, labels=labels, colors=colors_pie, autopct='',
-                          startangle=90, counterclock=False)
-                    ax.set_title('Evidence for H1', fontsize=12, fontweight='bold')
-                    
-                    # Add text summary
-                    support_count = sum(values)
-                    total_count = len(values)
-                    ax.text(0, -1.5, f'{support_count}/{total_count} tests support H1',
-                           ha='center', va='top', fontsize=11, fontweight='bold')
-            
-            plt.suptitle('Method 1: Hypothesis Test Results', fontsize=14, fontweight='bold')
-            plt.tight_layout()
-            
-            save_path = output_dir / "hypothesis_tests.png"
-            fig.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            
-            logger.info(f"Hypothesis tests visualization saved to {save_path}")
-            return save_path
-            
-        except Exception as e:
-            logger.error(f"Failed to create hypothesis tests visualization: {e}")
-            return None
     
     def _create_model_comparison_viz(self, output_dir: Path) -> Optional[Path]:
         """Create model comparison visualization using ModelComparison wrapper.
@@ -548,59 +394,68 @@ class Method1H0H1GLM:
         test_results = {}
         if 'likelihood_ratio_test' in self.hypothesis_results:
             test_results['lrt'] = self.hypothesis_results['likelihood_ratio_test']
-        if 'score_test' in self.hypothesis_results:
-            test_results['score'] = self.hypothesis_results['score_test']
         
-        return self.model_comparator.create_comparison_plot(
-            models=models,
-            test_results=test_results,
-            output_dir=output_dir,
-            filename="model_comparison_improved.png",
-            title="Method 1: Model Comparison (H0 vs H1)"
-        )
-    
-    def _create_diagnostic_plots(self, output_dir: Path) -> Optional[Path]:
-        """Create diagnostic plots using DiagnosticPlots wrapper.
-        
-        Args:
-            output_dir: Directory to save plot
+        # Use the visualization module directly
+        try:
+            from ..visualization.model_comparison_plots import plot_model_comparison
+            import matplotlib.pyplot as plt
             
-        Returns:
-            Path to saved plot or None
-        """
-        if not self.model_null or not self.model_full:
+            # Use the full model comparison results if available
+            if 'model_comparison' in self.hypothesis_results:
+                comparison_results = self.hypothesis_results['model_comparison']
+            else:
+                # Fallback to manual construction
+                comparison_results = {
+                    'models': {
+                        'null': {
+                            'aic': self.model_null.get('aic', 0),
+                            'bic': self.model_null.get('bic', 0),
+                            'loglik': self.model_null.get('loglik', 0),
+                            'df': self.model_null.get('df', self.model_null.get('df_residual', 0))
+                        },
+                        'full': {
+                            'aic': self.model_full.get('aic', 0),
+                            'bic': self.model_full.get('bic', 0),
+                            'loglik': self.model_full.get('loglik', 0),
+                            'df': self.model_full.get('df', self.model_full.get('df_residual', 0))
+                        }
+                },
+                'best_model': {
+                    'aic': 'full' if self.model_full.get('aic', 0) < self.model_null.get('aic', 0) else 'null',
+                    'bic': 'full' if self.model_full.get('bic', 0) < self.model_null.get('bic', 0) else 'null'
+                }
+            }
+            
+            fig = plot_model_comparison(
+                comparison_results=comparison_results,
+                title="Method 1: Model Comparison (H0 vs H1)"
+            )
+            
+            save_path = output_dir / "model_comparison.png"
+            fig.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            logger.info(f"Model comparison plot saved to {save_path}")
+            return save_path
+            
+        except Exception as e:
+            logger.error(f"Failed to create model comparison plot: {e}")
             return None
-        
-        models = {
-            'null': self.model_null,
-            'full': self.model_full
-        }
-        
-        return self.diagnostic_plotter.create_diagnostic_plots(
-            models=models,
-            output_dir=output_dir,
-            filename="diagnostics_improved.png",
-            title="Method 1: Model Diagnostics"
-        )
     
     def _create_lrt_viz(self, output_dir: Path) -> Optional[Path]:
         """Create LRT visualization.
         
-        Args:
-            output_dir: Directory to save plot
-            
-        Returns:
-            Path to saved plot or None
+        Shows chi-square distribution and deviance table.
+        Keep for now - decide later if truly redundant.
         """
         if 'likelihood_ratio_test' not in self.hypothesis_results:
             return None
         
         try:
-            # Use the LRT visualization method
-            fig = self.lrt_test.visualize_lrt(
-                test_results=self.hypothesis_results['likelihood_ratio_test'],
-                null_model_name="Climate Only (H0)",
-                full_model_name="Climate + Biodiversity (H1)"
+            from ..visualization.lrt_plots import visualize_lrt_results
+            
+            fig = visualize_lrt_results(
+                lrt_result=self.hypothesis_results['likelihood_ratio_test'],
+                model_names=["Climate Only (H0)", "Climate + Biodiversity (H1)"]
             )
             
             save_path = output_dir / "lrt_test.png"
@@ -613,122 +468,6 @@ class Method1H0H1GLM:
             logger.error(f"Failed to create LRT visualization: {e}")
             return None
     
-    def _create_score_test_viz(self, output_dir: Path) -> Optional[Path]:
-        """Create Score test visualization.
-        
-        Args:
-            output_dir: Directory to save plot
-            
-        Returns:
-            Path to saved plot or None
-        """
-        if 'score_test' not in self.hypothesis_results:
-            return None
-        
-        try:
-            # Use the Score test visualization method
-            fig = self.score_test.visualize_score_test(
-                test_results=self.hypothesis_results['score_test'],
-                model_name="Method 1: Biodiversity Effect"
-            )
-            
-            save_path = output_dir / "score_test.png"
-            fig.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            
-            logger.info(f"Score test visualization saved to {save_path}")
-            return save_path
-        except Exception as e:
-            logger.error(f"Failed to create Score test visualization: {e}")
-            return None
-    
-    def _create_feature_importance_viz(self, output_dir: Path) -> Optional[Path]:
-        """Create feature importance visualization.
-        
-        Args:
-            output_dir: Directory to save plot
-            
-        Returns:
-            Path to saved plot or None
-        """
-        if not self.model_full:
-            return None
-        
-        try:
-            # Extract coefficient information
-            coefs = np.array(self.model_full.get('coefficients', []))
-            ses = np.array(self.model_full.get('std_errors', []))
-            names = self.model_full.get('coef_names', [])
-            
-            # Filter out intercept and MESF terms for clarity
-            valid_indices = []
-            filtered_names = []
-            for i, name in enumerate(names):
-                if name != '(Intercept)' and not name.startswith('ME'):
-                    valid_indices.append(i)
-                    # Clean up names
-                    clean_name = name.replace('_log', ' (log)').replace('_', ' ').title()
-                    filtered_names.append(clean_name)
-            
-            if not valid_indices:
-                return None
-            
-            filtered_coefs = coefs[valid_indices]
-            filtered_ses = ses[valid_indices]
-            
-            # Calculate importance as absolute standardized coefficients
-            importance = np.abs(filtered_coefs / filtered_ses)
-            
-            # Sort by importance
-            sorted_indices = np.argsort(importance)[::-1]
-            
-            # Create plot
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            # Take top 15 features
-            top_n = min(15, len(sorted_indices))
-            top_indices = sorted_indices[:top_n]
-            
-            y_pos = np.arange(top_n)
-            importance_values = importance[top_indices]
-            feature_names = [filtered_names[i] for i in top_indices]
-            
-            # Color based on coefficient sign
-            colors = ['green' if filtered_coefs[i] > 0 else 'red' for i in top_indices]
-            
-            bars = ax.barh(y_pos, importance_values, color=colors, alpha=0.7)
-            ax.set_yticks(y_pos)
-            ax.set_yticklabels(feature_names)
-            ax.set_xlabel('Importance (|z-score|)', fontsize=12)
-            ax.set_title('Feature Importance in Full Model', fontsize=14, fontweight='bold')
-            
-            # Add value labels
-            for bar, val in zip(bars, importance_values):
-                width = bar.get_width()
-                ax.text(width, bar.get_y() + bar.get_height()/2,
-                       f'{val:.2f}', ha='left', va='center', fontsize=9)
-            
-            # Add legend
-            from matplotlib.patches import Patch
-            legend_elements = [
-                Patch(facecolor='green', alpha=0.7, label='Positive effect'),
-                Patch(facecolor='red', alpha=0.7, label='Negative effect')
-            ]
-            ax.legend(handles=legend_elements, loc='lower right')
-            
-            ax.grid(True, alpha=0.3, axis='x')
-            plt.tight_layout()
-            
-            save_path = output_dir / "feature_importance.png"
-            fig.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)
-            
-            logger.info(f"Feature importance visualization saved to {save_path}")
-            return save_path
-            
-        except Exception as e:
-            logger.error(f"Failed to create feature importance visualization: {e}")
-            return None
     
     def generate_report(self, output_dir: Optional[Path] = None) -> Dict[str, Any]:
         """Generate comprehensive report for Method 1.
@@ -770,18 +509,13 @@ class Method1H0H1GLM:
             'conclusion': self.hypothesis_results.get('conclusion', {})
         }
         
-        # Save JSON report
-        json_path = output_dir / "method1_report.json"
+        # Save structured results for programmatic access
+        json_path = output_dir / "method1_results.json"
         with open(json_path, 'w') as f:
             json.dump(report, f, indent=2, default=self._json_serialize)
-        logger.info(f"JSON report saved to {json_path}")
+        logger.info(f"Structured results saved to {json_path}")
         
-        # Create HTML report
-        html_path = self._create_html_report(report, output_dir)
-        if html_path:
-            report['html_report'] = str(html_path)
-        
-        # Create text summary
+        # Create text summary (simple, useful)
         text_path = self._create_text_summary(report, output_dir)
         if text_path:
             report['text_summary'] = str(text_path)
@@ -789,195 +523,182 @@ class Method1H0H1GLM:
         logger.info(f"Method 1 report generation complete. Files saved to {output_dir}")
         return report
     
-    def _create_html_report(self, report: Dict[str, Any], output_dir: Path) -> Optional[Path]:
-        """Create HTML report.
-        
-        Args:
-            report: Report data
-            output_dir: Directory to save report
-            
-        Returns:
-            Path to HTML file or None
-        """
-        try:
-            html_content = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Method 1: H0-H1 Testing Report</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 40px; background-color: #f5f5f5; }}
-        .container {{ background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
-        h1 {{ color: #2E86AB; border-bottom: 3px solid #2E86AB; padding-bottom: 10px; }}
-        h2 {{ color: #43A047; margin-top: 30px; }}
-        .summary {{ background-color: #E8F5E9; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .conclusion {{ background-color: #FFF3E0; padding: 20px; border-radius: 8px; margin: 20px 0; }}
-        .result {{ font-size: 18px; font-weight: bold; color: #2E7D32; }}
-        table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
-        th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-        th {{ background-color: #2E86AB; color: white; }}
-        img {{ max-width: 100%; height: auto; margin: 20px 0; border: 1px solid #ddd; border-radius: 4px; }}
-        .evidence {{ display: inline-block; padding: 5px 10px; border-radius: 4px; margin: 2px; }}
-        .evidence.support {{ background-color: #C8E6C9; color: #1B5E20; }}
-        .evidence.nosupport {{ background-color: #FFCDD2; color: #B71C1C; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Method 1: H0-H1 Hypothesis Testing Report</h1>
-        <p><strong>Generated:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-        
-        <div class="summary">
-            <h2>Executive Summary</h2>
-            <p class="result">{report['conclusion']['hypothesis']}</p>
-            <p>{report['conclusion']['interpretation']}</p>
-            <p><strong>Sample size:</strong> {report['data_summary']['n_observations']:,} observations</p>
-        </div>
-        
-        <h2>Hypotheses</h2>
-        <ul>
-            <li><strong>H0 (Null):</strong> {report['hypotheses']['H0']}</li>
-            <li><strong>H1 (Alternative):</strong> {report['hypotheses']['H1']}</li>
-        </ul>
-        
-        <h2>Evidence Summary</h2>
-        <p>Tests supporting H1:</p>
-        <div>
-"""
-            
-            # Add evidence badges
-            for test, supports in report['conclusion']['evidence'].items():
-                class_name = 'support' if supports else 'nosupport'
-                symbol = '✓' if supports else '✗'
-                html_content += f'            <span class="evidence {class_name}">{test.upper()} {symbol}</span>\n'
-            
-            html_content += """
-        </div>
-        
-        <h2>Visualizations</h2>
-"""
-            
-            # Add images
-            for viz_file in report.get('visualizations', []):
-                viz_path = Path(viz_file)
-                if viz_path.exists():
-                    html_content += f'        <img src="{viz_path.name}" alt="{viz_path.stem}">\n'
-            
-            html_content += """
-        <div class="conclusion">
-            <h2>Conclusion</h2>
-            <p>{}</p>
-        </div>
-        
-        <h2>Statistical Details</h2>
-        <p>For detailed statistical results, see the accompanying JSON file: method1_report.json</p>
-    </div>
-</body>
-</html>
-""".format(report['conclusion']['interpretation'])
-            
-            # Save HTML
-            html_path = output_dir / "method1_report.html"
-            with open(html_path, 'w') as f:
-                f.write(html_content)
-            
-            logger.info(f"HTML report saved to {html_path}")
-            return html_path
-            
-        except Exception as e:
-            logger.error(f"Failed to create HTML report: {e}")
-            return None
-    
     def _create_text_summary(self, report: Dict[str, Any], output_dir: Path) -> Optional[Path]:
-        """Create text summary of results.
+        """Create professional reports using the reporting module.
+        
+        No more custom text formatting garbage.
+        Uses the professional reporting functions instead.
         
         Args:
             report: Report data
             output_dir: Directory to save summary
             
         Returns:
-            Path to text file or None
+            Path to combined report file or None
         """
+        from ..reporting import (
+            generate_wald_publication_report,
+            generate_lrt_publication_report
+        )
+        
         try:
-            text_content = "METHOD 1: H0-H1 HYPOTHESIS TESTING RESULTS\n"
-            text_content += "=" * 70 + "\n\n"
-            text_content += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            reports = []
+            methods_texts = []  # Collect methods descriptions
+            latex_tables = []
+            supplementary_tables = []  # For CSV export
+            supplementary_info = {}  # Assumptions and guidelines
             
-            text_content += "HYPOTHESES\n"
-            text_content += "-" * 40 + "\n"
-            text_content += f"H0: {report['hypotheses']['H0']}\n"
-            text_content += f"H1: {report['hypotheses']['H1']}\n\n"
+            # Generate professional reports for each test
             
-            text_content += "DATA SUMMARY\n"
-            text_content += "-" * 40 + "\n"
-            text_content += f"Sample size: {report['data_summary']['n_observations']:,}\n"
-            text_content += f"Null model parameters: {report['data_summary']['n_features_null']}\n"
-            text_content += f"Full model parameters: {report['data_summary']['n_features_full']}\n"
-            text_content += f"Spatial filtering: {'Yes' if report['data_summary']['has_spatial_filtering'] else 'No'}\n\n"
-            
-            text_content += "TEST RESULTS\n"
-            text_content += "-" * 40 + "\n"
-            
-            # LRT
+            # 1. LRT Report
             if 'likelihood_ratio_test' in report['test_results']:
                 lrt = report['test_results']['likelihood_ratio_test']
-                text_content += f"Likelihood Ratio Test:\n"
-                text_content += f"  χ² = {lrt.get('lr_statistic', 0):.2f}\n"
-                text_content += f"  df = {lrt.get('df', 0)}\n"
-                text_content += f"  p-value = {lrt.get('p_value', 1):.4e}\n"
-                text_content += f"  Result: {'REJECT H0' if lrt.get('reject_h0', False) else 'FAIL TO REJECT H0'}\n\n"
+                
+                # Generate professional report
+                lrt_report = generate_lrt_publication_report(
+                    test_results=lrt,
+                    hypothesis="H0: Climate-only model vs H1: Climate + Biodiversity model"
+                )
+                
+                # Extract all valuable content
+                reports.append(lrt_report.get('main_text', ''))
+                
+                # Collect methods text
+                if 'methods_text' in lrt_report:
+                    methods_texts.append(("LRT", lrt_report['methods_text']))
+                
+                # Save comparison details for supplementary
+                if 'comparison_details' in lrt_report:
+                    supplementary_tables.append(("lrt_comparison", lrt_report['comparison_details']))
+                
+                if 'latex_table' in lrt_report:
+                    latex_tables.append(("LRT", lrt_report['latex_table']))
             
-            # Score Test
-            if 'score_test' in report['test_results']:
-                score = report['test_results']['score_test']
-                text_content += f"Score Test:\n"
-                text_content += f"  χ² = {score.get('statistic', 0):.2f}\n"
-                text_content += f"  df = {score.get('df', 0)}\n"
-                text_content += f"  p-value = {score.get('p_value', 1):.4e}\n"
-                text_content += f"  Result: {'REJECT H0' if score.get('reject_h0', False) else 'FAIL TO REJECT H0'}\n\n"
-            
-            # Wald Tests
+            # 3. Wald Tests with SESOI and TOST
             if 'wald_tests' in report['test_results']:
-                text_content += "Wald Tests (SESOI & TOST):\n"
-                for name, result in report['test_results']['wald_tests'].items():
-                    if 'summary' in result:
-                        text_content += f"  {name}:\n"
-                        text_content += f"    Exceeds SESOI: {'Yes' if result['summary'].get('exceeds_sesoi', False) else 'No'}\n"
-                        text_content += f"    Equivalent to zero: {'Yes' if result['summary'].get('is_equivalent', False) else 'No'}\n"
-                        text_content += f"    Interpretation: {result['summary'].get('interpretation', '')}\n"
+                for test_name, wald_result in report['test_results']['wald_tests'].items():
+                    # Determine SESOI and TOST parameters
+                    sesoi_threshold = None
+                    tost_bounds = None
+                    
+                    if 'sesoi' in test_name.lower():
+                        sesoi_threshold = wald_result.get('sesoi_threshold', 0.1)
+                    elif 'tost' in test_name.lower():
+                        tost_bounds = wald_result.get('tost_bounds', (-0.1, 0.1))
+                    
+                    # Generate professional report
+                    wald_report = generate_wald_publication_report(
+                        test_results=wald_result,
+                        test_name=test_name,
+                        hypothesis="Biodiversity effects",
+                        sesoi_threshold=sesoi_threshold,
+                        tost_bounds=tost_bounds
+                    )
+                    
+                    reports.append(wald_report.get('main_text', ''))
+                    
+                    # Collect methods text
+                    if 'methods_text' in wald_report:
+                        methods_texts.append((f"Wald {test_name}", wald_report['methods_text']))
+                    
+                    # Collect supplementary info (assumptions, guidelines)
+                    if 'supplementary_info' in wald_report:
+                        supplementary_info[f"wald_{test_name}"] = wald_report['supplementary_info']
+                    
+                    # Save results table for supplementary
+                    if 'results_table' in wald_report and wald_report['results_table'] is not None:
+                        supplementary_tables.append((f"wald_{test_name}", wald_report['results_table']))
+                    
+                    if 'latex_table' in wald_report:
+                        latex_tables.append((test_name, wald_report['latex_table']))
             
-            text_content += "\nMODEL COMPARISON\n"
-            text_content += "-" * 40 + "\n"
-            if 'model_comparison' in report['test_results']:
-                comp = report['test_results']['model_comparison']
-                text_content += f"ΔAIC = {comp.get('delta_aic', 0):.2f} ({'Full' if comp.get('delta_aic', 0) > 0 else 'Null'} model preferred)\n"
-                text_content += f"ΔBIC = {comp.get('delta_bic', 0):.2f} ({'Full' if comp.get('delta_bic', 0) > 0 else 'Null'} model preferred)\n"
-                text_content += f"Evidence ratio: {comp.get('evidence_ratio', 1):.2e}:1 in favor of full model\n\n"
+            # Combine all reports (professional reports already contain formatting)
+            full_report = "\n\n".join(reports)
             
-            text_content += "CONCLUSION\n"
-            text_content += "=" * 70 + "\n"
-            text_content += f"{report['conclusion']['hypothesis']}\n"
-            text_content += f"{report['conclusion']['interpretation']}\n\n"
+            # METHODS SECTION
+            if methods_texts:
+                full_report += "\nMETHODS\n"
+                full_report += "=" * 70 + "\n"
+                # Deduplicate methods texts (some might be identical)
+                seen_methods = set()
+                for test_name, methods_text in methods_texts:
+                    if methods_text not in seen_methods:
+                        full_report += f"\n{test_name}:\n"
+                        full_report += methods_text + "\n"
+                        seen_methods.add(methods_text)
+                full_report += "\n"
             
-            text_content += "Evidence supporting H1:\n"
-            for test, supports in report['conclusion']['evidence'].items():
-                text_content += f"  {test.upper()}: {'Yes' if supports else 'No'}\n"
+            # CONCLUSION - This is the key summary that synthesizes all tests
+            if 'conclusion' in report:
+                full_report += "\n\nCONCLUSION\n"
+                full_report += "=" * 70 + "\n"
+                conclusion = report['conclusion']
+                
+                # Final decision
+                if 'hypothesis' in conclusion:
+                    full_report += f"Decision: {conclusion['hypothesis']}\n"
+                if 'interpretation' in conclusion:
+                    full_report += f"Interpretation: {conclusion['interpretation']}\n"
+                
+                # Evidence summary from all tests
+                if 'evidence' in conclusion:
+                    full_report += "\nEvidence Summary:\n"
+                    for test_name, supports_h1 in conclusion['evidence'].items():
+                        full_report += f"  {test_name.upper()}: {'Supports H1' if supports_h1 else 'Supports H0'}\n"
             
-            # Save text file
-            text_path = output_dir / "method1_summary.txt"
+            # Save combined text report
+            text_path = output_dir / "method1_professional_report.txt"
             with open(text_path, 'w') as f:
-                f.write(text_content)
+                f.write(full_report)
             
-            logger.info(f"Text summary saved to {text_path}")
+            # Save LaTeX tables separately
+            if latex_tables:
+                latex_path = output_dir / "method1_latex_tables.tex"
+                with open(latex_path, 'w') as f:
+                    f.write("% LaTeX Tables for Method 1 Results\n\n")
+                    for name, table in latex_tables:
+                        f.write(f"% {name}\n")
+                        f.write(table)
+                        f.write("\n\n")
+                logger.info(f"LaTeX tables saved to {latex_path}")
+            
+            # Save supplementary tables as CSV (NEW!)
+            if supplementary_tables:
+                supp_dir = output_dir / "supplementary"
+                supp_dir.mkdir(exist_ok=True)
+                
+                for table_name, df in supplementary_tables:
+                    if df is not None:
+                        csv_path = supp_dir / f"{table_name}.csv"
+                        df.to_csv(csv_path, index=False)
+                        logger.info(f"Supplementary table saved to {csv_path}")
+            
+            # Save supplementary info as JSON (NEW!)
+            if supplementary_info:
+                supp_json_path = output_dir / "supplementary" / "assumptions_guidelines.json"
+                supp_json_path.parent.mkdir(exist_ok=True)
+                with open(supp_json_path, 'w') as f:
+                    json.dump(supplementary_info, f, indent=2)
+                logger.info(f"Supplementary info saved to {supp_json_path}")
+            
+            logger.info(f"Professional report saved to {text_path}")
             return text_path
             
         except Exception as e:
-            logger.error(f"Failed to create text summary: {e}")
+            logger.error(f"Failed to create professional report: {e}")
             return None
     
     def _json_serialize(self, obj):
         """Custom JSON serializer for numpy types."""
-        if isinstance(obj, (np.integer, np.int64, np.int32)):
+        import pandas as pd
+        
+        # Handle pandas DataFrames
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict('records')
+        elif isinstance(obj, pd.Series):
+            return obj.tolist()
+        # Handle numpy types
+        elif isinstance(obj, (np.integer, np.int64, np.int32)):
             return int(obj)
         elif isinstance(obj, (np.floating, np.float64, np.float32)):
             return float(obj)
@@ -985,19 +706,14 @@ class Method1H0H1GLM:
             return bool(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif obj == np.inf:
-            return "Infinity"
-        elif obj == -np.inf:
-            return "-Infinity"
-        elif np.isnan(obj):
-            return "NaN"
+        # Handle infinity and NaN
+        elif isinstance(obj, float):
+            if np.isinf(obj):
+                return "Infinity" if obj > 0 else "-Infinity"
+            elif np.isnan(obj):
+                return "NaN"
+            return obj
         return obj
-    
-    # Compatibility methods for orchestrator
-    def fit_models(self, data_metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Compatibility method - models are already fitted in Julia."""
-        logger.info("Models already fitted in Julia. Running hypothesis tests...")
-        return self.run_hypothesis_tests()
     
     def get_biodiversity_coefficients(self) -> Dict[str, Any]:
         """Get biodiversity coefficients for reporting.

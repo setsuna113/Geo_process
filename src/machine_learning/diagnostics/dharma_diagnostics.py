@@ -6,18 +6,10 @@ Refactored to work with Julia GLM results instead of H2O models.
 
 import logging
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, List
 from scipy import stats
-from scipy.spatial import distance
 
 logger = logging.getLogger(__name__)
-
-# Set style for publication-quality plots
-sns.set_style("whitegrid")
-sns.set_context("paper", font_scale=1.2)
 
 
 class DHARMaDiagnostics:
@@ -32,41 +24,31 @@ class DHARMaDiagnostics:
     Works with Julia GLM result dictionaries instead of model objects.
     """
     
-    def __init__(self, model_results: Optional[Dict[str, Any]] = None):
-        """Initialize diagnostics.
-        
-        Args:
-            model_results: Julia GLM results dictionary
-        """
-        self.model_results = model_results
+    def __init__(self):
+        """Initialize diagnostics."""
+        self.model_results = None
         self.diagnostics_results = {}
     
     def run_diagnostics(self, 
-                       model_results: Optional[Dict[str, Any]] = None,
-                       data_summary: Optional[Dict[str, Any]] = None,
-                       coords: Optional[np.ndarray] = None) -> Dict[str, Any]:
+                       model_results: Dict[str, Any],
+                       gvif_values: Dict[str, float],
+                       coef_table: Dict[str, Any]) -> Dict[str, Any]:
         """Run complete diagnostic suite on Julia GLM results.
         
         Args:
             model_results: Julia GLM results dictionary with:
-                - coefficients, std_errors, vcov
-                - aic, bic, deviance, loglik
-                - df_residual, n_obs, theta
-            data_summary: Optional data summary from Julia
-            coords: Optional coordinates for spatial tests [longitude, latitude]
+                - aic, bic, deviance, loglik, df_residual, n_obs, theta
+                - test_* fields with residual-based test results from Julia
+            gvif_values: GVIF values from Julia for multicollinearity (REQUIRED)
+            coef_table: coeftable output from Julia with z_values, p_values (REQUIRED)
             
         Returns:
             Dictionary with all diagnostic results
-        """
-        if model_results is not None:
-            self.model_results = model_results
         
-        if self.model_results is None:
-            return {
-                'model_adequate': False,
-                'error': 'No model results provided for diagnostics',
-                'checks_performed': []
-            }
+        Note: All residual-based tests are now computed in Julia for efficiency.
+        Spatial autocorrelation is handled by MESF eigenvectors in the model.
+        """
+        self.model_results = model_results
         
         diagnostics = {
             'model_adequate': True,  # Will be set to False if issues found
@@ -100,13 +82,8 @@ class DHARMaDiagnostics:
                 elif theta > 100:
                     diagnostics['warnings'].append(f"Very high theta ({theta:.1f}) - consider using Poisson")
             
-            # 4. Information criteria check
-            ic_check = self._check_information_criteria()
-            diagnostics['information_criteria'] = ic_check
-            diagnostics['checks_performed'].append('information_criteria')
-            
-            # 5. Coefficient significance check
-            coef_check = self._check_coefficients()
+            # 4. Coefficient significance check using Julia coef_table
+            coef_check = self._check_coefficients(coef_table)
             diagnostics['coefficients'] = coef_check
             diagnostics['checks_performed'].append('coefficient_significance')
             
@@ -119,15 +96,21 @@ class DHARMaDiagnostics:
                 diagnostics['warnings'].append(sample_check['message'])
                 diagnostics['model_adequate'] = False
             
-            # 7. Spatial autocorrelation (if coordinates provided)
-            if coords is not None and len(coords) > 0:
-                spatial = self._test_spatial_autocorrelation(coords)
-                diagnostics['spatial_autocorrelation'] = spatial
-                diagnostics['checks_performed'].append('spatial_autocorrelation')
-                
-                if spatial.get('significant', False):
-                    diagnostics['warnings'].append("Significant spatial autocorrelation detected")
-                    # Don't mark as inadequate since MESF should handle this
+            # 7. Multicollinearity check using GVIF from Julia
+            multi_check = self._check_multicollinearity_gvif(gvif_values)
+            diagnostics['multicollinearity'] = multi_check
+            diagnostics['checks_performed'].append('multicollinearity_gvif')
+            
+            if multi_check.get('has_multicollinearity', False):
+                diagnostics['warnings'].append("Multicollinearity detected in predictors")
+            
+            # 8. Residual analysis - all tests now computed in Julia
+            residual_check = self._analyze_residuals()
+            diagnostics['residual_analysis'] = residual_check
+            diagnostics['checks_performed'].append('residual_analysis')
+            
+            if residual_check.get('has_issues', False):
+                diagnostics['warnings'].extend(residual_check.get('issues', []))
             
         except Exception as e:
             logger.error(f"Diagnostics failed: {e}")
@@ -194,84 +177,48 @@ class DHARMaDiagnostics:
         else:
             return "Severe overdispersion (consider model revision)"
     
-    def _check_information_criteria(self) -> Dict[str, Any]:
-        """Check AIC and BIC values for model quality.
+    def _check_coefficients(self, coef_table: Dict[str, Any]) -> Dict[str, Any]:
+        """Check coefficient estimates for issues using Julia coef_table.
         
-        Returns:
-            Dictionary with IC assessment
-        """
-        aic = self.model_results.get('aic')
-        bic = self.model_results.get('bic')
-        n_obs = self.model_results.get('n_obs', 0)
-        
-        results = {
-            'aic': aic,
-            'bic': bic,
-            'n_obs': n_obs
-        }
-        
-        # Check if AIC/BIC are reasonable
-        if aic and n_obs > 0:
-            aic_per_obs = aic / n_obs
-            results['aic_per_obs'] = aic_per_obs
-            
-            # Rule of thumb: AIC/n should be reasonably small
-            if aic_per_obs < 10:
-                results['quality'] = 'good'
-            elif aic_per_obs < 20:
-                results['quality'] = 'acceptable'
-            else:
-                results['quality'] = 'poor'
-        
-        return results
-    
-    def _check_coefficients(self) -> Dict[str, Any]:
-        """Check coefficient estimates for issues.
+        Args:
+            coef_table: coeftable output from Julia with:
+                - coef_names: coefficient names
+                - coefficients: coefficient values
+                - z_values: z-statistics
+                - p_values: p-values
         
         Returns:
             Dictionary with coefficient diagnostics
         """
-        coefs = self.model_results.get('coefficients', [])
-        std_errors = self.model_results.get('std_errors', [])
-        coef_names = self.model_results.get('coef_names', [])
-        
-        if len(coefs) == 0:
-            return {'error': 'No coefficients found'}
+        coef_names = coef_table.get('coef_names', [])
+        coefficients = coef_table.get('coefficients', [])
+        z_values = coef_table.get('z_values', [])
+        p_values = coef_table.get('p_values', [])
         
         results = {
-            'n_coefficients': len(coefs),
+            'n_coefficients': len(coefficients),
             'issues': []
         }
         
+        # Check for separation (extreme z-values)
+        for i, z_val in enumerate(z_values):
+            if abs(z_val) > 10:
+                name = coef_names[i] if i < len(coef_names) else f"coef_{i}"
+                results['issues'].append(f"Possible separation: {name} has z={z_val:.2f}")
+        
+        # Check for perfect prediction (p-values near 0 or 1)
+        for i, p_val in enumerate(p_values):
+            if p_val < 1e-10 or p_val > 0.9999:
+                name = coef_names[i] if i < len(coef_names) else f"coef_{i}"
+                results['issues'].append(f"Perfect prediction warning: {name} has p={p_val:.6f}")
+        
         # Check for extreme coefficients
-        coef_array = np.array(coefs)
-        extreme_coefs = np.abs(coef_array) > 10
-        if np.any(extreme_coefs):
-            extreme_indices = np.where(extreme_coefs)[0]
-            for idx in extreme_indices:
-                name = coef_names[idx] if idx < len(coef_names) else f"coef_{idx}"
-                results['issues'].append(f"Extreme coefficient: {name} = {coefs[idx]:.2f}")
-        
-        # Check for very large standard errors
-        if len(std_errors) > 0:
-            se_array = np.array(std_errors)
-            large_se = se_array > 100
-            if np.any(large_se):
-                large_indices = np.where(large_se)[0]
-                for idx in large_indices:
-                    name = coef_names[idx] if idx < len(coef_names) else f"coef_{idx}"
-                    results['issues'].append(f"Large std error: {name} SE = {std_errors[idx]:.2f}")
-        
-        # Check condition number of vcov matrix
-        vcov = self.model_results.get('vcov')
-        if vcov is not None and isinstance(vcov, np.ndarray):
-            try:
-                cond_number = np.linalg.cond(vcov)
-                results['vcov_condition_number'] = cond_number
-                if cond_number > 1000:
-                    results['issues'].append(f"High collinearity (condition number = {cond_number:.0f})")
-            except:
-                pass
+        for i, coef in enumerate(coefficients):
+            if abs(coef) > 10:
+                name = coef_names[i] if i < len(coef_names) else f"coef_{i}"
+                # Only add if not already flagged
+                if not any(name in issue for issue in results['issues']):
+                    results['issues'].append(f"Extreme coefficient: {name} = {coef:.2f}")
         
         results['has_issues'] = len(results['issues']) > 0
         
@@ -284,18 +231,18 @@ class DHARMaDiagnostics:
             Dictionary with sample size assessment
         """
         n_obs = self.model_results.get('n_obs', 0)
-        n_coef = len(self.model_results.get('coefficients', []))
+        n_parameters = self.model_results.get('n_parameters', 0)
         df_residual = self.model_results.get('df_residual', 0)
         
         # Rule of thumb: at least 10-20 observations per parameter
         min_obs_per_param = 10
-        recommended_obs = n_coef * min_obs_per_param
+        recommended_obs = n_parameters * min_obs_per_param
         
         results = {
             'n_obs': n_obs,
-            'n_parameters': n_coef,
+            'n_parameters': n_parameters,
             'df_residual': df_residual,
-            'obs_per_parameter': n_obs / n_coef if n_coef > 0 else np.inf,
+            'obs_per_parameter': n_obs / n_parameters if n_parameters > 0 else np.inf,
             'recommended_min_obs': recommended_obs,
             'adequate': n_obs >= recommended_obs
         }
@@ -307,99 +254,139 @@ class DHARMaDiagnostics:
         
         return results
     
-    def _test_spatial_autocorrelation(self, coords: np.ndarray) -> Dict[str, Any]:
-        """Test for spatial autocorrelation in residuals.
-        
-        Note: This is a simplified test since we don't have actual residuals from Julia.
-        A full implementation would need residuals computed in Julia.
+    def _check_multicollinearity_gvif(self, gvif_values: Dict[str, float]) -> Dict[str, Any]:
+        """Check multicollinearity using GVIF values from Julia.
         
         Args:
-            coords: Coordinates array [longitude, latitude]
+            gvif_values: Dictionary mapping variable names to GVIF values
             
         Returns:
-            Dictionary with spatial test results
+            Dictionary with multicollinearity assessment
         """
-        try:
-            n_obs = self.model_results.get('n_obs', 0)
+        issues = []
+        problematic_vars = []
+        
+        for var_name, gvif in gvif_values.items():
+            # For single df predictors, use GVIF^(1/2df) where df=1
+            adjusted_gvif = np.sqrt(gvif)
             
-            # Without residuals, we can only report that spatial correction was applied
-            # via MESF eigenvectors
-            return {
-                'test_performed': False,
-                'note': 'Spatial autocorrelation handled by MESF eigenvectors',
-                'n_observations': n_obs,
-                'coords_provided': True
-            }
+            if adjusted_gvif > 2:
+                issues.append(f"{var_name}: GVIF^0.5 = {adjusted_gvif:.2f} (>2 suggests collinearity)")
+                problematic_vars.append(var_name)
             
-        except Exception as e:
-            logger.warning(f"Spatial autocorrelation test failed: {e}")
-            return {
-                'test_performed': False,
-                'error': str(e)
-            }
+            if adjusted_gvif > 5:
+                issues.append(f"{var_name}: SEVERE multicollinearity (GVIF^0.5 = {adjusted_gvif:.2f})")
+        
+        max_gvif = max(gvif_values.values()) if gvif_values else 0
+        
+        return {
+            'max_gvif': max_gvif,
+            'max_adjusted_gvif': np.sqrt(max_gvif),
+            'problematic_variables': problematic_vars,
+            'issues': issues,
+            'has_multicollinearity': len(problematic_vars) > 0,
+            'interpretation': self._interpret_gvif(np.sqrt(max_gvif))
+        }
     
-    def plot_diagnostics(self, save_path: Optional[str] = None) -> None:
-        """Create diagnostic plots.
+    def _interpret_gvif(self, adjusted_gvif: float) -> str:
+        """Interpret adjusted GVIF value."""
+        if adjusted_gvif < 1.5:
+            return "No multicollinearity"
+        elif adjusted_gvif < 2:
+            return "Low multicollinearity (acceptable)"
+        elif adjusted_gvif < 5:
+            return "Moderate multicollinearity (monitor coefficients)"
+        else:
+            return "Severe multicollinearity (consider removing predictors)"
+    
+    def _analyze_residuals(self) -> Dict[str, Any]:
+        """Extract residual analysis results from Julia computations.
         
-        Note: Limited plots available without residuals from Julia.
+        All residual-based tests are now computed in Julia for efficiency.
+        This method just extracts and formats the results.
         
-        Args:
-            save_path: Optional path to save plots
+        Returns:
+            Dictionary with residual diagnostics from Julia
         """
-        if not self.diagnostics_results:
-            logger.warning("No diagnostics results to plot")
-            return
-        
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        
-        # Plot 1: Coefficient plot
-        coefs = self.model_results.get('coefficients', [])
-        std_errors = self.model_results.get('std_errors', [])
-        coef_names = self.model_results.get('coef_names', 
-                                           [f"coef_{i}" for i in range(len(coefs))])
-        
-        if len(coefs) > 0 and len(std_errors) > 0:
-            # Calculate z-scores
-            z_scores = np.array(coefs) / np.array(std_errors)
-            
-            # Plot coefficients with error bars
-            ax = axes[0]
-            y_pos = np.arange(len(coefs))
-            ax.errorbar(coefs, y_pos, xerr=1.96*np.array(std_errors), 
-                       fmt='o', capsize=5)
-            ax.axvline(x=0, color='red', linestyle='--', alpha=0.5)
-            ax.set_yticks(y_pos)
-            ax.set_yticklabels(coef_names)
-            ax.set_xlabel('Coefficient Value')
-            ax.set_title('Coefficient Estimates with 95% CI')
-            ax.grid(True, alpha=0.3)
-        
-        # Plot 2: Model quality metrics
-        ax = axes[1]
-        metrics = {
-            'AIC': self.model_results.get('aic', 0),
-            'BIC': self.model_results.get('bic', 0),
-            'Deviance': self.model_results.get('deviance', 0),
-            'Log-likelihood': self.model_results.get('loglik', 0)
+        results = {
+            'n_residuals': self.model_results.get('n_obs', 0),
+            'issues': [],
+            'tests': {}
         }
         
-        x_pos = np.arange(len(metrics))
-        values = list(metrics.values())
+        # 1. Normality tests - from Julia
+        if 'test_jarque_bera_p' in self.model_results:
+            jb_pvalue = self.model_results['test_jarque_bera_p']
+            results['tests']['jarque_bera'] = {
+                'statistic': self.model_results.get('test_jarque_bera_stat'),
+                'p_value': jb_pvalue,
+                'is_normal': jb_pvalue > 0.05
+            }
+            
+            if jb_pvalue < 0.01:
+                results['issues'].append(f"Residuals not normal (JB p={jb_pvalue:.4f})")
         
-        ax.bar(x_pos, values)
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(metrics.keys(), rotation=45)
-        ax.set_ylabel('Value')
-        ax.set_title('Model Quality Metrics')
-        ax.grid(True, alpha=0.3)
+        if 'test_anderson_darling_p' in self.model_results:
+            ad_pvalue = self.model_results['test_anderson_darling_p']
+            results['tests']['anderson_darling'] = {
+                'statistic': self.model_results.get('test_anderson_darling_stat'),
+                'p_value': ad_pvalue,
+                'is_normal': ad_pvalue > 0.05
+            }
         
-        plt.tight_layout()
+        # 2. Outlier detection - from Julia
+        if 'test_outliers_count' in self.model_results:
+            outlier_pct = self.model_results.get('test_outliers_percent', 0)
+            results['outliers'] = {
+                'n_outliers': int(self.model_results.get('test_outliers_count', 0)),
+                'percentage': outlier_pct,
+                'threshold': self.model_results.get('test_outliers_threshold', 3.0)
+            }
+            
+            if outlier_pct > 5:
+                results['issues'].append(f"High outlier rate: {outlier_pct:.1f}% (>5%)")
         
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Diagnostic plots saved to {save_path}")
+        # 3. Residual statistics - from Julia
+        if 'test_skewness' in self.model_results:
+            skewness = self.model_results['test_skewness']
+            kurtosis = self.model_results['test_kurtosis_excess']
+            
+            results['statistics'] = {
+                'skewness': skewness,
+                'kurtosis': kurtosis,
+                'skewness_high': self.model_results.get('test_skewness_high', False),
+                'kurtosis_high': self.model_results.get('test_kurtosis_high', False)
+            }
+            
+            # Check for high skewness
+            if self.model_results.get('test_skewness_high', False):
+                results['issues'].append(f"Highly skewed residuals (skewness={skewness:.2f})")
+            
+            # Check for high kurtosis
+            if self.model_results.get('test_kurtosis_high', False):
+                results['issues'].append(f"High kurtosis (excess={kurtosis:.2f})")
         
-        plt.show()
+        # 4. Heteroscedasticity test - from Julia (binning-based)
+        if 'test_heteroscedasticity_cv' in self.model_results:
+            cv = self.model_results['test_heteroscedasticity_cv']
+            is_heteroscedastic = self.model_results.get('test_heteroscedasticity_high', False)
+            
+            results['tests']['heteroscedasticity'] = {
+                'coefficient_of_variation': cv,
+                'is_heteroscedastic': is_heteroscedastic,
+                'method': 'binned_variance',
+                'interpretation': 'High CV indicates variance changes with fitted values'
+            }
+            
+            if is_heteroscedastic:
+                results['issues'].append(f"Heteroscedasticity detected (CV={cv:.2f} > 0.5)")
+        
+        # Note: All residual-based computations now done in Julia for efficiency
+        # This includes: outliers, heteroscedasticity, skewness, kurtosis, normality tests
+        
+        results['has_issues'] = len(results['issues']) > 0
+        
+        return results
     
     def get_summary(self) -> str:
         """Get text summary of diagnostics.
