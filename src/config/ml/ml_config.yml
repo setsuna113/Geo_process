@@ -17,6 +17,39 @@ regression_analysis:
       - "plants_richness_log"
       - "vertebrates_richness_log"
     
+    lightgbm:
+      outcome_model:
+        objective: "regression"
+        metric: "rmse"
+        num_leaves: 31
+        max_depth: 6
+        learning_rate: 0.1
+        feature_fraction: 0.9
+        bagging_fraction: 0.5
+        bagging_freq: 1
+        min_data_in_leaf: 100
+        num_threads: 120  # Using 120 threads (system has 256 cores)
+        num_iterations: 100
+        seed: 42
+        force_col_wise: true
+        verbosity: -1
+      
+      treatment_model:
+        objective: "regression"
+        metric: "rmse"
+        num_leaves: 31
+        max_depth: 6
+        learning_rate: 0.1
+        feature_fraction: 0.9
+        bagging_fraction: 0.5
+        bagging_freq: 1
+        min_data_in_leaf: 100
+        num_threads: 80  # Same as outcome model
+        num_iterations: 100
+        seed: 42
+        force_col_wise: true
+        verbosity: -1
+    
   hypothesis_testing:
     alpha: 0.05
     sesoi_threshold: 0.1
@@ -26,3 +59,4 @@ regression_analysis:
     results_dir: "results"
     figures_dir: "results/figures"
     reports_dir: "results/reports"
+    julia_results_dir: "/scratch/yl998/julia"

@@ -71,8 +71,9 @@ class MLOrchestrator:
         self.hypothesis_results = {}
         self.diagnostic_results = {}
         
-        # Results directory
-        self.results_dir = Path("results/julia_models")
+        # Results directory - get from config or use default
+        julia_dir = self.config.get('regression_analysis', {}).get('output', {}).get('julia_results_dir', '/scratch/yl998/julia')
+        self.results_dir = Path(julia_dir)
         
         # Storage for results
         self.results = {
