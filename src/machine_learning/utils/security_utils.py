@@ -51,12 +51,27 @@ class PathValidator:
             FileNotFoundError: If file doesn't exist
             PermissionError: If file is not readable
         """
-        # Check for path traversal attempts BEFORE resolving
-        if ".." in str(file_path):
-            raise ValueError("Path traversal detected in file path")
-        
-        # Convert to Path object and resolve
+        # Convert to Path object and resolve FIRST
         path = Path(file_path).resolve()
+        
+        # Check for path traversal AFTER resolving - the only way that works
+        # Check if the resolved path is within allowed directories
+        try:
+            # Get the current working directory as base
+            base_dir = Path.cwd().resolve()
+            # Also allow /tmp and /scratch for temp files
+            allowed_dirs = [base_dir, Path('/tmp').resolve(), Path('/scratch').resolve()]
+            
+            # Check if path is within any allowed directory
+            is_allowed = any(
+                str(path).startswith(str(allowed_dir))
+                for allowed_dir in allowed_dirs
+            )
+            
+            if not is_allowed:
+                raise ValueError(f"Path {path} is outside allowed directories")
+        except (OSError, RuntimeError) as e:
+            raise ValueError(f"Invalid path: {e}")
         
         # Check if file exists
         if not path.exists():

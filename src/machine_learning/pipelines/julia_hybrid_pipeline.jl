@@ -141,17 +141,26 @@ function preprocess_data(df::DataFrame, method::String)
 end
 
 function compute_mesf(df::DataFrame, spatial_step::Int)
-    # Call Python MESF processor
+    # Validate spatial_step is reasonable
+    if spatial_step < 1 || spatial_step > 1000
+        error("Invalid spatial_step: must be between 1 and 1000")
+    end
+    
+    # Call Python MESF processor - use proper command array, not string interpolation
     temp_path = "/tmp/temp_mesf_$(hash(df))_$(spatial_step).arrow"
     Arrow.write(temp_path, df)
     
     mesf_processor = joinpath(@__DIR__, "mesf_processor.py")
     cache_dir = "/scratch/yl998/.cache/mesf"
     
-    # Simple command execution
-    cmd = `$(homedir())/anaconda3/envs/geo/bin/python $mesf_processor 
-           $temp_path --spatial-step $spatial_step --n-eigenvectors 10 
-           --n-jobs 120 --output-dir $cache_dir`
+    # Proper command construction - Julia's backticks handle escaping correctly
+    # when variables are passed as separate arguments
+    python_exe = joinpath(homedir(), "anaconda3", "envs", "geo", "bin", "python")
+    cmd = Cmd([python_exe, mesf_processor, temp_path, 
+               "--spatial-step", string(spatial_step),
+               "--n-eigenvectors", "10",
+               "--n-jobs", "120", 
+               "--output-dir", cache_dir])
     
     output = read(cmd, String)
     rm(temp_path, force=true)
