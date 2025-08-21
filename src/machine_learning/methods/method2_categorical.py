@@ -273,15 +273,29 @@ class Method2H2Testing:
         result['wald_results'] = wald_results
         
         # Find and extract interaction term results
+        # Looking for: bio04_std_x_plants_log or similar patterns
         interaction_result = None
         interaction_coef = None
         interaction_se = None
         
-        for coef_name, coef_result in wald_results.items():
-            if ('bio04' in coef_name.lower() and 'plant' in coef_name.lower()) or 'interaction' in coef_name.lower():
+        # Check if wald_results has 'predictors' key (new structure)
+        if 'predictors' in wald_results:
+            search_dict = wald_results['predictors']
+        else:
+            # Fallback to old structure
+            search_dict = wald_results
+            
+        for coef_name, coef_result in search_dict.items():
+            # Check for the exact interaction term names from Julia
+            if ('bio04_std_x_plants_log' in coef_name or 
+                ('bio04' in coef_name.lower() and 'plant' in coef_name.lower()) or 
+                ('bio4' in coef_name.lower() and 'plant' in coef_name.lower()) or
+                'x_plants' in coef_name.lower() or
+                'interaction' in coef_name.lower()):
                 interaction_result = coef_result
                 interaction_coef = coef_result.get('coefficient', 0)
                 interaction_se = coef_result.get('standard_error', 0)
+                logger.info(f"Found continuous interaction term: {coef_name}")
                 break
         
         if interaction_result:
@@ -363,16 +377,28 @@ class Method2H2Testing:
         result['wald_results'] = wald_results
         
         # Find and extract interaction term results
+        # Looking for: temperate_x_plant_high or similar patterns
         interaction_result = None
         interaction_coef = None
         interaction_se = None
         
-        for coef_name, coef_result in wald_results.items():
-            if (('temperate' in coef_name.lower() and 'plant' in coef_name.lower()) or 
+        # Check if wald_results has 'predictors' key (new structure)
+        if 'predictors' in wald_results:
+            search_dict = wald_results['predictors']
+        else:
+            # Fallback to old structure
+            search_dict = wald_results
+            
+        for coef_name, coef_result in search_dict.items():
+            # Check for the exact interaction term names from Julia
+            if ('temperate_x_plant_high' in coef_name or
+                ('temperate' in coef_name.lower() and 'plant' in coef_name.lower()) or 
+                'x_plant' in coef_name.lower() or
                 'interaction' in coef_name.lower()):
                 interaction_result = coef_result
                 interaction_coef = coef_result.get('coefficient', 0)
                 interaction_se = coef_result.get('standard_error', 0)
+                logger.info(f"Found categorical interaction term: {coef_name}")
                 break
         
         if interaction_result:
