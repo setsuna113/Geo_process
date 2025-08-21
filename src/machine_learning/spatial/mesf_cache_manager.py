@@ -1,11 +1,11 @@
-"""MESF Cache Manager for spatial sampling-aware caching.
+"""MESF Cache Manager with robust caching for eigenvectors only.
 
 This manager ensures:
-1. Original data files are never modified
-2. MESF is cached per (file, sampling_rate, params) combination
-3. Efficient reuse of computed MESF values
-4. Thread-safe atomic operations
-5. Comprehensive error handling
+1. Efficient NPZ storage of eigenvectors only (not full data)
+2. Thread-safe atomic operations with file locking
+3. Cache invalidation on file changes (mtime/size)
+4. Robust error handling and corruption recovery
+5. Minimal storage overhead
 """
 
 import os
@@ -16,9 +16,7 @@ import tempfile
 import fcntl
 import shutil
 import numpy as np
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
+# Removed pandas and pyarrow - we only store numpy arrays
 import tempfile
 import fcntl
 import threading
@@ -153,15 +151,16 @@ class MESFCacheManager:
         return cache_key
     
     def get_cached_path(self, cache_key: str) -> Path:
-        """Get the path for cached MESF-augmented data.
+        """Get the path for cached MESF eigenvectors.
         
         Args:
             cache_key: Unique cache key
             
         Returns:
-            Path to cached parquet file
+            Path to cached NPZ file
         """
-        return self.cache_dir / f"mesf_{cache_key}.parquet"
+        # Use same naming as simple cache for compatibility
+        return self.cache_dir / f"{cache_key}.npz"
     
     def get_metadata_path(self, cache_key: str) -> Path:
         """Get the path for cache metadata.
@@ -172,7 +171,7 @@ class MESFCacheManager:
         Returns:
             Path to metadata JSON file
         """
-        return self.cache_dir / f"mesf_{cache_key}_metadata.json"
+        return self.cache_dir / f"{cache_key}_metadata.json"
     
     def is_cached(self, cache_key: str) -> bool:
         """Check if MESF data is cached.
@@ -229,15 +228,15 @@ class MESFCacheManager:
 
     def save_to_cache(self,
                       cache_key: str,
-                      data_table: pa.Table,
+                      eigenvectors: np.ndarray,
                       metadata: Dict[str, Any]) -> str:
-        """Save MESF-augmented data to cache atomically.
+        """Save MESF eigenvectors to cache atomically.
         
         Uses atomic file operations to prevent race conditions.
         
         Args:
             cache_key: Unique cache key
-            data_table: PyArrow table with MESF columns
+            eigenvectors: MESF eigenvectors array (n_points, n_eigenvectors)
             metadata: Metadata about the computation
             
         Returns:
@@ -259,22 +258,22 @@ class MESFCacheManager:
                 return str(cached_path)
             
             # Use atomic write with temporary files
-            temp_data_path = cached_path.with_suffix('.tmp')
-            temp_meta_path = metadata_path.with_suffix('.tmp')
+            temp_data_path = self.cache_dir / f"tmp_{cache_key}.npz"
+            temp_meta_path = self.cache_dir / f"tmp_{cache_key}_metadata.json"
             
             try:
                 # Check available disk space first
                 stat = os.statvfs(self.cache_dir)
                 free_bytes = stat.f_bavail * stat.f_frsize
-                # Estimate size (rough estimate: current table size * 1.2 for safety)
-                estimated_size = data_table.nbytes * 1.2 if hasattr(data_table, 'nbytes') else 100 * 1024 * 1024
+                # Estimate compressed size (NPZ typically achieves 5-10x compression)
+                estimated_size = eigenvectors.nbytes * 0.3  # Conservative estimate
                 
                 if free_bytes < estimated_size:
                     raise OSError(f"Insufficient disk space. Need ~{estimated_size/(1024*1024):.1f}MB, "
                                 f"have {free_bytes/(1024*1024):.1f}MB")
                 
-                # Save data to temporary file
-                pq.write_table(data_table, temp_data_path)
+                # Save eigenvectors to temporary NPZ file - exact same format as simple cache
+                np.savez_compressed(temp_data_path, eigenvectors=eigenvectors)
                 # Set restrictive permissions
                 os.chmod(temp_data_path, 0o644)
                 
@@ -302,14 +301,14 @@ class MESFCacheManager:
                 logger.error(f"Failed to save cache: {e}")
                 raise OSError(f"Failed to save cache for key {cache_key}") from e
     
-    def load_from_cache(self, cache_key: str) -> Tuple[str, Dict[str, Any]]:
-        """Load MESF-augmented data from cache with error handling.
+    def load_from_cache(self, cache_key: str) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Load MESF eigenvectors from cache with error handling.
         
         Args:
             cache_key: Unique cache key
             
         Returns:
-            Tuple of (cached_file_path, metadata)
+            Tuple of (eigenvectors_array, metadata)
             
         Raises:
             ValueError: If cache doesn't exist
@@ -344,15 +343,22 @@ class MESFCacheManager:
                     self._cleanup_cache(cache_key)
                     raise OSError(f"Corrupted cache metadata for key: {cache_key}") from e
                 
-                # Verify data file is readable
+                # Load and verify eigenvectors
                 try:
-                    # Quick check that parquet file is valid
-                    pq_file = pq.ParquetFile(cached_path)
-                    _ = pq_file.metadata
+                    with np.load(cached_path) as data:
+                        eigenvectors = data['eigenvectors']
+                        # Verify shape matches metadata
+                        if 'eigenvector_shape' in metadata:
+                            expected_shape = tuple(metadata['eigenvector_shape'])
+                            if eigenvectors.shape != expected_shape:
+                                raise ValueError(f"Shape mismatch: {eigenvectors.shape} != {expected_shape}")
                 except Exception as e:
-                    logger.error(f"Failed to verify cache data: {e}")
+                    logger.error(f"Failed to load cache data: {e}")
                     self._cleanup_cache(cache_key)
                     raise OSError(f"Corrupted cache data for key: {cache_key}") from e
+                
+                # Return the eigenvectors and metadata
+                return eigenvectors, metadata
         except TimeoutError:
             logger.warning(f"Timeout waiting for cache lock, proceeding without lock")
             # Fall back to reading without lock with validation
@@ -365,17 +371,21 @@ class MESFCacheManager:
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
                 
-                # Quick validation of parquet file
+                # Quick validation of NPZ file
                 try:
-                    pq_file = pq.ParquetFile(cached_path)
-                    _ = pq_file.metadata
+                    with np.load(cached_path) as data:
+                        eigenvectors = data['eigenvectors']
+                        if 'eigenvector_shape' in metadata:
+                            expected_shape = tuple(metadata['eigenvector_shape'])
+                            if eigenvectors.shape != expected_shape:
+                                raise ValueError(f"Shape mismatch")
                 except Exception as e:
                     logger.error(f"Cache data appears corrupted: {e}")
                     self._cleanup_cache(cache_key)
                     raise OSError(f"Corrupted cache data for key: {cache_key}") from e
                 
                 logger.info(f"Successfully read cache without lock: {cached_path}")
-                return str(cached_path), metadata
+                return eigenvectors, metadata
                 
             except (json.JSONDecodeError, IOError, ValueError) as e:
                 logger.error(f"Failed to read cache without lock: {e}")
@@ -404,36 +414,39 @@ class MESFCacheManager:
                            file_path: str,
                            spatial_grid_step: int,
                            mesf_params: Dict[str, Any],
-                           compute_fn: callable) -> str:
-        """Get cached MESF data or compute if not cached.
+                           compute_fn: callable) -> np.ndarray:
+        """Get cached MESF eigenvectors or compute if not cached.
         
         Args:
             file_path: Path to original data file
             spatial_grid_step: Spatial sampling rate
             mesf_params: MESF computation parameters
             compute_fn: Function to compute MESF if not cached
-                       Should return (augmented_table, metadata)
+                       Should return (eigenvectors, metadata)
             
         Returns:
-            Path to MESF-augmented parquet file
+            MESF eigenvectors array
         """
         # Generate cache key
         cache_key = self.get_cache_key(file_path, spatial_grid_step, mesf_params)
         
         # Check cache
         if self.is_cached(cache_key):
-            logger.info(f"Using cached MESF data for key: {cache_key}")
-            cached_path, metadata = self.load_from_cache(cache_key)
-            return cached_path
+            logger.info(f"Using cached MESF eigenvectors for key: {cache_key}")
+            eigenvectors, metadata = self.load_from_cache(cache_key)
+            return eigenvectors
         
         # Compute MESF
         logger.info(f"Computing MESF (not in cache): key={cache_key}")
-        augmented_table, metadata = compute_fn(file_path, spatial_grid_step, mesf_params)
+        eigenvectors, metadata = compute_fn(file_path, spatial_grid_step, mesf_params)
+        
+        # Add shape to metadata for validation
+        metadata['eigenvector_shape'] = eigenvectors.shape
         
         # Save to cache
-        cached_path = self.save_to_cache(cache_key, augmented_table, metadata)
+        self.save_to_cache(cache_key, eigenvectors, metadata)
         
-        return cached_path
+        return eigenvectors
     
     def clear_cache(self, older_than_days: Optional[int] = None):
         """Clear cache files safely with proper locking.
@@ -455,7 +468,7 @@ class MESFCacheManager:
                        f"{free / 1024 / 1024 / 1024:.1f}GB free")
             
             try:
-                for cache_file in self.cache_dir.glob("mesf_*.parquet"):
+                for cache_file in self.cache_dir.glob("*.npz"):
                     try:
                         if older_than_days is not None:
                             file_age_days = (time.time() - cache_file.stat().st_mtime) / 86400
@@ -509,7 +522,7 @@ class MESFCacheManager:
         Returns:
             Dictionary with cache statistics
         """
-        cache_files = list(self.cache_dir.glob("mesf_*.parquet"))
+        cache_files = list(self.cache_dir.glob("*.npz"))
         
         total_size = sum(f.stat().st_size for f in cache_files)
         
@@ -519,268 +532,6 @@ class MESFCacheManager:
             'total_size_mb': total_size / (1024 * 1024),
             'cache_files': [f.name for f in cache_files[:10]]  # First 10
         }
-
-
-class FungiRichnessCacheManager:
-    """Manages fungi_richness computation caching."""
-    
-    def __init__(self, cache_dir: Optional[str] = None):
-        """Initialize the cache manager.
-        
-        Args:
-            cache_dir: Directory for cache storage
-        """
-        if cache_dir is None:
-            # Use system temp directory with proper user isolation (same as MESF)
-            base_temp = os.environ.get('ML_CACHE_DIR', tempfile.gettempdir())
-            user_id = os.getuid() if hasattr(os, 'getuid') else 'user'
-            cache_dir = os.path.join(base_temp, f'ml_cache_{user_id}', 'fungi')
-        
-        self.cache_dir = Path(cache_dir)
-        
-        try:
-            # Create directory with secure permissions (same as MESF)
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            # Set restrictive permissions (owner only)
-            os.chmod(self.cache_dir, 0o700)
-        except (OSError, PermissionError) as e:
-            # Fall back to user's home directory if temp fails
-            fallback_dir = Path.home() / '.cache' / 'ml_cache' / 'fungi'
-            logger.warning(f"Failed to create cache at {self.cache_dir}: {e}")
-            logger.info(f"Using fallback cache directory: {fallback_dir}")
-            self.cache_dir = fallback_dir
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            os.chmod(self.cache_dir, 0o700)
-        
-        logger.info(f"Fungi richness cache directory: {self.cache_dir}")
-    
-    def get_cache_key(self, file_path: str) -> str:
-        """Generate cache key for fungi richness with validation.
-        
-        Args:
-            file_path: Path to original data file
-            
-        Returns:
-            Unique cache key
-            
-        Raises:
-            ValueError: If file_path is invalid or contains path traversal
-            FileNotFoundError: If file doesn't exist
-        """
-        # Validate and sanitize file path (same as MESF)
-        if not file_path:
-            raise ValueError("file_path cannot be empty")
-        
-        # Resolve to absolute path and check for path traversal
-        try:
-            abs_path = Path(file_path).resolve()
-        except (RuntimeError, OSError) as e:
-            raise ValueError(f"Invalid file path: {file_path}") from e
-        
-        # Check file existence separately to preserve FileNotFoundError
-        if not abs_path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-        if not abs_path.is_file():
-            raise ValueError(f"Path is not a file: {file_path}")
-        
-        # Get file stats for cache invalidation
-        try:
-            file_stat = abs_path.stat()
-        except OSError as e:
-            raise OSError(f"Cannot access file: {abs_path}") from e
-        
-        key_data = {
-            'file_path': str(abs_path),
-            'file_size': file_stat.st_size,
-            'file_mtime': file_stat.st_mtime
-        }
-        
-        key_str = json.dumps(key_data, sort_keys=True)
-        return hashlib.sha256(key_str.encode()).hexdigest()[:16]
-    
-    def get_cached_path(self, cache_key: str) -> Path:
-        """Get path for cached data with fungi_richness."""
-        return self.cache_dir / f"fungi_{cache_key}.parquet"
-    
-    def is_cached(self, cache_key: str) -> bool:
-        """Check if fungi_richness is cached."""
-        return self.get_cached_path(cache_key).exists()
-    
-    def get_or_compute_fungi(self,
-                            file_path: str,
-                            compute_fn: callable) -> str:
-        """Get cached data with fungi_richness or compute if needed.
-        
-        Args:
-            file_path: Path to original data
-            compute_fn: Function to compute fungi_richness
-                       Should return path to augmented file
-            
-        Returns:
-            Path to file with fungi_richness column
-        """
-        cache_key = self.get_cache_key(file_path)
-        cached_path = self.get_cached_path(cache_key)
-        
-        if self.is_cached(cache_key):
-            logger.info(f"Using cached fungi_richness data: {cached_path}")
-            return str(cached_path)
-        
-        # Compute fungi_richness
-        logger.info(f"Computing fungi_richness (not in cache)")
-        augmented_path = compute_fn(file_path, str(cached_path))
-        
-        return augmented_path
-    
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache statistics including size and age information.
-        
-        Returns:
-            Dictionary with cache statistics
-        """
-        import time
-        
-        stats = {
-            'cache_dir': str(self.cache_dir),
-            'total_files': 0,
-            'total_size_mb': 0.0,
-            'oldest_file_days': 0.0,
-            'newest_file_days': 0.0,
-            'avg_file_size_mb': 0.0,
-            'disk_free_gb': 0.0,
-            'disk_used_gb': 0.0,
-            'cache_entries': []
-        }
-        
-        try:
-            # Get disk usage
-            stat = os.statvfs(self.cache_dir)
-            stats['disk_free_gb'] = (stat.f_bavail * stat.f_frsize) / (1024**3)
-            stats['disk_used_gb'] = ((stat.f_blocks - stat.f_bavail) * stat.f_frsize) / (1024**3)
-            
-            cache_files = list(self.cache_dir.glob("mesf_*.parquet"))
-            if not cache_files:
-                return stats
-            
-            current_time = time.time()
-            oldest_mtime = current_time
-            newest_mtime = 0
-            total_size = 0
-            
-            for cache_file in cache_files:
-                try:
-                    file_stat = cache_file.stat()
-                    file_size_mb = file_stat.st_size / (1024**2)
-                    file_age_days = (current_time - file_stat.st_mtime) / 86400
-                    
-                    total_size += file_stat.st_size
-                    oldest_mtime = min(oldest_mtime, file_stat.st_mtime)
-                    newest_mtime = max(newest_mtime, file_stat.st_mtime)
-                    
-                    stats['cache_entries'].append({
-                        'file': cache_file.name,
-                        'size_mb': round(file_size_mb, 2),
-                        'age_days': round(file_age_days, 1)
-                    })
-                except:
-                    continue
-            
-            stats['total_files'] = len(cache_files)
-            stats['total_size_mb'] = round(total_size / (1024**2), 2)
-            stats['oldest_file_days'] = round((current_time - oldest_mtime) / 86400, 1) if oldest_mtime < current_time else 0
-            stats['newest_file_days'] = round((current_time - newest_mtime) / 86400, 1) if newest_mtime > 0 else 0
-            stats['avg_file_size_mb'] = round(stats['total_size_mb'] / len(cache_files), 2) if cache_files else 0
-            
-        except Exception as e:
-            logger.warning(f"Failed to get cache statistics: {e}")
-        
-        return stats
-    
-    def cleanup_old_entries(self, force: bool = False) -> Dict[str, int]:
-        """Clean up old cache entries based on age and size limits.
-        
-        Args:
-            force: Force cleanup even if within limits
-            
-        Returns:
-            Dictionary with cleanup statistics
-        """
-        import time
-        
-        cleanup_stats = {
-            'removed_by_age': 0,
-            'removed_by_size': 0,
-            'errors': 0,
-            'space_freed_mb': 0
-        }
-        
-        try:
-            current_time = time.time()
-            cache_files = []
-            
-            # Collect all cache files with metadata
-            for cache_file in self.cache_dir.glob("mesf_*.parquet"):
-                try:
-                    file_stat = cache_file.stat()
-                    cache_files.append({
-                        'path': cache_file,
-                        'size': file_stat.st_size,
-                        'mtime': file_stat.st_mtime,
-                        'age_seconds': current_time - file_stat.st_mtime
-                    })
-                except:
-                    continue
-            
-            # Sort by age (oldest first)
-            cache_files.sort(key=lambda x: x['mtime'])
-            
-            # Remove files older than max age
-            for file_info in cache_files[:]:
-                if file_info['age_seconds'] > self.max_cache_age_seconds:
-                    try:
-                        file_info['path'].unlink()
-                        # Also remove metadata
-                        metadata_path = Path(str(file_info['path'].with_suffix('')) + '_metadata.json')
-                        if metadata_path.exists():
-                            metadata_path.unlink()
-                        
-                        cleanup_stats['removed_by_age'] += 1
-                        cleanup_stats['space_freed_mb'] += file_info['size'] / (1024**2)
-                        cache_files.remove(file_info)
-                    except Exception as e:
-                        logger.warning(f"Failed to remove old cache file: {e}")
-                        cleanup_stats['errors'] += 1
-            
-            # Check total cache size
-            total_size = sum(f['size'] for f in cache_files)
-            
-            # Remove oldest files if cache exceeds size limit
-            while total_size > self.max_cache_size_bytes and cache_files:
-                file_info = cache_files.pop(0)
-                try:
-                    file_info['path'].unlink()
-                    # Also remove metadata
-                    metadata_path = Path(str(file_info['path'].with_suffix('')) + '_metadata.json')
-                    if metadata_path.exists():
-                        metadata_path.unlink()
-                    
-                    cleanup_stats['removed_by_size'] += 1
-                    cleanup_stats['space_freed_mb'] += file_info['size'] / (1024**2)
-                    total_size -= file_info['size']
-                except Exception as e:
-                    logger.warning(f"Failed to remove cache file for size limit: {e}")
-                    cleanup_stats['errors'] += 1
-            
-            if cleanup_stats['removed_by_age'] + cleanup_stats['removed_by_size'] > 0:
-                logger.info(f"Cache cleanup: removed {cleanup_stats['removed_by_age']} old files, "
-                           f"{cleanup_stats['removed_by_size']} for size limit, "
-                           f"freed {cleanup_stats['space_freed_mb']:.1f}MB")
-            
-        except Exception as e:
-            logger.error(f"Cache cleanup failed: {e}")
-            cleanup_stats['errors'] += 1
-        
-        return cleanup_stats
     
     def validate_cache_integrity(self, cache_key: str) -> bool:
         """Validate cache entry integrity including schema and data.
@@ -809,25 +560,18 @@ class FungiRichnessCacheManager:
                 logger.warning(f"Cache metadata missing required fields: {cache_key}")
                 return False
             
-            # Validate parquet file
-            pq_file = pq.ParquetFile(cached_path)
-            schema = pq_file.schema_arrow
-            
-            # Check for MESF columns
-            mesf_cols = [name for name in schema.names if name.startswith('ME')]
-            if len(mesf_cols) != metadata.get('n_eigenvectors', 0):
-                logger.warning(f"Cache eigenvector count mismatch: expected {metadata.get('n_eigenvectors')}, "
-                              f"found {len(mesf_cols)}")
-                return False
-            
-            # Quick data integrity check (read first row)
-            table = pq_file.read_row_group(0, columns=[mesf_cols[0]] if mesf_cols else None)
-            if table.num_rows == 0:
-                logger.warning(f"Cache file has no data: {cache_key}")
-                return False
+            # Quick array validation
+            with np.load(cached_path) as data:
+                eigenvectors = data['eigenvectors']
+                if 'eigenvector_shape' in metadata:
+                    expected_shape = tuple(metadata['eigenvector_shape'])
+                    if eigenvectors.shape != expected_shape:
+                        logger.warning(f"Cache shape mismatch: expected {expected_shape}, got {eigenvectors.shape}")
+                        return False
             
             return True
             
         except Exception as e:
             logger.warning(f"Cache validation failed for {cache_key}: {e}")
             return False
+

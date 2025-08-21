@@ -105,19 +105,24 @@ class MLRegressionConfig:
     def _log_configuration(self):
         """Log important configuration settings."""
         preprocessing = self.regression_config.get('preprocessing', {})
-        logger.info(preprocessing['missing_data']['log_message'])
-        logger.info(preprocessing['standardization']['log_message'])
-        logger.info(preprocessing['response_variable']['log_message'])
-        logger.info(preprocessing['biotic_predictors']['log_message'])
+        logger.info(preprocessing.get('missing_data', {}).get('log_message', 'Using default missing data strategy'))
+        logger.info(preprocessing.get('standardization', {}).get('log_message', 'Using default standardization'))
+        logger.info(preprocessing.get('response_variable', {}).get('log_message', 'Using default response transformation'))
+        logger.info(preprocessing.get('biotic_predictors', {}).get('log_message', 'Using default biotic transformation'))
         
         models = self.regression_config.get('models', {})
-        logger.info(models['glm']['distribution']['log_message'])
-        logger.info(models['lightgbm']['log_message'])
+        glm_config = models.get('glm', {})
+        if 'distribution' in glm_config:
+            logger.info(glm_config['distribution'].get('log_message', 'Using default GLM distribution'))
+        lightgbm_config = models.get('lightgbm', {})
+        if 'log_message' in lightgbm_config:
+            logger.info(lightgbm_config['log_message'])
         
+        # Simplified spatial config logging
         spatial = self.regression_config.get('spatial', {})
-        logger.info(spatial['mesf']['log_message'])
-        if spatial['nystrom']['enable_for_large_data']:
-            logger.info(spatial['nystrom']['log_message'])
+        if spatial:
+            logger.info(f"MESF spatial analysis: {spatial.get('n_eigenvectors', 10)} eigenvectors, "
+                       f"{spatial.get('distance_threshold', 100.0)}km threshold")
     
     def get_preprocessing_config(self) -> Dict[str, Any]:
         """Get preprocessing configuration."""

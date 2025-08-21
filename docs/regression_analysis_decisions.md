@@ -896,7 +896,6 @@ The residuals capture "unexpected" richness after accounting for shared environm
 
 ### Phase 2: GLM Analysis (Primary)
 - [ ] Test H0 vs H1 with Negative Binomial GLM
-- [ ] Test H2 with Method 2 (threshold regression + emmeans contrasts)
 - [ ] Generate variable importance rankings
 - [ ] Create marginal effects tables
 - [ ] Produce interaction visualizations
