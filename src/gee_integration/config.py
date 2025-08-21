@@ -10,10 +10,10 @@ from typing import Dict, List, Optional, Any
 import yaml
 from dataclasses import dataclass, field
 
-from src.infrastructure.logging import get_logger
+import logging
 from config.gee.constants import DEFAULT_LAT_MIN, DEFAULT_LAT_MAX, BASE_RESOLUTION_DEGREES
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 
