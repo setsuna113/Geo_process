@@ -1,35 +1,24 @@
 """Machine learning module for biodiversity analysis."""
 
-# Import H2O models
-from .models import H2ONegativeBinomialGLM, H2OGBM
+# Since Julia handles all preprocessing, we don't import preprocessing modules
+# This avoids polars and other preprocessing dependencies
 
-# Import feature builders
-from .preprocessing.feature_engineering import (
-    RichnessFeatureBuilder,
-    SpatialFeatureBuilder,
-    EcologicalFeatureBuilder,
-    CompositeFeatureBuilder
-)
+# Import CV strategies (if available)
+try:
+    from .validation.spatial_cv import (
+        SpatialBlockCV,
+        SpatialBufferCV,
+        EnvironmentalBlockCV
+    )
+    CV_AVAILABLE = True
+except ImportError:
+    CV_AVAILABLE = False
 
-# Import imputation (module not yet implemented)
-# from .preprocessing.imputation.knn_imputer import SpatialKNNImputer
+__all__ = []
 
-# Import CV strategies
-from .validation.spatial_cv import (
-    SpatialBlockCV,
-    SpatialBufferCV,
-    EnvironmentalBlockCV
-)
-
-__all__ = [
-    'H2ONegativeBinomialGLM',
-    'H2OGBM',
-    'RichnessFeatureBuilder',
-    'SpatialFeatureBuilder',
-    'EcologicalFeatureBuilder',
-    'CompositeFeatureBuilder',
-    # 'SpatialKNNImputer',  # Not yet implemented
-    'SpatialBlockCV',
-    'SpatialBufferCV',
-    'EnvironmentalBlockCV'
-]
+if CV_AVAILABLE:
+    __all__.extend([
+        'SpatialBlockCV',
+        'SpatialBufferCV',
+        'EnvironmentalBlockCV'
+    ])

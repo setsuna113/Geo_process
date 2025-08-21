@@ -264,7 +264,7 @@ class ConfigValidator:
 
 
 class DataLoader:
-    """Secure data loading with validation."""
+    """Secure H2O data loading with validation."""
     
     def __init__(self, 
                  max_file_size_mb: float = 10000,
@@ -284,76 +284,69 @@ class DataLoader:
     def load_data(self, 
                   file_path: Union[str, Path],
                   validate_shape: bool = True,
-                  max_rows: Optional[int] = None) -> 'pd.DataFrame':
-        """Load data with security validation.
+                  spatial_grid_step: Optional[int] = None) -> 'pd.DataFrame':
+        """Load data using Julia with security validation.
         
         Args:
             file_path: Path to data file
             validate_shape: Whether to validate data shape
-            max_rows: Maximum number of rows to load
+            spatial_grid_step: Spatial sampling step (e.g., 100 = take every 100th row)
             
         Returns:
-            Loaded DataFrame
+            Loaded pandas DataFrame (processed via Julia)
             
         Raises:
             ValueError: If data validation fails
         """
         import pandas as pd
+        from src.machine_learning.utils import JuliaManager
         
         # Validate path
         path = self.path_validator.validate_path(file_path)
         
-        # Load based on extension
-        logger.info(f"Loading data from {path}")
-        
-        if path.suffix == '.parquet':
-            if max_rows:
-                # For parquet, we need to load all then slice
-                df = pd.read_parquet(path)
-                df = df.head(max_rows)
-            else:
-                df = pd.read_parquet(path)
-        elif path.suffix == '.csv':
-            df = pd.read_csv(path, nrows=max_rows)
-        elif path.suffix == '.tsv':
-            df = pd.read_csv(path, sep='\t', nrows=max_rows)
-        elif path.suffix == '.pkl':
-            df = pd.read_pickle(path)
-            if max_rows:
-                df = df.head(max_rows)
-        else:
+        # Check file type
+        if path.suffix not in ['.parquet', '.csv', '.tsv', '.txt']:
             raise ValueError(f"Unsupported file type: {path.suffix}")
+        
+        # Get Julia manager instance
+        julia = JuliaManager.get_or_init()
+        
+        logger.info(f"Loading data via Julia from {path}")
+        
+        # Load with Julia (includes preprocessing)
+        if spatial_grid_step and spatial_grid_step > 1:
+            logger.info(f"Applying spatial grid sampling (step={spatial_grid_step})")
+            data = julia.import_file_with_sampling(str(path), spatial_grid_step)
+        else:
+            data = julia.import_file(str(path))
         
         # Validate shape
         if validate_shape:
-            if df.empty:
-                raise ValueError("Loaded DataFrame is empty")
+            if len(data) == 0:
+                raise ValueError("Loaded DataFrame has no rows")
             
-            if len(df) == 0:
-                raise ValueError("DataFrame has no rows")
-            
-            logger.info(f"Loaded data shape: {df.shape}")
+            logger.info(f"Loaded data shape: ({len(data)}, {len(data.columns)})")
         
         # Validate columns
         if self.required_columns:
-            missing_cols = set(self.required_columns) - set(df.columns)
+            missing_cols = set(self.required_columns) - set(data.columns)
             if missing_cols:
                 raise ValueError(f"Missing required columns: {missing_cols}")
         
         if self.validate_columns:
-            unexpected_cols = set(df.columns) - set(self.validate_columns)
+            unexpected_cols = set(data.columns) - set(self.validate_columns)
             if unexpected_cols:
                 logger.warning(f"Unexpected columns found: {unexpected_cols}")
         
         # Check for suspicious column names
         suspicious_patterns = ['__', 'eval', 'exec', 'system']
-        for col in df.columns:
+        for col in data.columns:
             for pattern in suspicious_patterns:
                 if pattern in col.lower():
                     raise ValueError(f"Suspicious column name detected: {col}")
         
-        logger.info(f"Data loaded successfully: {len(df)} rows, {len(df.columns)} columns")
-        return df
+        logger.info(f"Data loaded successfully: {len(data)} rows, {len(data.columns)} columns")
+        return data
 
 
 class InputSanitizer:

@@ -14,6 +14,7 @@ Usage:
 """
 
 import sys
+import os
 import argparse
 import logging
 from pathlib import Path
@@ -34,7 +35,7 @@ except ImportError as e:
         sys.exit(1)
 
 
-MethodType = Literal["all", "method1", "method2", "method3", "glm-continuous", "glm-categorical", "dml"]
+MethodType = Literal["all", "method1", "method2", "method3"]  # One name per method
 
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
@@ -82,8 +83,7 @@ def validate_inputs(data_path: Path, method: str) -> None:
     if not data_path.exists():
         raise FileNotFoundError(f"Data file not found: {data_path}")
     
-    valid_methods = ["all", "method1", "method2", "method3", 
-                     "glm-continuous", "glm-categorical", "dml"]
+    valid_methods = ["all", "method1", "method2", "method3"]
     
     if method not in valid_methods:
         raise ValueError(
@@ -131,13 +131,24 @@ def run_ml_pipeline(
     if config_path:
         logger.info(f"Loading config from: {config_path}")
         config = MLRegressionConfig(config_path, validate=True)
+        config_path_str = str(config_path)
     else:
         logger.info("Using default configuration")
-        config = MLRegressionConfig(validate=True)
+        # Use the default config path
+        config_path_str = "src/config/ml/ml_config.yml"
+        config = MLRegressionConfig(config_path_str, validate=True)
+    
+    # Set thread count as environment variable for JAX and Polars
+    julia_config = config.config.get('julia', config.config.get('h2o', {}))
+    nthreads = julia_config.get('nthreads', 150)
+    os.environ['JULIA_NUM_THREADS'] = str(nthreads)
+    logger.info(f"Set JULIA_NUM_THREADS={nthreads} for Julia and JAX")
+    
+    # Julia will be initialized by the orchestrator
     
     # Initialize orchestrator
     logger.info("Initializing ML Orchestrator...")
-    orchestrator = MLOrchestrator(config_path)
+    orchestrator = MLOrchestrator(config_path_str)
     
     # Set output directory
     if output_dir:
