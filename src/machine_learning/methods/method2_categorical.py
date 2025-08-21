@@ -838,7 +838,7 @@ class Method2H2Testing:
                         latex_tables.append(("Categorical Interaction", wald_report['latex_table']))
             
             # 3. EMmeans/Contrast Report (if available)
-            if self.emmeans_results and self.contrast_analyzer:
+            if self.emmeans_results:
                 try:
                     contrast_report = generate_contrast_publication_report(
                         contrast_results=self.emmeans_results,
@@ -853,10 +853,10 @@ class Method2H2Testing:
                     logger.warning(f"Could not generate contrast report: {e}")
             
             # 4. Simple Slopes Report (if available)
-            if self.simple_slopes and hasattr(self.simple_slopes, 'results'):
+            if self.simple_slopes_results:
                 try:
                     slopes_report = generate_simple_slopes_publication_report(
-                        simple_slopes_results=self.simple_slopes.results,
+                        simple_slopes_results=self.simple_slopes_results,
                         hypothesis_name="H2: Plant effect varies with climate seasonality"
                     )
                     reports.append(slopes_report.get('main_text', ''))
