@@ -2,11 +2,12 @@
 # Output structure: see docs/julia_pipeline_output_structure.md
 
 using DataFrames, Arrow, Statistics, GLM, Distributions, JSON, StatsBase
-using LinearAlgebra, YAML, JLD2, Dates, NPZ
+using LinearAlgebra, YAML, JLD2, Dates, NPZ, Random
 using StatsModels, HypothesisTests
 using NPZ  # For saving binary numpy files
 using Distributions: Normal, Chisq, cdf
 using LinearAlgebra: dot, inv, cond
+using Random: MersenneTwister
 
 # ============================================================================
 # DATA STRUCTURES - No globals, no special cases
@@ -456,11 +457,45 @@ function fit_method3_dml(state::PipelineState)
     return result
 end
 
+function save_bootstrap_results(results::Dict, output_dir::String, method::String)
+    """Save bootstrap results in NPZ format for Python visualization."""
+    mkpath(output_dir)
+    
+    npz_path = joinpath(output_dir, "bootstrap_$(method).npz")
+    
+    # Prepare data for NPZ
+    npz_data = Dict{String, Any}()
+    sample_sizes = results["sample_sizes"]
+    
+    # Metadata
+    npz_data["sample_sizes"] = sample_sizes
+    npz_data["optimal_n"] = results["optimal_n"]
+    npz_data["N_total"] = results["N"]
+    npz_data["n_iterations"] = results["n_iterations"]
+    
+    # Results for each sample size
+    for n in sample_sizes
+        sr = results["sample_results"][n]
+        npz_data["n$(n)_plants_effects"] = sr["plants_effects"]
+        npz_data["n$(n)_vertebrates_effects"] = sr["vertebrates_effects"]
+        npz_data["n$(n)_p_values"] = sr["p_values"]
+        npz_data["n$(n)_r2_improvements"] = sr["r2_improvements"]
+        npz_data["n$(n)_power"] = sr["power"]
+        npz_data["n$(n)_eco_power"] = sr["ecological_power"]
+        npz_data["n$(n)_plants_mean"] = sr["plants_effect"]["mean"]
+        npz_data["n$(n)_plants_std"] = sr["plants_effect"]["std"]
+    end
+    
+    npzwrite(npz_path, npz_data)
+    println("\nBootstrap results saved to: $npz_path")
+end
+
 # ============================================================================
 # PIPELINE RUNNER
 # ============================================================================
 
-function run_pipeline(method::String, data_path::String, spatial_step::Int=1000)
+function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
+                     mode::String="normal", bootstrap_iterations::Int=100)
     # Load config
     config_path = "src/config/ml/ml_config.yml"
     config = YAML.load_file(config_path)
@@ -481,7 +516,34 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000)
         "/scratch/yl998/julia"  # Use scratch for large outputs
     )
     
-    # Fit models
+    # BOOTSTRAP MODE
+    if mode == "bootstrap"
+        println("\n" * "="^60)
+        println("RUNNING BOOTSTRAP ANALYSIS MODE")
+        println("="^60)
+        
+        # Set output directory for bootstrap results
+        output_dir = joinpath(@__DIR__, "..", "..", "..", "results", "bootstrap")
+        mkpath(output_dir)
+        println("Bootstrap results will be saved to: $output_dir")
+        
+        # Load bootstrap methods module
+        include("../validation/bootstrap_methods.jl")
+        
+        # Run bootstrap analysis using the module (use Base.invokelatest for world age issue)
+        bootstrap_results = Base.invokelatest(
+            Main.BootstrapMethods.run_bootstrap_analysis,
+            state, method, fit_method1, fit_method2,
+            n_iterations=bootstrap_iterations
+        )
+        
+        # Save bootstrap results (pipeline handles I/O)
+        save_bootstrap_results(bootstrap_results, output_dir, method)
+        
+        return bootstrap_results
+    end
+    
+    # NORMAL MODE - Fit models
     all_results = Dict{String, Any}()
     all_models = Dict{String, Any}()
     
@@ -619,7 +681,31 @@ end
 if length(ARGS) > 0
     method = ARGS[1]
     
-    if method in ["method1", "method2", "method3", "dml"]
+    # Check for bootstrap mode
+    if method == "bootstrap"
+        # Bootstrap mode: bootstrap <model> <data_path> [iterations]
+        if length(ARGS) < 3
+            println("Usage: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
+            println("Models: method1, method2")
+            exit(1)
+        end
+        
+        model = ARGS[2]
+        data_path = ARGS[3]
+        iterations = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 100
+        
+        println("Running bootstrap analysis...")
+        println("  Model: $model")
+        println("  Data: $data_path")
+        println("  Spatial step: 1 (HARDCODED - uses full dataset)")
+        println("  Iterations: $iterations")
+        
+        # HARDCODE spatial_step=1 for bootstrap - always use full dataset
+        run_pipeline(model, data_path, 1, 
+                    mode="bootstrap", bootstrap_iterations=iterations)
+        
+    elseif method in ["method1", "method2", "method3", "dml"]
+        # Normal mode
         data_path = length(ARGS) > 1 ? ARGS[2] : error("Data path required")
         spatial_step = length(ARGS) > 2 ? parse(Int, ARGS[3]) : 1000
         
@@ -631,9 +717,13 @@ if length(ARGS) > 0
         run_pipeline(method, data_path, spatial_step)
         
     else
-        println("Usage: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
+        println("Usage:")
+        println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
+        println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
         println("Methods: method1, method2, method3/dml")
     end
 else
-    println("Usage: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
+    println("Usage:")
+    println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
+    println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
 end

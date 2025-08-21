@@ -199,12 +199,21 @@ class MLOrchestrator:
         if 'method2_continuous' in self.models or 'method2_categorical' in self.models:
             logger.info("\nMethod 2: H2 Testing (Climate-Diversity Interactions)")
             
-            # Set the models directly on Method2 instance
-            if 'method2_continuous' in self.models:
-                self.method2.model_3a_continuous = self.models['method2_continuous']
-            if 'method2_categorical' in self.models:
-                self.method2.model_3b_categorical = self.models['method2_categorical']
+            # Prepare LRT results for Method2
+            lrt_results = {}
+            if 'lrt_method1_vs_method2a' in self.models:
+                lrt_results['lrt_method1_vs_method2a'] = self.models['lrt_method1_vs_method2a']
+            if 'lrt_method1_vs_method2b' in self.models:
+                lrt_results['lrt_method1_vs_method2b'] = self.models['lrt_method1_vs_method2b']
             
+            # Pass Julia results to Method2 using set_julia_results
+            method2_models = {}
+            if 'method2_continuous' in self.models:
+                method2_models['method2_continuous'] = self.models['method2_continuous']
+            if 'method2_categorical' in self.models:
+                method2_models['method2_categorical'] = self.models['method2_categorical']
+            
+            self.method2.set_julia_results(method2_models, lrt_results)
             self.method2.data_metadata = data_metadata
             
             # Run Method 2's comprehensive testing
@@ -213,90 +222,54 @@ class MLOrchestrator:
             
             # Test continuous interaction
             if self.method2.model_3a_continuous:
-                # Remove intercept from coef_names to get feature columns
-                coef_names = self.method2.model_3a_continuous.get('coef_names', [])
-                feature_cols_3a = [name for name in coef_names if name != '(Intercept)']
-                method2_results['model_3a_continuous'] = self.method2._test_continuous_interaction(
-                    self.method2.model_3a_continuous,
-                    interaction_term='bio04_std_x_plants_log',
-                    feature_cols_3a=feature_cols_3a
-                )
+                method2_results['continuous_interaction'] = self.method2._test_continuous_interaction()
             
-            # Test categorical interaction
+            # Test categorical interaction  
             if self.method2.model_3b_categorical:
-                # Remove intercept from coef_names to get feature columns
-                coef_names = self.method2.model_3b_categorical.get('coef_names', [])
-                feature_cols_3b = [name for name in coef_names if name != '(Intercept)']
-                method2_results['model_3b_categorical'] = self.method2._test_categorical_interaction(
-                    self.method2.model_3b_categorical,
-                    feature_cols_3b=feature_cols_3b
-                )
+                method2_results['categorical_interaction'] = self.method2._test_categorical_interaction()
             
-            # Model comparison
-            if self.method2.model_3a_continuous and self.method2.model_3b_categorical:
-                method2_results['model_comparison'] = self.method2._compare_models()
-            
-            # Compute EMmeans for categorical model
-            if self.method2.model_3b_categorical:
-                try:
-                    emmeans_results = self.method2.compute_emmeans()
-                    method2_results['emmeans'] = emmeans_results
-                except Exception as e:
-                    logger.warning(f"EMmeans computation failed: {e}")
-            
-            # Test H2 contrast
-            h2_contrast = self.method2.test_h2_contrast()
-            method2_results['h2_contrast'] = h2_contrast
             
             self.results['method2'] = method2_results
             
             # Log summary
-            if 'model_3b_categorical' in method2_results:
-                cat_test = method2_results['model_3b_categorical'].get('interaction_test', {})
+            if 'categorical_interaction' in method2_results:
+                cat_test = method2_results['categorical_interaction']
                 if cat_test:
-                    logger.info(f"  Categorical interaction: β={cat_test.get('coefficient', 0):.4f}, "
-                              f"p={cat_test.get('p_value', 1):.4e}")
+                    logger.info(f"  Categorical interaction: β={cat_test.get('estimate', 0):.4f}, "
+                              f"p={cat_test.get('wald_test', {}).get('p_value', 1):.4e}")
         
         # Method 3: DML
         if 'method3_dml' in self.models:
-            logger.info("\nMethod 3: Causal Effects (Simplified DML)")
+            logger.info("\nMethod 3: Causal Effects (DML)")
             
             # Set the model directly on Method3 instance
             self.method3.model = self.models['method3_dml']
-            model = self.models['method3_dml']
-            self.results['method3'] = {'causal_effects': {}}
             
-            effects = {
-                'plants_richness_effect': 'Plants',
-                'vertebrates_richness_effect': 'Vertebrates'
-            }
+            # Set Julia results for analysis
+            self.method3.set_julia_results(self.models)
             
-            for effect_name, display_name in effects.items():
-                if effect_name in model['coef_names']:
-                    idx = model['coef_names'].index(effect_name)
-                    coef = model['coefficients'][idx]
-                    se = model['std_errors'][idx]
-                    
-                    # TOST for practical equivalence
-                    tost_result = self.hypothesis_tester.tost_test(
-                        coef, se, lower_bound=-0.5, upper_bound=0.5
-                    )
-                    
-                    # SESOI test
-                    sesoi_result = self.hypothesis_tester.sesoi_test(
-                        coef, se, sesoi_threshold=0.1
-                    )
-                    
-                    logger.info(f"  {display_name} effect: {coef:.4f}±{se:.4f}")
-                    logger.info(f"    TOST p={tost_result['tost_p_value']:.4e} (equivalent if < 0.05)")
-                    logger.info(f"    SESOI: {'Meaningful' if sesoi_result.get('exceeds_sesoi', False) else 'Not meaningful'}")
-                    
-                    self.results['method3']['causal_effects'][display_name.lower()] = {
-                        'estimate': coef,
-                        'std_error': se,
-                        'tost': tost_result,
-                        'sesoi': sesoi_result
-                    }
+            # Run hypothesis tests
+            method3_results = self.method3.run_hypothesis_tests()
+            self.results['method3'] = method3_results
+            
+            # Log summary results  
+            if 'individual_effects' in method3_results:
+                for name, stats in method3_results['individual_effects'].items():
+                    logger.info(f"  {name}: θ={stats['coefficient']:.4f}±{stats['std_error']:.4f}, p={stats['p_value']:.4f}")
+                    logger.info(f"    Significant: {stats['significant']}")
+            
+            if 'joint_test' in method3_results:
+                joint = method3_results['joint_test']
+                test_stat = joint.get('chi2_statistic', joint.get('f_statistic', 0))
+                logger.info(f"  Joint test: χ²={test_stat:.2f}, p={joint['p_value']:.4e}")
+                if joint['p_value'] < 0.05:
+                    logger.info(f"    Significant joint effect detected")
+                else:
+                    logger.info(f"    No significant joint effect")
+            
+            if 'h0_h1_test' in method3_results:
+                h0h1 = method3_results['h0_h1_test']
+                logger.info(f"  H0 vs H1: {h0h1.get('interpretation', 'No interpretation available')}")
         
         self.hypothesis_results = self.results
         return self.results
@@ -375,7 +348,12 @@ class MLOrchestrator:
                 logger.error(f"Method 2 report failed: {e}")
         
         # Method 3 report
-        if hasattr(self.method3, 'model') and self.method3.model:
+        if 'method3_dml' in self.models:
+            # Ensure Method 3 is properly initialized with Julia results
+            if not hasattr(self.method3, 'model') or not self.method3.model:
+                self.method3.model = self.models['method3_dml']
+                self.method3.set_julia_results(self.models)
+            
             try:
                 all_reports['method3'] = self.method3.generate_report(output_dir)
                 logger.info("Method 3 report generated")

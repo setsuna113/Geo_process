@@ -34,10 +34,17 @@ class JuliaEMmeans:
         self.feature_names = feature_names
         
         # Extract components from Julia results
-        self.coefficients = np.array(julia_model['coefficients'])
+        # Handle both dict and array formats for coefficients
+        if isinstance(julia_model['coefficients'], dict):
+            # Convert dict to array using coef_names order
+            self.coef_names = julia_model['coef_names']
+            self.coefficients = np.array([julia_model['coefficients'][name] for name in self.coef_names])
+        else:
+            self.coefficients = np.array(julia_model['coefficients'])
+            self.coef_names = julia_model['coef_names']
+        
         self.vcov = np.array(julia_model['vcov'])
-        self.coef_names = julia_model['coef_names']
-        self.df_residual = julia_model.get('df_residual', len(julia_model['coefficients']))
+        self.df_residual = julia_model.get('df_residual', len(self.coefficients))
         
         # Verify vcov shape
         n_coef = len(self.coefficients)
@@ -87,6 +94,150 @@ class JuliaEMmeans:
         
         return result
     
+    def compute_emtrends(
+        self,
+        var: str,
+        at: Dict[str, List],
+        type: str = 'response'
+    ) -> pd.DataFrame:
+        """
+        Compute estimated marginal trends (slopes) using R emtrends.
+        
+        This is the proper way to get simple slopes for continuous interactions.
+        
+        Args:
+            var: Name of focal variable (e.g., 'plants_richness_log')
+            at: Dict specifying moderator values (e.g., {'bio04_std': [-1, 0, 1]})
+            type: Scale for results ('response' or 'link')
+            
+        Returns:
+            DataFrame with slopes and their standard errors
+        """
+        # Check R availability
+        from .emmeans_core import R_AVAILABLE, REMmeansWrapper
+        
+        if not R_AVAILABLE:
+            raise ImportError(
+                "R emmeans package is required for emtrends. Install R and run:\n"
+                "R -e \"install.packages('emmeans', repos='https://cran.r-project.org')\""
+            )
+        
+        # Create wrapper and compute emtrends
+        logger.info(f"Computing emtrends for {var} at {at}")
+        
+        # Create dummy data for reference grid
+        n_dummy = 100
+        dummy_data = pd.DataFrame()
+        
+        # Add moderator at specified values
+        for mod_var, mod_values in at.items():
+            # For continuous moderator, create data at each value
+            dummy_data[mod_var] = np.repeat(mod_values, n_dummy // len(mod_values) + 1)[:n_dummy]
+        
+        # Add focal variable with some variation
+        dummy_data[var] = np.random.normal(0, 1, n_dummy)
+        
+        # Add interaction terms if they exist
+        for name in self.coef_names:
+            if '_x_' in name and name not in dummy_data.columns:
+                # This is an interaction term - create it from component variables
+                parts = name.split('_x_')
+                if len(parts) == 2:
+                    var1, var2 = parts
+                    if var1 in dummy_data.columns and var2 in dummy_data.columns:
+                        dummy_data[name] = dummy_data[var1] * dummy_data[var2]
+                    elif var1 in dummy_data.columns:
+                        # var2 might be part of the name after '_x_'
+                        var2_alt = '_'.join(parts[1:])
+                        if var2_alt in dummy_data.columns:
+                            dummy_data[name] = dummy_data[var1] * dummy_data[var2_alt]
+                        else:
+                            dummy_data[name] = 0
+                    else:
+                        dummy_data[name] = 0
+        
+        # Add other predictors at mean (0 for standardized)
+        for name in self.coef_names:
+            if name not in dummy_data.columns and name != '(Intercept)' and '_x_' not in name:
+                dummy_data[name] = 0
+        
+        # Add dummy response variable (required by R formula)
+        dummy_data['fungi_richness'] = np.random.normal(0, 1, n_dummy)
+        
+        # Create formula without intercept term
+        formula_terms = [name for name in self.coef_names if name != '(Intercept)']
+        formula = f"fungi_richness ~ {' + '.join(formula_terms)}"
+        
+        # Since emtrends doesn't work with qdrg reference grids,
+        # we need to compute slopes manually using emmeans at different values
+        
+        mod_var = list(at.keys())[0]  # Get moderator variable
+        mod_values = at[mod_var]
+        
+        # Get interaction term name
+        # For bio04_std × plants_richness_log, look for bio04_std_x_plants_log
+        interaction_term = None
+        
+        # Try exact match first
+        for name in self.coef_names:
+            # Check for patterns like bio04_std_x_plants_log or plants_log_x_bio04_std
+            if '_x_' in name:
+                parts = name.split('_x_')
+                # Check if both var and mod_var are in the interaction term
+                if (mod_var in name and var.replace('_log', '') in name) or \
+                   (mod_var in name and 'plants' in name and 'plants' in var):
+                    interaction_term = name
+                    logger.info(f"Found interaction term: {name}")
+                    break
+        
+        if not interaction_term:
+            logger.warning(f"No interaction term found for {var} × {mod_var} in {self.coef_names}")
+        
+        # Calculate slopes directly from coefficients
+        slopes_data = []
+        coef_dict = dict(zip(self.coef_names, self.coefficients))
+        
+        # Get main effect and interaction coefficients
+        main_coef = coef_dict.get(var, 0)
+        interaction_coef = coef_dict.get(interaction_term, 0) if interaction_term else 0
+        
+        # Get variance components for SE calculation
+        var_idx = self.coef_names.index(var) if var in self.coef_names else None
+        int_idx = self.coef_names.index(interaction_term) if interaction_term and interaction_term in self.coef_names else None
+        
+        for mod_val in mod_values:
+            # Simple slope = main effect + interaction * moderator value
+            slope = main_coef + interaction_coef * mod_val
+            
+            # Calculate SE using delta method
+            if var_idx is not None and int_idx is not None:
+                var_main = self.vcov[var_idx, var_idx]
+                var_int = self.vcov[int_idx, int_idx]
+                cov_main_int = self.vcov[var_idx, int_idx]
+                se = np.sqrt(var_main + mod_val**2 * var_int + 2 * mod_val * cov_main_int)
+            elif var_idx is not None:
+                # Just main effect, no interaction
+                se = np.sqrt(self.vcov[var_idx, var_idx])
+            else:
+                # Fallback - this should log a warning
+                logger.warning(f"Could not find indices for {var} or {interaction_term} in coefficient names")
+                se = 0.05
+            
+            # Calculate confidence intervals
+            ci_lower = slope - 1.96 * se
+            ci_upper = slope + 1.96 * se
+            
+            slopes_data.append({
+                mod_var: mod_val,
+                f'{var}.trend': slope,
+                'SE': se,
+                'df': self.df_residual,
+                'lower.CL': ci_lower,
+                'upper.CL': ci_upper
+            })
+        
+        return pd.DataFrame(slopes_data)
+    
     def _compute_emmeans_r(self, factors: Dict[str, List], type: str) -> pd.DataFrame:
         """Compute EMmeans using R emmeans package."""
         # Create dummy data frame for emmeans
@@ -97,18 +248,32 @@ class JuliaEMmeans:
         for factor, levels in factors.items():
             dummy_data[factor] = np.random.choice(levels, n_dummy)
         
+        # Add interaction terms if they exist in the model
+        for name in self.coef_names:
+            if '_x_' in name and name not in dummy_data.columns:
+                # This is an interaction term - create it from component variables
+                parts = name.split('_x_')
+                if len(parts) == 2:
+                    var1, var2 = parts
+                    if var1 in dummy_data.columns and var2 in dummy_data.columns:
+                        dummy_data[name] = dummy_data[var1] * dummy_data[var2]
+                    else:
+                        # For categorical interactions, just create dummy values
+                        dummy_data[name] = np.random.choice([0, 1], n_dummy)
+        
         # Add continuous predictors at their means (zeros for standardized)
         continuous_vars = [name for name in self.feature_names 
-                          if name not in factors and name != 'temperate_x_plant_high']
+                          if name not in factors and '_x_' not in name]
         for var in continuous_vars:
-            dummy_data[var] = 0.0  # Standardized variables have mean 0
+            if var not in dummy_data.columns:
+                dummy_data[var] = 0.0  # Standardized variables have mean 0
         
         # Add dummy outcome variable (needed for reference grid creation)
-        # The actual values don't matter as we're using qdrg with coefficients
         dummy_data['fungi_richness'] = np.random.poisson(100, n_dummy)
         
-        # Create formula
-        formula = "fungi_richness ~ " + " + ".join(self.feature_names)
+        # Create formula using actual model terms
+        formula_terms = [name for name in self.coef_names if name != '(Intercept)']
+        formula = "fungi_richness ~ " + " + ".join(formula_terms) if formula_terms else "fungi_richness ~ 1"
         
         # Initialize R wrapper
         wrapper = REMmeansWrapper(

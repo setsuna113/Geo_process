@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from scipy import stats
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 import logging
@@ -41,29 +42,114 @@ class DMLEffectInterpreter:
     """
     
     def __init__(self, 
-                 coefficients: Union[List[float], np.ndarray],
-                 std_errors: Union[List[float], np.ndarray],
-                 coef_names: List[str],
-                 n_obs: int,
-                 summary_stats: Optional[Dict[str, Any]] = None):
+                 coefficients: Union[List[float], np.ndarray] = None,
+                 std_errors: Union[List[float], np.ndarray] = None,
+                 coef_names: List[str] = None,
+                 n_obs: int = None,
+                 summary_stats: Optional[Dict[str, Any]] = None,
+                 julia_results: Optional[Dict[str, Any]] = None):
         """Initialize DML interpreter with results.
         
         Args:
-            coefficients: DML theta estimates [θ₁, θ₂, θ₃]
-            std_errors: Standard errors for coefficients
-            coef_names: Names of coefficients (e.g., ['plants', 'interaction', 'vertebrates'])
-            n_obs: Number of observations
+            coefficients: DML theta estimates [θ₁, θ₂, θ₃] (optional if julia_results provided)
+            std_errors: Standard errors for coefficients (optional if julia_results provided)
+            coef_names: Names of coefficients (optional if julia_results provided)
+            n_obs: Number of observations (optional if julia_results provided)
             summary_stats: Optional dict with means, quantiles, variances
+            julia_results: Complete Julia DML results dict with pre-computed statistics
         """
-        self.coefficients = np.array(coefficients)
-        self.std_errors = np.array(std_errors)
-        self.coef_names = coef_names
-        self.n_obs = n_obs
-        self.summary_stats = summary_stats or {}
+        if julia_results is not None:
+            # Use pre-computed Julia statistics
+            self._load_from_julia(julia_results)
+        else:
+            # Legacy initialization
+            if coefficients is None or std_errors is None:
+                raise ValueError("Either provide julia_results or (coefficients, std_errors)")
+            self.coefficients = np.array(coefficients)
+            self.std_errors = np.array(std_errors)
+            self.coef_names = coef_names or [f'coef_{i}' for i in range(len(coefficients))]
+            self.n_obs = n_obs or 0
+            self.summary_stats = summary_stats or {}
+            
+            # Calculate confidence intervals (95%) - only if not from Julia
+            self.ci_lower = self.coefficients - 1.96 * self.std_errors
+            self.ci_upper = self.coefficients + 1.96 * self.std_errors
+            self.z_statistics = self.coefficients / self.std_errors
+            self.p_values = 2 * (1 - stats.norm.cdf(np.abs(self.z_statistics)))
+            
+            # No pre-computed Julia stats available
+            self.julia_stats = None
+    
+    def _load_from_julia(self, julia_results: Dict[str, Any]):
+        """Load statistics directly from Julia results.
         
-        # Calculate confidence intervals (95%)
-        self.ci_lower = self.coefficients - 1.96 * self.std_errors
-        self.ci_upper = self.coefficients + 1.96 * self.std_errors
+        Args:
+            julia_results: Julia DML results dictionary
+        """
+        # Extract basic arrays - these are ALWAYS in correct order
+        self.coefficients = np.array(julia_results['coefficients'])
+        self.std_errors = np.array(julia_results['std_errors'])
+        self.coef_names = julia_results.get('coef_names', julia_results.get('treatment_names', []))
+        self.n_obs = julia_results['n_obs']
+        self.vcov = np.array(julia_results.get('vcov', []))
+        
+        # Use pre-computed statistics from treatments dict if available
+        if 'treatments' in julia_results and julia_results['treatments']:
+            # Julia treatments dict keys might not match order of coef_names
+            # Build ordered arrays matching coef_names order
+            self.ci_lower = []
+            self.ci_upper = []
+            self.z_statistics = []
+            self.p_values = []
+            self.significant_flags = []
+            
+            for i, name in enumerate(self.coef_names):
+                if name in julia_results['treatments']:
+                    # Use Julia pre-computed values
+                    treat_stats = julia_results['treatments'][name]
+                    self.ci_lower.append(treat_stats['ci_95'][0])
+                    self.ci_upper.append(treat_stats['ci_95'][1])
+                    self.z_statistics.append(treat_stats['z_statistic'])
+                    self.p_values.append(treat_stats['p_value'])
+                    self.significant_flags.append(treat_stats['statistically_significant'])
+                else:
+                    # Fallback for missing entry (shouldn't happen)
+                    coef = self.coefficients[i]
+                    se = self.std_errors[i]
+                    z = coef / se if se > 0 else 0
+                    p = 2 * (1 - stats.norm.cdf(abs(z)))
+                    self.ci_lower.append(coef - 1.96 * se)
+                    self.ci_upper.append(coef + 1.96 * se)
+                    self.z_statistics.append(z)
+                    self.p_values.append(p)
+                    self.significant_flags.append(p < 0.05)
+            
+            self.ci_lower = np.array(self.ci_lower)
+            self.ci_upper = np.array(self.ci_upper)
+            self.z_statistics = np.array(self.z_statistics)
+            self.p_values = np.array(self.p_values)
+            self.significant_flags = np.array(self.significant_flags)
+        else:
+            # No treatments dict - compute everything
+            self.z_statistics = np.divide(self.coefficients, self.std_errors, 
+                                         out=np.zeros_like(self.coefficients), 
+                                         where=self.std_errors!=0)
+            self.p_values = 2 * (1 - stats.norm.cdf(np.abs(self.z_statistics)))
+            self.ci_lower = self.coefficients - 1.96 * self.std_errors
+            self.ci_upper = self.coefficients + 1.96 * self.std_errors
+            self.significant_flags = self.p_values < 0.05
+        
+        # Store model-level statistics
+        self.model_stats = julia_results.get('model_stats', {})
+        self.joint_test = self.model_stats.get('joint_test', None)
+        self.condition_number = self.model_stats.get('condition_number', None)
+        
+        # Store BDML stats if available
+        self.bdml_stats = julia_results.get('bdml_stats', None)
+        
+        # Store full Julia results for reference
+        self.julia_stats = julia_results
+        self.summary_stats = julia_results.get('summary_stats', {})
     
     def effect_size_plot(self, 
                         figsize: Tuple[float, float] = (8, 6),
@@ -97,9 +183,18 @@ class DMLEffectInterpreter:
         # Create bars with confidence intervals
         bars = ax.bar(x_pos, self.coefficients, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
         
-        # Add error bars
+        # Add error bars using pre-computed CIs if available
+        if hasattr(self, 'ci_lower') and hasattr(self, 'ci_upper'):
+            # Use pre-computed confidence intervals
+            yerr_lower = self.coefficients - self.ci_lower
+            yerr_upper = self.ci_upper - self.coefficients
+            yerr = [yerr_lower, yerr_upper]
+        else:
+            # Fallback to computing from SE
+            yerr = 1.96 * self.std_errors
+        
         ax.errorbar(x_pos, self.coefficients, 
-                   yerr=1.96 * self.std_errors,
+                   yerr=yerr,
                    fmt='none', color='black', capsize=4, capthick=1.5, linewidth=1.5)
         
         # Customize axes

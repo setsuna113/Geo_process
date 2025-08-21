@@ -227,6 +227,56 @@ class REMmeansWrapper:
         
         return emmeans_df
     
+    def compute_emtrends(
+        self,
+        specs: str,
+        var: str,
+        at: Optional[Dict[str, List]] = None,
+        delta: float = 0.01,
+        type: str = 'response'
+    ) -> pd.DataFrame:
+        """
+        Compute estimated marginal trends (slopes) using R emtrends.
+        
+        For continuous × continuous interactions, this is the proper way to get simple slopes.
+        
+        Args:
+            specs: Model specification (e.g., "~ moderator" or "pairwise ~ moderator")
+            var: Name of variable for which to compute slopes (focal variable)
+            at: Optional dict specifying values of moderator (e.g., {'bio04_std': [-1, 0, 1]})
+            delta: Delta for numerical differentiation (default 0.01)
+            type: Scale for results ('response' or 'link')
+            
+        Returns:
+            DataFrame with slopes and their standard errors
+        """
+        if self.ref_grid is None:
+            raise ValueError("Reference grid not created")
+        
+        # Build emtrends call
+        # Note: emtrends needs the reference grid, not an emmGrid object
+        emtrends_args = {
+            'object': self.ref_grid,
+            'specs': specs,  # Don't convert to R object yet
+            'var': var,
+            'delta': delta
+        }
+        
+        if at:
+            # Convert 'at' dictionary to R list
+            r_at = ro.ListVector(at)
+            emtrends_args['at'] = r_at
+        
+        # Compute emtrends
+        emtrends_result = self.emmeans.emtrends(**emtrends_args)
+        
+        # Convert to pandas DataFrame
+        summary = self.base.summary(emtrends_result)
+        with localconverter(pandas_numpy_converter):
+            emtrends_df = ro.conversion.rpy2py(summary)
+        
+        return emtrends_df
+    
     def compute_emmeans_2x2(
         self,
         factor1: str = 'plant_high',

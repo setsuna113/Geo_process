@@ -26,9 +26,8 @@ from .wald_method import WaldMethod
 from ..evaluation.model_comparison import ModelComparison
 from ..diagnostics.diagnostic_plots import ResidualDiagnostics
 # Score test not used in Method2 - removed
-from ..hypothesis.contrast_analysis import ContrastAnalysis
-from ..hypothesis.simple_slopes import SimpleSlopesAnalysis
-from ..evaluation.emmeans_core import REMmeansWrapper
+from ..interpretation.simple_slopes import analyze_simple_slopes
+from ..interpretation.marginal_means import analyze_marginal_means
 from ..config_loader import MLRegressionConfig
 
 logger = logging.getLogger(__name__)
@@ -75,9 +74,10 @@ class Method2H2Testing:
         self.diagnostic_plotter = ResidualDiagnostics()
         # LRT is now done in Julia - removed Python LikelihoodRatioTest
         # Score test not used in Method2 - removed
-        self.emmeans_r = None  # Will be created when needed
-        self.contrast_analyzer = None  # Will be created when needed
-        self.simple_slopes = None  # Will be created when needed
+        
+        # Storage for interpretation results
+        self.simple_slopes_results = None
+        self.marginal_means_results = None
         
         logger.info("Method 2 H2 Testing initialized with wrapped components")
     
@@ -105,9 +105,9 @@ class Method2H2Testing:
                 'has_mesf': any('ME' in name for name in self.model_3a_continuous.get('coef_names', []))
             }
         
-        logger.info(f"Julia results set for Method 2: "
-                   f"3a AIC={self.model_3a_continuous.get('aic', 'N/A') if self.model_3a_continuous else 'N/A':.2f}, "
-                   f"3b AIC={self.model_3b_categorical.get('aic', 'N/A') if self.model_3b_categorical else 'N/A':.2f}")
+        aic_3a = self.model_3a_continuous.get('aic', 0) if self.model_3a_continuous else 0
+        aic_3b = self.model_3b_categorical.get('aic', 0) if self.model_3b_categorical else 0
+        logger.info(f"Julia results set for Method 2: 3a AIC={aic_3a:.2f}, 3b AIC={aic_3b:.2f}")
         
         if self.lrt_continuous:
             logger.info(f"LRT 3a: χ²={self.lrt_continuous.get('lr_statistic', 0):.2f}, p={self.lrt_continuous.get('p_value', 1):.4e}")
@@ -138,38 +138,87 @@ class Method2H2Testing:
         # Test Model 3b (Categorical interaction)  
         if self.model_3b_categorical:
             results['categorical_interaction'] = self._test_categorical_interaction()
+        
+        # Run Simple Slopes Interpretation for continuous interaction
+        if self.model_3a_continuous:
+            logger.info("\nRunning Simple Slopes Interpretation for Continuous Interaction...")
             
-            # Run ContrastAnalysis if we have the capability
-            if self.contrast_analyzer is None and self.emmeans_results:
-                try:
-                    from ..hypothesis.contrast_analysis import ContrastAnalysis
-                    self.contrast_analyzer = ContrastAnalysis(
-                        emmeans_wrapper=None,  # We'll use pre-computed emmeans
-                        vcov_matrix=np.array(self.model_3b_categorical.get('vcov', []))
-                    )
-                    contrast_result = self.contrast_analyzer.test_h2_contrast()
-                    results['contrast_analysis'] = contrast_result
-                    logger.info(f"Contrast analysis: {contrast_result.get('interpretation', 'N/A')}")
-                except Exception as e:
-                    logger.warning(f"Contrast analysis failed: {e}")
+            try:
+                # Get feature names for the model
+                feature_names = self.model_3a_continuous.get('coef_names', [])
+                
+                # Run simple slopes analysis
+                self.simple_slopes_results = analyze_simple_slopes(
+                    julia_model=self.model_3a_continuous,
+                    focal_var='plants_richness_log',
+                    moderator_var='bio04_std',
+                    interaction_term='bio04_std_x_plants_log',
+                    feature_names=feature_names,
+                    save_path=None  # Will be set later in visualization
+                )
+                
+                if self.simple_slopes_results:
+                    results['simple_slopes'] = self.simple_slopes_results
+                    logger.info("Simple slopes interpretation completed")
+                    
+                    # Log interpretation summary
+                    interpretation = self.simple_slopes_results.get('interpretation', {})
+                    if interpretation.get('summary'):
+                        logger.info(f"Pattern: {interpretation.get('pattern', 'unknown')}")
+                        logger.info(f"Summary: {interpretation.get('summary', '')}")
+                else:
+                    logger.warning("Simple slopes interpretation returned None")
+                    
+            except Exception as e:
+                import traceback
+                logger.error(f"Simple slopes interpretation failed: {e}")
+                logger.error(f"Traceback:\n{traceback.format_exc()}")
+                self.simple_slopes_results = None
+        
+        # Run Marginal Means Interpretation for categorical interaction (Model 3b)
+        if self.model_3b_categorical:
+            logger.info("\nRunning Marginal Means Interpretation for Categorical Interaction...")
             
-            # Run SimpleSlopesAnalysis if we have continuous model
-            if self.model_3a_continuous and self.simple_slopes is None:
-                try:
-                    from ..hypothesis.simple_slopes import SimpleSlopesAnalysis
-                    self.simple_slopes = SimpleSlopesAnalysis()
-                    slopes_result = self.simple_slopes.analyze_simple_slopes(
-                        model=self.model_3a_continuous,
-                        focal_var='plants_richness_log',
-                        moderator='bio04_std',
-                        moderator_values=[-1, 0, 1]  # Low, medium, high seasonality
-                    )
-                    results['simple_slopes'] = slopes_result
-                    # Store for visualization
-                    self.simple_slopes_results = slopes_result
-                    logger.info("Simple slopes analysis completed")
-                except Exception as e:
-                    logger.warning(f"Simple slopes analysis failed: {e}")
+            try:
+                # Get feature names for the model
+                feature_names = self.model_3b_categorical.get('coef_names', [])
+                
+                # Run marginal means analysis
+                self.marginal_means_results = analyze_marginal_means(
+                    julia_model=self.model_3b_categorical,
+                    factor1='temperate',
+                    factor2='plant_high',
+                    feature_names=feature_names,
+                    factor1_levels=[0, 1],
+                    factor2_levels=[0, 1],
+                    factor1_labels=['Non-temperate', 'Temperate'],
+                    factor2_labels=['Low plant diversity', 'High plant diversity'],
+                    save_path=None  # Will be set later in visualization
+                )
+                
+                if self.marginal_means_results:
+                    results['marginal_means'] = self.marginal_means_results
+                    logger.info("Marginal means interpretation completed")
+                    
+                    # Log interpretation summary
+                    interpretation = self.marginal_means_results.get('interpretation', {})
+                    if interpretation.get('summary'):
+                        logger.info(f"Pattern: {interpretation.get('pattern', 'unknown')}")
+                        logger.info(f"Summary: {interpretation.get('summary', '')}")
+                        
+                    # Store for backward compatibility
+                    self.emmeans_results = self.marginal_means_results
+                else:
+                    logger.warning("Marginal means interpretation returned None")
+                    
+            except Exception as e:
+                import traceback
+                logger.error(f"Marginal means interpretation failed: {e}")
+                logger.error(f"Traceback:\n{traceback.format_exc()}")
+                self.marginal_means_results = None
+                self.emmeans_results = {}
+        
+        # For Method2, the interaction terms themselves test the H2 hypothesis
         
         # Overall conclusion
         results['conclusion'] = self._determine_conclusion(results)
@@ -199,9 +248,19 @@ class Method2H2Testing:
             result['lrt_significant'] = self.lrt_continuous['p_value'] < 0.05
         
         # 2. Use WaldMethod wrapper for professional Wald testing
-        coefs = np.array(self.model_3a_continuous.get('coefficients', []))
-        ses = np.array(self.model_3a_continuous.get('std_errors', []))
+        # Handle both dict and array formats for coefficients
+        coef_data = self.model_3a_continuous.get('coefficients', {})
+        se_data = self.model_3a_continuous.get('std_errors', {})
         names = self.model_3a_continuous.get('coef_names', [])
+        
+        # Convert to arrays matching coef_names order
+        if isinstance(coef_data, dict):
+            coefs = np.array([coef_data.get(name, 0.0) for name in names])
+            ses = np.array([se_data.get(name, 0.0) for name in names])
+        else:
+            coefs = np.array(coef_data)
+            ses = np.array(se_data)
+        
         vcov = np.array(self.model_3a_continuous.get('vcov', []))
         
         # Run Wald tests using the wrapper (like Method1)
@@ -254,6 +313,9 @@ class Method2H2Testing:
             result['supports_h2'] = False
             result['interpretation'] = "No interaction term detected"
         
+        # Store in hypothesis_results for reporting
+        self.hypothesis_results['continuous_interaction'] = result
+        
         return result
     
     def _test_categorical_interaction(self) -> Dict[str, Any]:
@@ -276,9 +338,19 @@ class Method2H2Testing:
             result['lrt_significant'] = self.lrt_categorical['p_value'] < 0.05
         
         # 2. Use WaldMethod wrapper for professional Wald testing
-        coefs = np.array(self.model_3b_categorical.get('coefficients', []))
-        ses = np.array(self.model_3b_categorical.get('std_errors', []))
+        # Handle both dict and array formats for coefficients
+        coef_data = self.model_3b_categorical.get('coefficients', {})
+        se_data = self.model_3b_categorical.get('std_errors', {})
         names = self.model_3b_categorical.get('coef_names', [])
+        
+        # Convert to arrays matching coef_names order
+        if isinstance(coef_data, dict):
+            coefs = np.array([coef_data.get(name, 0.0) for name in names])
+            ses = np.array([se_data.get(name, 0.0) for name in names])
+        else:
+            coefs = np.array(coef_data)
+            ses = np.array(se_data)
+        
         vcov = np.array(self.model_3b_categorical.get('vcov', []))
         
         # Run Wald tests using the wrapper (like Method1)
@@ -331,6 +403,9 @@ class Method2H2Testing:
             logger.warning("No interaction term found in Wald results")
             result['supports_h2'] = False
             result['interpretation'] = "No interaction term detected"
+        
+        # Store in hypothesis_results for reporting
+        self.hypothesis_results['categorical_interaction'] = result
         
         return result
     
@@ -440,7 +515,7 @@ class Method2H2Testing:
         return generated_files
     
     def _create_forest_plot(self, output_dir: Path) -> Optional[Path]:
-        """Create forest plot using WaldMethod wrapper for H2 interaction terms.
+        """Create specialized Method 2 forest plot showing both models side by side.
         
         Args:
             output_dir: Directory to save plot
@@ -448,34 +523,35 @@ class Method2H2Testing:
         Returns:
             Path to saved plot or None
         """
-        # Collect all Wald results from both interaction models
-        combined_wald_results = {}
+        # Prepare results in the format expected by WaldMethod
+        method2_results = {}
         
-        # Add continuous interaction results
+        # Get continuous interaction results
         if 'continuous_interaction' in self.hypothesis_results:
             cont_result = self.hypothesis_results['continuous_interaction']
             if 'wald_results' in cont_result:
-                combined_wald_results.update(cont_result['wald_results'])
+                method2_results['continuous'] = cont_result['wald_results']
         
-        # Add categorical interaction results
+        # Get categorical interaction results
         if 'categorical_interaction' in self.hypothesis_results:
             cat_result = self.hypothesis_results['categorical_interaction']
             if 'wald_results' in cat_result:
-                combined_wald_results.update(cat_result['wald_results'])
+                method2_results['categorical'] = cat_result['wald_results']
         
-        if not combined_wald_results:
+        if not method2_results:
             logger.warning("No Wald results available for forest plot")
             return None
         
-        # Use WaldMethod to create forest plot (like Method1)
+        # Use WaldMethod's create_forest_plot with method='method2'
         return self.wald_method.create_forest_plot(
-            results=combined_wald_results,
+            results=method2_results,
             output_dir=output_dir,
-            filename="h2_forest_plot.png"
+            filename="method2_h2_forest.png",
+            method='method2'
         )
     
     def _create_interaction_plots(self, output_dir: Path) -> Optional[Path]:
-        """Create interaction visualization plots using visualization module.
+        """Create interaction plots using new interpretation modules.
         
         Args:
             output_dir: Directory to save plot
@@ -484,28 +560,25 @@ class Method2H2Testing:
             Path to saved plot or None
         """
         try:
-            from ..visualization.interaction_plots import create_h2_publication_figure
+            saved_paths = []
             
-            # Prepare combined results for visualization
-            combined_results = {
-                'continuous': self.hypothesis_results.get('continuous_interaction'),
-                'categorical': self.hypothesis_results.get('categorical_interaction'),
-                'emmeans': self.emmeans_results
-            }
+            # Save marginal means plot if available
+            if hasattr(self, 'marginal_means_results') and self.marginal_means_results:
+                mm_fig = self.marginal_means_results.get('figure')
+                if mm_fig:
+                    mm_path = output_dir / "marginal_means_h2.png"
+                    mm_fig.savefig(mm_path, dpi=300, bbox_inches='tight')
+                    plt.close(mm_fig)
+                    saved_paths.append(mm_path)
+                    logger.info(f"Marginal means plot saved to {mm_path}")
             
-            # Use the professional visualization function
-            save_path = create_h2_publication_figure(
-                contrast_results=combined_results,
-                output_dir=output_dir,
-                filename="h2_interaction_plots.png"
-            )
-            
-            if save_path:
-                logger.info(f"Interaction plots saved to {save_path}")
-            return save_path
+            # Return the first saved path for backward compatibility
+            return saved_paths[0] if saved_paths else None
             
         except Exception as e:
             logger.error(f"Failed to create interaction plots: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def _create_lrt_plots(self, output_dir: Path) -> List[Path]:
@@ -524,28 +597,28 @@ class Method2H2Testing:
         # Plot LRT 3a (continuous interaction)
         if self.lrt_continuous:
             try:
-                save_path = visualize_lrt_results(
+                save_path = output_dir / "lrt_method2a_continuous.png"
+                fig = visualize_lrt_results(
                     lrt_result=self.lrt_continuous,
                     model_names=['Method 1', 'Method 2a (Continuous)'],
-                    output_dir=output_dir,
-                    filename="lrt_method2a_continuous.png",
-                    title="LRT: Method 1 vs Method 2a (Bio4 × Plant Richness)"
+                    save_path=str(save_path)
                 )
                 if save_path:
                     saved_plots.append(save_path)
                     logger.info(f"LRT 3a plot saved to {save_path}")
             except Exception as e:
                 logger.error(f"Failed to create LRT 3a plot: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
         
         # Plot LRT 3b (categorical interaction)
         if self.lrt_categorical:
             try:
-                save_path = visualize_lrt_results(
+                save_path = output_dir / "lrt_method2b_categorical.png"
+                fig = visualize_lrt_results(
                     lrt_result=self.lrt_categorical,
                     model_names=['Method 1', 'Method 2b (Categorical)'],
-                    output_dir=output_dir,
-                    filename="lrt_method2b_categorical.png",
-                    title="LRT: Method 1 vs Method 2b (Temperate × Plant Diversity)"
+                    save_path=str(save_path)
                 )
                 if save_path:
                     saved_plots.append(save_path)
@@ -556,7 +629,7 @@ class Method2H2Testing:
         return saved_plots
     
     def _create_simple_slopes_plot(self, output_dir: Path) -> Optional[Path]:
-        """Create simple slopes visualization using visualization module.
+        """Create simple slopes visualization using new interpretation module.
         
         Args:
             output_dir: Directory to save plot
@@ -564,23 +637,22 @@ class Method2H2Testing:
         Returns:
             Path to saved plot or None
         """
-        from ..visualization.simple_slopes_plots import visualize_simple_slopes
-        
-        # Use results from SimpleSlopesAnalysis (already computed in run_hypothesis_tests)
         if hasattr(self, 'simple_slopes_results') and self.simple_slopes_results:
             try:
-                save_path = visualize_simple_slopes(
-                    slopes_results=self.simple_slopes_results,
-                    focal_var='Plant Richness',
-                    moderator='Climate (Temperate)',
-                    output_dir=output_dir,
-                    filename="simple_slopes_h2.png"
-                )
-                if save_path:
+                # The new simple slopes already creates visualizations
+                # Just save it to the right location
+                save_path = output_dir / "simple_slopes_h2.png"
+                
+                # Get the figure from results
+                fig = self.simple_slopes_results.get('figure')
+                if fig:
+                    fig.savefig(save_path, dpi=300, bbox_inches='tight')
+                    plt.close(fig)
                     logger.info(f"Simple slopes plot saved to {save_path}")
-                return save_path
+                    return save_path
+                    
             except Exception as e:
-                logger.error(f"Failed to create simple slopes plot: {e}")
+                logger.error(f"Failed to save simple slopes plot: {e}")
         
         return None
     
@@ -598,30 +670,57 @@ class Method2H2Testing:
         if not self.model_3a_continuous or not self.model_3b_categorical:
             return None
         
-        # Prepare comparison results
+        # Prepare comparison results with all required fields
+        aic_3a = self.model_3a_continuous.get('aic', 0)
+        aic_3b = self.model_3b_categorical.get('aic', 0)
+        
+        # Calculate AIC weights (simplified)
+        delta_aic = abs(aic_3a - aic_3b)
+        if aic_3a < aic_3b:
+            weight_3a = 1 / (1 + np.exp(delta_aic/2))
+            weight_3b = 1 - weight_3a
+            best = 'Method2a_Continuous'
+        else:
+            weight_3b = 1 / (1 + np.exp(delta_aic/2))
+            weight_3a = 1 - weight_3b
+            best = 'Method2b_Categorical'
+        
         comparison_results = {
             'models': {
                 'Method2a_Continuous': {
-                    'aic': self.model_3a_continuous.get('aic', 0),
+                    'aic': aic_3a,
                     'bic': self.model_3a_continuous.get('bic', 0),
                     'deviance': self.model_3a_continuous.get('deviance', 0),
-                    'df': self.model_3a_continuous.get('df_residual', 0)
+                    'df': self.model_3a_continuous.get('df_residual', 0),
+                    'delta_aic': 0 if best == 'Method2a_Continuous' else delta_aic,
+                    'aic_weight': weight_3a
                 },
                 'Method2b_Categorical': {
-                    'aic': self.model_3b_categorical.get('aic', 0),
+                    'aic': aic_3b,
                     'bic': self.model_3b_categorical.get('bic', 0),
                     'deviance': self.model_3b_categorical.get('deviance', 0),
-                    'df': self.model_3b_categorical.get('df_residual', 0)
+                    'df': self.model_3b_categorical.get('df_residual', 0),
+                    'delta_aic': 0 if best == 'Method2b_Categorical' else delta_aic,
+                    'aic_weight': weight_3b
                 }
             },
-            'best_model': 'Method2a_Continuous' if self.model_3a_continuous.get('aic', float('inf')) < self.model_3b_categorical.get('aic', float('inf')) else 'Method2b_Categorical'
+            'weights': {
+                'Method2a_Continuous': {'aic_weight': weight_3a},
+                'Method2b_Categorical': {'aic_weight': weight_3b}
+            },
+            'best_model': best,
+            'summary': {
+                'Method2a_Continuous': 'Continuous interaction model (bio4 × plants)',
+                'Method2b_Categorical': 'Categorical interaction model (temperate × plant_high)'
+            }
         }
         
         try:
-            save_path = plot_model_comparison(
+            save_path = output_dir / "model_comparison_h2.png"
+            fig = plot_model_comparison(
                 comparison_results=comparison_results,
-                output_dir=output_dir,
-                filename="model_comparison_h2.png"
+                title="Method 2: Model Comparison",
+                save_path=save_path
             )
             if save_path:
                 logger.info(f"Model comparison plot saved to {save_path}")
@@ -651,7 +750,7 @@ class Method2H2Testing:
         # Generate visualizations
         viz_files = self.generate_visualizations(output_dir)
         
-        # Create report structure
+        # Create report structure - avoid circular references
         report = {
             'method': 'Method 2: H2 Climate-Biodiversity Interaction Testing',
             'timestamp': datetime.now().isoformat(),
@@ -661,7 +760,7 @@ class Method2H2Testing:
                 '3b_categorical': 'Temperate × Plant diversity (high/low) interaction'
             },
             'data_summary': self.data_metadata,
-            'test_results': self.hypothesis_results,
+            'test_results': self._serialize_results(self.hypothesis_results),
             'visualizations': [str(f) for f in viz_files],
             'conclusion': self.hypothesis_results.get('conclusion', {})
         }
@@ -806,6 +905,26 @@ class Method2H2Testing:
             logger.error(f"Failed to create professional report: {e}")
             return None
     
+    def _serialize_results(self, results: Dict) -> Dict:
+        """Serialize results to avoid circular references."""
+        serialized = {}
+        for key, value in results.items():
+            if isinstance(value, dict):
+                # Recursively serialize nested dicts
+                serialized[key] = self._serialize_results(value)
+            elif isinstance(value, pd.DataFrame):
+                # Convert DataFrames to dict
+                serialized[key] = value.to_dict('records')
+            elif isinstance(value, np.ndarray):
+                # Convert arrays to lists
+                serialized[key] = value.tolist()
+            elif hasattr(value, '__dict__'):
+                # Skip complex objects that might have circular refs
+                serialized[key] = str(type(value).__name__)
+            else:
+                serialized[key] = value
+        return serialized
+    
     def _json_serialize(self, obj):
         """Custom JSON serializer for numpy types."""
         if isinstance(obj, (np.integer, np.int64, np.int32)):
@@ -816,10 +935,14 @@ class Method2H2Testing:
             return bool(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif obj == np.inf:
-            return "Infinity"
-        elif obj == -np.inf:
-            return "-Infinity"
-        elif np.isnan(obj):
-            return "NaN"
+        elif isinstance(obj, pd.DataFrame):
+            return obj.to_dict('records')
+        elif isinstance(obj, pd.Series):
+            return obj.tolist()
+        elif isinstance(obj, float):
+            if np.isinf(obj):
+                return "Infinity" if obj > 0 else "-Infinity"
+            elif np.isnan(obj):
+                return "NaN"
+            return obj
         return obj
