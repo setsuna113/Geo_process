@@ -459,3 +459,66 @@ class BayesianDML:
         }
         
         return result
+    
+    @staticmethod
+    def from_julia_results(julia_dml_results: Dict[str, Any], 
+                          n_simulations: int = 10000) -> Dict[str, Any]:
+        """Run Bayesian DML analysis directly from Julia results.
+        
+        Args:
+            julia_dml_results: Julia method3_dml results with bdml_stats
+            n_simulations: Number of posterior samples
+            
+        Returns:
+            Bayesian DML analysis results
+        """
+        # Check for BDML stats
+        bdml_stats = julia_dml_results.get('bdml_stats')
+        if not bdml_stats:
+            raise ValueError("Julia results missing bdml_stats")
+        
+        # Extract covariance matrix and metadata
+        S = np.array(bdml_stats['covariance_matrix'])
+        n = bdml_stats['n_obs']
+        treatment_names = bdml_stats.get('treatment_names', [])
+        
+        # Use proper BDML implementation
+        from .bdml_correct import CorrectBayesianDML
+        
+        bdml_result = CorrectBayesianDML.bdml_posterior(
+            S=S,
+            n=n,
+            n_posterior_samples=n_simulations
+        )
+        
+        # For multiple treatments, extract alpha samples
+        # The covariance matrix structure for k treatments is:
+        # S = [[Var(Y), Cov(Y,A1), ..., Cov(Y,Ak)],
+        #      [Cov(A1,Y), Var(A1), ..., Cov(A1,Ak)],
+        #      ...]
+        # We get k causal effects from the first row
+        
+        if 'alpha_posterior_samples' in bdml_result:
+            # Single treatment case
+            alpha_samples = bdml_result['alpha_posterior_samples']
+            prob_positive = (alpha_samples > 0).mean()
+            
+            bdml_result['biodiversity_analysis'] = {
+                'both_positive': float(prob_positive),  # For single effect
+                'either_positive': float(prob_positive),
+                'h1_probability': float(prob_positive),
+                'h1_supported': prob_positive > 0.95,
+                'interpretation': (
+                    f"P(effect > 0) = {prob_positive:.1%}. "
+                    f"H1 {'strongly supported' if prob_positive > 0.95 else 'not strongly supported'}."
+                )
+            }
+        else:
+            # Multiple treatments - simplified interpretation
+            bdml_result['biodiversity_analysis'] = {
+                'note': 'Multiple treatment BDML requires specialized implementation',
+                'h1_supported': None,
+                'interpretation': 'BDML analysis completed. See posterior summaries for details.'
+            }
+        
+        return bdml_result

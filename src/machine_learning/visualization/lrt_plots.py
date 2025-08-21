@@ -77,11 +77,20 @@ def visualize_lrt_results(
         fontsize=16, fontweight='bold', color=color
     )
     
-    plt.tight_layout()
+    try:
+        plt.tight_layout()
+    except:
+        # Fallback if tight_layout fails
+        pass
     
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        logger.info(f"LRT visualization saved to {save_path}")
+        try:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            logger.info(f"LRT visualization saved to {save_path}")
+        except Exception as e:
+            # Try saving without bbox_inches='tight'
+            plt.savefig(save_path, dpi=300)
+            logger.info(f"LRT visualization saved to {save_path} (without tight bbox)")
     
     return fig
 
@@ -178,12 +187,12 @@ def _plot_chi_square_test(ax: plt.Axes, lr_stat: float, df: int, p_value: float)
         annotation_text = f'p = {p_value:.4f}\nFAIL TO REJECT H₀'
         color = 'red'
     
-    ax.annotate(annotation_text,
-               xy=(lr_stat, y_stat),
-               xytext=(lr_stat + x_max * 0.1, max(y) * 0.7),
-               arrowprops=dict(arrowstyle='->', color=color, lw=2),
-               fontsize=11, fontweight='bold', color=color,
-               bbox=dict(boxstyle='round', facecolor='white', edgecolor=color))
+    # Safe annotation positioning - use text without arrow to avoid matplotlib bug
+    ax.text(0.7, 0.8, annotation_text, 
+            transform=ax.transAxes,
+            fontsize=11, fontweight='bold', color=color,
+            bbox=dict(boxstyle='round', facecolor='white', edgecolor=color, alpha=0.9),
+            ha='center', va='center')
     
     # Styling
     ax.set_xlabel('Test Statistic', fontsize=11)

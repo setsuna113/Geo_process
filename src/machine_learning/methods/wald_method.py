@@ -91,9 +91,9 @@ class WaldMethod:
             results['predictors'][name] = {
                 'coefficient': coef,
                 'standard_error': se,
-                'traditional': traditional,
-                'sesoi': sesoi,
-                'tost': tost,
+                'traditional_test': traditional,
+                'sesoi_test': sesoi,
+                'tost_test': tost,
                 'response_scale': response_scale,
                 'interpretation': interpretation
             }
@@ -185,42 +185,50 @@ class WaldMethod:
     def create_forest_plot(self, 
                           results: Dict[str, Any],
                           output_dir: Optional[Path] = None,
-                          filename: str = "wald_forest_plot.png"):
+                          filename: str = "wald_forest_plot.png",
+                          method: str = 'method1'):
         """Create forest plot visualization.
         
-        Delegates to visualization module.
+        Supports both Method 1 (single model, 3 tests) and Method 2 (model comparison).
         
         Args:
-            results: Results from run_all_tests()
+            results: Results from run_all_tests() or dict with 'continuous'/'categorical' keys
             output_dir: Optional directory to save plot
             filename: Plot filename
+            method: 'method1' for standard 3-panel, 'method2' for comparison
             
         Returns:
             Path to saved plot or figure object
         """
         try:
-            # Convert our simplified results to format expected by visualization
-            wald_results = {}
-            for name, pred in results.get('predictors', {}).items():
-                wald_results[name] = {
-                    'coefficient': pred['coefficient'],
-                    'standard_error': pred['standard_error'],
-                    'sesoi_test': pred['sesoi'],
-                    'tost_test': pred['tost'],
-                    'summary': {
-                        'interpretation': pred['interpretation'],
-                        'percent_change': pred['response_scale']['percent_change']
-                    }
-                }
-            
-            # Create figure using new API
-            from ..visualization.forest_plots import create_wald_visualization
-            fig = create_wald_visualization(
-                wald_results=wald_results,
-                sesoi_threshold=self.sesoi_threshold,
-                tost_bounds=self.tost_bounds,
-                title='Wald Method: Combined Analysis'
-            )
+            if method == 'method1':
+                # Standard Method 1: 3-panel visualization
+                from ..visualization.forest_plots import create_wald_visualization
+                fig = create_wald_visualization(
+                    wald_results=results.get('predictors', {}),
+                    sesoi_threshold=self.sesoi_threshold,
+                    tost_bounds=self.tost_bounds,
+                    title='Method 1: Wald Test Analysis'
+                )
+            elif method == 'method2':
+                # Method 2: Compare continuous vs categorical
+                from ..visualization.forest_plots import create_method2_comparison
+                
+                # Extract continuous and categorical results
+                continuous = results.get('continuous', {})
+                categorical = results.get('categorical', {})
+                
+                if not continuous and not categorical:
+                    logger.warning("Method 2 requires 'continuous' and/or 'categorical' results")
+                    return None
+                
+                fig = create_method2_comparison(
+                    continuous_results=continuous,
+                    categorical_results=categorical,
+                    sesoi_threshold=self.sesoi_threshold
+                )
+            else:
+                raise ValueError(f"Unknown method: {method}. Use 'method1' or 'method2'")
             
             # Handle file I/O if needed
             if output_dir and fig:

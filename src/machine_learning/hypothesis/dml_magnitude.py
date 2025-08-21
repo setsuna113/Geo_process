@@ -55,9 +55,12 @@ class DMLMagnitude:
         ci_width = ci_upper - ci_lower
         
         # Relative precision (coefficient of variation)
-        if theta != 0:
+        if abs(theta) < 0.001:  # Effect too close to zero for reliable CV
+            relative_precision = float('inf')
+            precision_class = "undefined (effect too close to zero)"
+        elif theta != 0:
             relative_precision = abs(se_theta / theta)
-            precision_class = DMLMagnitude._classify_precision(relative_precision)
+            precision_class = DMLMagnitude._classify_precision(relative_precision, theta)
         else:
             relative_precision = float('inf')
             precision_class = "undefined (effect is zero)"
@@ -132,18 +135,31 @@ class DMLMagnitude:
             return "very large"
     
     @staticmethod
-    def _classify_precision(cv: float) -> str:
-        """Classify precision based on coefficient of variation."""
-        if cv < 0.1:
-            return "very high"
-        elif cv < 0.25:
-            return "high"
-        elif cv < 0.5:
-            return "moderate"
-        elif cv < 1.0:
-            return "low"
+    def _classify_precision(cv: float, theta: float = None) -> str:
+        """Classify precision based on coefficient of variation.
+        
+        Args:
+            cv: Coefficient of variation (SE/theta)
+            theta: Effect estimate (for checking if too close to zero)
+            
+        Returns:
+            Precision classification string
+        """
+        # Check if effect is too close to zero for reliable CV
+        if theta is not None and abs(theta) < 0.001:
+            return "undefined (effect too close to zero)"
+        
+        # Updated thresholds based on evidence from manufacturing and analytical chemistry
+        if cv < 0.05:
+            return "excellent"
+        elif cv < 0.10:
+            return "very good"
+        elif cv < 0.20:
+            return "acceptable"
+        elif cv < 0.30:
+            return "marginal"
         else:
-            return "very low"
+            return "poor"
     
     @staticmethod
     def compare_magnitudes(
@@ -275,6 +291,67 @@ class DMLMagnitude:
             interpretation += "Effect directions are uncertain."
         
         return interpretation
+    
+    @staticmethod
+    def from_julia_results(julia_dml_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze magnitudes directly from Julia DML results.
+        
+        Args:
+            julia_dml_results: Julia method3_dml results dictionary
+            
+        Returns:
+            Complete magnitude analysis including comparisons
+        """
+        # Extract coefficients and std errors
+        coefficients = julia_dml_results.get('coefficients', [])
+        std_errors = julia_dml_results.get('std_errors', [])
+        coef_names = julia_dml_results.get('coef_names', [])
+        
+        if not coefficients or not std_errors or not coef_names:
+            raise ValueError("Julia results missing required fields")
+        
+        # Individual magnitude classifications
+        magnitudes = {}
+        effects_list = []
+        
+        for i, name in enumerate(coef_names):
+            coef = coefficients[i]
+            se = std_errors[i]
+            
+            # Classify each effect
+            mag_result = DMLMagnitude.classify_magnitude(coef, se)
+            magnitudes[name] = mag_result
+            effects_list.append((name, coef, se))
+        
+        # Compare all effects
+        comparison = DMLMagnitude.compare_magnitudes(effects_list) if len(effects_list) > 1 else None
+        
+        # Special biodiversity evaluation if applicable
+        biodiversity_eval = None
+        if 'plants_richness' in coef_names and 'vertebrates_richness' in coef_names:
+            plants_idx = coef_names.index('plants_richness')
+            vertebrates_idx = coef_names.index('vertebrates_richness')
+            
+            interaction_idx = None
+            if 'plants_x_vertebrates' in coef_names:
+                interaction_idx = coef_names.index('plants_x_vertebrates')
+            
+            biodiversity_eval = DMLMagnitude.evaluate_biodiversity_magnitudes(
+                theta_plants=coefficients[plants_idx],
+                se_plants=std_errors[plants_idx],
+                theta_vertebrates=coefficients[vertebrates_idx],
+                se_vertebrates=std_errors[vertebrates_idx],
+                theta_interaction=coefficients[interaction_idx] if interaction_idx is not None else None,
+                se_interaction=std_errors[interaction_idx] if interaction_idx is not None else None
+            )
+        
+        return {
+            'individual_magnitudes': magnitudes,
+            'comparison': comparison,
+            'biodiversity_evaluation': biodiversity_eval,
+            'n_obs': julia_dml_results.get('n_obs'),
+            'method': julia_dml_results.get('method_note', 'DML')
+        }
     
     @staticmethod
     def evaluate_biodiversity_magnitudes(

@@ -137,42 +137,54 @@ class WaldTest:
         """SESOI (Smallest Effect Size of Interest) test.
         
         Tests if effect exceeds meaningful threshold.
+        For positive effects: H₀: β ≤ SESOI vs H₁: β > SESOI
         
         Args:
             coefficient: Estimated coefficient
             standard_error: Standard error
             threshold: SESOI threshold (smallest meaningful effect)
-            direction: 'greater' (exceeds threshold), 'less', or 'two-sided'
+            direction: 'greater' (default, tests β > threshold)
             
         Returns:
             Dictionary with SESOI test results
         """
-        # Adjust null value based on direction
+        from scipy import stats
+        
+        # Single-sided SESOI test (we only care about positive effects)
+        # H₀: β ≤ threshold
+        # H₁: β > threshold
+        # Test statistic: Z = (β̂ - threshold) / SE
+        
         if direction == 'greater':
-            null_value = threshold
-            alternative = 'greater'
-            exceeds = coefficient > threshold
-        elif direction == 'less':
-            null_value = -threshold
-            alternative = 'less'
-            exceeds = coefficient < -threshold
-        else:  # two-sided
-            null_value = 0
-            alternative = 'two-sided'
-            exceeds = abs(coefficient) > threshold
-        
-        # Run test with adjusted null
-        result = WaldTest.test(coefficient, standard_error, null_value, alternative)
-        
-        # Add SESOI-specific fields
-        result['threshold'] = threshold
-        result['exceeds_threshold'] = exceeds and result['significant']
-        
-        # Add interpretation
-        if result['exceeds_threshold']:
-            result['interpretation'] = f"Effect exceeds meaningful threshold ({threshold:.3f})"
+            # Testing if effect exceeds positive threshold
+            z_score = (coefficient - threshold) / standard_error
+            p_value = 1 - stats.norm.cdf(z_score)
+            exceeds = p_value < 0.05
+            
+            result = {
+                'z_score': z_score,
+                'p_value': p_value,
+                'significant': exceeds,
+                'threshold': threshold,
+                'exceeds_threshold': exceeds,
+                'direction': 'greater',
+                'interpretation': f"Effect {'exceeds' if exceeds else 'does not exceed'} SESOI threshold ({threshold:.3f})"
+            }
         else:
-            result['interpretation'] = f"Effect below meaningful threshold ({threshold:.3f})"
+            # For completeness, keep less direction (rarely used)
+            z_score = (coefficient + threshold) / standard_error  
+            p_value = stats.norm.cdf(z_score)
+            exceeds = p_value < 0.05
+            
+            result = {
+                'z_score': z_score,
+                'p_value': p_value,
+                'significant': exceeds,
+                'threshold': threshold,
+                'exceeds_threshold': exceeds,
+                'direction': 'less',
+                'interpretation': f"Effect {'exceeds' if exceeds else 'does not exceed'} negative SESOI threshold (-{threshold:.3f})"
+            }
         
         return result
     
@@ -261,19 +273,3 @@ class WaldTest:
         else:
             raise ValueError(f"Unknown link function: {link}")
 
-
-# Convenience function for backward compatibility
-def wald_test_all_methods(coefficient: float,
-                          standard_error: float,
-                          sesoi_threshold: float = 0.1,
-                          tost_bounds: tuple = (-0.05, 0.05)) -> Dict[str, Any]:
-    """Run all three Wald test variants at once.
-    
-    Returns combined results from traditional, SESOI, and TOST tests.
-    """
-    return {
-        'traditional': WaldTest.test(coefficient, standard_error),
-        'sesoi': WaldTest.test_sesoi(coefficient, standard_error, sesoi_threshold),
-        'tost': WaldTest.test_equivalence(coefficient, standard_error, 
-                                          tost_bounds[0], tost_bounds[1])
-    }

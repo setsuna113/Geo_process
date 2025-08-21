@@ -48,13 +48,32 @@ def visualize_dml_magnitude(
     gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
     
     # Convert single result to list for consistency
-    if isinstance(magnitude_results, dict) and 'effect_size' in magnitude_results:
-        results_list = [magnitude_results]
-    elif isinstance(magnitude_results, dict) and 'rankings' in magnitude_results:
-        # This is output from compare_magnitudes
-        results_list = magnitude_results['rankings']
-    else:
+    if isinstance(magnitude_results, dict):
+        if 'effect_size' in magnitude_results:
+            # Single effect result
+            results_list = [magnitude_results]
+        elif 'rankings' in magnitude_results:
+            # This is output from compare_magnitudes or from_julia_results
+            results_list = magnitude_results['rankings']
+        elif 'individual_magnitudes' in magnitude_results:
+            # This is full output from from_julia_results - use rankings if available
+            if 'comparison' in magnitude_results and 'rankings' in magnitude_results['comparison']:
+                results_list = magnitude_results['comparison']['rankings']
+            else:
+                # Convert individual_magnitudes to list format
+                results_list = []
+                for name, data in magnitude_results['individual_magnitudes'].items():
+                    result = {'name': name}
+                    result.update(data)
+                    results_list.append(result)
+        else:
+            # Unknown dict format, try to use as is
+            results_list = [magnitude_results]
+    elif isinstance(magnitude_results, list):
         results_list = magnitude_results
+    else:
+        # Unknown format, wrap in list
+        results_list = [magnitude_results] if magnitude_results else []
     
     # Panel 1: Forest plot with magnitude zones
     ax1 = fig.add_subplot(gs[0, 0])

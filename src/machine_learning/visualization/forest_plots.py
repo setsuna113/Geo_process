@@ -5,6 +5,8 @@ Provides comprehensive visualization for Wald tests including:
 - SESOI (Smallest Effect Size of Interest) forest plot
 - TOST (Two One-Sided Tests) equivalence forest plot
 - P-value significance plot
+
+Data processing and visualization in one file following Linus principles.
 """
 
 import numpy as np
@@ -21,83 +23,212 @@ sns.set_style("whitegrid")
 sns.set_context("paper", font_scale=1.2)
 
 
+class ForestDataProcessor:
+    """Process and prepare data for forest plots.
+    
+    Separates data manipulation from visualization logic.
+    Each method does one thing and does it well.
+    """
+    
+    @staticmethod
+    def calculate_importance(wald_results: Dict[str, Any]) -> Dict[str, float]:
+        """Calculate importance scores (|z-score|) for all predictors."""
+        importance = {}
+        for predictor, result in wald_results.items():
+            if predictor == 'overall' or not isinstance(result, dict):
+                continue
+                
+            coef = result.get('coefficient', 0)
+            se = result.get('standard_error', 1)
+            
+            if se > 0:
+                importance[predictor] = abs(coef / se)
+            else:
+                importance[predictor] = 0
+                
+        return importance
+    
+    @staticmethod
+    def sort_by_importance(wald_results: Dict[str, Any]) -> List[str]:
+        """Sort predictors by importance (|z-score|)."""
+        importance = ForestDataProcessor.calculate_importance(wald_results)
+        return sorted(importance.keys(), 
+                     key=lambda x: importance[x], 
+                     reverse=True)
+    
+    @staticmethod
+    def filter_predictors(predictors: List[str], 
+                         filter_mesf: bool = True,
+                         filter_intercept: bool = True) -> List[str]:
+        """Filter out unwanted predictors."""
+        filtered = predictors.copy()
+        
+        if filter_mesf:
+            filtered = [p for p in filtered 
+                       if not p.lower().startswith('mesf')]
+        
+        if filter_intercept:
+            filtered = [p for p in filtered 
+                       if p.lower() not in ['(intercept)', 'intercept']]
+        
+        return filtered
+    
+    @staticmethod
+    def clean_predictor_names(names: List[str]) -> List[str]:
+        """Clean predictor names for display."""
+        cleaned = []
+        for name in names:
+            clean = (name.replace('_log', ' (log)')
+                        .replace('_std', ' (std)')
+                        .replace('_', ' ')
+                        .replace('bio', 'Bio')
+                        .replace('plants', 'Plants')
+                        .replace('vertebrates', 'Vertebrates')
+                        .replace('richness', 'Richness')
+                        .title())
+            cleaned.append(clean)
+        return cleaned
+    
+    @staticmethod
+    def extract_ordered_data(wald_results: Dict[str, Any], 
+                            predictor_order: List[str]) -> Tuple[np.ndarray, np.ndarray, List]:
+        """Extract coefficients and errors in specified order."""
+        coefficients = []
+        std_errors = []
+        sesoi_results = []
+        
+        for predictor in predictor_order:
+            if predictor not in wald_results:
+                continue
+                
+            result = wald_results[predictor]
+            coefficients.append(result.get('coefficient', 0))
+            std_errors.append(result.get('standard_error', 0))
+            
+            # Extract SESOI test result
+            sesoi_test = result.get('sesoi_test', {})
+            sesoi_results.append(sesoi_test.get('exceeds_threshold', False))
+        
+        return (np.array(coefficients), 
+                np.array(std_errors), 
+                sesoi_results)
+    
+    @staticmethod
+    def prepare_smart_forest_data(wald_results: Dict[str, Any],
+                                 filter_mesf: bool = True,
+                                 top_n: Optional[int] = 15) -> Dict[str, Any]:
+        """Prepare data for smart forest plot."""
+        # Get sorted predictor order
+        sorted_predictors = ForestDataProcessor.sort_by_importance(wald_results)
+        
+        # Filter if requested
+        if filter_mesf:
+            sorted_predictors = ForestDataProcessor.filter_predictors(
+                sorted_predictors, filter_mesf=True)
+        
+        # Limit to top N
+        if top_n and len(sorted_predictors) > top_n:
+            sorted_predictors = sorted_predictors[:top_n]
+        
+        # Extract data in order
+        coefficients, std_errors, sesoi_results = \
+            ForestDataProcessor.extract_ordered_data(wald_results, sorted_predictors)
+        
+        # Clean names
+        clean_names = ForestDataProcessor.clean_predictor_names(sorted_predictors)
+        
+        return {
+            'predictors': sorted_predictors,
+            'clean_names': clean_names,
+            'coefficients': coefficients,
+            'std_errors': std_errors,
+            'sesoi_results': sesoi_results,
+            'importance': ForestDataProcessor.calculate_importance(wald_results)
+        }
+    
+    @staticmethod
+    def extract_basic_data(wald_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract basic data from raw wald_results (no sorting/filtering)."""
+        predictors = []
+        coefficients = []
+        std_errors = []
+        sesoi_results = []
+        tost_results = []  # Add TOST results extraction
+        p_values = []
+        wald_stats = []
+        
+        for predictor, result in wald_results.items():
+            if predictor == 'overall' or not isinstance(result, dict):
+                continue
+            predictors.append(predictor)
+            coefficients.append(result.get('coefficient', 0))
+            std_errors.append(result.get('standard_error', 0))
+            p_values.append(result.get('p_value', 1))
+            wald_stats.append(result.get('wald_statistic', 0))
+            
+            # Extract SESOI test result if available
+            sesoi_test = result.get('sesoi_test', {})
+            sesoi_results.append(sesoi_test.get('exceeds_threshold', False))
+            
+            # Extract TOST test result if available
+            tost_test = result.get('tost_test', {})
+            tost_results.append({
+                'is_equivalent': tost_test.get('is_equivalent', False),
+                'is_different': tost_test.get('is_different', False),
+                'conclusion': tost_test.get('conclusion', 'Inconclusive')
+            })
+        
+        return {
+            'predictors': predictors,
+            'coefficients': np.array(coefficients),
+            'std_errors': np.array(std_errors),
+            'sesoi_results': sesoi_results,
+            'tost_results': tost_results,  # Include TOST results
+            'p_values': np.array(p_values),
+            'wald_stats': np.array(wald_stats)
+        }
+
+
 def create_wald_visualization(
     wald_results: Dict[str, Any],
     sesoi_threshold: float = 0.1,  # Default SESOI threshold (10% change on response scale)
     tost_bounds: Tuple[float, float] = (-0.05, 0.05),  # Default TOST bounds (±5%)
-    plot_type: str = "smart",  # "smart" (filtered+unfiltered), "comprehensive" (4 panels), "compact" (3 panels)
-    title: str = "Wald Test: Comprehensive Analysis",
-    figsize: Tuple[int, int] = (16, 12)
+    title: str = "Wald Test Analysis",
+    figsize: Tuple[int, int] = (15, 5),
+    filter_mesf: bool = True  # Whether to filter MESF terms
 ) -> plt.Figure:
-    """Create smart Wald test visualization.
+    """Create Wald test visualization with three hypothesis tests.
     
-    ALWAYS sorts by importance (|z-score|).
-    ALWAYS cleans names for readability.
-    Default "smart" mode shows both filtered (no MESF) and unfiltered views.
+    Shows SESOI, TOST, and traditional p-value tests side by side.
+    Always sorts by importance (|z-score|) and cleans names.
     
     Args:
         wald_results: Results from Wald tests containing coefficients, std_errors, p_values
         sesoi_threshold: Threshold for smallest effect size of interest (on log scale)
         tost_bounds: Equivalence bounds for TOST (on log scale)
-        plot_type: "smart" (default - filtered+unfiltered), "comprehensive" (4 panels), "compact" (3 panels)
         title: Main title for the figure
-        figsize: Figure size
+        figsize: Figure size (default: wide layout for 3 panels)
+        filter_mesf: Whether to filter out MESF spatial terms
         
     Returns:
-        matplotlib Figure with smart layout showing what users actually need
+        matplotlib Figure with 3-panel layout
     """
-    if plot_type == "smart":
-        # The RIGHT default - what users actually want
-        fig = plt.figure(figsize=figsize)
-        gs = fig.add_gridspec(1, 2, hspace=0.2, wspace=0.3)
-        
-        # Panel 1: FILTERED view (what users care about)
-        ax1 = fig.add_subplot(gs[0])
-        _plot_smart_forest(ax1, wald_results, sesoi_threshold, 
-                          filter_mesf=True, title="Key Predictors (No MESF)")
-        
-        # Panel 2: COMPLETE view (for completeness)
-        ax2 = fig.add_subplot(gs[1])
-        _plot_smart_forest(ax2, wald_results, sesoi_threshold,
-                          filter_mesf=False, title="All Predictors")
-        
-    elif plot_type == "comprehensive":
-        fig = plt.figure(figsize=figsize)
-        gs = fig.add_gridspec(2, 2, hspace=0.3, wspace=0.3)
-        
-        # Panel 1: SESOI Forest Plot (top left)
-        ax1 = fig.add_subplot(gs[0, 0])
-        _plot_sesoi_forest(ax1, wald_results, sesoi_threshold)
-        
-        # Panel 2: TOST Forest Plot (top right)
-        ax2 = fig.add_subplot(gs[0, 1])
-        _plot_tost_forest(ax2, wald_results, tost_bounds)
-        
-        # Panel 3: P-value Plot (bottom left)
-        ax3 = fig.add_subplot(gs[1, 0])
-        _plot_pvalues(ax3, wald_results)
-        
-        # Panel 4: Combined Summary (bottom right)
-        ax4 = fig.add_subplot(gs[1, 1])
-        _plot_wald_summary(ax4, wald_results, sesoi_threshold, tost_bounds)
-        
-    elif plot_type == "compact":
-        fig = plt.figure(figsize=(figsize[0], figsize[1] * 0.75))
-        gs = fig.add_gridspec(1, 3, wspace=0.3)
-        
-        # Panel 1: Combined Forest Plot with SESOI
-        ax1 = fig.add_subplot(gs[0])
-        _plot_sesoi_forest(ax1, wald_results, sesoi_threshold)
-        
-        # Panel 2: TOST Forest Plot
-        ax2 = fig.add_subplot(gs[1])
-        _plot_tost_forest(ax2, wald_results, tost_bounds)
-        
-        # Panel 3: P-value Plot
-        ax3 = fig.add_subplot(gs[2])
-        _plot_pvalues(ax3, wald_results)
-    else:
-        raise ValueError(f"plot_type must be 'smart', 'comprehensive' or 'compact', got {plot_type}")
+    # Create figure with 3 panels
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(1, 3, hspace=0.2, wspace=0.3)
+    
+    # Panel 1: SESOI Forest Plot
+    ax1 = fig.add_subplot(gs[0])
+    _plot_smart_forest(ax1, wald_results, sesoi_threshold, 
+                      filter_mesf=filter_mesf, title="SESOI Test")
+    
+    # Panel 2: TOST Forest Plot
+    ax2 = fig.add_subplot(gs[1])
+    _plot_tost_forest(ax2, wald_results, tost_bounds)
+    
+    # Panel 3: P-value Plot
+    ax3 = fig.add_subplot(gs[2])
+    _plot_pvalues(ax3, wald_results)
     
     fig.suptitle(title, fontsize=16, fontweight='bold')
     plt.tight_layout()
@@ -105,267 +236,297 @@ def create_wald_visualization(
     return fig
 
 
+def create_method2_comparison(
+    continuous_results: Dict[str, Any],
+    categorical_results: Dict[str, Any],
+    sesoi_threshold: float = 0.1,
+    figsize: Tuple[int, int] = (14, 6),
+    highlight_interaction: bool = True
+) -> plt.Figure:
+    """Method 2 specific: Compare continuous vs categorical interaction models.
+    
+    Simple side-by-side comparison without hardcoded predictor lists.
+    
+    Args:
+        continuous_results: Wald results from Model 3a (continuous interaction)
+        categorical_results: Wald results from Model 3b (categorical interaction)
+        sesoi_threshold: SESOI threshold for significance
+        figsize: Figure size
+        highlight_interaction: Whether to highlight interaction terms
+        
+    Returns:
+        matplotlib Figure object
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    
+    # Process data using existing processor
+    cont_data = ForestDataProcessor.extract_basic_data(continuous_results)
+    cat_data = ForestDataProcessor.extract_basic_data(categorical_results)
+    
+    # Filter MESF variables manually
+    if cont_data['predictors']:
+        mesf_indices = [i for i, p in enumerate(cont_data['predictors']) 
+                       if not p.lower().startswith('mesf')]
+        cont_data = {
+            'predictors': [cont_data['predictors'][i] for i in mesf_indices],
+            'coefficients': [cont_data['coefficients'][i] for i in mesf_indices],
+            'std_errors': [cont_data['std_errors'][i] for i in mesf_indices],
+            'sesoi_results': [cont_data['sesoi_results'][i] for i in mesf_indices]
+        }
+    
+    if cat_data['predictors']:
+        mesf_indices = [i for i, p in enumerate(cat_data['predictors']) 
+                       if not p.lower().startswith('mesf')]
+        cat_data = {
+            'predictors': [cat_data['predictors'][i] for i in mesf_indices],
+            'coefficients': [cat_data['coefficients'][i] for i in mesf_indices],
+            'std_errors': [cat_data['std_errors'][i] for i in mesf_indices],
+            'sesoi_results': [cat_data['sesoi_results'][i] for i in mesf_indices]
+        }
+    
+    # Plot using existing SESOI forest function  
+    _plot_sesoi_forest_base(ax1,
+                           cont_data['predictors'],
+                           cont_data['coefficients'], 
+                           cont_data['std_errors'],
+                           cont_data['sesoi_results'],
+                           sesoi_threshold)
+    
+    _plot_sesoi_forest_base(ax2,
+                           cat_data['predictors'],
+                           cat_data['coefficients'],
+                           cat_data['std_errors'],
+                           cat_data['sesoi_results'],
+                           sesoi_threshold)
+    
+    # Titles that describe the models
+    ax1.set_title("Model 3a: Continuous Interaction", fontweight='bold')
+    ax2.set_title("Model 3b: Categorical Interaction", fontweight='bold')
+    
+    # Highlight interaction terms if requested
+    if highlight_interaction:
+        # Find and highlight interaction terms
+        for ax, data in [(ax1, cont_data), (ax2, cat_data)]:
+            labels = ax.get_yticklabels()
+            for i, (label, pred) in enumerate(zip(labels, data['predictors'])):
+                # Interaction terms contain '_x_' or specific patterns
+                if '_x_' in pred or 'temperate' in pred.lower():
+                    label.set_weight('bold')
+                    label.set_color('darkgoldenrod')
+    
+    # Main title
+    fig.suptitle('Method 2: Climate-Biodiversity Interaction Analysis', 
+                fontsize=14, fontweight='bold')
+    
+    plt.tight_layout()
+    return fig
 
 
 def _plot_smart_forest(ax: plt.Axes, wald_results: Dict[str, Any], 
                       sesoi_threshold: float, filter_mesf: bool = True,
                       title: str = "Forest Plot", top_n: Optional[int] = 15):
-    """Smart forest plot that ALWAYS sorts by importance and cleans names.
+    """Smart forest plot with sorting, filtering, and name cleaning.
     
-    This is what users actually want to see.
+    Can handle both filtered (smart mode) and unfiltered (comprehensive/compact) data.
+    Always sorts by importance and cleans names.
     """
-    # Clean name function
-    def clean_name(name: str) -> str:
-        """Make names human-readable."""
-        return (name.replace('_log', ' (log)')
-                   .replace('_', ' ')
-                   .replace('bio', 'Bio')
-                   .replace('plants', 'Plants')
-                   .replace('vertebrates', 'Vertebrates')
-                   .title())
     
-    # Calculate importance (|z-score|) for ALL predictors
-    importance_dict = {}
-    for predictor, result in wald_results.items():
-        if predictor == 'overall' or not isinstance(result, dict):
-            continue
-        coef = result.get('coefficient', 0)
-        # Handle both 'std_error' and 'standard_error' keys
-        se = result.get('std_error', result.get('standard_error', 1))
-        if se > 0:
-            importance_dict[predictor] = abs(coef / se)
-        else:
-            importance_dict[predictor] = 0
+    # Step 1: Process data - always sort and clean names
+    processed_data = ForestDataProcessor.prepare_smart_forest_data(
+        wald_results, filter_mesf=filter_mesf, top_n=top_n)
     
-    # Sort by importance (ALWAYS!)
-    sorted_predictors = sorted(importance_dict.keys(), 
-                              key=lambda x: importance_dict[x], 
-                              reverse=True)
-    
-    # Filter if requested
-    if filter_mesf:
-        sorted_predictors = [p for p in sorted_predictors 
-                           if not p.lower().startswith('mesf') and p.lower() != '(intercept)']
-    
-    # Limit to top_n if specified
-    if top_n and len(sorted_predictors) > top_n:
-        sorted_predictors = sorted_predictors[:top_n]
-    
-    if not sorted_predictors:
+    if not processed_data['predictors']:
         ax.text(0.5, 0.5, 'No data available', ha='center', va='center')
         ax.set_title(title)
         return
     
-    # Extract data in sorted order
-    coefficients = []
-    std_errors = []
-    clean_names_list = []
+    # Step 2: Delegate to base function (no data processing here!)
+    _plot_sesoi_forest_base(ax, 
+                           processed_data['clean_names'],
+                           processed_data['coefficients'],
+                           processed_data['std_errors'],
+                           processed_data['sesoi_results'],
+                           sesoi_threshold)
     
-    for predictor in sorted_predictors:
-        result = wald_results[predictor]
-        coefficients.append(result.get('coefficient', 0))
-        # Handle both 'std_error' and 'standard_error' keys
-        std_err = result.get('std_error', result.get('standard_error', 0))
-        std_errors.append(std_err)
-        clean_names_list.append(clean_name(predictor))
+    # Step 3: Add smart-specific features only
+    ax.set_title(title, fontsize=12, fontweight='bold')
     
-    # Calculate CIs
-    coefficients = np.array(coefficients)
-    std_errors = np.array(std_errors)
-    ci_lower = coefficients - 1.96 * std_errors
-    ci_upper = coefficients + 1.96 * std_errors
+    # Add importance scores as annotations
+    coefficients = processed_data['coefficients']
+    std_errors = processed_data['std_errors']
+    ci_upper = coefficients + 1.645 * std_errors
     
-    # Color by interpretation from results
-    colors = []
-    for predictor in sorted_predictors:
-        result = wald_results[predictor]
-        # Check both direct interpretation and nested in summary
-        interp = result.get('interpretation', '')
-        if not interp and 'summary' in result:
-            interp = result['summary'].get('interpretation', '')
-        
-        if 'Practically and statistically significant' in interp:
-            # Check if positive or negative
-            coef = result.get('coefficient', 0)
-            colors.append('darkgreen' if coef > 0 else 'darkred')
-        elif 'negligible' in interp.lower():
-            colors.append('gray')
-        elif 'below meaningful threshold' in interp:
-            colors.append('orange')
-        else:
-            colors.append('lightblue')  # Uncertain/other
-    
-    # Plot
-    y_pos = np.arange(len(sorted_predictors))
-    
-    for i, (coef, ci_l, ci_u, color) in enumerate(zip(coefficients, ci_lower, ci_upper, colors)):
-        ax.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
-                   fmt='o', color=color, markersize=8, 
-                   capsize=5, capthick=2, elinewidth=2)
-        
-        # Add importance score as text
-        importance = importance_dict[sorted_predictors[i]]
-        ax.text(ci_u + 0.01, i, f'|z|={importance:.1f}', 
+    for i, predictor in enumerate(processed_data['predictors']):
+        importance = processed_data['importance'][predictor]
+        ax.text(ci_upper[i] + 0.01, i, f'|z|={importance:.1f}', 
                fontsize=8, va='center', alpha=0.7)
     
-    # Reference lines
-    ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1)
-    ax.axvline(x=sesoi_threshold, color='blue', linestyle='--', alpha=0.3, linewidth=1)
-    ax.axvline(x=-sesoi_threshold, color='blue', linestyle='--', alpha=0.3, linewidth=1)
-    
-    # Add SESOI region
-    ax.axvspan(-sesoi_threshold, sesoi_threshold, alpha=0.05, color='gray')
-    
-    # Styling
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(clean_names_list)
-    ax.set_xlabel('Coefficient (log scale)', fontsize=11)
-    ax.set_title(title, fontsize=12, fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='x')
-    
-    # Smart legend
-    legend_elements = [
-        Patch(facecolor='darkgreen', label='Meaningful (+)'),
-        Patch(facecolor='darkred', label='Meaningful (-)'),
-        Patch(facecolor='orange', label='Below threshold'),
-        Patch(facecolor='gray', label='Negligible')
-    ]
-    ax.legend(handles=legend_elements, loc='best', fontsize=8)
-    
-    # Add note about sorting
-    ax.text(0.98, 0.02, 'Sorted by |z-score|', transform=ax.transAxes,
+    # Add methodology note
+    ax.text(0.98, 0.02, 'Sorted by |z-score| • 90% CI shown', transform=ax.transAxes,
            ha='right', fontsize=8, style='italic', alpha=0.7)
 
 
-def _plot_sesoi_forest(ax: plt.Axes, wald_results: Dict[str, Any], sesoi_threshold: float):
-    """Create forest plot with SESOI (Smallest Effect Size of Interest) threshold.
+def _plot_sesoi_forest_base(ax: plt.Axes, 
+                           predictors: List[str],
+                           coefficients: np.ndarray,
+                           std_errors: np.ndarray,
+                           sesoi_results: List[bool],
+                           sesoi_threshold: float):
+    """Base function for SESOI forest plot (internal use only).
     
-    Shows whether effects exceed the threshold for practical significance.
+    Pure plotting function with 4-layer SESOI judgment logic.
+    No data processing - only visualization.
+    
+    Args:
+        ax: Matplotlib axes
+        predictors: List of predictor names (for display)
+        coefficients: Array of coefficient values
+        std_errors: Array of standard errors
+        sesoi_results: List of SESOI test results (exceeds_threshold)
+        sesoi_threshold: SESOI threshold value
     """
-    # Extract data (same as basic)
-    predictors = []
-    coefficients = []
-    std_errors = []
-    
-    for predictor, result in wald_results.items():
-        if predictor == 'overall' or not isinstance(result, dict):
-            continue
-        predictors.append(predictor)
-        coefficients.append(result.get('coefficient', 0))
-        # Handle both 'std_error' and 'standard_error' keys
-        std_err = result.get('std_error', result.get('standard_error', 0))
-        std_errors.append(std_err)
-    
     if not predictors:
         ax.text(0.5, 0.5, 'No data available', ha='center', va='center')
         ax.set_title('SESOI Forest Plot')
         return
     
-    # Calculate CIs
+    # Calculate 90% CIs for SESOI testing (single-sided α=0.05)
     coefficients = np.array(coefficients)
     std_errors = np.array(std_errors)
-    ci_lower = coefficients - 1.96 * std_errors
-    ci_upper = coefficients + 1.96 * std_errors
+    ci_lower_90 = coefficients - 1.645 * std_errors  # 90% CI
+    ci_upper_90 = coefficients + 1.645 * std_errors
     
-    # Color by SESOI criteria
+    # Color based on SESOI test results
     colors = []
-    for coef, ci_l, ci_u in zip(coefficients, ci_lower, ci_upper):
-        if ci_l > sesoi_threshold:
-            colors.append('darkgreen')  # Entire CI above positive SESOI
-        elif ci_u < -sesoi_threshold:
-            colors.append('darkred')    # Entire CI below negative SESOI
-        elif abs(coef) < sesoi_threshold and ci_l > -sesoi_threshold and ci_u < sesoi_threshold:
-            colors.append('gray')        # Entirely within SESOI bounds (negligible)
+    markers = []
+    for i, (coef, ci_l, exceeds_sesoi) in enumerate(zip(coefficients, ci_lower_90, sesoi_results)):
+        if exceeds_sesoi:
+            # Statistically exceeds SESOI threshold
+            colors.append('darkgreen' if coef > 0 else 'darkred')
+            markers.append('o')  # Filled circle
+        elif ci_l > sesoi_threshold:
+            # CI suggests exceeds but not statistically confirmed
+            colors.append('lightgreen')
+            markers.append('^')  # Triangle
+        elif abs(coef) < sesoi_threshold * 0.5:
+            # Clearly negligible (less than half SESOI)
+            colors.append('gray')
+            markers.append('s')  # Square
         else:
-            colors.append('orange')      # Crosses SESOI threshold (uncertain)
+            # Uncertain/borderline
+            colors.append('orange')
+            markers.append('d')  # Diamond
     
     # Add SESOI regions
     ax.axvspan(-sesoi_threshold, sesoi_threshold, alpha=0.1, color='gray', 
               label=f'Negligible (|β| < {sesoi_threshold:.2f})')
     
-    # Plot
+    # Plot with 90% CI
     y_pos = np.arange(len(predictors))
     
-    for i, (coef, ci_l, ci_u, color) in enumerate(zip(coefficients, ci_lower, ci_upper, colors)):
+    for i, (coef, ci_l, ci_u, color, marker) in enumerate(zip(coefficients, ci_lower_90, ci_upper_90, colors, markers)):
         ax.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
-                   fmt='o', color=color, markersize=8, 
+                   fmt=marker, color=color, markersize=8, 
                    capsize=5, capthick=2, elinewidth=2)
     
     # Reference lines
-    ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1)
-    ax.axvline(x=sesoi_threshold, color='blue', linestyle='--', alpha=0.5, linewidth=1.5, 
-              label=f'SESOI = ±{sesoi_threshold:.2f}')
-    ax.axvline(x=-sesoi_threshold, color='blue', linestyle='--', alpha=0.5, linewidth=1.5)
+    ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1, label='Zero')
+    ax.axvline(x=sesoi_threshold, color='red', linestyle='--', alpha=0.5, linewidth=1.5, 
+              label=f'SESOI = {sesoi_threshold:.2f}')
+    ax.axvline(x=-sesoi_threshold, color='red', linestyle='--', alpha=0.5, linewidth=1.5)
     
     # Styling
     ax.set_yticks(y_pos)
     ax.set_yticklabels(predictors)
     ax.set_xlabel('Coefficient (log scale)', fontsize=10)
-    ax.set_title('SESOI Forest Plot (Practical Significance)', fontsize=11, fontweight='bold')
+    ax.set_title('SESOI Minimum-Effect Test (90% CI, α=0.05)', fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
     
-    # Legend
+    # Legend with proper SESOI test interpretation
+    from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+    
     legend_elements = [
-        Patch(facecolor='darkgreen', label='Above +SESOI'),
-        Patch(facecolor='darkred', label='Below -SESOI'),
-        Patch(facecolor='gray', label='Negligible'),
-        Patch(facecolor='orange', label='Uncertain')
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='darkgreen', 
+               markersize=8, label='Exceeds +SESOI (p<0.05)'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='darkred', 
+               markersize=8, label='Exceeds -SESOI (p<0.05)'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', 
+               markersize=8, label='Negligible (<50% SESOI)'),
+        Line2D([0], [0], marker='d', color='w', markerfacecolor='orange', 
+               markersize=8, label='Uncertain/Borderline'),
+        Line2D([0], [0], color='red', linestyle='--', label=f'SESOI Threshold (±{sesoi_threshold:.2f})')
     ]
-    ax.legend(handles=legend_elements, loc='best', fontsize=8, title='SESOI Status')
+    ax.legend(handles=legend_elements, loc='best', fontsize=8, title='SESOI Test Results')
+    
+    # Add note about CI level
+    ax.text(0.02, 0.98, '90% CI shown (for one-sided α=0.05)', 
+           transform=ax.transAxes, fontsize=8, style='italic', 
+           verticalalignment='top', alpha=0.7)
+
+
 
 
 def _plot_tost_forest(ax: plt.Axes, wald_results: Dict[str, Any], tost_bounds: Tuple[float, float]):
     """Create forest plot with TOST (Two One-Sided Tests) equivalence bounds.
     
-    Shows whether effects are practically equivalent to zero.
+    Shows whether effects are practically equivalent to zero based on statistical tests.
+    Uses actual TOST test results, not visual CI comparison.
     """
-    # Extract data
-    predictors = []
-    coefficients = []
-    std_errors = []
+    # Use data processor to get all data including TOST results
+    data = ForestDataProcessor.extract_basic_data(wald_results)
     
-    for predictor, result in wald_results.items():
-        if predictor == 'overall' or not isinstance(result, dict):
-            continue
-        predictors.append(predictor)
-        coefficients.append(result.get('coefficient', 0))
-        # Handle both 'std_error' and 'standard_error' keys
-        std_err = result.get('std_error', result.get('standard_error', 0))
-        std_errors.append(std_err)
+    predictors = data['predictors']
+    coefficients = data['coefficients'] 
+    std_errors = data['std_errors']
+    tost_results = data['tost_results']  # Get TOST test results
     
     if not predictors:
         ax.text(0.5, 0.5, 'No data available', ha='center', va='center')
         ax.set_title('TOST Forest Plot')
         return
     
-    # Calculate CIs
+    # Calculate 90% CIs for TOST (correct for equivalence testing)
     coefficients = np.array(coefficients)
     std_errors = np.array(std_errors)
-    ci_lower = coefficients - 1.96 * std_errors
-    ci_upper = coefficients + 1.96 * std_errors
+    ci_lower_90 = coefficients - 1.645 * std_errors  # 90% CI for TOST
+    ci_upper_90 = coefficients + 1.645 * std_errors
     
-    # Color by TOST equivalence test
+    # Color based on actual TOST statistical test results
     colors = []
-    for coef, ci_l, ci_u in zip(coefficients, ci_lower, ci_upper):
-        # Check if CI is entirely within TOST bounds
-        if ci_l > tost_bounds[0] and ci_u < tost_bounds[1]:
-            colors.append('green')       # Equivalent to zero
-        # Check if CI is entirely outside TOST bounds
-        elif ci_l > tost_bounds[1] or ci_u < tost_bounds[0]:
-            colors.append('red')         # Not equivalent (meaningful effect)
+    markers = []
+    for tost_result in tost_results:
+        is_equivalent = tost_result['is_equivalent']
+        is_different = tost_result['is_different']
+        conclusion = tost_result['conclusion']
+        
+        if is_equivalent and is_different:
+            # Different but equivalent (negligible effect)
+            colors.append('lightgreen')
+            markers.append('s')  # Square
+        elif is_equivalent and not is_different:
+            # Equivalent to zero
+            colors.append('green')
+            markers.append('o')  # Circle
+        elif not is_equivalent and is_different:
+            # Significant and meaningful
+            colors.append('red')
+            markers.append('d')  # Diamond
         else:
-            colors.append('orange')      # Inconclusive
+            # Inconclusive
+            colors.append('orange')
+            markers.append('^')  # Triangle
     
     # Add TOST equivalence region
     ax.axvspan(tost_bounds[0], tost_bounds[1], alpha=0.15, color='lightgreen', 
               label=f'Equivalence region [{tost_bounds[0]:.2f}, {tost_bounds[1]:.2f}]')
     
-    # Plot
+    # Plot with 90% CI and different markers based on TOST results
     y_pos = np.arange(len(predictors))
     
-    for i, (coef, ci_l, ci_u, color) in enumerate(zip(coefficients, ci_lower, ci_upper, colors)):
+    for i, (coef, ci_l, ci_u, color, marker) in enumerate(zip(coefficients, ci_lower_90, ci_upper_90, colors, markers)):
         ax.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
-                   fmt='o', color=color, markersize=8, 
+                   fmt=marker, color=color, markersize=8, 
                    capsize=5, capthick=2, elinewidth=2)
     
     # Reference lines
@@ -380,28 +541,34 @@ def _plot_tost_forest(ax: plt.Axes, wald_results: Dict[str, Any], tost_bounds: T
     ax.set_title('TOST Forest Plot (Equivalence Testing)', fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
     
-    # Legend
+    # Legend with TOST statistical test interpretations
+    from matplotlib.lines import Line2D
     legend_elements = [
-        Patch(facecolor='green', label='Equivalent to zero'),
-        Patch(facecolor='red', label='Not equivalent'),
-        Patch(facecolor='orange', label='Inconclusive')
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='green', 
+               markersize=8, label='Equivalent to zero'),
+        Line2D([0], [0], marker='s', color='w', markerfacecolor='lightgreen', 
+               markersize=8, label='Different but negligible'),
+        Line2D([0], [0], marker='d', color='w', markerfacecolor='red', 
+               markersize=8, label='Significant and meaningful'),
+        Line2D([0], [0], marker='^', color='w', markerfacecolor='orange', 
+               markersize=8, label='Inconclusive')
     ]
-    ax.legend(handles=legend_elements, loc='best', fontsize=8, title='TOST Result')
+    ax.legend(handles=legend_elements, loc='best', fontsize=8, title='TOST Statistical Test')
+    
+    # Add note about CI level
+    ax.text(0.02, 0.98, '90% CI shown (for TOST equivalence testing)', 
+           transform=ax.transAxes, fontsize=8, style='italic', 
+           verticalalignment='top', alpha=0.7)
 
 
 def _plot_pvalues(ax: plt.Axes, wald_results: Dict[str, Any]):
     """Create p-value plot showing significance levels."""
-    # Extract data
-    predictors = []
-    p_values = []
-    wald_stats = []
+    # Use data processor - no more manual extraction!
+    data = ForestDataProcessor.extract_basic_data(wald_results)
     
-    for predictor, result in wald_results.items():
-        if predictor == 'overall' or not isinstance(result, dict):
-            continue
-        predictors.append(predictor)
-        p_values.append(result.get('p_value', 1))
-        wald_stats.append(result.get('wald_statistic', 0))
+    predictors = data['predictors']
+    p_values = data['p_values']
+    wald_stats = data['wald_stats']
     
     if not predictors:
         ax.text(0.5, 0.5, 'No data available', ha='center', va='center')
@@ -457,89 +624,6 @@ def _plot_pvalues(ax: plt.Axes, wald_results: Dict[str, Any]):
            ha='right', fontsize=8, style='italic', alpha=0.7)
 
 
-def _plot_wald_summary(ax: plt.Axes, wald_results: Dict[str, Any], 
-                      sesoi_threshold: float, tost_bounds: Tuple[float, float]):
-    """Create summary panel showing key findings from SESOI and TOST analyses."""
-    ax.axis('off')
-    
-    # Count results by category
-    n_above_sesoi = 0
-    n_below_neg_sesoi = 0
-    n_negligible = 0
-    n_equivalent = 0
-    n_not_equivalent = 0
-    n_significant = 0
-    
-    for predictor, result in wald_results.items():
-        if predictor == 'overall' or not isinstance(result, dict):
-            continue
-            
-        coef = result.get('coefficient', 0)
-        se = result.get('std_error', 0)
-        p_val = result.get('p_value', 1)
-        
-        ci_lower = coef - 1.96 * se
-        ci_upper = coef + 1.96 * se
-        
-        # SESOI classification
-        if ci_lower > sesoi_threshold:
-            n_above_sesoi += 1
-        elif ci_upper < -sesoi_threshold:
-            n_below_neg_sesoi += 1
-        elif abs(coef) < sesoi_threshold and ci_lower > -sesoi_threshold and ci_upper < sesoi_threshold:
-            n_negligible += 1
-            
-        # TOST classification
-        if ci_lower > tost_bounds[0] and ci_upper < tost_bounds[1]:
-            n_equivalent += 1
-        elif ci_lower > tost_bounds[1] or ci_upper < tost_bounds[0]:
-            n_not_equivalent += 1
-            
-        # Statistical significance
-        if p_val < 0.05:
-            n_significant += 1
-    
-    # Create summary text
-    summary_text = """Wald Test Summary
-═══════════════════════════
-
-SESOI Analysis (±{:.2f}):
-  • Above threshold: {}
-  • Below threshold: {}
-  • Negligible: {}
-  
-TOST Equivalence [{:.2f}, {:.2f}]:
-  • Equivalent to zero: {}
-  • Not equivalent: {}
-  
-Statistical Significance:
-  • Significant (p<0.05): {}/{}
-  
-Interpretation:
-{}""".format(
-        sesoi_threshold, n_above_sesoi, n_below_neg_sesoi, n_negligible,
-        tost_bounds[0], tost_bounds[1], n_equivalent, n_not_equivalent,
-        n_significant, len([k for k in wald_results if k != 'overall']),
-        _get_interpretation(n_above_sesoi, n_negligible, n_equivalent, n_significant)
-    )
-    
-    ax.text(0.1, 0.95, summary_text, transform=ax.transAxes,
-           fontsize=10, va='top', family='monospace',
-           bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
-    
-    ax.set_title('Summary', fontsize=11, fontweight='bold')
-
-
-def _get_interpretation(n_above_sesoi, n_negligible, n_equivalent, n_significant):
-    """Generate interpretation based on results."""
-    if n_negligible > n_above_sesoi:
-        return "Most effects are negligible\n(below practical significance)"
-    elif n_equivalent > 0:
-        return "Some effects are equivalent\nto zero (within bounds)"
-    elif n_significant > 0:
-        return "Statistically significant\neffects detected"
-    else:
-        return "No significant effects"
 
 
 # Keep the old function name for backward compatibility but mark as deprecated
