@@ -32,8 +32,7 @@ class TestGEEIntegration:
         """创建测试配置"""
         config = GEEConfig(
             project_id='test-project',
-            service_account='test@test.iam.gserviceaccount.com',
-            key_file='test-key.json',
+            service_account_key='test-key.json',
             gcs_bucket='test-bucket',
             biodiversity_files=['test_bio1.tif', 'test_bio2.tif'],
             resolutions={
@@ -41,7 +40,6 @@ class TestGEEIntegration:
                 '2x': 0.016666666,
                 '4x': 0.033333333
             },
-            bounds=[-180, -90, 180, 90],
             output_dir=tmp_path,
             parallel_uploads=2
         )
@@ -51,17 +49,27 @@ class TestGEEIntegration:
         """测试配置加载"""
         config_path = tmp_path / "test_config.yaml"
         config_path.write_text("""
-project_id: test-project
-service_account: test@test.iam.gserviceaccount.com
-key_file: test-key.json
-gcs_bucket: test-bucket
-biodiversity_files:
-  - test1.tif
-  - test2.tif
-resolutions:
-  1x: 0.008333333
-  2x: 0.016666666
-bounds: [-180, -90, 180, 90]
+gee:
+  auth:
+    service_account_key: test-key.json
+    project_id: test-project
+  export:
+    gcs_bucket: test-bucket
+    resolutions:
+      1x: 0.008333333
+      2x: 0.016666666
+data:
+  biodiversity:
+    files:
+      - test1.tif
+      - test2.tif
+  climate:
+    bands: [bio01, bio04, bio12, bio15]
+  elevation:
+    include: true
+processing:
+  chunk_size: 50000
+  parallel_uploads: 3
 """)
         
         config = GEEConfig.from_yaml(str(config_path))
