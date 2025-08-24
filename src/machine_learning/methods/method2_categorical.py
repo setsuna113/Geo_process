@@ -169,9 +169,12 @@ class Method2H2Testing:
                 else:
                     logger.warning("Simple slopes interpretation returned None")
                     
+            except (KeyError, ValueError, AttributeError) as e:
+                logger.error(f"Simple slopes interpretation failed with {type(e).__name__}: {e}")
+                self.simple_slopes_results = None
             except Exception as e:
                 import traceback
-                logger.error(f"Simple slopes interpretation failed: {e}")
+                logger.error(f"Unexpected error in simple slopes interpretation: {e}")
                 logger.error(f"Traceback:\n{traceback.format_exc()}")
                 self.simple_slopes_results = None
         
@@ -211,9 +214,13 @@ class Method2H2Testing:
                 else:
                     logger.warning("Marginal means interpretation returned None")
                     
+            except (KeyError, ValueError, AttributeError) as e:
+                logger.error(f"Marginal means interpretation failed with {type(e).__name__}: {e}")
+                self.marginal_means_results = None
+                self.emmeans_results = {}
             except Exception as e:
                 import traceback
-                logger.error(f"Marginal means interpretation failed: {e}")
+                logger.error(f"Unexpected error in marginal means interpretation: {e}")
                 logger.error(f"Traceback:\n{traceback.format_exc()}")
                 self.marginal_means_results = None
                 self.emmeans_results = {}
@@ -285,13 +292,20 @@ class Method2H2Testing:
             # Fallback to old structure
             search_dict = wald_results
             
+        # Use regex for more robust interaction term detection
+        import re
+        # Pattern matches: bio04 × plants, bio4 × plants, X × plants, or explicit "interaction"
+        interaction_patterns = [
+            r'bio0?4.*[x×:].*plant',  # bio04 or bio4 with any separator and plant
+            r'plant.*[x×:].*bio0?4',  # reverse order
+            r'bio0?4_std_x_plants',   # exact Julia format
+            r'x_plants',               # simple x_plants pattern
+            r'interaction'             # explicit interaction term
+        ]
+        
         for coef_name, coef_result in search_dict.items():
-            # Check for the exact interaction term names from Julia
-            if ('bio04_std_x_plants_log' in coef_name or 
-                ('bio04' in coef_name.lower() and 'plant' in coef_name.lower()) or 
-                ('bio4' in coef_name.lower() and 'plant' in coef_name.lower()) or
-                'x_plants' in coef_name.lower() or
-                'interaction' in coef_name.lower()):
+            # Check if any pattern matches (case insensitive)
+            if any(re.search(pattern, coef_name.lower()) for pattern in interaction_patterns):
                 interaction_result = coef_result
                 interaction_coef = coef_result.get('coefficient', 0)
                 interaction_se = coef_result.get('standard_error', 0)
@@ -389,12 +403,18 @@ class Method2H2Testing:
             # Fallback to old structure
             search_dict = wald_results
             
+        # Use regex for more robust categorical interaction term detection
+        categorical_patterns = [
+            r'temperate.*[x×:].*plant',  # temperate with any separator and plant
+            r'plant.*[x×:].*temperate',  # reverse order
+            r'temperate_x_plant',        # exact Julia format
+            r'x_plant',                   # simple x_plant pattern
+            r'interaction'                # explicit interaction term
+        ]
+        
         for coef_name, coef_result in search_dict.items():
-            # Check for the exact interaction term names from Julia
-            if ('temperate_x_plant_high' in coef_name or
-                ('temperate' in coef_name.lower() and 'plant' in coef_name.lower()) or 
-                'x_plant' in coef_name.lower() or
-                'interaction' in coef_name.lower()):
+            # Check if any pattern matches (case insensitive)
+            if any(re.search(pattern, coef_name.lower()) for pattern in categorical_patterns):
                 interaction_result = coef_result
                 interaction_coef = coef_result.get('coefficient', 0)
                 interaction_se = coef_result.get('standard_error', 0)

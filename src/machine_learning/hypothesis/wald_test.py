@@ -87,6 +87,9 @@ class WaldTest:
         Returns:
             Dictionary with TOST results
         """
+        if standard_error <= 0:
+            raise ValueError(f"Standard error must be positive, got {standard_error}")
+        
         if lower_bound >= upper_bound:
             raise ValueError("Lower bound must be less than upper bound")
         
@@ -149,6 +152,9 @@ class WaldTest:
             Dictionary with SESOI test results
         """
         from scipy import stats
+        
+        if standard_error <= 0:
+            raise ValueError(f"Standard error must be positive, got {standard_error}")
         
         if direction == 'two-tailed':
             # Two-tailed SESOI test: test if |β| > threshold
