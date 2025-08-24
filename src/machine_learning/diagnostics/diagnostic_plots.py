@@ -685,6 +685,133 @@ class ResidualDiagnostics:
             logger.error(f"Failed to create coefficient plot: {e}")
             return None
     
+    def plot_gvif_only(self,
+                       model_results: Dict[str, Any],
+                       output_dir: Optional[Path] = None,
+                       filename: str = "gvif_diagnostics.png") -> Optional[Path]:
+        """Create GVIF-only diagnostic plot for multicollinearity assessment.
+        
+        This is a simplified version that only shows GVIF values, which is
+        the most important diagnostic for GLM models.
+        
+        Args:
+            model_results: Model results containing GVIF values
+            output_dir: Directory to save plot
+            filename: Name of output file
+            
+        Returns:
+            Path to saved plot or None
+        """
+        try:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            
+            # Extract GVIF data
+            gvif_data = model_results.get('gvif', {})
+            
+            # Handle different GVIF data formats
+            if isinstance(gvif_data, list):
+                # If GVIF is a list, map to coefficient names (excluding intercept)
+                coef_names = model_results.get('coef_names', [])
+                if len(gvif_data) == len(coef_names) - 1:  # Exclude intercept
+                    gvif_dict = {}
+                    for name, value in zip(coef_names[1:], gvif_data):
+                        gvif_dict[name] = value
+                    gvif_data = gvif_dict
+                else:
+                    # Try to match by position
+                    gvif_dict = {}
+                    for i, value in enumerate(gvif_data):
+                        name = coef_names[i+1] if i+1 < len(coef_names) else f"var_{i+1}"
+                        gvif_dict[name] = value
+                    gvif_data = gvif_dict
+            
+            if not gvif_data or not isinstance(gvif_data, dict):
+                ax.text(0.5, 0.5, 'GVIF values not available', 
+                       ha='center', va='center', fontsize=14)
+                ax.set_title('Multicollinearity Check (GVIF)', fontsize=16, fontweight='bold')
+                ax.axis('off')
+            else:
+                # Extract variables and GVIF values
+                vars = list(gvif_data.keys())
+                gvif_values = list(gvif_data.values())
+                
+                # Calculate adjusted GVIF (square root for single df predictors)
+                adjusted_gvif = [np.sqrt(v) for v in gvif_values]
+                
+                # Color coding based on severity
+                colors = []
+                for v in adjusted_gvif:
+                    if v > 2:
+                        colors.append('#d62728')  # Red - problematic
+                    elif v > 1.5:
+                        colors.append('#ff7f0e')  # Orange - moderate concern
+                    else:
+                        colors.append('#2ca02c')  # Green - no concern
+                
+                # Create horizontal bar chart
+                y_pos = np.arange(len(vars))
+                bars = ax.barh(y_pos, adjusted_gvif, color=colors, alpha=0.7, edgecolor='black', linewidth=1)
+                
+                # Add threshold lines
+                ax.axvline(x=1.5, color='#ff7f0e', linestyle='--', alpha=0.5, 
+                          label='Low concern (√GVIF = 1.5)', linewidth=2)
+                ax.axvline(x=2.0, color='#d62728', linestyle='--', alpha=0.5, 
+                          label='High concern (√GVIF = 2.0)', linewidth=2)
+                
+                # Customize axes
+                ax.set_yticks(y_pos)
+                ax.set_yticklabels(vars, fontsize=11)
+                ax.set_xlabel('√GVIF (Adjusted GVIF)', fontsize=12, fontweight='bold')
+                ax.set_title('Generalized Variance Inflation Factor (GVIF) - Multicollinearity Check', 
+                           fontsize=14, fontweight='bold')
+                
+                # Add value labels on bars
+                for i, (bar, val, orig_val) in enumerate(zip(bars, adjusted_gvif, gvif_values)):
+                    label_x = bar.get_width() + 0.02
+                    ax.text(label_x, bar.get_y() + bar.get_height()/2, 
+                           f'{val:.2f}\n(GVIF={orig_val:.2f})', 
+                           va='center', fontsize=9)
+                
+                # Add legend
+                ax.legend(loc='upper right', framealpha=0.9)
+                
+                # Add interpretation text
+                max_adjusted = max(adjusted_gvif)
+                # Remove interpretation text per user request - just show the GVIF values
+                
+                # Add grid for better readability
+                ax.grid(True, alpha=0.3, axis='x', linestyle='--')
+                
+                # Add sample size info if available
+                n_obs = model_results.get('n_obs', 0)
+                n_params = len(model_results.get('coefficients', []))
+                if n_obs > 0:
+                    sample_info = f"Sample size: {n_obs:,} obs, {n_params} params"
+                    obs_per_param = n_obs / n_params if n_params > 0 else 0
+                    sample_info += f"\n{obs_per_param:.0f} obs/param"
+                    
+                    ax.text(0.02, 0.98, sample_info, transform=ax.transAxes,
+                           va='top', fontsize=10,
+                           bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.3))
+            
+            plt.tight_layout()
+            
+            if output_dir:
+                output_dir = Path(output_dir)
+                save_path = output_dir / filename
+                fig.savefig(save_path, dpi=300, bbox_inches='tight')
+                plt.close(fig)
+                logger.info(f"GVIF diagnostics saved to {save_path}")
+                return save_path
+            else:
+                return fig
+                
+        except Exception as e:
+            logger.error(f"Failed to create GVIF diagnostics: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     def create_all_diagnostics(self,
                                model_results: Dict[str, Any],
                                output_dir: Path,

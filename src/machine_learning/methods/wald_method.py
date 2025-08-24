@@ -202,14 +202,37 @@ class WaldMethod:
         """
         try:
             if method == 'method1':
-                # Standard Method 1: 3-panel visualization
+                # Standard Method 1: Now returns TWO separate figures
                 from ..visualization.forest_plots import create_wald_visualization
-                fig = create_wald_visualization(
+                fig_sesoi, fig_tost = create_wald_visualization(
                     wald_results=results.get('predictors', {}),
                     sesoi_threshold=self.sesoi_threshold,
                     tost_bounds=self.tost_bounds,
-                    title='Method 1: Wald Test Analysis'
+                    title='Method 1: Wald Test Analysis',
+                    filter_mesf=False  # Show MESF variables in analysis
                 )
+                
+                # Save both figures
+                if output_dir:
+                    output_dir = Path(output_dir)
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    # Save SESOI plot
+                    sesoi_path = output_dir / "forest_plot_sesoi.png"
+                    fig_sesoi.savefig(sesoi_path, dpi=300, bbox_inches='tight')
+                    import matplotlib.pyplot as plt
+                    plt.close(fig_sesoi)
+                    logger.info(f"SESOI forest plot saved to {sesoi_path}")
+                    
+                    # Save TOST plot
+                    tost_path = output_dir / "forest_plot_tost.png"
+                    fig_tost.savefig(tost_path, dpi=300, bbox_inches='tight')
+                    plt.close(fig_tost)
+                    logger.info(f"TOST forest plot saved to {tost_path}")
+                    
+                    return [sesoi_path, tost_path]  # Return both paths
+                
+                return (fig_sesoi, fig_tost)  # Return both figures
             elif method == 'method2':
                 # Method 2: Compare continuous vs categorical
                 from ..visualization.forest_plots import create_method2_comparison

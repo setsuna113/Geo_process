@@ -169,9 +169,12 @@ class Method2H2Testing:
                 else:
                     logger.warning("Simple slopes interpretation returned None")
                     
+            except (KeyError, ValueError, AttributeError) as e:
+                logger.error(f"Simple slopes interpretation failed with {type(e).__name__}: {e}")
+                self.simple_slopes_results = None
             except Exception as e:
                 import traceback
-                logger.error(f"Simple slopes interpretation failed: {e}")
+                logger.error(f"Unexpected error in simple slopes interpretation: {e}")
                 logger.error(f"Traceback:\n{traceback.format_exc()}")
                 self.simple_slopes_results = None
         
@@ -211,9 +214,13 @@ class Method2H2Testing:
                 else:
                     logger.warning("Marginal means interpretation returned None")
                     
+            except (KeyError, ValueError, AttributeError) as e:
+                logger.error(f"Marginal means interpretation failed with {type(e).__name__}: {e}")
+                self.marginal_means_results = None
+                self.emmeans_results = {}
             except Exception as e:
                 import traceback
-                logger.error(f"Marginal means interpretation failed: {e}")
+                logger.error(f"Unexpected error in marginal means interpretation: {e}")
                 logger.error(f"Traceback:\n{traceback.format_exc()}")
                 self.marginal_means_results = None
                 self.emmeans_results = {}
@@ -273,15 +280,36 @@ class Method2H2Testing:
         result['wald_results'] = wald_results
         
         # Find and extract interaction term results
+        # Looking for: bio04_std_x_plants_log or similar patterns
         interaction_result = None
         interaction_coef = None
         interaction_se = None
         
-        for coef_name, coef_result in wald_results.items():
-            if ('bio04' in coef_name.lower() and 'plant' in coef_name.lower()) or 'interaction' in coef_name.lower():
+        # Check if wald_results has 'predictors' key (new structure)
+        if 'predictors' in wald_results:
+            search_dict = wald_results['predictors']
+        else:
+            # Fallback to old structure
+            search_dict = wald_results
+            
+        # Use regex for more robust interaction term detection
+        import re
+        # Pattern matches: bio04 × plants, bio4 × plants, X × plants, or explicit "interaction"
+        interaction_patterns = [
+            r'bio0?4.*[x×:].*plant',  # bio04 or bio4 with any separator and plant
+            r'plant.*[x×:].*bio0?4',  # reverse order
+            r'bio0?4_std_x_plants',   # exact Julia format
+            r'x_plants',               # simple x_plants pattern
+            r'interaction'             # explicit interaction term
+        ]
+        
+        for coef_name, coef_result in search_dict.items():
+            # Check if any pattern matches (case insensitive)
+            if any(re.search(pattern, coef_name.lower()) for pattern in interaction_patterns):
                 interaction_result = coef_result
                 interaction_coef = coef_result.get('coefficient', 0)
                 interaction_se = coef_result.get('standard_error', 0)
+                logger.info(f"Found continuous interaction term: {coef_name}")
                 break
         
         if interaction_result:
@@ -363,16 +391,34 @@ class Method2H2Testing:
         result['wald_results'] = wald_results
         
         # Find and extract interaction term results
+        # Looking for: temperate_x_plant_high or similar patterns
         interaction_result = None
         interaction_coef = None
         interaction_se = None
         
-        for coef_name, coef_result in wald_results.items():
-            if (('temperate' in coef_name.lower() and 'plant' in coef_name.lower()) or 
-                'interaction' in coef_name.lower()):
+        # Check if wald_results has 'predictors' key (new structure)
+        if 'predictors' in wald_results:
+            search_dict = wald_results['predictors']
+        else:
+            # Fallback to old structure
+            search_dict = wald_results
+            
+        # Use regex for more robust categorical interaction term detection
+        categorical_patterns = [
+            r'temperate.*[x×:].*plant',  # temperate with any separator and plant
+            r'plant.*[x×:].*temperate',  # reverse order
+            r'temperate_x_plant',        # exact Julia format
+            r'x_plant',                   # simple x_plant pattern
+            r'interaction'                # explicit interaction term
+        ]
+        
+        for coef_name, coef_result in search_dict.items():
+            # Check if any pattern matches (case insensitive)
+            if any(re.search(pattern, coef_name.lower()) for pattern in categorical_patterns):
                 interaction_result = coef_result
                 interaction_coef = coef_result.get('coefficient', 0)
                 interaction_se = coef_result.get('standard_error', 0)
+                logger.info(f"Found categorical interaction term: {coef_name}")
                 break
         
         if interaction_result:
@@ -812,7 +858,9 @@ class Method2H2Testing:
                         sesoi_threshold=0.1,
                         tost_bounds=(-0.05, 0.05)
                     )
-                    reports.append(wald_report.get('main_text', ''))
+                    main_text = wald_report.get('main_text', '')
+                    if main_text:
+                        reports.append(main_text)
                     
                     if 'latex_table' in wald_report:
                         latex_tables.append(("Continuous Interaction", wald_report['latex_table']))
@@ -832,13 +880,15 @@ class Method2H2Testing:
                         sesoi_threshold=0.1,
                         tost_bounds=(-0.05, 0.05)
                     )
-                    reports.append(wald_report.get('main_text', ''))
+                    main_text = wald_report.get('main_text', '')
+                    if main_text:
+                        reports.append(main_text)
                     
                     if 'latex_table' in wald_report:
                         latex_tables.append(("Categorical Interaction", wald_report['latex_table']))
             
             # 3. EMmeans/Contrast Report (if available)
-            if self.emmeans_results and self.contrast_analyzer:
+            if self.emmeans_results:
                 try:
                     contrast_report = generate_contrast_publication_report(
                         contrast_results=self.emmeans_results,
@@ -853,10 +903,10 @@ class Method2H2Testing:
                     logger.warning(f"Could not generate contrast report: {e}")
             
             # 4. Simple Slopes Report (if available)
-            if self.simple_slopes and hasattr(self.simple_slopes, 'results'):
+            if self.simple_slopes_results:
                 try:
                     slopes_report = generate_simple_slopes_publication_report(
-                        simple_slopes_results=self.simple_slopes.results,
+                        simple_slopes_results=self.simple_slopes_results,
                         hypothesis_name="H2: Plant effect varies with climate seasonality"
                     )
                     reports.append(slopes_report.get('main_text', ''))
