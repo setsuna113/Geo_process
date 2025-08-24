@@ -133,30 +133,62 @@ class WaldTest:
     def test_sesoi(coefficient: float,
                    standard_error: float,
                    threshold: float,
-                   direction: str = 'greater') -> Dict[str, Any]:
+                   direction: str = 'two-tailed') -> Dict[str, Any]:
         """SESOI (Smallest Effect Size of Interest) test.
         
-        Tests if effect exceeds meaningful threshold.
-        For positive effects: H₀: β ≤ SESOI vs H₁: β > SESOI
+        Tests if effect magnitude exceeds meaningful threshold (two-tailed).
+        H₀: |β| ≤ SESOI vs H₁: |β| > SESOI
         
         Args:
             coefficient: Estimated coefficient
             standard_error: Standard error
-            threshold: SESOI threshold (smallest meaningful effect)
-            direction: 'greater' (default, tests β > threshold)
+            threshold: SESOI threshold (smallest meaningful effect size)
+            direction: 'two-tailed' (default), 'greater', or 'less'
             
         Returns:
             Dictionary with SESOI test results
         """
         from scipy import stats
         
-        # Single-sided SESOI test (we only care about positive effects)
-        # H₀: β ≤ threshold
-        # H₁: β > threshold
-        # Test statistic: Z = (β̂ - threshold) / SE
-        
-        if direction == 'greater':
-            # Testing if effect exceeds positive threshold
+        if direction == 'two-tailed':
+            # Two-tailed SESOI test: test if |β| > threshold
+            # This is the correct approach for testing meaningful effects in either direction
+            
+            # Test for positive meaningful effect: β > threshold
+            z_pos = (coefficient - threshold) / standard_error
+            p_pos = 1 - stats.norm.cdf(z_pos)
+            
+            # Test for negative meaningful effect: β < -threshold
+            z_neg = (coefficient + threshold) / standard_error
+            p_neg = stats.norm.cdf(z_neg)
+            
+            # Effect exceeds SESOI if it's significantly > threshold OR < -threshold
+            exceeds_positive = p_pos < 0.05 and coefficient > 0
+            exceeds_negative = p_neg < 0.05 and coefficient < 0
+            exceeds = exceeds_positive or exceeds_negative
+            
+            # Use the relevant p-value based on coefficient sign
+            if coefficient > 0:
+                z_score = z_pos
+                p_value = p_pos
+                direction_str = "positive"
+            else:
+                z_score = z_neg
+                p_value = p_neg
+                direction_str = "negative"
+            
+            result = {
+                'z_score': z_score,
+                'p_value': p_value,
+                'significant': exceeds,
+                'threshold': threshold,
+                'exceeds_threshold': exceeds,
+                'direction': 'two-tailed',
+                'interpretation': f"Effect {'exceeds' if exceeds else 'does not exceed'} SESOI threshold (|β| > {threshold:.3f})"
+            }
+            
+        elif direction == 'greater':
+            # One-sided test for positive effects only
             z_score = (coefficient - threshold) / standard_error
             p_value = 1 - stats.norm.cdf(z_score)
             exceeds = p_value < 0.05
@@ -168,11 +200,11 @@ class WaldTest:
                 'threshold': threshold,
                 'exceeds_threshold': exceeds,
                 'direction': 'greater',
-                'interpretation': f"Effect {'exceeds' if exceeds else 'does not exceed'} SESOI threshold ({threshold:.3f})"
+                'interpretation': f"Effect {'exceeds' if exceeds else 'does not exceed'} positive SESOI threshold ({threshold:.3f})"
             }
-        else:
-            # For completeness, keep less direction (rarely used)
-            z_score = (coefficient + threshold) / standard_error  
+        else:  # direction == 'less'
+            # One-sided test for negative effects only
+            z_score = (coefficient + threshold) / standard_error
             p_value = stats.norm.cdf(z_score)
             exceeds = p_value < 0.05
             

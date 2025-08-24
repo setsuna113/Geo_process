@@ -838,7 +838,9 @@ class Method2H2Testing:
                         sesoi_threshold=0.1,
                         tost_bounds=(-0.05, 0.05)
                     )
-                    reports.append(wald_report.get('main_text', ''))
+                    main_text = wald_report.get('main_text', '')
+                    if main_text:
+                        reports.append(main_text)
                     
                     if 'latex_table' in wald_report:
                         latex_tables.append(("Continuous Interaction", wald_report['latex_table']))
@@ -858,7 +860,9 @@ class Method2H2Testing:
                         sesoi_threshold=0.1,
                         tost_bounds=(-0.05, 0.05)
                     )
-                    reports.append(wald_report.get('main_text', ''))
+                    main_text = wald_report.get('main_text', '')
+                    if main_text:
+                        reports.append(main_text)
                     
                     if 'latex_table' in wald_report:
                         latex_tables.append(("Categorical Interaction", wald_report['latex_table']))
