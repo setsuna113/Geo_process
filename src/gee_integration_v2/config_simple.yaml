@@ -1,0 +1,25 @@
+# GEE Integration Configuration - Simplified Version
+# 原版有62个字段，现在只有必要的
+
+gee:
+  auth:
+    service_account_key: ~/.config/gee/service-account-key.json
+    project_id: biodiversity-project
+  
+  upload:
+    bucket: biodiversity-data
+
+biodiversity_datasets:
+  - path: /data/biodiversity/animal_richness.tif
+  - path: /data/biodiversity/plant_richness.tif
+
+# 可选 - 有合理的默认值
+climate_bands: [bio01, bio04, bio12, bio15]
+include_elevation: true
+
+resolutions:
+  1x: 0.008333333   # ~1km
+  2x: 0.016666667   # ~2km
+  4x: 0.033333333   # ~4km
+
+output_dir: outputs
