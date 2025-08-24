@@ -1482,4 +1482,266 @@ class TIFValidator:
 
 ---
 
+## 文件 6: `processing/resampler.py` (320行) ⭐技术创新
+
+### 类: `GEEResampler`
+
+**重要说明**: 这个文件包含了整个GEE集成的核心技术创新 - 递归2x降采样。这是绕过GEE聚合限制的关键技术。
+
+#### 函数 6.1: `__init__` (行26-44)
+
+**完整目的**：
+- 初始化重采样器
+- 设置基础分辨率（度）
+- 解析输出配置（哪些分辨率需要导出）
+- 转换度到米的比例
+- 调用_parse_outputs解析配置
+
+**品味评分**：🟢 好品味
+
+**当前实现问题**：
+1. 依赖外部常量文件
+2. logger重复赋值
+
+**改进方案**：保持现状，这是合理的初始化
+
+---
+
+#### 函数 6.2: `_parse_outputs` (行46-79)
+
+**完整目的**：
+- 解析输出配置字典
+- 提取分辨率因子（1x, 2x, 4x等）
+- 验证因子是2的幂且≤16
+- 返回排序的(名称, 因子, 导出标志)元组列表
+
+**品味评分**：🟡 可接受
+
+**当前实现问题**：
+1. 34行代码解析简单配置
+2. 过度验证（检查2的幂）
+3. 异常处理过于细粒度
+
+**改进方案**：
+```python
+def _parse_outputs(self, outputs: Dict) -> List[Tuple[str, int, bool]]:
+    """解析输出配置 - 简化版"""
+    resolutions = []
+    for key, config in outputs.items():
+        if key.endswith('x'):
+            factor = int(key[:-1])
+            export = config.get('enabled', False) if isinstance(config, dict) else False
+            if 1 <= factor <= 16 and factor & (factor-1) == 0:  # 是2的幂
+                resolutions.append((key, factor, export))
+    return sorted(resolutions, key=lambda x: x[1])
+```
+
+---
+
+#### 函数 6.3: `process_dataset` (行81-141) ⭐核心函数
+
+**完整目的**：
+- 处理单个数据集的多分辨率降采样
+- 首先对齐到基础分辨率网格
+- 通过递归2x降采样构建分辨率金字塔
+- 存储中间结果
+- 返回需要导出的分辨率图像
+
+**品味评分**：🟢 好品味 - 这是技术创新的核心
+
+**当前实现问题**：
+1. 61行有点长，但逻辑清晰
+2. 嵌套循环可以优化
+
+**改进方案**：保持现状 - 这个函数的复杂性是必要的
+
+---
+
+#### 函数 6.4: `_align_to_base` (行143-197)
+
+**完整目的**：
+- 将图像对齐到基础分辨率网格
+- 处理nodata值的掩码
+- 重投影到目标CRS和分辨率
+- 确保Y轴方向一致（避免投影不匹配）
+- 转换为Float32确保数据类型一致
+- 保留波段名称和属性
+
+**品味评分**：🟡 可接受但过长
+
+**当前实现问题**：
+1. 55行函数做了太多事
+2. 注释过多表明代码不够自明
+3. 硬编码的变换矩阵
+
+**改进方案（拆分为3个函数）**：
+```python
+def _align_to_base(self, image, config):
+    """对齐到基础网格"""
+    image = self._mask_nodata(image, config)
+    image = self._reproject_to_base(image, config)
+    return self._finalize_alignment(image, config)
+
+def _mask_nodata(self, image, config):
+    """掩码nodata值"""
+    no_data = config.get('no_data_value')
+    return image.updateMask(image.neq(no_data)) if no_data else image
+
+def _reproject_to_base(self, image, config):
+    """重投影到基础分辨率"""
+    import ee
+    projection = ee.Projection(self.target_crs).scale(self.base_scale, self.base_scale)
+    return image.reproject(crs=projection, scale=self.base_scale)
+
+def _finalize_alignment(self, image, config):
+    """最终处理：类型转换和命名"""
+    image = image.toFloat()
+    band_name = config.get('band_name')
+    if band_name:
+        image = image.rename(band_name)
+    return image
+```
+
+---
+
+#### 函数 6.5: `_get_reducer` (行199-218)
+
+**完整目的**：
+- 根据重采样方法返回对应的ee.Reducer
+- 支持多种方法：max, min, mean, mode, median等
+- bilinear和bicubic映射到mean
+
+**品味评分**：🟢 好品味
+
+**当前实现问题**：无
+
+**改进方案**：保持现状，清晰的映射表
+
+---
+
+#### 函数 6.6: `_downsample_2x` (行220-260) ⭐核心技术
+
+**完整目的**：
+- 执行2倍降采样 - 这是整个系统的核心操作
+- 获取当前投影和比例
+- 创建2倍比例的目标投影
+- 使用reduceResolution进行降采样（4像素->1像素）
+- 重投影到目标比例
+
+**品味评分**：🟢 好品味 - 核心创新
+
+**当前实现问题**：
+1. 注释过多（但这里是必要的，因为是核心逻辑）
+
+**改进方案**：保持现状 - 这是系统的关键部分
+
+---
+
+#### 函数 6.7: `_calculate_steps` (行262-283)
+
+**完整目的**：
+- 计算需要多少次2x降采样步骤
+- 使用log2计算步数
+- 处理边界情况
+
+**品味评分**：🟢 好品味
+
+**当前实现问题**：
+1. 22行代码做简单的log2计算
+
+**改进方案**：
+```python
+def _calculate_steps(self, current: int, target: int) -> int:
+    """计算2x降采样步数"""
+    import math
+    factor = target // current
+    return int(math.log2(factor)) if factor > 1 else 0
+```
+
+---
+
+#### 函数 6.8: `process_collection` (行285-320)
+
+**完整目的**：
+- 批量处理多个数据集
+- 调用process_dataset处理每个图像
+- 按分辨率组织结果
+- 确保所有结果都是ee.Image对象
+- 记录处理统计
+
+**品味评分**：🟡 可接受
+
+**当前实现问题**：
+1. 类型检查和转换逻辑过于防御性
+2. 嵌套循环可以简化
+
+**改进方案**：
+```python
+def process_collection(self, images: List, configs: List) -> Dict[str, List]:
+    """批量处理数据集"""
+    results = {}
+    
+    for image, config in zip(images, configs):
+        dataset_results = self.process_dataset(image, config)
+        for res_name, processed in dataset_results.items():
+            results.setdefault(res_name, []).append(processed)
+    
+    return results
+```
+
+---
+
+### resampler.py 总体评估
+
+**文件级问题**：
+1. 320行相对合理，因为这是核心技术实现
+2. 一些函数可以拆分（如_align_to_base）
+3. 过度的类型检查和防御性编程
+
+**但是！这个文件有重要价值**：
+1. **递归2x降采样是真正的技术创新**
+2. **解决了GEE的实际限制问题**
+3. **代码质量整体良好**
+
+**Linus式评价**：
+
+```python
+# 这个文件的核心价值在于递归2x降采样技术
+# 虽然有些冗长，但技术创新值得保留
+
+class SimpleResampler:
+    """精简版重采样器 - 保留核心创新"""
+    
+    def __init__(self, base_resolution: float):
+        self.base_resolution = base_resolution
+    
+    def downsample_recursive(self, image, target_factor: int):
+        """递归2x降采样 - 核心创新"""
+        import ee, math
+        
+        steps = int(math.log2(target_factor))
+        current = image
+        
+        for _ in range(steps):
+            # 2x降采样 - 关键操作
+            current = current.reduceResolution(
+                reducer=ee.Reducer.mean(),
+                maxPixels=4  # 2x2 -> 1
+            ).reproject(
+                scale=current.projection().nominalScale().multiply(2)
+            )
+        
+        return current
+```
+
+**核心洞察**：
+> "Innovation matters when it solves real problems."
+
+这个文件虽然长，但包含了真正的技术创新。递归2x降采样解决了GEE无法直接进行大因子聚合的问题。这是好的复杂性。
+
+**Linus的判决**：
+🟢 **好代码** - 虽然有改进空间，但核心技术创新有价值。这是整个GEE集成中最有价值的部分。
+
+---
+
 ## 继续分析其他文件...
