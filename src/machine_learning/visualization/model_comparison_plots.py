@@ -38,34 +38,22 @@ def plot_model_comparison(comparison_results: Dict[str, Any],
     Returns:
         matplotlib Figure object
     """
-    # Create figure with subplots
-    fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+    # Create figure with subplots - simplified to 1x2 grid (integrated % improvement into AIC/BIC plot)
+    fig = plt.figure(figsize=(12, 5))
+    gs = fig.add_gridspec(1, 2, hspace=0.3, wspace=0.3)
     
     # Extract data
     models = comparison_results['models']
     weights = comparison_results.get('weights', {})
     best_model = comparison_results.get('best_model', {})
     
-    # 1. AIC/BIC Values (top left)
+    # 1. AIC/BIC Values with % Improvements (left)
     ax1 = fig.add_subplot(gs[0, 0])
     _plot_ic_values(ax1, models)
     
-    # 2. Delta IC Values (top middle)
+    # 2. R² Values (right) - keep only one R² plot
     ax2 = fig.add_subplot(gs[0, 1])
-    _plot_delta_ic(ax2, models, comparison_results.get('threshold'))
-    
-    # 3. Model Weights (top right)
-    ax3 = fig.add_subplot(gs[0, 2])
-    _plot_weights(ax3, models, weights)
-    
-    # 4. Evidence Ratios (bottom left)
-    ax4 = fig.add_subplot(gs[1, 0])
-    _plot_evidence_ratios(ax4, models, comparison_results.get('evidence_ratios', {}))
-    
-    # 5. Summary Table (bottom middle and right)
-    ax5 = fig.add_subplot(gs[1, 1:])
-    _plot_summary_table(ax5, comparison_results)
+    _plot_r_squared_values(ax2, models)
     
     # Add main title
     fig.suptitle(title, fontsize=16, fontweight='bold')
@@ -79,15 +67,15 @@ def plot_model_comparison(comparison_results: Dict[str, Any],
 
 
 def _plot_ic_values(ax, models):
-    """Plot AIC and BIC values grouped by IC type."""
+    """Plot AIC and BIC values with percentage improvements as third bars."""
     model_names = list(models.keys())
     aics = [m.get('aic', np.nan) for m in models.values()]
     bics = [m.get('bic', np.nan) for m in models.values()]
     
-    # Group by IC type: (null_aic, full_aic), (null_bic, full_bic)
+    # Group by IC type with 3 bars each: null, full, %change
     ic_types = ['AIC', 'BIC']
     x = np.arange(len(ic_types))
-    width = 0.35
+    width = 0.25  # Narrower bars for 3 per group
     
     # Get null and full values
     null_idx = model_names.index('null') if 'null' in model_names else 0
@@ -96,36 +84,45 @@ def _plot_ic_values(ax, models):
     null_values = [aics[null_idx], bics[null_idx]]
     full_values = [aics[full_idx], bics[full_idx]]
     
-    # Plot bars
-    bars1 = ax.bar(x - width/2, null_values, width, label='Null Model', color='lightcoral', alpha=0.8)
-    bars2 = ax.bar(x + width/2, full_values, width, label='Full Model', color='lightgreen', alpha=0.8)
+    # Calculate percentage improvements
+    improvements = []
+    for null_val, full_val in zip(null_values, full_values):
+        if not np.isnan(null_val) and not np.isnan(full_val) and null_val != 0:
+            improvement = ((null_val - full_val) / null_val) * 100
+            improvements.append(improvement)
+        else:
+            improvements.append(0)
     
-    # Add value labels
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            if not np.isnan(height):
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.1f}', ha='center', va='bottom', fontsize=9)
+    # Plot three groups of bars
+    bars1 = ax.bar(x - width, null_values, width, label='Null Model', color='lightcoral', alpha=0.8)
+    bars2 = ax.bar(x, full_values, width, label='Full Model', color='lightgreen', alpha=0.8)
+    bars3 = ax.bar(x + width, improvements, width, label='% Improvement', color='gold', alpha=0.8)
     
-    # Add improvement indicators
-    for i, ic_type in enumerate(ic_types):
-        null_val = null_values[i]
-        full_val = full_values[i]
-        if not np.isnan(null_val) and not np.isnan(full_val):
-            if full_val < null_val:  # Lower is better
-                # Show improvement
-                improvement = null_val - full_val
-                ax.text(i, max(null_val, full_val) * 1.01, 
-                       f'Δ={improvement:.0f}',
-                       ha='center', fontsize=9, fontweight='bold', color='green')
+    # Add value labels for AIC/BIC values (in scientific notation for readability)
+    for bars, values in [(bars1, null_values), (bars2, full_values)]:
+        for bar, val in zip(bars, values):
+            if not np.isnan(val):
+                ax.text(bar.get_x() + bar.get_width()/2., bar.get_height(),
+                       f'{val:.1e}', ha='center', va='bottom', fontsize=8, rotation=90)
+    
+    # Add percentage labels
+    for bar, val in zip(bars3, improvements):
+        if val != 0:
+            ax.text(bar.get_x() + bar.get_width()/2., bar.get_height(),
+                   f'{val:.1f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
+    
+    # Set up dual y-axis for percentage values
+    ax2 = ax.twinx()
+    ax2.set_ylabel('Improvement (%)', color='orange')
+    ax2.set_ylim(0, max(improvements) * 1.2 if improvements else 5)
+    ax2.tick_params(axis='y', labelcolor='orange')
     
     ax.set_xlabel('Information Criterion Type')
     ax.set_ylabel('IC Value')
-    ax.set_title('Model Comparison: AIC and BIC')
+    ax.set_title('Model Comparison: AIC, BIC, and % Improvements')
     ax.set_xticks(x)
     ax.set_xticklabels(ic_types)
-    ax.legend()
+    ax.legend(loc='upper left')
     ax.grid(True, alpha=0.3)
 
 
@@ -187,29 +184,82 @@ def _plot_delta_ic(ax, models, threshold=None):
     ax.grid(True, alpha=0.3)
 
 
-def _plot_weights(ax, models, weights):
-    """Plot model weights (Akaike weights)."""
+def _plot_percentage_improvement(ax, models):
+    """Plot percentage improvement of full model over null model."""
     model_names = list(models.keys())
     
-    if weights:
-        aic_weights = [weights.get(name, {}).get('aic_weight', 0) for name in model_names]
-        
-        # Create pie chart
-        colors = plt.cm.Set3(np.linspace(0, 1, len(model_names)))
-        wedges, texts, autotexts = ax.pie(aic_weights, labels=model_names, 
-                                           colors=colors, autopct='%1.1f%%',
-                                           startangle=90)
-        
-        # Make percentage text bold
-        for autotext in autotexts:
-            autotext.set_fontweight('bold')
-            autotext.set_fontsize(10)
-        
-        ax.set_title('Model Weights (AIC)')
-    else:
-        ax.text(0.5, 0.5, 'No weights available', 
+    # Get null and full model indices
+    null_idx = model_names.index('null') if 'null' in model_names else None
+    full_idx = model_names.index('full') if 'full' in model_names else None
+    
+    if null_idx is None or full_idx is None:
+        ax.text(0.5, 0.5, 'Need both null and full models', 
                ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('Model Weights')
+        ax.set_title('Model Improvement')
+        ax.axis('off')
+        return
+    
+    # Get AIC and BIC values
+    null_aic = models[model_names[null_idx]].get('aic')
+    full_aic = models[model_names[full_idx]].get('aic')
+    null_bic = models[model_names[null_idx]].get('bic')
+    full_bic = models[model_names[full_idx]].get('bic')
+    
+    # Calculate percentage improvements
+    improvements = []
+    labels = []
+    colors = []
+    
+    if null_aic and full_aic:
+        aic_improvement = ((null_aic - full_aic) / null_aic) * 100
+        improvements.append(aic_improvement)
+        labels.append(f'AIC\n{aic_improvement:.2f}%')
+        colors.append('steelblue' if aic_improvement > 0 else 'lightcoral')
+    
+    if null_bic and full_bic:
+        bic_improvement = ((null_bic - full_bic) / null_bic) * 100
+        improvements.append(bic_improvement)
+        labels.append(f'BIC\n{bic_improvement:.2f}%')
+        colors.append('steelblue' if bic_improvement > 0 else 'lightcoral')
+    
+    if improvements:
+        x = np.arange(len(improvements))
+        bars = ax.bar(x, improvements, color=colors, alpha=0.7, edgecolor='black', linewidth=2)
+        
+        # Add a horizontal line at 0
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=1)
+        
+        # Add value labels on bars
+        for bar, val in zip(bars, improvements):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{val:.1f}%', ha='center', 
+                   va='bottom' if height > 0 else 'top', fontweight='bold')
+        
+        ax.set_xticks(x)
+        ax.set_xticklabels(['AIC', 'BIC'])
+        ax.set_ylabel('Improvement (%)')
+        ax.set_title('Full Model Improvement over Null Model\n(Percentage Reduction in IC)')
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Add interpretation
+        avg_improvement = np.mean(improvements)
+        if avg_improvement > 10:
+            interpretation = f"✓ Strong improvement: {avg_improvement:.1f}%"
+            color = 'green'
+        elif avg_improvement > 5:
+            interpretation = f"✓ Moderate improvement: {avg_improvement:.1f}%"
+            color = 'orange'
+        else:
+            interpretation = f"⚠ Minimal improvement: {avg_improvement:.1f}%"
+            color = 'red'
+        
+        ax.text(0.5, 0.95, interpretation, transform=ax.transAxes,
+               ha='center', fontsize=11, fontweight='bold', color=color)
+    else:
+        ax.text(0.5, 0.5, 'No IC values available', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Model Improvement')
         ax.axis('off')
 
 
@@ -256,6 +306,157 @@ def _plot_evidence_ratios(ax, models, evidence_ratios):
     ax.grid(True, alpha=0.3, axis='x')
 
 
+def _plot_r_squared_values(ax, models):
+    """Plot R² values comparison - McFadden's and Deviance-based."""
+    model_names = list(models.keys())
+    mcfadden_r2s = [m.get('mcfadden_r2', np.nan) for m in models.values()]
+    deviance_r2s = [m.get('deviance_r2', np.nan) for m in models.values()]
+    
+    # Check if we have any R² values
+    if all(np.isnan(mcfadden_r2s)) and all(np.isnan(deviance_r2s)):
+        ax.text(0.5, 0.5, 'No R² values available\n(requires loglik and deviance data)', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Pseudo R² Comparison')
+        ax.axis('off')
+        return
+    
+    # Group by R² type
+    r2_types = ['McFadden R²', 'Deviance R²']
+    x = np.arange(len(r2_types))
+    width = 0.35
+    
+    # Get null and full values (assuming standard naming)
+    null_idx = model_names.index('null') if 'null' in model_names else 0
+    full_idx = model_names.index('full') if 'full' in model_names else 1
+    
+    null_r2_values = [mcfadden_r2s[null_idx], deviance_r2s[null_idx]]
+    full_r2_values = [mcfadden_r2s[full_idx], deviance_r2s[full_idx]]
+    
+    # Replace NaN with 0 for plotting (null model typically has R² = 0)
+    null_r2_values = [0 if np.isnan(v) else v for v in null_r2_values]
+    full_r2_values = [0 if np.isnan(v) else v for v in full_r2_values]
+    
+    # Plot bars
+    bars1 = ax.bar(x - width/2, null_r2_values, width, label='Null Model', 
+                  color='lightcoral', alpha=0.8)
+    bars2 = ax.bar(x + width/2, full_r2_values, width, label='Full Model', 
+                  color='lightgreen', alpha=0.8)
+    
+    # Add value labels
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            if height > 0:  # Only show non-zero values
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{height:.3f}', ha='center', va='bottom', fontsize=10)
+    
+    # Add interpretation text
+    max_r2 = max(full_r2_values) if full_r2_values else 0
+    if max_r2 > 0:
+        if max_r2 >= 0.4:
+            interpretation = "Excellent fit"
+            color = 'green'
+        elif max_r2 >= 0.2:
+            interpretation = "Good fit"
+            color = 'orange'
+        elif max_r2 >= 0.1:
+            interpretation = "Moderate fit"
+            color = 'blue'
+        else:
+            interpretation = "Weak fit"
+            color = 'red'
+        
+        ax.text(0.98, 0.95, f'Full model: {interpretation}\n(R² = {max_r2:.3f})',
+               transform=ax.transAxes, ha='right', va='top',
+               bbox=dict(boxstyle='round', facecolor=color, alpha=0.2),
+               fontsize=10, fontweight='bold')
+    
+    ax.set_xlabel('R² Type')
+    ax.set_ylabel('R² Value')
+    ax.set_title('Pseudo R² Comparison')
+    ax.set_xticks(x)
+    ax.set_xticklabels(r2_types)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, max(max(full_r2_values), max(null_r2_values)) * 1.2)
+
+
+def _plot_pseudo_r2_comparison(ax, models):
+    """Plot pseudo R² comparison between null and full models."""
+    model_names = list(models.keys())
+    
+    # Get null and full model indices
+    null_idx = model_names.index('null') if 'null' in model_names else None
+    full_idx = model_names.index('full') if 'full' in model_names else None
+    
+    if null_idx is None or full_idx is None:
+        ax.text(0.5, 0.5, 'Need both null and full models', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Pseudo R² Comparison')
+        ax.axis('off')
+        return
+    
+    # Extract R² values
+    null_mcfadden = models[model_names[null_idx]].get('mcfadden_r2', 0)
+    full_mcfadden = models[model_names[full_idx]].get('mcfadden_r2', 0)
+    null_deviance_r2 = models[model_names[null_idx]].get('deviance_r2', 0)
+    full_deviance_r2 = models[model_names[full_idx]].get('deviance_r2', 0)
+    
+    # Create comparison data
+    categories = ['McFadden R²', 'Deviance R²']
+    null_values = [null_mcfadden, null_deviance_r2]
+    full_values = [full_mcfadden, full_deviance_r2]
+    
+    x = np.arange(len(categories))
+    width = 0.35
+    
+    # Create bars
+    bars1 = ax.bar(x - width/2, null_values, width, label='Null Model', 
+                  color='lightcoral', alpha=0.7, edgecolor='black', linewidth=1)
+    bars2 = ax.bar(x + width/2, full_values, width, label='Full Model', 
+                  color='lightgreen', alpha=0.7, edgecolor='black', linewidth=1)
+    
+    # Add value labels
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    # Add reference lines for interpretation
+    ax.axhline(y=0.2, color='orange', linestyle='--', alpha=0.5, 
+              label='Good fit (0.2)', linewidth=1)
+    ax.axhline(y=0.4, color='green', linestyle='--', alpha=0.5, 
+              label='Excellent fit (0.4)', linewidth=1)
+    
+    ax.set_ylabel('Pseudo R² Value')
+    ax.set_title('Pseudo R² Comparison')
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories)
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim([0, max(max(full_values), 0.5) * 1.1])
+    
+    # Add interpretation
+    avg_full_r2 = np.mean(full_values)
+    if avg_full_r2 > 0.4:
+        interpretation = f"✓ Excellent fit (avg R² = {avg_full_r2:.3f})"
+        color = 'darkgreen'
+    elif avg_full_r2 > 0.2:
+        interpretation = f"✓ Good fit (avg R² = {avg_full_r2:.3f})"
+        color = 'green'
+    elif avg_full_r2 > 0.1:
+        interpretation = f"⚠ Moderate fit (avg R² = {avg_full_r2:.3f})"
+        color = 'orange'
+    else:
+        interpretation = f"⚠ Poor fit (avg R² = {avg_full_r2:.3f})"
+        color = 'red'
+    
+    ax.text(0.98, 0.95, interpretation, transform=ax.transAxes,
+           ha='right', fontsize=10, fontweight='bold', color=color,
+           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+
+
 def _plot_summary_table(ax, comparison_results):
     """Plot summary table - NO CALCULATIONS, just display pre-computed table."""
     # Get pre-computed summary table from results
@@ -282,10 +483,15 @@ def _plot_summary_table(ax, comparison_results):
         return
     
     # Format numeric columns for display only
-    numeric_cols = ['AIC', 'ΔAIC', 'AIC Weight', 'BIC', 'ΔBIC']
+    numeric_cols = ['AIC', 'ΔAIC', 'AIC Weight', 'BIC', 'ΔBIC', 'McFadden R²', 'Deviance R²']
     for col in numeric_cols:
         if col in df.columns:
-            df[col] = df[col].apply(lambda x: f'{x:.2f}' if not pd.isna(x) else '-')
+            if 'R²' in col:
+                # Special formatting for R² values (3 decimal places)
+                df[col] = df[col].apply(lambda x: f'{x:.3f}' if not pd.isna(x) else '-')
+            else:
+                # Regular formatting for other numeric columns
+                df[col] = df[col].apply(lambda x: f'{x:.2f}' if not pd.isna(x) else '-')
     
     # Create table
     ax.axis('tight')

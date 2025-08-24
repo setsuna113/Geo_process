@@ -217,17 +217,8 @@ class MLOrchestrator:
             self.method2.data_metadata = data_metadata
             
             # Run Method 2's comprehensive testing
-            # Since models are already fitted, just run the tests
-            method2_results = {}
-            
-            # Test continuous interaction
-            if self.method2.model_3a_continuous:
-                method2_results['continuous_interaction'] = self.method2._test_continuous_interaction()
-            
-            # Test categorical interaction  
-            if self.method2.model_3b_categorical:
-                method2_results['categorical_interaction'] = self.method2._test_categorical_interaction()
-            
+            # Call run_hypothesis_tests() to get full results including simple slopes and marginal means
+            method2_results = self.method2.run_hypothesis_tests()
             
             self.results['method2'] = method2_results
             
@@ -374,14 +365,22 @@ class MLOrchestrator:
             return {k: self._make_serializable(v) for k, v in obj.items()}
         elif isinstance(obj, list):
             return [self._make_serializable(v) for v in obj]
+        elif isinstance(obj, (np.bool_, bool)):
+            return bool(obj)
         elif isinstance(obj, (np.integer, np.int64)):
             return int(obj)
         elif isinstance(obj, (np.floating, np.float64)):
             return float(obj)
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
+        elif pd and isinstance(obj, pd.DataFrame):
+            return obj.to_dict('records')
+        elif pd and isinstance(obj, pd.Series):
+            return obj.to_dict()
         elif hasattr(obj, 'to_dict'):
             return obj.to_dict()
+        elif isinstance(obj, Path):
+            return str(obj)
         else:
             return obj
     
@@ -472,6 +471,12 @@ class MLOrchestrator:
         
         # Synthesize results
         self.synthesize_results()
+        
+        # Generate visualizations - THIS WAS MISSING!
+        logger.info("\n" + "="*70)
+        logger.info("GENERATING VISUALIZATIONS")
+        logger.info("="*70)
+        self.visualize_results(Path("results"))
         
         # Generate summary report
         self._generate_summary_report()
