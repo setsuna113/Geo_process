@@ -32,10 +32,30 @@ class ExportManager:
         self.config = config
         self.gee_ops = gee_ops
     
-    def export_to_gcs(self, image: ee.Image, description: str) -> str:
-        """导出图像到GCS - 使用正确的参数避免内存错误"""
+    def export_to_gcs(self, image: ee.Image, description: str, scale_meters: float = None) -> str:
+        """导出图像到GCS - 使用正确的参数避免内存错误
+        
+        Args:
+            image: 要导出的图像
+            description: 导出描述（如'biodiv_1x'）
+            scale_meters: 导出分辨率（米）。如果不指定，从description推断
+        """
         # 检查是否需要半球分割（大于180度）
         geometry = ee.Geometry.Rectangle([-180, -90, 180, 90])
+        
+        # 推断正确的scale
+        if scale_meters is None:
+            # 从description推断（如'biodiv_1x' → 1x → 1855米）
+            if '1x' in description:
+                scale_meters = self.config.base_resolution * 111320  # 1855米
+            elif '2x' in description:
+                scale_meters = self.config.base_resolution * 2 * 111320  # 3700米
+            elif '4x' in description:
+                scale_meters = self.config.base_resolution * 4 * 111320  # 7400米
+            else:
+                # 默认使用基础分辨率
+                scale_meters = self.config.base_resolution * 111320
+                logger.warning(f"Cannot infer scale from '{description}', using base resolution {scale_meters:.0f}m")
         
         # 构建导出参数
         export_params = {
@@ -44,7 +64,7 @@ class ExportManager:
             'bucket': self.config.gcs_bucket,
             'fileNamePrefix': f"exports/{description}",
             'region': geometry,
-            'scale': self.config.export_scale,  # 30m分辨率
+            'scale': scale_meters,  # 使用正确的分辨率！
             'maxPixels': self.config.export_max_pixels,  # 1e13，不是1e14！
             'fileFormat': 'GeoTIFF',
             'formatOptions': {
@@ -54,6 +74,8 @@ class ExportManager:
             'fileDimensions': self.config.export_tile_size,
             'shardSize': self.config.export_shard_size  # 2560 - 关键参数！
         }
+        
+        logger.info(f"Exporting {description} at {scale_meters:.0f}m resolution")
         
         # 如果启用bestEffort，添加参数
         if self.config.export_best_effort:

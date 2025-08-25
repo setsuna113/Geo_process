@@ -49,7 +49,7 @@ class GEEConfig:
     include_elevation: bool = True
     
     # 导出参数 - 关键参数，避免OOM
-    export_scale: int = 30  # 30m分辨率
+    # export_scale现在根据每个分辨率自动计算，不再硬编码
     export_max_pixels: float = 1e13  # 不是1e14！
     export_tile_size: int = 2048
     export_shard_size: int = 2560  # 关键参数！
