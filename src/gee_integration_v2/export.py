@@ -32,30 +32,32 @@ class ExportManager:
         self.config = config
         self.gee_ops = gee_ops
     
-    def export_to_gcs(self, image: ee.Image, description: str, scale_meters: float = None) -> str:
+    def export_to_gcs(self, image: ee.Image, description: str, resolution_key: str = None) -> str:
         """导出图像到GCS - 使用正确的参数避免内存错误
         
         Args:
             image: 要导出的图像
-            description: 导出描述（如'biodiv_1x'）
-            scale_meters: 导出分辨率（米）。如果不指定，从description推断
+            description: 导出描述
+            resolution_key: 分辨率键（'1x', '2x', '4x'等）
         """
         # 检查是否需要半球分割（大于180度）
         geometry = ee.Geometry.Rectangle([-180, -90, 180, 90])
         
-        # 推断正确的scale
-        if scale_meters is None:
-            # 从description推断（如'biodiv_1x' → 1x → 1855米）
-            if '1x' in description:
-                scale_meters = self.config.base_resolution * 111320  # 1855米
-            elif '2x' in description:
-                scale_meters = self.config.base_resolution * 2 * 111320  # 3700米
-            elif '4x' in description:
-                scale_meters = self.config.base_resolution * 4 * 111320  # 7400米
+        # 计算正确的scale - 没有if/else！
+        if resolution_key and resolution_key in self.config.resolutions:
+            resolution_degrees = self.config.resolutions[resolution_key]
+        else:
+            # 尝试从description提取（如'biodiv_4x' → '4x'）
+            import re
+            match = re.search(r'(\d+x)', description)
+            if match and match.group(1) in self.config.resolutions:
+                resolution_degrees = self.config.resolutions[match.group(1)]
             else:
-                # 默认使用基础分辨率
-                scale_meters = self.config.base_resolution * 111320
-                logger.warning(f"Cannot infer scale from '{description}', using base resolution {scale_meters:.0f}m")
+                resolution_degrees = self.config.base_resolution
+                logger.warning(f"Using base resolution for '{description}'")
+        
+        # 度转米
+        scale_meters = resolution_degrees * 111320
         
         # 构建导出参数
         export_params = {

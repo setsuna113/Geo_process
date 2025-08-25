@@ -205,7 +205,8 @@ class GEEPipeline:
         for res, img in images.items():
             if res not in self.state.export_tasks:
                 logger.info(f"Exporting {res} resolution...")
-                task_id = self.exporter.export_to_gcs(img, f"biodiv_{res}")
+                # 传递resolution_key让export知道正确的分辨率
+                task_id = self.exporter.export_to_gcs(img, f"biodiv_{res}", resolution_key=res)
                 self.state.export_tasks[res] = task_id
                 self._save_state()
             
