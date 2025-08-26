@@ -11,8 +11,8 @@ gee:
 
 # 输入输出路径
 input_dir: data/production
-output_dir: outputs/production
-state_dir: state/production
+output_dir: /scratch/yl998/gee_outputs
+state_dir: /scratch/yl998/gee_state
 
 # 基础分辨率 - 所有数据对齐到这个分辨率并输出
 base_resolution: 0.016666666666667  # ~1.85km (1/60度)
