@@ -23,17 +23,18 @@ logger = logging.getLogger(__name__)
 class GEEOperations:
     """GEE核心操作类"""
     
-    def __init__(self, service_account_key: str, project_id: str, gcs_bucket: str):
+    def __init__(self, service_account_key: str, project_id: str, gcs_bucket: str, test_mode: bool = False):
         self.service_account_key = service_account_key
         self.project_id = project_id
         self.gcs_bucket = gcs_bucket
+        self.test_mode = test_mode
         self._authenticate()
         self._init_gcs_client()
     
     def _authenticate(self):
         """GEE认证 - 简单直接"""
-        # 测试模式检查
-        if 'test' in self.service_account_key and not Path(self.service_account_key).exists():
+        # 测试模式检查 - 使用明确的参数
+        if self.test_mode:
             logger.info("⚠️ Test mode - skipping real authentication")
             self.credentials = None
             return
