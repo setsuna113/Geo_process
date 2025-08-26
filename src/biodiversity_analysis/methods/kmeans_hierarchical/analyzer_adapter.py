@@ -16,17 +16,15 @@ class KMeansHierarchicalAnalyzerAdapter(IAnalyzer):
     while maintaining compatibility with the existing pipeline.
     """
     
-    def __init__(self, config: Any, db: Any):
+    def __init__(self, config: Any):
         """Initialize k-means hierarchical analyzer adapter.
         
         Args:
             config: Configuration object (used by factory)
-            db: Database manager (used by factory, ignored here)
         """
         # Initialize the actual hierarchical analyzer
         self._analyzer = KMeansHierarchicalAnalyzer()
         self._config = config
-        self._db = db
     
     def get_default_parameters(self) -> Dict[str, Any]:
         """Get default parameters for k-means hierarchical analysis."""

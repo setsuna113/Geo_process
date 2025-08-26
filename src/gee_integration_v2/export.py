@@ -73,8 +73,8 @@ class ExportManager:
             'maxPixels': self.config.export_max_pixels,
             'fileFormat': 'GeoTIFF',
             'formatOptions': {
-                'cloudOptimized': True,
-                'noData': 0
+                'cloudOptimized': True
+                # 不设置noData，让GEE使用NaN作为无数据值
             }
         }
         
