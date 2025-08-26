@@ -1,25 +1,66 @@
-# GEE Integration Configuration - Simplified Version
-# 原版有62个字段，现在只有必要的
+# GEE Integration Configuration
+# 生产环境配置
 
 gee:
   auth:
-    service_account_key: ~/.config/gee/service-account-key.json
-    project_id: biodiversity-project
+    service_account_key: .gee/service-account-key.json
+    project_id: triple-carrier-441622-t1
   
   upload:
-    bucket: biodiversity-data
+    bucket: biodiv-gee-yl998
 
-biodiversity_datasets:
-  - path: /data/biodiversity/animal_richness.tif
-  - path: /data/biodiversity/plant_richness.tif
+# 输入输出路径
+input_dir: data/production
+output_dir: outputs/production
+state_dir: state/production
 
-# 可选 - 有合理的默认值
-climate_bands: [bio01, bio04, bio12, bio15]
-include_elevation: true
+# 基础分辨率 - 所有数据对齐到这个分辨率并输出
+base_resolution: 0.016666666666667  # ~1.85km (1/60度)
 
-resolutions:
-  1x: 0.008333333   # ~1km
-  2x: 0.016666667   # ~2km
-  4x: 0.033333333   # ~4km
+# 生物多样性数据集（GEE Assets）
+biodiversity_assets:
+  daru-plants-richness: users/nicolasdeffense/mwd24/species_richness/daru-plants-richness
+  iucn-terrestrial-richness: users/nicolasdeffense/mwd24/species_richness/iucn-terrestrial-richness
+  AM_Fungi_Richness_Predicted: users/nicolasdeffense/mwd24/species_richness/AM_Fungi_Richness_Predicted
+  EcM_Fungi_Richness_Predicted: users/nicolasdeffense/mwd24/species_richness/EcM_Fungi_Richness_Predicted
 
-output_dir: outputs
+# 生物多样性数据的处理方法
+biodiversity_reducers:
+  daru-plants-richness: max
+  iucn-terrestrial-richness: max
+  AM_Fungi_Richness_Predicted: mean
+  EcM_Fungi_Richness_Predicted: mean
+
+# 外部数据集配置
+external_datasets:
+  - name: climate
+    image: WORLDCLIM/V1/BIO
+    bands: [bio01, bio04, bio12, bio15]
+    rename: [annual_temp, temp_seasonality, annual_precip, precip_seasonality]
+  
+  - name: elevation
+    image: MERIT/DEM/v1_0_3
+    bands: [dem]
+    rename: [elevation]
+  
+  - name: pet
+    collection: IDAHO_EPSCOR/TERRACLIMATE
+    bands: [pet]
+    reducer: mean
+    filter_dates: ['2000-01-01', '2020-12-31']
+    rename: [pet]
+  
+  - name: soil_sand
+    image: projects/soilgrids-isric/sand_mean
+    bands: [sand_0-5cm_mean]
+    rename: [sand_content_pct]
+  
+  - name: soil_carbon
+    image: projects/soilgrids-isric/soc_mean
+    bands: [soc_0-5cm_mean]
+    rename: [soil_organic_carbon]
+  
+  - name: soil_ph
+    image: projects/soilgrids-isric/phh2o_mean
+    bands: [phh2o_0-5cm_mean]
+    rename: [soil_ph]

@@ -31,6 +31,35 @@ class GEEConfig:
     project_id: str
     gcs_bucket: str
     
+    @classmethod
+    def from_yaml(cls, config_path: str) -> 'GEEConfig':
+        """从YAML文件加载配置"""
+        import yaml
+        with open(config_path) as f:
+            data = yaml.safe_load(f)
+        
+        # 提取GEE配置
+        gee_config = data.get('gee', {})
+        auth = gee_config.get('auth', {})
+        
+        # 创建配置实例
+        config = cls(
+            service_account_key=auth.get('service_account_key'),
+            project_id=auth.get('project_id'),
+            gcs_bucket=gee_config.get('upload', {}).get('bucket'),
+            input_dir=Path(data.get('input_dir', 'data/input')),
+            output_dir=Path(data.get('output_dir', 'outputs')),
+            state_dir=Path(data.get('state_dir', 'state')),
+            base_resolution=data.get('base_resolution', 0.016666666666667),
+            external_datasets=data.get('external_datasets', [])
+        )
+        
+        # 添加生物多样性资产和reducers
+        config.biodiversity_assets = data.get('biodiversity_assets', {})
+        config.biodiversity_reducers = data.get('biodiversity_reducers', {})
+        
+        return config
+    
     # 输入输出
     input_dir: Path = field(default_factory=lambda: Path('data/input'))
     output_dir: Path = field(default_factory=lambda: Path('data/output'))
