@@ -125,7 +125,8 @@ class GEEPipeline:
         self.gee_ops = GEEOperations(
             config.service_account_key,
             config.project_id, 
-            config.gcs_bucket
+            config.gcs_bucket,
+            test_mode=test_mode
         )
         self.processor = DataProcessor(config)
         self.exporter = ExportManager(config, self.gee_ops)
@@ -231,8 +232,8 @@ class GEEPipeline:
             
             # 保存处理状态
             self.state.processed_images = {'1x': "processed"}
-            # 临时保存在实例中，用于后续步骤
-            self._temp_processed_images = processed_images
+            # 不要保存在实例中 - 这会造成内存泄漏
+            # 后续步骤应该重新获取或通过参数传递
         else:
             logger.info("⏭️ Data already processed")
     
