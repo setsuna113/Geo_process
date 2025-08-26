@@ -242,12 +242,14 @@ class ExportManager:
                     # 处理西半球数据 - 批次读取
                     for i in range(west_reader.num_record_batches):
                         batch = west_reader.get_batch(i)
-                        # 调整经度（如果需要）
+                        # 检查经度范围是否合法
                         df = batch.to_pandas()
                         if 'longitude' in df.columns and (df['longitude'] > 180).any():
-                            df.loc[df['longitude'] > 180, 'longitude'] -= 360
+                            logger.warning(f"Invalid longitude values >180 detected in tile {i}")
+                            # 不要"修正"数据，让用户知道数据有问题
                         elif 'x' in df.columns and (df['x'] > 180).any():
-                            df.loc[df['x'] > 180, 'x'] -= 360
+                            logger.warning(f"Invalid x coordinates >180 detected in tile {i}")
+                            # 不要"修正"数据，让用户知道数据有问题
                         
                         # 写入批次
                         writer.write_batch(pa.RecordBatch.from_pandas(df, schema=schema))

@@ -212,16 +212,11 @@ class GEEPipeline:
         if not self.state.export_tasks:
             self.state.export_tasks = {}
         
-        # 获取处理后的图像
-        if hasattr(self, '_temp_processed_images'):
-            images = self._temp_processed_images
-        else:
-            # 重新处理（恢复时需要）
-            biodiv_images = {}
-            for name, asset_id in self.state.asset_ids.items():
-                biodiv_images[name] = ee.Image(asset_id)
-            images = self.processor.process_images(biodiv_images)
-            self._temp_processed_images = images
+        # 获取处理后的图像（每次都重新处理，不缓存）
+        biodiv_images = {}
+        for name, asset_id in self.state.asset_ids.items():
+            biodiv_images[name] = ee.Image(asset_id)
+        images = self.processor.process_images(biodiv_images)
         
         # 导出每个分辨率
         for res, img in images.items():
