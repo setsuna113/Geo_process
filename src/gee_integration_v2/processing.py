@@ -1,211 +1,260 @@
 """
-数据处理模块
-===========
+数据处理模块 - 简化版
+====================
 
-处理GEE中的数据操作，包括对齐、合并、重采样、添加气候数据等。
+处理流程：
+1. 处理NoData
+2. 对齐到基准分辨率  
+3. 合并生物多样性数据
+4. 应用Ocean mask
+5. 添加外部数据集
 
-关键修复：所有数据必须先对齐到base_resolution再合并！
+删除了多分辨率pyramid和降采样逻辑
 
 作者: Linus式重构
 """
 
 import ee
 import logging
-from typing import Dict, List
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 
 
 class DataProcessor:
-    """数据处理类"""
+    """数据处理类 - 简化版，只处理单一分辨率"""
     
     def __init__(self, config):
         """
         Args:
-            config: 包含base_resolution, climate_bands, include_elevation等配置
+            config: 包含base_resolution和external_datasets配置
         """
         self.config = config
-        # 基础分辨率 - 所有数据对齐到这里
         self.base_resolution = config.base_resolution
         self.base_scale = self.base_resolution * 111320  # 度转米（赤道）
     
-    def align_to_base(self, image: ee.Image, band_name: str = None) -> ee.Image:
-        """对齐图像到基础分辨率 - 核心操作！
-        
-        这确保所有数据在同一网格上，才能正确合并。
-        """
-        # 创建统一的投影
-        projection = ee.Projection('EPSG:4326').atScale(self.base_scale)
-        
-        # Reproject到基础分辨率
-        aligned = image.reproject(
-            crs=projection,
-            scale=self.base_scale
-        )
-        
-        # 转换为Float32（统一数据类型）
-        aligned = aligned.toFloat()
-        
-        # 重命名波段
-        if band_name:
-            aligned = aligned.rename(band_name)
-        
-        return aligned
-    
-    def downsample_2x(self, image: ee.Image) -> ee.Image:
-        """降采样2倍 - 复用的核心操作
-        
-        这是递归降采样的基础操作。
-        """
-        # 使用reduceResolution降采样
-        downsampled = image.reduceResolution(
-            reducer=ee.Reducer.mean(),
-            maxPixels=1024  # 安全值，远低于256限制
-        )
-        
-        # 获取当前投影并放大2倍
-        current_projection = image.projection()
-        new_scale = current_projection.nominalScale().multiply(2)
-        
-        # Reproject到新分辨率
-        return downsampled.reproject(
-            crs='EPSG:4326',
-            scale=new_scale
-        )
-    
-    def recursive_downsample(self, image: ee.Image, factor: int) -> ee.Image:
-        """递归降采样到指定倍数
+    def process_images(self, biodiv_images: Dict[str, ee.Image]) -> Dict[str, ee.Image]:
+        """处理生物多样性图像 - 简化流程
         
         Args:
-            image: 输入图像（已对齐到base_resolution）
-            factor: 降采样倍数，必须是2的幂（2, 4, 8...）
+            biodiv_images: {name: ee.Image}字典
         
         Returns:
-            降采样后的图像
+            {'1x': 处理后的ee.Image} - 为了兼容现有接口
         """
-        # 验证factor是2的幂
-        if factor <= 0 or (factor & (factor - 1)) != 0:
-            raise ValueError(f"Factor must be power of 2, got {factor}")
+        # Step 1: 处理每个数据集 - NoData + 对齐
+        aligned_images = []
         
-        if factor == 1:
+        for name, image in biodiv_images.items():
+            # 获取配置
+            dataset_config = self._get_dataset_config(name)
+            nodata_value = dataset_config.get('nodata_value', None)
+            
+            # 处理NoData
+            if nodata_value is not None:
+                valid_mask = image.neq(nodata_value)
+                image = image.updateMask(valid_mask)
+                logger.info(f"Applied NoData mask for {name} (value={nodata_value})")
+            
+            # 对齐到基准分辨率（关键步骤！）
+            aligned = image.reproject(
+                crs='EPSG:4326',
+                scale=self.base_scale
+            ).toFloat().rename(name)
+            
+            aligned_images.append(aligned)
+            logger.info(f"Aligned {name} to base resolution ({self.base_resolution}°)")
+        
+        # Step 2: 合并所有生物多样性数据
+        merged = aligned_images[0]
+        for img in aligned_images[1:]:
+            merged = merged.addBands(img)
+        logger.info(f"Merged {len(aligned_images)} biodiversity datasets")
+        
+        # Step 3: 应用Ocean mask和纬度限制
+        masked = self.apply_mask(merged)
+        
+        # Step 4: 添加外部数据集（climate, elevation, PET等）
+        final = self.add_external_datasets(masked, self.base_scale)
+        
+        logger.info(f"Processing complete: {final.bandNames().size()} bands")
+        
+        # 返回字典格式以兼容现有接口
+        return {'1x': final}
+    
+    def apply_mask(self, image: ee.Image) -> ee.Image:
+        """应用ocean mask和纬度限制
+        
+        重要：保留原始mask（包括NoData处理后的mask）！
+        """
+        if not getattr(self.config, 'mask_ocean', False):
+            logger.info("Ocean masking disabled")
             return image
         
-        # 计算需要多少次2x降采样
-        steps = 0
-        temp = factor
-        while temp > 1:
-            temp //= 2
-            steps += 1
+        # 获取原始mask（包括NoData mask）
+        original_mask = image.mask()
         
-        # 递归应用2x降采样
-        result = image
-        for _ in range(steps):
-            result = self.downsample_2x(result)
-            logger.debug(f"Applied 2x downsample, step {_+1}/{steps}")
+        # 使用MODIS land/water mask
+        # 0 = land, 1 = water
+        water_mask = ee.Image("MODIS/006/MOD44W/2015_01_01").select('water_mask')
         
-        return result
+        # 创建陆地mask（水=1，所以陆地是水!=1）
+        land_mask = water_mask.neq(1)
+        
+        # 应用纬度限制
+        lat_min = getattr(self.config, 'lat_min', -60)
+        lat_max = getattr(self.config, 'lat_max', 75)
+        
+        if lat_min is not None or lat_max is not None:
+            logger.info(f"Applying latitude bounds: [{lat_min}°, {lat_max}°]")
+            
+            # 创建纬度图像
+            lat_img = ee.Image.pixelLonLat().select('latitude')
+            
+            # 创建纬度mask
+            lat_mask = lat_img.gte(lat_min).And(lat_img.lte(lat_max))
+            
+            # 组合所有masks：原始mask AND ocean mask AND 纬度mask
+            final_mask = original_mask.And(land_mask).And(lat_mask)
+        else:
+            # 只组合原始mask和ocean mask
+            final_mask = original_mask.And(land_mask)
+        
+        # 应用组合后的mask
+        masked = image.updateMask(final_mask)
+        
+        logger.info("Applied ocean mask and latitude bounds")
+        return masked
     
-    def merge_biodiversity(self, images: Dict[str, ee.Image]) -> ee.Image:
-        """合并生物多样性波段
+    def add_external_datasets(self, image: ee.Image, target_scale: float) -> ee.Image:
+        """添加外部数据集（climate, elevation等）
         
-        关键：所有图像先对齐到base_resolution！
+        使用GEE的pyramid功能自动重采样到目标分辨率
         """
-        if not images:
-            raise ValueError("No biodiversity images provided")
-        
-        # 步骤1：对齐所有图像到基础分辨率
-        aligned_images = {}
-        for name, img in images.items():
-            aligned = self.align_to_base(img, name)
-            aligned_images[name] = aligned
-            logger.info(f"Aligned {name} to base resolution {self.base_resolution} degrees")
-        
-        # 步骤2：合并对齐后的图像
-        first_name = list(aligned_images.keys())[0]
-        result = aligned_images[first_name]
-        
-        for name, img in list(aligned_images.items())[1:]:
-            result = result.addBands(img)
-        
-        logger.info(f"Merged {len(images)} biodiversity bands")
-        return result
-    
-    def add_climate(self, image: ee.Image) -> ee.Image:
-        """添加WorldClim气候数据"""
-        if not self.config.climate_bands:
+        if not hasattr(self.config, 'external_datasets'):
             return image
         
-        # 获取气候数据
-        climate = ee.ImageCollection("WORLDCLIM/V1/BIO").select(self.config.climate_bands)
-        climate_image = climate.toBands()
-        
-        # 重命名波段
-        band_names = [f"WORLDCLIM_V1_BIO_{band}" for band in self.config.climate_bands]
-        climate_image = climate_image.rename(band_names)
-        
-        # 对齐到基础分辨率（WorldClim原生~1km）
-        climate_aligned = self.align_to_base(climate_image)
-        
-        logger.info(f"Added {len(self.config.climate_bands)} climate bands")
-        return image.addBands(climate_aligned)
-    
-    def add_elevation(self, image: ee.Image) -> ee.Image:
-        """添加MERIT DEM高程数据"""
-        if not self.config.include_elevation:
-            return image
-        
-        # 获取高程数据
-        elevation = ee.Image("MERIT/DEM/v1_0_3").select('dem').rename('elevation')
-        
-        # 对齐到基础分辨率（MERIT DEM原生90m）
-        elevation_aligned = self.align_to_base(elevation, 'elevation')
-        
-        logger.info("Added elevation band")
-        return image.addBands(elevation_aligned)
-    
-    def process_images(self, biodiv_images: Dict[str, ee.Image]) -> Dict[str, ee.Image]:
-        """完整的处理流程
-        
-        正确的顺序：
-        1. 对齐所有生物多样性数据到base_resolution
-        2. 合并生物多样性波段
-        3. 添加气候数据（自动对齐）
-        4. 添加高程数据（自动对齐）
-        5. 生成多分辨率版本（2x, 4x递归降采样）
-        """
-        processed = {}
-        
-        # 步骤1-2：合并生物多样性（内部会对齐）
-        merged = self.merge_biodiversity(biodiv_images)
-        
-        # 步骤3：添加气候数据
-        merged = self.add_climate(merged)
-        
-        # 步骤4：添加高程数据
-        merged = self.add_elevation(merged)
-        
-        # 步骤5：生成多分辨率版本
-        for res_name, resolution in self.config.resolutions.items():
-            # 解析分辨率名称（如 '1x', '2x', '4x'）
-            if res_name.endswith('x'):
-                try:
-                    factor = int(res_name[:-1])
+        for dataset in self.config.external_datasets:
+            try:
+                name = dataset.get('name', 'unknown')
+                
+                # 获取数据源
+                if 'image' in dataset:
+                    # 直接是Image（如WorldClim, MERIT DEM）
+                    data = ee.Image(dataset['image'])
+                elif 'collection' in dataset:
+                    # 是ImageCollection（如TerraClimate）
+                    collection = ee.ImageCollection(dataset['collection'])
                     
-                    # 验证是2的幂
-                    if factor > 0 and (factor & (factor - 1)) == 0:
-                        if factor == 1:
-                            # 基础分辨率，直接使用
-                            processed[res_name] = merged
-                            logger.info(f"Generated {res_name}: base resolution")
-                        else:
-                            # 递归降采样
-                            processed[res_name] = self.recursive_downsample(merged, factor)
-                            target_res = self.base_resolution * factor
-                            logger.info(f"Generated {res_name}: {target_res:.9f} degrees")
+                    # 日期过滤（如果需要）
+                    if 'filter_dates' in dataset:
+                        start_date, end_date = dataset['filter_dates']
+                        collection = collection.filterDate(start_date, end_date)
+                        logger.info(f"Filtered {name} to date range: {start_date} to {end_date}")
+                    
+                    # 应用reducer转换为单个Image
+                    reducer_type = dataset.get('reducer', 'mean')
+                    if reducer_type == 'mean':
+                        data = collection.mean()
+                    elif reducer_type == 'median':
+                        data = collection.median()
+                    elif reducer_type == 'max':
+                        data = collection.max()
+                    elif reducer_type == 'min':
+                        data = collection.min()
+                    elif reducer_type == 'sum':
+                        data = collection.sum()
                     else:
-                        logger.warning(f"Skipping {res_name}: factor must be power of 2")
-                        
-                except ValueError:
-                    logger.warning(f"Invalid resolution key: {res_name}")
+                        data = collection.first()
+                else:
+                    logger.warning(f"Dataset {name} missing 'image' or 'collection' field")
+                    continue
+                
+                # 选择波段
+                if 'bands' in dataset:
+                    data = data.select(dataset['bands'])
+                
+                # 重命名波段
+                if 'rename' in dataset:
+                    data = data.rename(dataset['rename'])
+                elif 'rename_pattern' in dataset:
+                    pattern = dataset['rename_pattern']
+                    band_names = [pattern.format(band=b) for b in dataset['bands']]
+                    data = data.rename(band_names)
+                
+                # 关键：使用GEE的pyramid - reproject到目标scale
+                # GEE会自动从pyramid中选择合适的级别！
+                data_at_scale = data.reproject(
+                    crs='EPSG:4326',
+                    scale=target_scale
+                )
+                
+                # 确保数据类型一致（统一为Float32）
+                data_at_scale = data_at_scale.toFloat()
+                
+                # 添加到图像
+                image = image.addBands(data_at_scale)
+                
+                logger.info(f"Added {name} at scale {target_scale}m using GEE pyramid")
+                
+            except Exception as e:
+                logger.error(f"Failed to add external dataset {dataset.get('name', 'unknown')}: {e}")
+                continue
         
-        return processed
+        # 检查是否需要计算地形变量
+        compute_terrain = False
+        for dataset in self.config.external_datasets:
+            if dataset.get('name') == 'elevation':
+                compute_terrain = dataset.get('compute_terrain', True)  # 默认计算
+                break
+        
+        if compute_terrain:
+            try:
+                elevation = image.select('elevation')
+                
+                # 计算所有地形变量
+                slope = ee.Terrain.slope(elevation).toFloat().rename('slope')
+                aspect = ee.Terrain.aspect(elevation).toFloat()
+                
+                # Aspect 转换为 cos/sin
+                aspect_rad = aspect.multiply(3.14159265359/180)
+                aspect_cos = aspect_rad.cos().toFloat().rename('aspect_cos')
+                aspect_sin = aspect_rad.sin().toFloat().rename('aspect_sin')
+                
+                # TPI计算 - 简单3x3窗口版本
+                mean_elev = elevation.focal_mean(radius=3, units='pixels', kernelType='square')
+                tpi = elevation.subtract(mean_elev).toFloat().rename('tpi')
+                
+                # 一次性添加所有地形波段
+                terrain_bands = ee.Image.cat([slope, aspect_cos, aspect_sin, tpi])
+                image = image.addBands(terrain_bands)
+                
+                # 使用延迟计算的方式记录信息
+                terrain_band_names = ['slope', 'aspect_cos', 'aspect_sin', 'tpi']
+                logger.info(f"Added {len(terrain_band_names)} terrain variables: {', '.join(terrain_band_names)}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to compute terrain variables: {e}")
+        
+        return image
+    
+    def _get_dataset_config(self, name: str) -> dict:
+        """获取数据集的配置（包括reducer、nodata、resampling等）"""
+        # 先检查biodiversity_datasets
+        if hasattr(self.config, 'biodiversity_datasets'):
+            for dataset in self.config.biodiversity_datasets:
+                if dataset.get('name') == name:
+                    return dataset
+        
+        # 再检查external_datasets
+        if hasattr(self.config, 'external_datasets'):
+            for dataset in self.config.external_datasets:
+                if dataset.get('name') == name:
+                    return dataset
+        
+        # 默认配置
+        return {
+            'reducer': 'mean',
+            'resampling_method': 'bilinear',
+            'nodata_value': None
+        }

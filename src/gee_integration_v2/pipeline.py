@@ -36,17 +36,33 @@ class GEEConfig:
     output_dir: Path = field(default_factory=lambda: Path('data/output'))
     state_dir: Path = field(default_factory=lambda: Path('data/state'))
     
-    # 基础分辨率 - 所有数据先对齐到这个分辨率
+    # 基础分辨率 - 所有数据对齐到这个分辨率并输出
     base_resolution: float = 0.016666666666667  # ~1.85km (1/60度)
     
-    # 输出分辨率 - 必须 >= base_resolution
-    resolutions: Dict[str, float] = field(default_factory=lambda: {
-        '1x': 0.016666666666667,  # ~1.85km (基础分辨率)
-        '2x': 0.033333333,        # ~3.7km  
-        '4x': 0.066666667         # ~7.4km
-    })
-    climate_bands: List[str] = field(default_factory=lambda: ['bio01', 'bio12'])
-    include_elevation: bool = True
+    # 统一的外部数据源配置 - 可扩展！
+    external_datasets: List[Dict] = field(default_factory=lambda: [
+        {
+            'name': 'climate',
+            'image': 'WORLDCLIM/V1/BIO',  # 是Image不是Collection！
+            'bands': ['bio01', 'bio12'],  # 可配置要哪些波段
+            'rename_pattern': 'climate_{band}'  # 重命名模式
+        },
+        {
+            'name': 'elevation', 
+            'image': 'MERIT/DEM/v1_0_3',
+            'bands': ['dem'],
+            'rename': ['elevation'],  # 直接重命名
+            'compute_terrain': True  # 计算地形变量（slope, aspect_cos, aspect_sin, tpi）
+        }
+        # 轻松添加更多数据源：
+        # {'name': 'soil', 'collection': 'OpenLandMap/SOL/...', 'bands': ['ph', 'clay']}
+        # {'name': 'landcover', 'image': 'MODIS/006/MCD12Q1/...', 'bands': ['LC_Type1']}
+    ])
+    
+    # Ocean masking参数
+    mask_ocean: bool = True
+    lat_min: float = -60  # 排除南极
+    lat_max: float = 75   # 排除北极
     
     # 导出参数 - 关键参数，避免OOM
     # export_scale现在根据每个分辨率自动计算，不再硬编码
@@ -181,13 +197,13 @@ class GEEPipeline:
             for name, asset_id in self.state.asset_ids.items():
                 biodiv_images[name] = ee.Image(asset_id)
             
-            # 处理
-            processed = self.processor.process_images(biodiv_images)
+            # 处理 - 简化版返回 {'1x': image}
+            processed_images = self.processor.process_images(biodiv_images)
             
-            # 保存处理结果ID（GEE返回的是Image对象，需要序列化）
-            self.state.processed_images = {
-                res: img.serialize() for res, img in processed.items()
-            }
+            # 保存处理状态
+            self.state.processed_images = {'1x': "processed"}
+            # 临时保存在实例中，用于后续步骤
+            self._temp_processed_images = processed_images
         else:
             logger.info("⏭️ Data already processed")
     
@@ -196,10 +212,16 @@ class GEEPipeline:
         if not self.state.export_tasks:
             self.state.export_tasks = {}
         
-        # 反序列化图像
-        images = {}
-        for res, serialized in self.state.processed_images.items():
-            images[res] = ee.Deserializer.decode(serialized)
+        # 获取处理后的图像
+        if hasattr(self, '_temp_processed_images'):
+            images = self._temp_processed_images
+        else:
+            # 重新处理（恢复时需要）
+            biodiv_images = {}
+            for name, asset_id in self.state.asset_ids.items():
+                biodiv_images[name] = ee.Image(asset_id)
+            images = self.processor.process_images(biodiv_images)
+            self._temp_processed_images = images
         
         # 导出每个分辨率
         for res, img in images.items():
@@ -223,7 +245,7 @@ class GEEPipeline:
         for res in self.state.export_tasks:
             if res not in self.state.completed_exports:
                 logger.info(f"Downloading {res} resolution...")
-                output_path = self.config.output_dir / f"biodiv_{res}.parquet"
+                output_path = self.config.output_dir / f"biodiv_{res}.arrow"
                 self.exporter.download_and_convert(f"biodiv_{res}", output_path)
                 self.state.completed_exports[res] = output_path
                 self._save_state()
