@@ -6,7 +6,6 @@ import logging
 
 from src.abstractions.interfaces.analyzer import IAnalyzer
 from src.config.config import Config
-from src.database.connection import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +30,13 @@ class AnalyzerFactory:
     }
     
     @classmethod
-    def create(cls, method: str, config: Config, db: DatabaseManager) -> IAnalyzer:
+    def create(cls, method: str, config: Config) -> IAnalyzer:
         """
         Create analyzer instance for the specified method.
         
         Args:
             method: Analysis method name (e.g., 'som', 'gwpca', 'maxp_regions')
             config: Configuration object
-            db: Database connection manager
             
         Returns:
             Analyzer instance implementing IAnalyzer interface
@@ -72,7 +70,7 @@ class AnalyzerFactory:
             
             # Create instance with standardized constructor
             logger.info(f"Creating {class_name} instance for method '{method}'")
-            return analyzer_class(config, db)
+            return analyzer_class(config)
             
         except ImportError as e:
             logger.error(f"Failed to import analyzer for '{method}': {e}")

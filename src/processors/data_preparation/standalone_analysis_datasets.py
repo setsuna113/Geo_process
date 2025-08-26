@@ -11,9 +11,7 @@ import os
 
 from src.base.dataset import BaseDataset, DatasetInfo
 from src.abstractions.types import DataType
-from src.infrastructure.logging import get_logger
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class StandaloneAnalysisDataset(BaseDataset, ABC):
