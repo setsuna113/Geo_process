@@ -13,7 +13,6 @@ import logging
 import numpy as np
 import rasterio
 import pyarrow as pa
-import pyarrow.parquet as pq
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -32,56 +31,72 @@ class ExportManager:
         self.config = config
         self.gee_ops = gee_ops
     
-    def export_to_gcs(self, image: ee.Image, description: str, resolution_key: str = None) -> str:
+    def export_to_gcs(self, image: ee.Image, description: str, 
+                      resolution_key: str = None, region: ee.Geometry = None) -> str:
         """导出图像到GCS - 使用正确的参数避免内存错误
         
         Args:
             image: 要导出的图像
             description: 导出描述
             resolution_key: 分辨率键（'1x', '2x', '4x'等）
+            region: 导出区域（如果None，则从图像获取）
         """
-        # 检查是否需要半球分割（大于180度）
-        geometry = ee.Geometry.Rectangle([-180, -90, 180, 90])
-        
-        # 计算正确的scale - 没有if/else！
-        if resolution_key and resolution_key in self.config.resolutions:
-            resolution_degrees = self.config.resolutions[resolution_key]
+        # 获取导出区域
+        if region is None:
+            # 创建全球边界（排除极地）
+            # 使用配置的lat_min和lat_max，或默认值
+            lat_min = getattr(self.config, 'lat_min', -60)
+            lat_max = getattr(self.config, 'lat_max', 75)
+            # 使用BBox而不是Rectangle，避免反子午线问题
+            geometry = ee.Geometry.BBox(-180, lat_min, 180, lat_max)
+            logger.info(f"Using global bounds for export: [{lat_min}°, {lat_max}°]")
         else:
-            # 尝试从description提取（如'biodiv_4x' → '4x'）
-            import re
-            match = re.search(r'(\d+x)', description)
-            if match and match.group(1) in self.config.resolutions:
-                resolution_degrees = self.config.resolutions[match.group(1)]
-            else:
-                resolution_degrees = self.config.base_resolution
-                logger.warning(f"Using base resolution for '{description}'")
+            geometry = region
+            logger.info(f"Using provided region for export")
         
-        # 度转米
-        scale_meters = resolution_degrees * 111320
+        # 简化：直接使用base_resolution（因为已经删除了多分辨率支持）
+        resolution_degrees = self.config.base_resolution
+        logger.info(f"Using resolution: {resolution_degrees}° for export")
         
-        # 构建导出参数
+        # 构建导出参数 - 极其简单！
+        # 数据已经是EPSG:4326，已经是目标分辨率，只需要导出
+        # 使用scale而不是crsTransform，更稳定
+        scale_meters = resolution_degrees * 111320  # 转换度到米（赤道处）
         export_params = {
             'image': image,
             'description': description,
             'bucket': self.config.gcs_bucket,
             'fileNamePrefix': f"exports/{description}",
             'region': geometry,
-            'scale': scale_meters,  # 使用正确的分辨率！
-            'maxPixels': self.config.export_max_pixels,  # 1e13，不是1e14！
+            'crs': 'EPSG:4326',  # 数据已经是4326
+            'scale': scale_meters,  # 使用scale而不是crsTransform
+            'maxPixels': self.config.export_max_pixels,
             'fileFormat': 'GeoTIFF',
             'formatOptions': {
                 'cloudOptimized': True,
-                'noData': 0  # 明确的NoData值处理
-            },
-            'fileDimensions': self.config.export_tile_size,
-            'shardSize': self.config.export_shard_size  # 2560 - 关键参数！
+                'noData': 0
+            }
         }
         
-        logger.info(f"Exporting {description} at {scale_meters:.0f}m resolution")
+        # 计算预期的输出尺寸（基于实际区域）
+        # 直接使用已知的边界值，避免bounds()方法的问题
+        if region is None:
+            # 使用我们创建的Rectangle的实际边界
+            min_lon = -180
+            max_lon = 180
+            min_lat = lat_min
+            max_lat = lat_max
+        else:
+            # 对于提供的region，尝试获取边界
+            bounds = geometry.bounds().getInfo()['coordinates'][0]
+            min_lon = min(coord[0] for coord in bounds)
+            max_lon = max(coord[0] for coord in bounds)
+            min_lat = min(coord[1] for coord in bounds)
+            max_lat = max(coord[1] for coord in bounds)
         
-        # 如果启用bestEffort，添加参数
-        if self.config.export_best_effort:
-            export_params['bestEffort'] = True
+        width = int((max_lon - min_lon) / resolution_degrees + 0.5)
+        height = int((max_lat - min_lat) / resolution_degrees + 0.5)
+        logger.info(f"Exporting {description}: {width}x{height} pixels at {resolution_degrees:.6f}° resolution")
         
         task = ee.batch.Export.image.toCloudStorage(**export_params)
         task.start()
@@ -94,7 +109,12 @@ class ExportManager:
         check_interval = getattr(self.config, 'export_check_interval', 30)
         
         while time.time() - start_time < timeout:
-            status = ee.data.getTaskStatus(task_id)
+            # getTaskStatus返回的是列表，第一个元素是状态字典
+            status_list = ee.data.getTaskStatus(task_id)
+            if isinstance(status_list, list) and len(status_list) > 0:
+                status = status_list[0]
+            else:
+                status = status_list
             
             if status['state'] == 'COMPLETED':
                 logger.info(f"Export completed: {task_id}")
@@ -113,7 +133,7 @@ class ExportManager:
         raise TimeoutError(f"Export timeout: {task_id}")
     
     def download_and_convert(self, export_name: str, output_path: Path) -> Path:
-        """下载GCS文件并转换为parquet"""
+        """下载GCS文件并转换为Arrow IPC格式"""
         # 1. 准备目录
         temp_dir = self.config.output_dir / 'temp'
         temp_dir.mkdir(exist_ok=True)
@@ -126,15 +146,22 @@ class ExportManager:
             raise FileNotFoundError(f"No files found with prefix: {gcs_prefix}")
         
         # 3. 下载并处理
-        if len(files_to_download) == 2:
+        # 过滤掉小文件（可能是失败的导出）
+        large_files = [f for f in files_to_download if not f.endswith(f"{export_name}.tif")]
+        if not large_files:
+            large_files = files_to_download
+            
+        if len(large_files) == 2:
             # 半球文件
-            west_file = self.gee_ops.download_gcs_file(files_to_download[0], temp_dir)
-            east_file = self.gee_ops.download_gcs_file(files_to_download[1], temp_dir)
-            self._merge_hemispheres_to_parquet(west_file, east_file, output_path)
+            logger.info(f"Found 2 hemisphere files, merging...")
+            west_file = self.gee_ops.download_gcs_file(large_files[0], temp_dir)
+            east_file = self.gee_ops.download_gcs_file(large_files[1], temp_dir)
+            self._merge_hemispheres_to_arrow(west_file, east_file, output_path)
         else:
-            # 单个文件
-            tif_file = self.gee_ops.download_gcs_file(files_to_download[0], temp_dir)
-            self._convert_tif_to_parquet(tif_file, output_path)
+            # 单个文件或多个文件
+            logger.info(f"Found {len(large_files)} file(s), processing first...")
+            tif_file = self.gee_ops.download_gcs_file(large_files[0], temp_dir)
+            self._convert_tif_to_arrow(tif_file, output_path)
         
         # 4. 清理
         if self.config.cleanup_temp:
@@ -147,8 +174,8 @@ class ExportManager:
         
         return output_path
     
-    def _convert_tif_to_parquet(self, tif_path: Path, output_path: Path):
-        """转换TIF到parquet - 流式处理避免内存爆炸"""
+    def _convert_tif_to_arrow(self, tif_path: Path, output_path: Path):
+        """转换TIF到Arrow IPC - 流式处理避免内存爆炸"""
         with rasterio.open(tif_path) as src:
             # 准备schema
             schema = pa.schema([
@@ -159,8 +186,8 @@ class ExportManager:
                 for i in range(src.count)
             ])
             
-            # 流式写入
-            with pq.ParquetWriter(output_path, schema) as writer:
+            # 流式写入Arrow IPC格式
+            with pa.ipc.RecordBatchFileWriter(output_path, schema) as writer:
                 # 按窗口处理
                 for ji, window in src.block_windows(1):
                     data = src.read(window=window)
@@ -193,52 +220,53 @@ class ExportManager:
                         batch = pa.RecordBatch.from_pydict(filtered, schema=schema)
                         writer.write_batch(batch)
         
-        logger.info(f"Converted {tif_path} to {output_path}")
+        logger.info(f"Converted {tif_path} to Arrow IPC: {output_path}")
     
-    def _merge_hemispheres_to_parquet(self, west_file: Path, east_file: Path, output_path: Path):
-        """合并半球文件到parquet - 窗口化处理避免内存爆炸"""
-        # 先转换为临时parquet文件
-        temp_west = output_path.with_suffix('.west.parquet')
-        temp_east = output_path.with_suffix('.east.parquet')
+    def _merge_hemispheres_to_arrow(self, west_file: Path, east_file: Path, output_path: Path):
+        """合并半球文件到Arrow IPC - 窗口化处理避免内存爆炸"""
+        # 先转换为临时Arrow文件
+        temp_west = output_path.with_suffix('.west.arrow')
+        temp_east = output_path.with_suffix('.east.arrow')
         
-        self._convert_tif_to_parquet(west_file, temp_west)
-        self._convert_tif_to_parquet(east_file, temp_east)
+        self._convert_tif_to_arrow(west_file, temp_west)
+        self._convert_tif_to_arrow(east_file, temp_east)
         
         # 窗口化合并 - 避免一次性加载全部数据
-        west_pq = pq.ParquetFile(temp_west)
-        east_pq = pq.ParquetFile(temp_east)
-        
-        # 获取schema（两个文件应该相同）
-        schema = west_pq.schema_arrow
-        
-        # 流式写入合并结果
-        with pq.ParquetWriter(output_path, schema) as writer:
-            # 处理西半球数据 - 批次读取
-            for batch in west_pq.iter_batches(batch_size=100000):
-                # 调整经度（如果需要）
-                df = batch.to_pandas()
-                if 'longitude' in df.columns and (df['longitude'] > 180).any():
-                    df.loc[df['longitude'] > 180, 'longitude'] -= 360
-                elif 'x' in df.columns and (df['x'] > 180).any():
-                    df.loc[df['x'] > 180, 'x'] -= 360
+        with pa.ipc.open_file(temp_west) as west_reader:
+            with pa.ipc.open_file(temp_east) as east_reader:
+                # 获取schema（两个文件应该相同）
+                schema = west_reader.schema
                 
-                # 写入批次
-                writer.write_batch(pa.RecordBatch.from_pandas(df, schema=schema))
-            
-            # 处理东半球数据 - 批次读取
-            for batch in east_pq.iter_batches(batch_size=100000):
-                # 调整经度（东半球可能需要+360调整）
-                df = batch.to_pandas()
-                if 'longitude' in df.columns and (df['longitude'] < -180).any():
-                    df.loc[df['longitude'] < -180, 'longitude'] += 360
-                elif 'x' in df.columns and (df['x'] < -180).any():
-                    df.loc[df['x'] < -180, 'x'] += 360
-                
-                # 写入批次
-                writer.write_batch(pa.RecordBatch.from_pandas(df, schema=schema))
+                # 流式写入合并结果
+                with pa.ipc.RecordBatchFileWriter(output_path, schema) as writer:
+                    # 处理西半球数据 - 批次读取
+                    for i in range(west_reader.num_record_batches):
+                        batch = west_reader.get_batch(i)
+                        # 调整经度（如果需要）
+                        df = batch.to_pandas()
+                        if 'longitude' in df.columns and (df['longitude'] > 180).any():
+                            df.loc[df['longitude'] > 180, 'longitude'] -= 360
+                        elif 'x' in df.columns and (df['x'] > 180).any():
+                            df.loc[df['x'] > 180, 'x'] -= 360
+                        
+                        # 写入批次
+                        writer.write_batch(pa.RecordBatch.from_pandas(df, schema=schema))
+                    
+                    # 处理东半球数据 - 批次读取
+                    for i in range(east_reader.num_record_batches):
+                        batch = east_reader.get_batch(i)
+                        # 调整经度（东半球可能需要+360调整）
+                        df = batch.to_pandas()
+                        if 'longitude' in df.columns and (df['longitude'] < -180).any():
+                            df.loc[df['longitude'] < -180, 'longitude'] += 360
+                        elif 'x' in df.columns and (df['x'] < -180).any():
+                            df.loc[df['x'] < -180, 'x'] += 360
+                        
+                        # 写入批次
+                        writer.write_batch(pa.RecordBatch.from_pandas(df, schema=schema))
         
         # 清理临时文件
         temp_west.unlink()
         temp_east.unlink()
         
-        logger.info(f"Merged hemispheres to {output_path}")
+        logger.info(f"Merged hemispheres to Arrow IPC: {output_path}")

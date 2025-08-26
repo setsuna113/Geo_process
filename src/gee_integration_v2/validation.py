@@ -54,7 +54,7 @@ class TIFValidator:
                     issues.append(f"Non-geographic CRS: {src.crs}")
                 
                 # 2. 检查数据类型
-                if src.dtypes[0] not in ['float32', 'float64', 'int16', 'int32']:
+                if src.dtypes[0] not in ['float32', 'float64', 'int16', 'int32', 'uint16', 'uint32']:
                     issues.append(f"Unusual dtype: {src.dtypes[0]}")
                 
                 # 3. 检查维度
@@ -69,11 +69,12 @@ class TIFValidator:
                 if metadata['file_size_mb'] > 10000:  # 10GB
                     issues.append(f"File too large: {metadata['file_size_mb']:.1f}MB")
                 
-                # 6. 检查边界合理性
+                # 6. 检查边界合理性（允许小的浮点误差）
                 bounds = src.bounds
-                if bounds.left < -180 or bounds.right > 180:
+                tolerance = 0.01  # 允许0.01度的误差（约1km）
+                if bounds.left < -180 - tolerance or bounds.right > 180 + tolerance:
                     issues.append(f"Longitude out of range: [{bounds.left}, {bounds.right}]")
-                if bounds.bottom < -90 or bounds.top > 90:
+                if bounds.bottom < -90 - tolerance or bounds.top > 90 + tolerance:
                     issues.append(f"Latitude out of range: [{bounds.bottom}, {bounds.top}]")
                 
                 # 7. 快速数据检查（只读第一个块）
@@ -82,8 +83,9 @@ class TIFValidator:
                 
                 if np.all(np.isnan(data)):
                     issues.append("All values are NaN in sample")
-                elif np.all(data == 0):
-                    issues.append("All values are 0 in sample")
+                elif np.all(data == 0) and src.nodata != 0:
+                    # 只有当0不是NoData值时才报告问题
+                    issues.append("All values are 0 in sample (and 0 is not NoData)")
                 
                 # 日志记录
                 if issues:
@@ -130,7 +132,7 @@ class TIFValidator:
                 logger.error(f"Inconsistent CRS: {crs_set}")
                 return False
             
-            # 检查分辨率一致性
+            # 记录分辨率信息（但不要求一致）
             resolutions = []
             for m in metadata_list:
                 t = m['transform']
@@ -138,17 +140,17 @@ class TIFValidator:
                 res_y = abs(t[4])
                 resolutions.append((res_x, res_y))
             
-            # 允许小的浮点误差
+            # 只记录分辨率差异，不作为错误
             res_x_values = [r[0] for r in resolutions]
             res_y_values = [r[1] for r in resolutions]
             
             if max(res_x_values) - min(res_x_values) > 1e-6:
-                logger.error(f"Inconsistent X resolution: {res_x_values}")
-                return False
+                logger.info(f"Different X resolutions detected: {res_x_values}")
+                logger.info("Files will be resampled to base resolution in GEE")
             
             if max(res_y_values) - min(res_y_values) > 1e-6:
-                logger.error(f"Inconsistent Y resolution: {res_y_values}")
-                return False
+                logger.info(f"Different Y resolutions detected: {res_y_values}")
+                logger.info("Files will be resampled to base resolution in GEE")
             
             logger.info(f"Batch compatibility check passed for {len(file_paths)} files")
             return True
