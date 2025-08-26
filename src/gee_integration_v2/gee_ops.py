@@ -27,22 +27,35 @@ class GEEOperations:
         self.service_account_key = service_account_key
         self.project_id = project_id
         self.gcs_bucket = gcs_bucket
-        self.gcs = storage.Client()
         self._authenticate()
+        self._init_gcs_client()
     
     def _authenticate(self):
         """GEE认证 - 简单直接"""
         # 测试模式检查
         if 'test' in self.service_account_key and not Path(self.service_account_key).exists():
             logger.info("⚠️ Test mode - skipping real authentication")
+            self.credentials = None
             return
             
-        credentials = service_account.Credentials.from_service_account_file(
+        self.credentials = service_account.Credentials.from_service_account_file(
             self.service_account_key,
-            scopes=['https://www.googleapis.com/auth/earthengine']
+            scopes=[
+                'https://www.googleapis.com/auth/earthengine',
+                'https://www.googleapis.com/auth/cloud-platform'
+            ]
         )
-        ee.Initialize(credentials, project=self.project_id)
+        ee.Initialize(self.credentials, project=self.project_id)
         logger.info("✅ GEE authenticated")
+    
+    def _init_gcs_client(self):
+        """初始化GCS客户端 - 使用相同的credentials"""
+        if self.credentials:
+            self.gcs = storage.Client(credentials=self.credentials, project=self.project_id)
+        else:
+            # 测试模式
+            self.gcs = None
+            logger.info("⚠️ Test mode - GCS client not initialized")
     
     def check_asset_exists(self, asset_id: str) -> bool:
         """检查GEE资产是否已存在"""
@@ -87,21 +100,41 @@ class GEEOperations:
     @retry_on_failure()
     def import_to_gee(self, gcs_path: str, asset_id: str):
         """从GCS导入到GEE - 带重试"""
+        # 新的API需要使用startIngestion而不是createAsset
         request = {
-            'type': 'IMAGE',
-            'gcs_location': {'uris': [gcs_path]},
-            'properties': {'source': 'biodiversity'}
+            'name': asset_id,
+            'tilesets': [
+                {
+                    'sources': [
+                        {
+                            'uris': [gcs_path]
+                        }
+                    ]
+                }
+            ]
         }
         
-        task = ee.data.createAsset(asset_id, request)
+        # 生成唯一的request_id
+        request_id = ee.data.newTaskId()[0]
+        
+        # 使用新的API - startIngestion需要request_id和params
+        task = ee.data.startIngestion(request_id, request)
+        task_id = task['name'].split('/')[-1] if 'name' in task else task.get('id')
         
         # 等待完成 - 简单轮询，不要复杂的监控
         while True:
-            status = ee.data.getTaskStatus(task['id'])
-            if status['state'] == 'COMPLETED':
+            status = ee.data.getTaskStatus(task_id)
+            # getTaskStatus可能返回列表，取第一个元素
+            if isinstance(status, list):
+                status = status[0] if status else {}
+            
+            if status.get('state') == 'COMPLETED':
                 break
-            elif status['state'] == 'FAILED':
-                raise RuntimeError(f"Import failed: {status.get('error_message')}")
+            elif status.get('state') == 'FAILED':
+                raise RuntimeError(f"Import failed: {status.get('error_message', 'Unknown error')}")
+            elif status.get('state') == 'CANCELLED':
+                raise RuntimeError(f"Import cancelled")
+            
             time.sleep(10)
         
         logger.info(f"Imported {asset_id}")
@@ -112,7 +145,7 @@ class GEEOperations:
         
         # 检查资产是否已存在（避免重复上传）
         if self.check_asset_exists(asset_id):
-            logger.info(f"⏭️ Skipping {name} - asset already exists")
+            logger.info(f"⏭️ Skipping {name} - asset already exists, will reuse it")
             return name, asset_id
         
         # 确保资产文件夹存在
