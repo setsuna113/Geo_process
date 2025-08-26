@@ -177,12 +177,13 @@ class ExportManager:
     def _convert_tif_to_arrow(self, tif_path: Path, output_path: Path):
         """转换TIF到Arrow IPC - 流式处理避免内存爆炸"""
         with rasterio.open(tif_path) as src:
-            # 准备schema
+            # 准备schema - 使用真正的波段名！
+            band_names = src.descriptions if src.descriptions else [f'band_{i+1}' for i in range(src.count)]
             schema = pa.schema([
                 ('x', pa.float64()),
                 ('y', pa.float64()),
             ] + [
-                (f'band_{i+1}', pa.float32()) 
+                (band_names[i], pa.float32()) 
                 for i in range(src.count)
             ])
             
@@ -208,7 +209,7 @@ class ExportManager:
                     }
                     
                     for i in range(src.count):
-                        batch_dict[f'band_{i+1}'] = data[i].flatten()
+                        batch_dict[band_names[i]] = data[i].flatten()
                     
                     # 过滤无效像素
                     valid_mask = ~np.isnan(data[0].flatten())
