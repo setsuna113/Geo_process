@@ -300,7 +300,7 @@ SPECIES_CLASSIFICATION_DEFAULTS = {
 # Data files configuration (for test mode)
 DATA_FILES = {
     'plants_richness': 'daru-plants-richness.tif',
-    'terrestrial_richness': 'iucn-terrestrial-richness.tif'
+    'animal_richness': 'iucn-animal-richness.tif'
 }
 
 # Dataset definitions (for unified resampling pipeline)
@@ -316,11 +316,11 @@ DATASETS = {
             'enabled': True
         },
         {
-            'name': 'terrestrial-richness', 
-            'path': str(DATA_DIR / 'iucn-terrestrial-richness.tif'),  # New: Direct path (preferred)
-            'path_key': 'terrestrial_richness',  # Legacy: For backward compatibility
+            'name': 'animal-richness', 
+            'path': str(DATA_DIR / 'iucn-animal-richness.tif'),  # New: Direct path (preferred)
+            'path_key': 'animal_richness',  # Legacy: For backward compatibility
             'data_type': 'richness_data',
-            'band_name': 'terrestrial_richness',
+            'band_name': 'animal_richness',
             'enabled': True
         }
     ]
