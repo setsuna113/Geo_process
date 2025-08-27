@@ -1,46 +1,58 @@
 # Statistical Analysis Configuration
 # Single unified configuration for biodiversity statistical methods
 
+# Sampling configuration - DISABLED for publication quality
+# ALL sampling logic removed - use full resolution data
+
 # Method enable/disable settings
 methods:
   coverage:
     enabled: true
-    skip_reason: "Enable for production run"
-    sample_factor: 5  # Production: 5, Test: 20
     
   trust_maps:
     enabled: true
-    sample_factor: 5  # Production: 5, Test: 20
+    # downsample: REMOVED - always use full resolution for publication quality
     
   overlap:
     enabled: true
-    skip_reason: "Enable for production run"
-    sample_factor: 5  # Production: 5, Test: 20
     
   latitudinal:
     enabled: true
-    sample_factor: 5  # Already optimized
+    lat_bins: 512       # HIGH RESOLUTION: 512 bins for fine gradients
+    smoothing_method: null  # Options: null, 'moving_average', 'loess' (post-processing only)
     
   global_maps:
     enabled: true
-    sample_factor: 5  # Production: 5, Test: 20
+    max_plot_resolution: [2000, 1000]  # Resolution limit for visualization
     
   correlation:
     enabled: true
-    sample_factor: 5  # Production: 5, Test: 20
+    method: 'spearman'  # Only run spearman correlation
+    # CRITICAL LIMITS for 51M points
+    max_samples_dcor: 2000   # Distance correlation O(n²) - REDUCED for faster computation
+    max_samples_rda: 10000   # RDA SVD limit - REDUCED for faster computation
+    
+  biome_analysis:
+    enabled: true
+    
+  partial_correlation:
+    enabled: true
 
 # Dataset paths - Updated to new locations
 datasets:
   plants: "/maps/mwd24/richness/daru-plants-richness.tif"
-  animals: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"
+  animals: "/maps/mwd24/richness/iucn-animal-richness.tif"
   am_fungi: "/maps/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
   ecm_fungi: "/maps/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
   
-  # Optional climate data (for coverage analysis)
-  climate_parquet: null
+  # Climate data with elevation for biome analysis
+  climate_parquet: "biodiversity_climate_production_1x_corrected.parquet"
 
 # Global settings
 settings:
   output_dir: "outputs/biodiversity_analysis"
   log_level: "INFO"
   log_file: "biodiversity_analysis.log"
+
+# Data processing configuration
+spatial_grid_step: 1  # Use all data points (no downsampling)

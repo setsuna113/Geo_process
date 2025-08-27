@@ -3,7 +3,7 @@ Data type definitions for biodiversity analysis.
 """
 
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
 from enum import Enum
 
@@ -35,16 +35,19 @@ class SpatialData:
         """Number of features."""
         return self.features.shape[1]
     
-    def get_bounds(self) -> tuple[float, float, float, float]:
+    def get_bounds(self) -> Tuple[float, float, float, float]:
         """Get spatial bounds (min_lon, min_lat, max_lon, max_lat).
         
-        Assumes coordinates are stored as [longitude, latitude].
+        Convention: coordinates are ALWAYS [longitude, latitude] per WGS84 standard.
         """
+        # Import here to avoid circular dependency
+        from src.biodiversity_analysis.shared.coordinate_convention import LON_IDX, LAT_IDX
+        
         return (
-            self.coordinates[:, 0].min(),  # min_lon
-            self.coordinates[:, 1].min(),  # min_lat
-            self.coordinates[:, 0].max(),  # max_lon
-            self.coordinates[:, 1].max()   # max_lat
+            self.coordinates[:, LON_IDX].min(),  # min_lon
+            self.coordinates[:, LAT_IDX].min(),  # min_lat
+            self.coordinates[:, LON_IDX].max(),  # max_lon
+            self.coordinates[:, LAT_IDX].max()   # max_lat
         )
 
 
