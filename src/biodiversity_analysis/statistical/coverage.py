@@ -36,6 +36,7 @@ def analyze_coverage(
     output_dir.mkdir(parents=True, exist_ok=True)
     
     results = {'datasets': {}}
+    raster_loader = RasterLoader()
     
     for name, array in data.items():
         if array is None:
