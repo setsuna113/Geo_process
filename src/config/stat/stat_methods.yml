@@ -29,12 +29,12 @@ methods:
     enabled: true
     sample_factor: 5  # Production: 5, Test: 20
 
-# Dataset paths
+# Dataset paths - Updated to new locations
 datasets:
-  plants: "data/richness_maps/daru-plants-richness.tif"
-  animals: "data/richness_maps/iucn-terrestrial-richness.tif"
-  am_fungi: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
-  ecm_fungi: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
+  plants: "/maps/mwd24/richness/daru-plants-richness.tif"
+  animals: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"
+  am_fungi: "/maps/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
+  ecm_fungi: "/maps/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
   
   # Optional climate data (for coverage analysis)
   climate_parquet: null
