@@ -18,13 +18,14 @@ from datetime import datetime
 from scipy import stats
 from typing import Dict, Any, Optional, Union, Tuple, List
 import json
+import re
 import warnings
 warnings.filterwarnings('ignore')
 
 # Import hypothesis test modules and visualization wrappers
 from .wald_method import WaldMethod
 from ..evaluation.model_comparison import ModelComparison
-from ..diagnostics.diagnostic_plots import ResidualDiagnostics
+from ..diagnostics.gvif import plot_gvif_only
 # Score test not used in Method2 - removed
 from ..interpretation.simple_slopes import analyze_simple_slopes
 from ..interpretation.marginal_means import analyze_marginal_means
@@ -62,6 +63,7 @@ class Method2H2Testing:
         # Storage for model results from Julia
         self.model_3a_continuous = None  # Model 3a: Continuous interaction
         self.model_3b_categorical = None  # Model 3b: Categorical interaction
+        self.method1_full = None  # Method 1 full model for comparison
         self.data_metadata = None
         
         # Storage for hypothesis test results
@@ -71,7 +73,6 @@ class Method2H2Testing:
         # Initialize wrapped components
         self.wald_method = WaldMethod()
         self.model_comparator = ModelComparison()
-        self.diagnostic_plotter = ResidualDiagnostics()
         # LRT is now done in Julia - removed Python LikelihoodRatioTest
         # Score test not used in Method2 - removed
         
@@ -87,11 +88,12 @@ class Method2H2Testing:
         Called by orchestrator to pass Julia results to this method.
         
         Args:
-            models: Dictionary containing 'method2_continuous' and 'method2_categorical'
+            models: Dictionary containing 'method2_continuous', 'method2_categorical', and 'method1_full'
             lrt_results: Optional LRT results comparing Method1 vs Method2 models
         """
         self.model_3a_continuous = models.get('method2_continuous')
         self.model_3b_categorical = models.get('method2_categorical')
+        self.method1_full = models.get('method1_full')  # Store Method 1 full for comparison
         
         # Store LRT results from Julia
         self.lrt_continuous = lrt_results.get('lrt_method1_vs_method2a') if lrt_results else None
@@ -148,11 +150,12 @@ class Method2H2Testing:
                 feature_names = self.model_3a_continuous.get('coef_names', [])
                 
                 # Run simple slopes analysis
+                # Note: Julia standardizes variables, so use _std suffix
                 self.simple_slopes_results = analyze_simple_slopes(
                     julia_model=self.model_3a_continuous,
-                    focal_var='plants_richness_log',
+                    focal_var='plants_richness_log_std',
                     moderator_var='bio04_std',
-                    interaction_term='bio04_std_x_plants_log',
+                    interaction_term='bio04_std_x_plants_log_std',
                     feature_names=feature_names,
                     save_path=None  # Will be set later in visualization
                 )
@@ -317,9 +320,10 @@ class Method2H2Testing:
             p_value = (interaction_result.get('sesoi_test', {}).get('p_value') or 
                       interaction_result.get('basic_test', {}).get('p_value') or 1.0)
             
-            result['interaction_coef'] = interaction_coef
-            result['interaction_se'] = interaction_se
-            result['wald_p'] = p_value
+            # Use standardized field names
+            result['estimate'] = interaction_coef
+            result['std_error'] = interaction_se
+            result['wald_test'] = {'p_value': p_value}
             result['significant'] = p_value < 0.05
             
             # H2 interpretation based on coefficient sign
@@ -426,9 +430,10 @@ class Method2H2Testing:
             p_value = (interaction_result.get('sesoi_test', {}).get('p_value') or 
                       interaction_result.get('basic_test', {}).get('p_value') or 1.0)
             
-            result['interaction_coef'] = interaction_coef
-            result['interaction_se'] = interaction_se
-            result['wald_p'] = p_value
+            # Use standardized field names
+            result['estimate'] = interaction_coef
+            result['std_error'] = interaction_se
+            result['wald_test'] = {'p_value': p_value}
             result['significant'] = p_value < 0.05
             
             # H2 interpretation
@@ -556,6 +561,26 @@ class Method2H2Testing:
         comparison_path = self._create_model_comparison_viz(output_dir)
         if comparison_path:
             generated_files.append(comparison_path)
+        
+        # 6. GVIF diagnostics (same as Method 1)
+        # Create simplified GVIF-only diagnostic plots for both models
+        if self.model_3a_continuous:
+            path = plot_gvif_only(
+                model_results=self.model_3a_continuous,
+                output_dir=output_dir,
+                filename="method2a_gvif_diagnostics.png"
+            )
+            if path:
+                generated_files.append(path)
+        
+        if self.model_3b_categorical:
+            path = plot_gvif_only(
+                model_results=self.model_3b_categorical,
+                output_dir=output_dir,
+                filename="method2b_gvif_diagnostics.png"
+            )
+            if path:
+                generated_files.append(path)
         
         logger.info(f"Generated {len(generated_files)} visualizations in {output_dir}")
         return generated_files
@@ -705,6 +730,8 @@ class Method2H2Testing:
     def _create_model_comparison_viz(self, output_dir: Path) -> Optional[Path]:
         """Create model comparison visualization using visualization module.
         
+        Compares Method 2a continuous interaction against Method 1 full model.
+        
         Args:
             output_dir: Directory to save plot
             
@@ -713,59 +740,32 @@ class Method2H2Testing:
         """
         from ..visualization.model_comparison_plots import plot_model_comparison
         
-        if not self.model_3a_continuous or not self.model_3b_categorical:
+        # Compare Method 2a continuous to Method 1 full (NOT 2a vs 2b)
+        if not self.model_3a_continuous or not self.method1_full:
+            logger.warning("Cannot create comparison: missing Method 2a continuous or Method 1 full model")
             return None
         
-        # Prepare comparison results with all required fields
-        aic_3a = self.model_3a_continuous.get('aic', 0)
-        aic_3b = self.model_3b_categorical.get('aic', 0)
-        
-        # Calculate AIC weights (simplified)
-        delta_aic = abs(aic_3a - aic_3b)
-        if aic_3a < aic_3b:
-            weight_3a = 1 / (1 + np.exp(delta_aic/2))
-            weight_3b = 1 - weight_3a
-            best = 'Method2a_Continuous'
-        else:
-            weight_3b = 1 / (1 + np.exp(delta_aic/2))
-            weight_3a = 1 - weight_3b
-            best = 'Method2b_Categorical'
-        
-        comparison_results = {
-            'models': {
-                'Method2a_Continuous': {
-                    'aic': aic_3a,
-                    'bic': self.model_3a_continuous.get('bic', 0),
-                    'deviance': self.model_3a_continuous.get('deviance', 0),
-                    'df': self.model_3a_continuous.get('df_residual', 0),
-                    'delta_aic': 0 if best == 'Method2a_Continuous' else delta_aic,
-                    'aic_weight': weight_3a
-                },
-                'Method2b_Categorical': {
-                    'aic': aic_3b,
-                    'bic': self.model_3b_categorical.get('bic', 0),
-                    'deviance': self.model_3b_categorical.get('deviance', 0),
-                    'df': self.model_3b_categorical.get('df_residual', 0),
-                    'delta_aic': 0 if best == 'Method2b_Categorical' else delta_aic,
-                    'aic_weight': weight_3b
-                }
-            },
-            'weights': {
-                'Method2a_Continuous': {'aic_weight': weight_3a},
-                'Method2b_Categorical': {'aic_weight': weight_3b}
-            },
-            'best_model': best,
-            'summary': {
-                'Method2a_Continuous': 'Continuous interaction model (bio4 × plants)',
-                'Method2b_Categorical': 'Categorical interaction model (temperate × plant_high)'
-            }
+        # Use ModelComparison to properly calculate R² values and other metrics
+        models = {
+            'Method1_Full': self.method1_full,
+            'Method2a_Continuous': self.model_3a_continuous
         }
+        
+        # Use the model_comparator to get proper comparison with R² calculations
+        comparison_results = self.model_comparator.compare_models(models)
+        
+        # Add summary descriptions
+        if 'summary' not in comparison_results:
+            comparison_results['summary'] = {
+                'Method1_Full': 'Full model (H0 vs H1)',
+                'Method2a_Continuous': 'Continuous interaction model (bio4 × plants)'
+            }
         
         try:
             save_path = output_dir / "model_comparison_h2.png"
             fig = plot_model_comparison(
                 comparison_results=comparison_results,
-                title="Method 2: Model Comparison",
+                title="Method 2 vs Method 1: Model Comparison",
                 save_path=save_path
             )
             if save_path:

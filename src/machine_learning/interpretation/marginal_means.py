@@ -155,16 +155,35 @@ class MarginalMeansInterpretation:
         emmean_col = 'emmean' if 'emmean' in emmeans_df.columns else 'response'
         se_col = 'SE' if 'SE' in emmeans_df.columns else 'std.error'
         
-        # Plot 1: Interaction plot (line plot)
+        # Plot 1: Interaction plot using seaborn lineplot
+        import seaborn as sns
+        
+        # Create DataFrame for seaborn
+        plot_data = []
         for f2_val, f2_label in zip(self.factor2_levels, self.factor2_labels):
             subset = emmeans_df[emmeans_df[self.factor2] == f2_val]
-            
-            ax1.errorbar(subset[self.factor1], 
-                        subset[emmean_col],
-                        yerr=subset[se_col] if se_col in subset.columns else None,
-                        marker='o', markersize=8, 
-                        label=f2_label,
-                        capsize=5, capthick=2, linewidth=2)
+            for _, row in subset.iterrows():
+                plot_data.append({
+                    'x': row[self.factor1],
+                    'y': row[emmean_col],
+                    'factor2': f2_label,
+                    'se': row[se_col] if se_col in subset.columns else 0
+                })
+        
+        plot_df = pd.DataFrame(plot_data)
+        
+        # Use seaborn lineplot
+        sns.lineplot(data=plot_df, x='x', y='y', hue='factor2', 
+                    marker='o', markersize=8, linewidth=2, ax=ax1,
+                    err_style='bars', errorbar=None)  # We'll add error bars manually
+        
+        # Add error bars manually for each group
+        for f2_val, f2_label in zip(self.factor2_levels, self.factor2_labels):
+            subset = emmeans_df[emmeans_df[self.factor2] == f2_val]
+            if se_col in subset.columns:
+                ax1.errorbar(subset[self.factor1], subset[emmean_col],
+                            yerr=subset[se_col], fmt='none', 
+                            capsize=5, capthick=2, alpha=0.7)
         
         ax1.set_xlabel(self.factor1_labels[0] + ' vs ' + self.factor1_labels[-1], fontsize=11)
         ax1.set_ylabel('Estimated Marginal Mean', fontsize=11)
@@ -184,27 +203,41 @@ class MarginalMeansInterpretation:
                         transform=ax1.transAxes, ha='center',
                         bbox=dict(boxstyle='round', facecolor='yellow', alpha=0.5))
         
-        # Plot 2: Bar plot with error bars
-        x_positions = np.arange(len(emmeans_df))
-        colors = ['steelblue', 'coral'] * 2  # Alternating colors
-        
-        bars = ax2.bar(x_positions, emmeans_df[emmean_col], 
-                      yerr=emmeans_df[se_col] if se_col in emmeans_df.columns else None,
-                      capsize=5, color=colors, alpha=0.7, edgecolor='black')
+        # Plot 2: Bar plot with error bars using seaborn
         
         # Create labels for x-axis
         x_labels = [f"{row['factor1_label']}\n{row['factor2_label']}" 
                    for _, row in emmeans_df.iterrows()]
-        ax2.set_xticks(x_positions)
-        ax2.set_xticklabels(x_labels, rotation=45, ha='right')
+        
+        # Create a copy of DataFrame with x labels  
+        bar_df = emmeans_df.copy()
+        bar_df['Group'] = x_labels
+        
+        # Determine colors based on groups
+        colors = ['steelblue', 'coral'] * 2  # Alternating colors
+        
+        # Use seaborn barplot
+        sns.barplot(data=bar_df, x='Group', y=emmean_col, ax=ax2,
+                   palette=colors[:len(bar_df)], alpha=0.7,
+                   errorbar=None)  # We'll add error bars manually
+        
+        # Add error bars manually if SE column exists
+        if se_col in emmeans_df.columns:
+            x_positions = np.arange(len(emmeans_df))
+            ax2.errorbar(x_positions, emmeans_df[emmean_col], 
+                        yerr=emmeans_df[se_col], 
+                        fmt='none', c='black', capsize=5)
+        
+        ax2.set_xlabel('')  # Remove x label since it's in the tick labels
         ax2.set_ylabel('Estimated Marginal Mean', fontsize=11)
         ax2.set_title('Marginal Means by Group', fontsize=12, fontweight='bold')
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
         ax2.grid(True, alpha=0.3, axis='y')
         
         # Add value labels on bars
-        for bar, val in zip(bars, emmeans_df[emmean_col]):
-            height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2., height,
+        for patch, val in zip(ax2.patches, emmeans_df[emmean_col]):
+            height = patch.get_height()
+            ax2.text(patch.get_x() + patch.get_width()/2., height,
                     f'{val:.2f}', ha='center', va='bottom', fontsize=9)
         
         # Plot 3: Heatmap of means

@@ -19,32 +19,24 @@ class JuliaEMmeans:
     
     def __init__(self, julia_model: Dict[str, Any], feature_names: List[str]):
         """
-        Initialize EMmeans for Julia model results.
+        Initialize EMmeans for Julia GLM results.
         
         Args:
-            julia_model: Dictionary containing Julia GLM results with:
-                - coefficients: coefficient values
-                - std_errors: standard errors  
-                - vcov: variance-covariance matrix
-                - coef_names: coefficient names
-                - df_residual: residual degrees of freedom
+            julia_model: Dictionary containing Julia GLM results with EXACTLY:
+                - coefficients: array of coefficient values from Julia
+                - vcov: variance-covariance matrix from Julia vcov()
+                - coef_names: coefficient names from Julia
+                - df_residual: residual degrees of freedom from Julia
             feature_names: List of feature names used in the model
         """
         self.julia_model = julia_model
         self.feature_names = feature_names
         
-        # Extract components from Julia results
-        # Handle both dict and array formats for coefficients
-        if isinstance(julia_model['coefficients'], dict):
-            # Convert dict to array using coef_names order
-            self.coef_names = julia_model['coef_names']
-            self.coefficients = np.array([julia_model['coefficients'][name] for name in self.coef_names])
-        else:
-            self.coefficients = np.array(julia_model['coefficients'])
-            self.coef_names = julia_model['coef_names']
-        
+        # Julia gives us exactly these fields. No special cases.
+        self.coefficients = np.array(julia_model['coefficients'])
         self.vcov = np.array(julia_model['vcov'])
-        self.df_residual = julia_model.get('df_residual', len(self.coefficients))
+        self.coef_names = julia_model['coef_names']
+        self.df_residual = julia_model['df_residual']
         
         # Verify vcov shape
         n_coef = len(self.coefficients)
@@ -78,14 +70,8 @@ class JuliaEMmeans:
             logger.info(f"Returning cached EMmeans for key: {cache_key}")
             return self._emmeans_cache[cache_key].copy()  # Return copy to prevent modification
         
-        # Check R availability
-        from .emmeans_core import R_AVAILABLE
-        
-        if not R_AVAILABLE:
-            raise ImportError(
-                "R emmeans package is required. Install R and run:\n"
-                "R -e \"install.packages('emmeans', repos='https://cran.r-project.org')\""
-            )
+        # R is REQUIRED - no checking, just import
+        # If R is not available, it will fail immediately
         
         # Compute and cache
         logger.info(f"Computing new EMmeans for key: {cache_key}")
@@ -113,14 +99,8 @@ class JuliaEMmeans:
         Returns:
             DataFrame with slopes and their standard errors
         """
-        # Check R availability
-        from .emmeans_core import R_AVAILABLE, REMmeansWrapper
-        
-        if not R_AVAILABLE:
-            raise ImportError(
-                "R emmeans package is required for emtrends. Install R and run:\n"
-                "R -e \"install.packages('emmeans', repos='https://cran.r-project.org')\""
-            )
+        # R is REQUIRED - import directly
+        from .emmeans_core import REMmeansWrapper
         
         # Create wrapper and compute emtrends
         logger.info(f"Computing emtrends for {var} at {at}")
@@ -219,9 +199,8 @@ class JuliaEMmeans:
                 # Just main effect, no interaction
                 se = np.sqrt(self.vcov[var_idx, var_idx])
             else:
-                # Fallback - this should log a warning
-                logger.warning(f"Could not find indices for {var} or {interaction_term} in coefficient names")
-                se = 0.05
+                # No fallback - crash if indices not found
+                raise ValueError(f"Could not find indices for {var} in coefficient names {self.coef_names}")
             
             # Calculate confidence intervals
             ci_lower = slope - 1.96 * se

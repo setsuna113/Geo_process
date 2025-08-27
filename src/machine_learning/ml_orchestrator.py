@@ -212,6 +212,9 @@ class MLOrchestrator:
                 method2_models['method2_continuous'] = self.models['method2_continuous']
             if 'method2_categorical' in self.models:
                 method2_models['method2_categorical'] = self.models['method2_categorical']
+            # Also pass Method 1 full model for comparison
+            if 'method1_full' in self.models:
+                method2_models['method1_full'] = self.models['method1_full']
             
             self.method2.set_julia_results(method2_models, lrt_results)
             self.method2.data_metadata = data_metadata

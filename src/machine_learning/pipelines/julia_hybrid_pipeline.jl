@@ -500,11 +500,54 @@ function save_bootstrap_results(results::Dict, output_dir::String, method::Strin
 end
 
 # ============================================================================
+# DHARMA DIAGNOSTIC SUPPORT (minimal, clean)
+# ============================================================================
+
+function dump_for_r_dharma(state::PipelineState, method::String; sample_frac::Float64=0.1)
+    """Dump sampled preprocessed data for R DHARMa diagnostics."""
+    cache_dir = "/scratch/yl998/.cache/dharma"
+    mkpath(cache_dir)
+    
+    # Sample data (DHARMa doesn't need full dataset)
+    n_rows = nrow(state.data)
+    n_sample = max(10000, Int(floor(n_rows * sample_frac)))  # At least 10k rows
+    n_sample = min(n_sample, 100000)  # Cap at 100k for efficiency
+    Random.seed!(42)  # Reproducible sampling
+    sample_idx = sort(sample(1:n_rows, n_sample, replace=false))
+    
+    df_sample = state.data[sample_idx, :]
+    
+    # Use Arrow for efficient R reading
+    arrow_file = joinpath(cache_dir, "dharma_data.arrow")
+    Arrow.write(arrow_file, df_sample)
+    
+    # Save minimal metadata (just data info, no formulas)
+    metadata = Dict(
+        "data_file" => arrow_file,
+        "n_sampled" => n_sample,
+        "n_total" => n_rows,
+        "sample_frac" => n_sample / n_rows,
+        "mesf_columns" => state.mesf_columns,  # R needs to know which are MESF
+        "timestamp" => Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
+    )
+    
+    json_file = joinpath(cache_dir, "dharma_meta.json")
+    open(json_file, "w") do f
+        JSON.print(f, metadata, 2)
+    end
+    
+    println("DHARMa cache saved:")
+    println("  Data: $arrow_file ($(round(filesize(arrow_file)/1e6, digits=1)) MB)")
+    println("  Meta: $json_file")
+    println("  Sampled: $n_sample / $n_rows rows ($(round(100*n_sample/n_rows, digits=1))%)")
+end
+
+# ============================================================================
 # PIPELINE RUNNER
 # ============================================================================
 
 function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
-                     mode::String="normal", bootstrap_iterations::Int=100)
+                     mode::String="normal", bootstrap_iterations::Int=100, dump_for_dharma::Bool=false)
     # Load config
     config_path = "src/config/ml/ml_config.yml"
     config = YAML.load_file(config_path)
@@ -524,6 +567,13 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         "/scratch/yl998/.cache/mesf",
         "/scratch/yl998/julia"  # Use scratch for large outputs
     )
+    
+    # DHARMA preprocessing dump (minimal, clean)
+    if dump_for_dharma
+        dump_for_r_dharma(state, method)
+        println("Data dumped for DHARMa diagnostics. Exiting.")
+        return Dict("status" => "dharma_cache_saved")
+    end
     
     # BOOTSTRAP MODE
     if mode == "bootstrap"
@@ -690,8 +740,26 @@ end
 if length(ARGS) > 0
     method = ARGS[1]
     
+    # Check for dharma mode
+    if method == "dharma"
+        # DHARMa dump mode: dharma <data_path> [spatial_step]
+        if length(ARGS) < 2
+            println("Usage: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
+            exit(1)
+        end
+        
+        data_path = ARGS[2]
+        spatial_step = length(ARGS) > 2 ? parse(Int, ARGS[3]) : 1000
+        
+        println("Dumping preprocessed data for DHARMa diagnostics...")
+        println("  Data: $data_path")
+        println("  Spatial step: $spatial_step")
+        
+        # Run for method1/2 (they share preprocessing)
+        run_pipeline("method1", data_path, spatial_step, dump_for_dharma=true)
+        
     # Check for bootstrap mode
-    if method == "bootstrap"
+    elseif method == "bootstrap"
         # Bootstrap mode: bootstrap <model> <data_path> [iterations]
         if length(ARGS) < 3
             println("Usage: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
@@ -729,10 +797,12 @@ if length(ARGS) > 0
         println("Usage:")
         println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
         println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
+        println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
         println("Methods: method1, method2, method3/dml")
     end
 else
     println("Usage:")
     println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
     println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
+    println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
 end

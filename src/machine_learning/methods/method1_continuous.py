@@ -320,13 +320,12 @@ class Method1H0H1GLM:
         
         # ========= MODEL DIAGNOSTIC PLOTS (NEW) =========
         # Add comprehensive model diagnostics
-        from ..diagnostics.diagnostic_plots import ResidualDiagnostics
-        diag = ResidualDiagnostics()
+        from ..diagnostics.gvif import plot_gvif_only
         
         # Only generate diagnostics for full model (not null model)
         if self.model_full:
             # Create simplified GVIF-only diagnostic plot
-            path = diag.plot_gvif_only(
+            path = plot_gvif_only(
                 model_results=self.model_full,
                 output_dir=output_dir,
                 filename="method1_gvif_diagnostics.png"
