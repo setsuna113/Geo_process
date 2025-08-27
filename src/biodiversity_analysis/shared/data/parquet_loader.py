@@ -309,14 +309,11 @@ class ParquetLoader:
             if 'filtered_table' in locals():
                 del filtered_table  # Delete filtered table if it exists
             
-            # Minimize PyArrow thread pools after data loading
-            # This won't release threads but will prevent them from doing work
-            pa.set_cpu_count(1)  # Minimize CPU threads
-            pa.set_io_thread_count(1)  # Minimize I/O threads
+            # Remove thread pool manipulation - PyArrow manages its own pools
             
             # Force garbage collection
             gc.collect()
-            logger.debug("Minimized PyArrow thread pools (CPU=1, IO=1) after data loading")
+            logger.debug("Cleaned up PyArrow references")
         else:
             # Still delete tables but skip thread management
             del table
