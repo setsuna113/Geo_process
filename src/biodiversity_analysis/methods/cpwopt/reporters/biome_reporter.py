@@ -429,7 +429,7 @@ class BiomeReporter:
         for i, name in enumerate(feature_names):
             if 'plant' in name.lower():
                 feature_indices['plants'] = i
-            elif 'terrestrial' in name.lower() or 'animal' in name.lower():
+            elif 'animal' in name.lower():
                 feature_indices['animals'] = i
             elif 'fungi' in name.lower() or 'fung' in name.lower():
                 # Use AM fungi as primary fungi for RGB (more widespread)

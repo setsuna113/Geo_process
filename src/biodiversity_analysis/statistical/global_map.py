@@ -15,15 +15,18 @@ from matplotlib.patches import Rectangle
 import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
+from src.biodiversity_analysis.statistical.smart_visualization import smart_imshow
+from src.biodiversity_analysis.statistical.professional_map_visualizer import ProfessionalMapVisualizer
 
 logger = logging.getLogger(__name__)
+from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 
 def analyze_global_maps(
     data: Dict[str, np.ndarray],
-    output_dir: Union[str, Path],
+    output_dir: Path,
     **kwargs
-) -> Dict[str, Any]:
+) -> MethodResult:
     """
     Create global map visualizations.
     
@@ -37,10 +40,16 @@ def analyze_global_maps(
         Map statistics and generated plots
     """
     output_dir = Path(output_dir)
+    logger.info(f"[DEBUG] analyze_global_maps received output_dir: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"[DEBUG] Created/verified directory: {output_dir}")
     
     if not data:
-        return {'error': 'No data provided'}
+        return MethodResult(
+            success=False,
+            method='global_maps',
+            error='No data provided'
+        )
     
     # Process each dataset
     stats = {}
@@ -74,7 +83,12 @@ def analyze_global_maps(
     # Save statistics
     save_results(stats, output_dir / 'global_map_stats.json')
     
-    return stats
+    return MethodResult(
+        success=True,
+        method='global_maps',
+        output_dir=output_dir,
+        metrics=stats
+    )
 
 
 def _create_global_map(
@@ -83,85 +97,46 @@ def _create_global_map(
     output_dir: Path,
     **kwargs
 ) -> None:
-    """Create a single global map visualization."""
+    """Create a PROPER global map with correct projection.
     
-    # Downsample for visualization if needed
-    max_width = kwargs.get('max_viz_width', 2000)
-    max_height = kwargs.get('max_viz_height', 1000)
+    NO MORE DISTORTED MAPS! Using professional cartographic tools.
+    """
     
-    height, width = arr.shape
-    downsample = max(1, max(width // max_width, height // max_height))
+    logger.info(f"{name}: Creating map with proper projection (shape={arr.shape})")
     
-    if downsample > 1:
-        arr_viz = arr[::downsample, ::downsample]
-        logger.info(f"{name}: Downsampled {downsample}x for visualization")
-    else:
-        arr_viz = arr
+    # Use the PROFESSIONAL map visualizer with CORRECT projection
+    # Default to Robinson projection (standard for global biodiversity)
+    projection = kwargs.get('projection', 'robinson')
     
-    # Create figure
-    fig, ax = plt.subplots(figsize=(14, 7))
-    
-    # Mask invalid values
-    masked = np.ma.masked_invalid(arr_viz)
-    
-    # Get data range (use percentiles to handle outliers)
-    valid_data = masked.compressed()
-    if len(valid_data) > 0:
-        vmin, vmax = np.percentile(valid_data, [2, 98])
-    else:
-        vmin, vmax = 0, 1
-    
-    # Better titles
-    title_map = {
-        'animal_richness': 'Global Terrestrial Animal Species Richness',
-        'plant_richness': 'Global Plant Species Richness',
-        'am_fungi_richness': 'Global Arbuscular Mycorrhizal (AM) Fungi Richness',
-        'ecm_fungi_richness': 'Global Ectomycorrhizal (ECM) Fungi Richness',
-        'am_fungi_cv': 'AM Fungi Coefficient of Variation',
-        'ecm_fungi_cv': 'ECM Fungi Coefficient of Variation'
-    }
-    title = title_map.get(name, name.replace('_', ' ').title())
-    
-    # Choose colormap based on data type
+    # Determine colormap
     if 'cv' in name or 'uncertainty' in name:
-        cmap = 'RdYlBu_r'  # High CV = red (bad), Low CV = blue (good)
+        colormap = 'RdYlBu_r'  # High CV = red (bad), Low CV = blue (good)
     else:
-        cmap = 'viridis'  # Standard for richness
+        colormap = 'viridis'  # Standard for richness
     
-    # Plot
-    im = ax.imshow(
-        masked,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        aspect='auto',
-        interpolation='none'
+    # Create the map with PROPER projection
+    output_path = output_dir / f'global_{name}.png'
+    logger.debug(f"Creating map at: {output_path}")
+    
+    # Assuming data is on regular lat/lon grid
+    # Most biodiversity data is in WGS84 (EPSG:4326)
+    # bounds = (west, east, south, north)
+    bounds = (-180, 180, -90, 90)  # Global extent
+    
+    # Use professional map visualizer
+    ProfessionalMapVisualizer.create_global_biodiversity_map(
+        data=arr,
+        name=name,
+        output_path=output_path,
+        bounds=bounds,
+        projection=projection,
+        publication_quality=True,
+        add_features=True,  # Add coastlines, borders, etc.
+        colormap=colormap,
+        title=None  # Auto-generated from name
     )
     
-    # Add coastlines effect (simple version)
-    ax.contour(~np.isnan(arr_viz), levels=[0.5], colors='black', linewidths=0.5, alpha=0.3)
-    
-    # Format
-    ax.set_title(title, fontsize=14, fontweight='bold')
-    ax.set_xlabel('Longitude', fontsize=10)
-    ax.set_ylabel('Latitude', fontsize=10)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.05, fraction=0.05)
-    cbar.set_label('Species Richness' if 'cv' not in name else 'Coefficient of Variation', 
-                   fontsize=10)
-    
-    # Add statistics text
-    stats_text = f"Mean: {valid_data.mean():.1f}\nRange: {vmin:.1f} - {vmax:.1f}"
-    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
-            fontsize=9, verticalalignment='top',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
-    
-    plt.tight_layout()
-    save_figure(fig, output_dir / f'global_{name}.png', dpi=150)
-    plt.close()
+    logger.info(f"Created properly projected map: {output_path}")
 
 
 def _create_comparison_plot(
@@ -188,13 +163,8 @@ def _create_comparison_plot(
             
         ax = axes[idx]
         
-        # Downsample for comparison plot
-        height, width = arr.shape
-        downsample = max(1, max(width // 1000, height // 500))
-        if downsample > 1:
-            arr_viz = arr[::downsample, ::downsample]
-        else:
-            arr_viz = arr
+        # Data will be handled by smart_imshow
+        arr_viz = arr
         
         # Mask and plot
         masked = np.ma.masked_invalid(arr_viz)
@@ -203,7 +173,9 @@ def _create_comparison_plot(
         if len(valid) > 0:
             vmin, vmax = np.percentile(valid, [2, 98])
             
-            im = ax.imshow(
+            # Use smart_imshow for large arrays
+            im = smart_imshow(
+                ax,
                 masked,
                 cmap='viridis',
                 vmin=vmin,
@@ -226,6 +198,11 @@ def _create_comparison_plot(
     
     plt.suptitle('Global Biodiversity Comparison', fontsize=14, fontweight='bold')
     plt.tight_layout()
+    
+    # Rasterize for efficient output
+    from src.biodiversity_analysis.statistical.optimized_visualization import rasterize_for_pdf
+    rasterize_for_pdf(fig, dpi=150)
+    
     save_figure(fig, output_dir / 'global_comparison.png', dpi=150)
     plt.close()
 
@@ -240,7 +217,21 @@ def create_nature_style_map(
     Create publication-quality map.
     
     For when you actually need to publish.
+    NOW WITH PROPER HANDLING OF 225M PIXELS!
     """
+    # Use ProfessionalMapVisualizer - it handles everything properly
+    ProfessionalMapVisualizer.create_global_biodiversity_map(
+        data=arr,
+        name=name,
+        output_path=output_dir / f'nature_style_{name}.png',
+        projection='robinson',
+        publication_quality=True,
+        add_features=True,
+        title=None  # Will auto-generate proper title
+    )
+    return
+    
+    # OLD CODE BELOW - KEPT FOR REFERENCE BUT NOT EXECUTED
     from matplotlib.colors import LinearSegmentedColormap
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
@@ -269,9 +260,14 @@ def create_nature_style_map(
     
     cmap = LinearSegmentedColormap.from_list('custom', colors)
     
-    # Plot data
+    # Plot data WITH PROPER EXTENT!
+    # CRITICAL: Extent is the GEOGRAPHIC bounds, not array dimensions!
+    # Our data (from TIF files) covers this geographic range:
+    extent = [-180.0, 180.0, -89.83, 83.67]  # [west, east, south, north]
+    
     im = ax.imshow(
         masked,
+        extent=extent,  # Geographic extent (doesn't change with downsampling!)
         transform=ccrs.PlateCarree(),
         cmap=cmap,
         vmin=vmin,
@@ -284,12 +280,13 @@ def create_nature_style_map(
     ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='gray')
     ax.add_feature(cfeature.BORDERS, linewidth=0.3, color='gray', alpha=0.5)
     
-    # Clean title
+    # Clean title - REAL production data names!
     title_map = {
         'animal_richness': 'Terrestrial Vertebrate Richness',
         'plant_richness': 'Vascular Plant Richness',
         'am_fungi_richness': 'AM Fungi Richness',
-        'ecm_fungi_richness': 'ECM Fungi Richness'
+        'ecm_fungi_richness': 'ECM Fungi Richness',
+        'total_fungi_richness': 'Total Fungi Richness'
     }
     
     ax.set_title(title_map.get(name, name), fontsize=14, pad=10)

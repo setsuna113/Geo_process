@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 @feature_builder(
     "richness",
-    required_columns={'plants_richness', 'terrestrial_richness'},
+    required_columns={'plants_richness', 'animal_richness'},
     description="Builds features from biodiversity richness data"
 )
 class RichnessFeatureBuilder(BaseFeatureBuilder):
@@ -49,22 +49,22 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         features = [
             'total_richness',
             'plants_richness',
-            'terrestrial_richness'
+            'animal_richness'
         ]
         
         if self.compute_ratios:
             features.extend([
-                'plant_terrestrial_ratio',
-                'terrestrial_plant_ratio',
+                'plant_animal_ratio',
+                'animal_plant_ratio',
                 'plant_proportion',
-                'terrestrial_proportion'
+                'animal_proportion'
             ])
         
         if self.log_transform:
             features.extend([
                 'log_total_richness',
                 'log_plants_richness',
-                'log_terrestrial_richness'
+                'log_animal_richness'
             ])
         
         if 'shannon' in self.diversity_metrics:
@@ -81,7 +81,7 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
     
     def get_required_columns(self) -> Set[str]:
         """Get set of required input columns."""
-        return {'plants_richness', 'terrestrial_richness'}
+        return {'plants_richness', 'animal_richness'}
     
     def _fit(self, data: pd.DataFrame, **kwargs) -> None:
         """
@@ -93,14 +93,14 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         # Compute basic statistics for logging
         self._fitted_params['plants_mean'] = data['plants_richness'].mean()
         self._fitted_params['plants_std'] = data['plants_richness'].std()
-        self._fitted_params['terrestrial_mean'] = data['terrestrial_richness'].mean()
-        self._fitted_params['terrestrial_std'] = data['terrestrial_richness'].std()
+        self._fitted_params['animal_mean'] = data['animal_richness'].mean()
+        self._fitted_params['animal_std'] = data['animal_richness'].std()
         
         logger.info(f"Fitted richness features on {len(data)} samples")
         logger.info(f"Plants richness: mean={self._fitted_params['plants_mean']:.2f}, "
                    f"std={self._fitted_params['plants_std']:.2f}")
-        logger.info(f"Terrestrial richness: mean={self._fitted_params['terrestrial_mean']:.2f}, "
-                   f"std={self._fitted_params['terrestrial_std']:.2f}")
+        logger.info(f"Terrestrial richness: mean={self._fitted_params['animal_mean']:.2f}, "
+                   f"std={self._fitted_params['animal_std']:.2f}")
     
     def _transform(self, data: pd.DataFrame, **kwargs) -> pd.DataFrame:
         """
@@ -117,8 +117,8 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         
         # Basic richness features
         features['plants_richness'] = data['plants_richness'].fillna(0)
-        features['terrestrial_richness'] = data['terrestrial_richness'].fillna(0)
-        features['total_richness'] = features['plants_richness'] + features['terrestrial_richness']
+        features['animal_richness'] = data['animal_richness'].fillna(0)
+        features['total_richness'] = features['plants_richness'] + features['animal_richness']
         
         # Ratios and proportions
         if self.compute_ratios:
@@ -126,40 +126,40 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
             eps = 1e-8
             
             # Ratios
-            features['plant_terrestrial_ratio'] = (
-                features['plants_richness'] / (features['terrestrial_richness'] + eps)
+            features['plant_animal_ratio'] = (
+                features['plants_richness'] / (features['animal_richness'] + eps)
             )
-            features['terrestrial_plant_ratio'] = (
-                features['terrestrial_richness'] / (features['plants_richness'] + eps)
+            features['animal_plant_ratio'] = (
+                features['animal_richness'] / (features['plants_richness'] + eps)
             )
             
             # Proportions
             total_safe = features['total_richness'] + eps
             features['plant_proportion'] = features['plants_richness'] / total_safe
-            features['terrestrial_proportion'] = features['terrestrial_richness'] / total_safe
+            features['animal_proportion'] = features['animal_richness'] / total_safe
             
             # Clip extreme ratios
-            features['plant_terrestrial_ratio'] = features['plant_terrestrial_ratio'].clip(0, 100)
-            features['terrestrial_plant_ratio'] = features['terrestrial_plant_ratio'].clip(0, 100)
+            features['plant_animal_ratio'] = features['plant_animal_ratio'].clip(0, 100)
+            features['animal_plant_ratio'] = features['animal_plant_ratio'].clip(0, 100)
         
         # Log transformations
         if self.log_transform:
             # Log(x + 1) to handle zeros
             features['log_total_richness'] = np.log1p(features['total_richness'])
             features['log_plants_richness'] = np.log1p(features['plants_richness'])
-            features['log_terrestrial_richness'] = np.log1p(features['terrestrial_richness'])
+            features['log_animal_richness'] = np.log1p(features['animal_richness'])
         
         # Diversity metrics
         if 'shannon' in self.diversity_metrics:
             features['shannon_diversity'] = self._compute_shannon_diversity(
                 features['plants_richness'], 
-                features['terrestrial_richness']
+                features['animal_richness']
             )
         
         if 'simpson' in self.diversity_metrics:
             features['simpson_diversity'] = self._compute_simpson_diversity(
                 features['plants_richness'], 
-                features['terrestrial_richness']
+                features['animal_richness']
             )
         
         # Update metadata
@@ -167,13 +167,13 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         
         return features
     
-    def _compute_shannon_diversity(self, plants: pd.Series, terrestrial: pd.Series) -> pd.Series:
+    def _compute_shannon_diversity(self, plants: pd.Series, animal: pd.Series) -> pd.Series:
         """
         Compute Shannon diversity index.
         
         H = -sum(p_i * log(p_i))
         """
-        total = plants + terrestrial
+        total = plants + animal
         
         # Avoid log(0)
         mask = total > 0
@@ -182,23 +182,23 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         if mask.any():
             # Proportions
             p_plants = plants[mask] / total[mask]
-            p_terrestrial = terrestrial[mask] / total[mask]
+            p_animal = animal[mask] / total[mask]
             
             # Shannon index
             h_plants = np.where(p_plants > 0, -p_plants * np.log(p_plants), 0)
-            h_terrestrial = np.where(p_terrestrial > 0, -p_terrestrial * np.log(p_terrestrial), 0)
+            h_animal = np.where(p_animal > 0, -p_animal * np.log(p_animal), 0)
             
-            diversity.loc[mask] = h_plants + h_terrestrial
+            diversity.loc[mask] = h_plants + h_animal
         
         return diversity
     
-    def _compute_simpson_diversity(self, plants: pd.Series, terrestrial: pd.Series) -> pd.Series:
+    def _compute_simpson_diversity(self, plants: pd.Series, animal: pd.Series) -> pd.Series:
         """
         Compute Simpson diversity index.
         
         D = 1 - sum(p_i^2)
         """
-        total = plants + terrestrial
+        total = plants + animal
         
         # Avoid division by zero
         mask = total > 0
@@ -207,10 +207,10 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         if mask.any():
             # Proportions
             p_plants = plants[mask] / total[mask]
-            p_terrestrial = terrestrial[mask] / total[mask]
+            p_animal = animal[mask] / total[mask]
             
             # Simpson index
-            diversity.loc[mask] = 1 - (p_plants**2 + p_terrestrial**2)
+            diversity.loc[mask] = 1 - (p_plants**2 + p_animal**2)
         
         return diversity
     
@@ -218,7 +218,7 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         """Update feature metadata with richness-specific information."""
         metadata_updates = {
             'total_richness': {
-                'description': 'Total species richness (plants + terrestrial)',
+                'description': 'Total species richness (plants + animal)',
                 'category': 'richness',
                 'transformation': 'sum'
             },
@@ -227,18 +227,18 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
                 'category': 'richness',
                 'transformation': 'identity'
             },
-            'terrestrial_richness': {
+            'animal_richness': {
                 'description': 'Terrestrial species richness',
                 'category': 'richness',
                 'transformation': 'identity'
             },
-            'plant_terrestrial_ratio': {
-                'description': 'Ratio of plant to terrestrial richness',
+            'plant_animal_ratio': {
+                'description': 'Ratio of plant to animal richness',
                 'category': 'richness',
                 'transformation': 'ratio'
             },
-            'terrestrial_plant_ratio': {
-                'description': 'Ratio of terrestrial to plant richness',
+            'animal_plant_ratio': {
+                'description': 'Ratio of animal to plant richness',
                 'category': 'richness',
                 'transformation': 'ratio'
             },
@@ -247,8 +247,8 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
                 'category': 'richness',
                 'transformation': 'proportion'
             },
-            'terrestrial_proportion': {
-                'description': 'Proportion of total richness from terrestrial species',
+            'animal_proportion': {
+                'description': 'Proportion of total richness from animal species',
                 'category': 'richness',
                 'transformation': 'proportion'
             },
@@ -262,8 +262,8 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
                 'category': 'richness',
                 'transformation': 'log'
             },
-            'log_terrestrial_richness': {
-                'description': 'Log-transformed terrestrial richness',
+            'log_animal_richness': {
+                'description': 'Log-transformed animal richness',
                 'category': 'richness',
                 'transformation': 'log'
             },
@@ -298,14 +298,14 @@ class RichnessFeatureBuilder(BaseFeatureBuilder):
         importance = {
             'log_total_richness': 0.15,
             'log_plants_richness': 0.12,
-            'log_terrestrial_richness': 0.12,
+            'log_animal_richness': 0.12,
             'total_richness': 0.10,
             'plants_richness': 0.08,
-            'terrestrial_richness': 0.08,
-            'plant_terrestrial_ratio': 0.08,
-            'terrestrial_plant_ratio': 0.07,
+            'animal_richness': 0.08,
+            'plant_animal_ratio': 0.08,
+            'animal_plant_ratio': 0.07,
             'plant_proportion': 0.05,
-            'terrestrial_proportion': 0.05,
+            'animal_proportion': 0.05,
             'shannon_diversity': 0.05,
             'simpson_diversity': 0.05
         }

@@ -1,43 +1,56 @@
 # Statistical Analysis Configuration
 # Single unified configuration for biodiversity statistical methods
 
+# Sampling configuration - PRODUCTION MODE (for publication quality)
+sampling:
+  enabled: false  # NO SAMPLING - use full 51M points for publication quality
+  method: none    # Options: none, spatial, random
+  
+  # Spatial sampling settings (if enabled)
+  spatial_step: 100  # Every 100th pixel (only used if enabled)
+  
+  # Random sampling settings (if enabled)
+  n_samples: 100000
+  random_seed: 42
+
 # Method enable/disable settings
 methods:
   coverage:
     enabled: true
-    skip_reason: "Enable for production run"
-    sample_factor: 5  # Production: 5, Test: 20
     
   trust_maps:
     enabled: true
-    sample_factor: 5  # Production: 5, Test: 20
+    # downsample: REMOVED - always use full resolution for publication quality
     
   overlap:
     enabled: true
-    skip_reason: "Enable for production run"
-    sample_factor: 5  # Production: 5, Test: 20
     
   latitudinal:
     enabled: true
-    sample_factor: 5  # Already optimized
+    lat_bins: 512       # HIGH RESOLUTION: 512 bins for fine gradients
+    smoothing_method: null  # Options: null, 'moving_average', 'loess' (post-processing only)
     
   global_maps:
     enabled: true
-    sample_factor: 5  # Production: 5, Test: 20
+    max_plot_resolution: [2000, 1000]  # Resolution limit for visualization
     
   correlation:
     enabled: true
-    sample_factor: 5  # Production: 5, Test: 20
+    method: 'spearman'  # Only run spearman correlation
+    # CRITICAL LIMITS for 51M points
+    max_samples_dcor: 2000   # Distance correlation O(n²) - REDUCED for faster computation
+    max_samples_rda: 10000   # RDA SVD limit - REDUCED for faster computation
     
   biome_analysis:
     enabled: true
-    chunk_size: 100000  # Sample size for large datasets
-    sample_factor: 5
+    
+  partial_correlation:
+    enabled: true
 
 # Dataset paths
 datasets:
   plants: "data/richness_maps/daru-plants-richness.tif"
-  animals: "data/richness_maps/iucn-terrestrial-richness.tif"
+  animals: "data/richness_maps/iucn-animal-richness.tif"
   am_fungi: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
   am_fungi_cv: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
   ecm_fungi: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
@@ -51,3 +64,6 @@ settings:
   output_dir: "outputs/biodiversity_analysis"
   log_level: "INFO"
   log_file: "biodiversity_analysis.log"
+
+# Data processing configuration
+spatial_grid_step: 1  # Use all data points (no downsampling)

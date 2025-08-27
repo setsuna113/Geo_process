@@ -370,7 +370,7 @@ class RasterCatalog:
             return 'plants'
         elif 'vertebrate' in name_lower or 'iucn' in name_lower:
             return 'vertebrates'
-        elif 'terrestrial' in name_lower:
+        elif 'animal' in name_lower:
             return 'animals'
         elif 'marine' in name_lower:
             return 'marine'

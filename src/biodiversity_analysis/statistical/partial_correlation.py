@@ -13,6 +13,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 
+from src.biodiversity_analysis.statistical.result_types import MethodResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,13 +119,9 @@ def _manual_partial_correlation(
 
 def analyze_partial_correlations(
     df: pd.DataFrame,
-    output_dir: Union[str, Path],
-    target_pairs: List[tuple],
-    control_vars: List[str],
-    method: str = 'spearman',
-    plot: bool = True,
-    **kwargs  # Ignore extra config
-) -> Dict[str, Any]:
+    output_dir: Path,
+    **config  # ALL config comes here - NO SPECIAL ARGS
+) -> MethodResult:
     """
     Analyze partial correlations - DataFrame ONLY.
     
@@ -132,16 +130,78 @@ def analyze_partial_correlations(
     Args:
         df: DataFrame with all variables
         output_dir: Output directory
-        target_pairs: List of (var1, var2) pairs to analyze
-        control_vars: Variables to control for (e.g., climate)
-        method: 'pearson' or 'spearman'
-        plot: Generate comparison plots
+        **config: Configuration dict with:
+            - target_pairs: List of (var1, var2) pairs
+            - control_vars: Variables to control for
+            - method: 'pearson' or 'spearman'
+            - plot: Generate visualizations
         
     Returns:
-        Results comparing simple vs partial correlations
+        MethodResult comparing simple vs partial correlations
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # LINUS SAYS: VALIDATE YOUR INPUTS OR DIE!
+    if not isinstance(df, pd.DataFrame):
+        # Try to convert BiodiversityData
+        if hasattr(df, 'features') and hasattr(df, 'coordinates'):
+            df_dict = {
+                'x': df.coordinates[:, 0],
+                'y': df.coordinates[:, 1]
+            }
+            # Add features with standardized names
+            for i, name in enumerate(df.feature_names):
+                df_dict[name] = df.features[:, i]
+            df = pd.DataFrame(df_dict)
+            logger.info(f"Converted BiodiversityData to DataFrame with {len(df)} rows")
+        else:
+            raise TypeError(f"partial_correlation expects DataFrame or BiodiversityData, got {type(df).__name__}")
+    
+    # Extract config - method handles its own config!
+    # LINUS: Smart target pairs based on available columns
+    default_pairs = []
+    
+    # Check what biodiversity columns exist - REAL production data names!
+    biodiv_cols = ['animal_richness', 'plant_richness', 
+                   'am_fungi_richness', 'ecm_fungi_richness', 'total_fungi_richness']
+    biodiv_cols = [c for c in biodiv_cols if c in df.columns]
+    
+    # Build pairs based on available columns - REAL production data names!
+    if 'animal_richness' in biodiv_cols and 'plant_richness' in biodiv_cols:
+        default_pairs.append(('animal_richness', 'plant_richness'))
+    
+    # Handle fungi columns (either separated or merged)
+    if 'am_fungi_richness' in biodiv_cols and 'ecm_fungi_richness' in biodiv_cols:
+        # Original/separated version
+        if 'animal_richness' in biodiv_cols:
+            default_pairs.extend([
+                ('animal_richness', 'am_fungi_richness'),
+                ('animal_richness', 'ecm_fungi_richness')
+            ])
+        if 'plant_richness' in biodiv_cols:
+            default_pairs.extend([
+                ('plant_richness', 'am_fungi_richness'),
+                ('plant_richness', 'ecm_fungi_richness')
+            ])
+        default_pairs.append(('am_fungi_richness', 'ecm_fungi_richness'))
+    elif 'total_fungi_richness' in biodiv_cols:
+        # Merged version
+        if 'animal_richness' in biodiv_cols:
+            default_pairs.append(('animal_richness', 'total_fungi_richness'))
+        if 'plant_richness' in biodiv_cols:
+            default_pairs.append(('plant_richness', 'total_fungi_richness'))
+    
+    target_pairs = config.get('target_pairs', default_pairs)
+    # Use available climate variables (dem might not exist)
+    default_control = ['bio01', 'bio04', 'bio12', 'bio15']
+    if 'dem' in df.columns:
+        default_control.append('dem')
+    elif 'elevation' in df.columns:
+        default_control.append('elevation')
+    control_vars = config.get('control_vars', default_control)
+    method = config.get('method', 'spearman')
+    plot = config.get('plot', True)
     
     # Results storage
     results = {
@@ -155,15 +215,21 @@ def analyze_partial_correlations(
         pair_name = f"{var1}_vs_{var2}"
         
         # Simple correlation (without controlling)
+        # Need to align data first - dropna on BOTH columns together
+        df_pair = df[[var1, var2]].dropna()
+        if len(df_pair) < 10:
+            logger.warning(f"Too few samples for {var1} vs {var2}: {len(df_pair)}")
+            continue
+            
         if method == 'spearman':
             r_simple, p_simple = stats.spearmanr(
-                df[var1].dropna(), 
-                df[var2].dropna()
+                df_pair[var1], 
+                df_pair[var2]
             )
         else:
             r_simple, p_simple = stats.pearsonr(
-                df[var1].dropna(),
-                df[var2].dropna()
+                df_pair[var1],
+                df_pair[var2]
             )
         
         # Partial correlation (controlling for confounders)
@@ -204,7 +270,12 @@ def analyze_partial_correlations(
     # Generate summary
     _generate_summary(results, output_dir)
     
-    return results
+    return MethodResult(
+        success=True,
+        method='partial_correlation',
+        output_dir=output_dir,
+        metrics=results
+    )
 
 
 def _interpret_correlation(r: float) -> str:
@@ -226,11 +297,18 @@ def _interpret_correlation(r: float) -> str:
 
 
 def _plot_partial_comparison(results: Dict[str, Any], output_dir: Path):
-    """Create comparison plot of simple vs partial correlations."""
+    """Create comparison plot of simple vs partial correlations.
+    
+    LINUS: Generate BOTH bar chart AND correlation matrices!
+    """
     
     comparisons = results['comparisons']
     n_pairs = len(comparisons)
     
+    # First generate matrix visualizations
+    _plot_correlation_matrices(results, output_dir)
+    
+    # Then generate comparison plots
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     
     # Extract data
@@ -288,17 +366,78 @@ def _plot_partial_comparison(results: Dict[str, Any], output_dir: Path):
     ax.grid(True, alpha=0.3)
     ax.legend()
     
-    # Color regions
-    ax.axhspan(0, 1, where=(ax.get_xlim()[0] < 0), alpha=0.1, color='green',
-              label='Relationship revealed')
-    ax.axhspan(-1, 0, where=(ax.get_xlim()[0] > 0), alpha=0.1, color='red',
-              label='Relationship masked')
+    # Color regions (removed 'where' parameter - not supported)
+    # ax.axhspan(0, 1, alpha=0.1, color='green', label='Relationship revealed')
+    # ax.axhspan(-1, 0, alpha=0.1, color='red', label='Relationship masked')
     
     plt.suptitle(f'Partial Correlation Analysis - {results["method"].title()} Method',
                 fontsize=14, fontweight='bold', y=1.02)
     plt.tight_layout()
     plt.savefig(output_dir / 'partial_correlation_comparison.png', dpi=150, bbox_inches='tight')
     plt.close()
+
+
+def _plot_correlation_matrices(results: Dict[str, Any], output_dir: Path):
+    """Generate correlation matrices for simple and partial correlations."""
+    import seaborn as sns
+    
+    comparisons = results['comparisons']
+    
+    # Extract unique variables
+    all_vars = set()
+    for pair_name in comparisons.keys():
+        vars = pair_name.split('_vs_')
+        all_vars.update(vars)
+    all_vars = sorted(list(all_vars))
+    n_vars = len(all_vars)
+    
+    # Build matrices
+    simple_matrix = np.full((n_vars, n_vars), np.nan)
+    partial_matrix = np.full((n_vars, n_vars), np.nan)
+    
+    # Fill diagonal
+    np.fill_diagonal(simple_matrix, 1.0)
+    np.fill_diagonal(partial_matrix, 1.0)
+    
+    # Fill off-diagonal
+    for pair_name, data in comparisons.items():
+        vars = pair_name.split('_vs_')
+        if len(vars) == 2:
+            i = all_vars.index(vars[0])
+            j = all_vars.index(vars[1])
+            
+            # Fill both triangles
+            simple_matrix[i, j] = data['simple']['r']
+            simple_matrix[j, i] = data['simple']['r']
+            partial_matrix[i, j] = data['partial']['r']
+            partial_matrix[j, i] = data['partial']['r']
+    
+    # Create figure
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Plot simple correlations
+    sns.heatmap(simple_matrix, annot=True, fmt='.3f', cmap='RdBu_r',
+                vmin=-1, vmax=1, center=0, square=True,
+                xticklabels=all_vars, yticklabels=all_vars,
+                ax=ax1, cbar_kws={'label': 'Correlation'})
+    ax1.set_title('Simple Correlations\n(No control variables)', fontweight='bold')
+    
+    # Plot partial correlations
+    sns.heatmap(partial_matrix, annot=True, fmt='.3f', cmap='RdBu_r',
+                vmin=-1, vmax=1, center=0, square=True,
+                xticklabels=all_vars, yticklabels=all_vars,
+                ax=ax2, cbar_kws={'label': 'Correlation'})
+    control_str = ', '.join(results['control_variables'][:3])
+    if len(results['control_variables']) > 3:
+        control_str += '...'
+    ax2.set_title(f'Partial Correlations\n(Controlling for {control_str})', fontweight='bold')
+    
+    plt.suptitle('Biodiversity Correlation Analysis', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(output_dir / 'partial_correlation_matrices.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Saved correlation matrices to {output_dir / 'partial_correlation_matrices.png'}")
 
 
 def _generate_summary(results: Dict[str, Any], output_dir: Path):
@@ -314,8 +453,9 @@ def _generate_summary(results: Dict[str, Any], output_dir: Path):
     summary.append("")
     
     for pair_name, data in results['comparisons'].items():
-        var1, var2 = pair_name.replace('_vs_', ' vs ')
-        summary.append(f"\n{var1} vs {var2}:")
+        # Format the pair name for display
+        display_name = pair_name.replace('_vs_', ' vs ').replace('_', ' ').title()
+        summary.append(f"\n{display_name}:")
         summary.append("-" * 40)
         
         simple = data['simple']
@@ -358,14 +498,14 @@ def _generate_summary(results: Dict[str, Any], output_dir: Path):
 # Convenience function for biodiversity analysis
 def analyze_biodiversity_climate_confounding(
     parquet_path: str,
-    output_dir: Union[str, Path]
+    output_dir: Path
 ) -> Dict[str, Any]:
     """
     Specific analysis for biodiversity-fungi relationships controlling for climate.
     
     This is what you REALLY want - the truth behind the correlations.
     """
-    # Define target relationships
+    # Define target relationships - REAL production data names!
     target_pairs = [
         ('plant_richness', 'am_fungi_richness'),
         ('plant_richness', 'ecm_fungi_richness'),
