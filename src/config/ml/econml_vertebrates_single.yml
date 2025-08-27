@@ -1,0 +1,129 @@
+# =============================================================================
+# EconML Single-Treatment Config: Vertebrates as Treatment
+# =============================================================================
+# Treats vertebrates_richness as treatment, plants_richness as control
+
+# =============================================================================
+# SECTION 0: SHARED PARAMETERS
+# =============================================================================
+num_threads: 80
+cv_folds: 5
+random_state: 42
+alpha: 0.05
+
+# =============================================================================
+# SECTION 1: DATA & PATHS
+# =============================================================================
+
+# ---------- Paths ----------
+data_path: "/scratch/yl998/biodiversity_climate_production_1x_corrected.arrow"
+mesf_cache_dir: "/scratch/yl998/.cache/mesf"
+output_dir: "/scratch/yl998/econml_results/sensitivity_vertebrates"
+
+# ---------- Data Processing ----------
+spatial_step: 10         # Using step 10 as requested (~4.3M samples with MESF)
+
+# ---------- Variable Definitions ----------
+outcome: "fungi_richness"
+
+# SINGLE TREATMENT: Vertebrates only
+treatments:
+  - "vertebrates_richness"
+
+# IMPORTANT: Add plants to confounders for proper control
+biodiversity_confounders:    # NEW: Other biodiversity as controls
+  - "plants_richness"        # Control for plants when testing vertebrates
+
+climate_confounders:
+  - "bio01_std"
+  - "bio04_std"
+  - "bio12_std"
+  - "bio15_std"
+
+topographic_confounders:
+  - "elevation_std"
+  - "slope_std"
+  - "aspect_cos_std"
+  - "aspect_sin_std"
+  - "tpi_std"
+
+soil_confounders:
+  - "soil_ph_std"
+  - "soil_organic_carbon_std"
+  - "sand_content_pct_std"
+
+water_balance_confounders:
+  - "pet_mm_month_std"
+
+# Effect modifiers remain the same (for heterogeneous analysis if needed)
+effect_modifiers:
+  - "bio01_std"
+  - "bio04_std"
+  - "bio12_std"
+
+# =============================================================================
+# SECTION 2: ESTIMATOR PARAMETERS
+# =============================================================================
+
+# ---------- HomogeneousEffectEstimator (LinearDML) ----------
+mc_iters: 1
+inference_homo: "statsmodels"
+
+# ---------- HeterogeneousEffectEstimator (CausalForestDML) ----------
+n_estimators: 100
+max_depth: 10
+min_samples_leaf: 1000
+subforest_size: 4
+inference_hetero: "blb"
+
+# =============================================================================
+# SECTION 3: LIGHTGBM PARAMETERS
+# =============================================================================
+
+# ---------- Core Parameters ----------
+objective: "regression"
+metric: "rmse"
+boosting_type: "gbdt"
+verbosity: -1
+seed: 42
+
+# ---------- Tree Structure ----------
+num_leaves: 31
+min_data_in_leaf: 20
+lgbm_max_depth: -1
+learning_rate: 0.1
+num_iterations: 100
+
+# ---------- Histogram & Binning ----------
+max_bin: 127
+
+# ---------- Sampling Parameters ----------
+feature_fraction: 0.9
+feature_fraction_bynode: 0.9
+bagging_fraction: 0.9
+bagging_freq: 0
+
+# ---------- Early Stopping ----------
+early_stopping_rounds: 10
+first_metric_only: true
+
+# ---------- Categorical Handling ----------
+cat_smooth: 10
+max_cat_to_onehot: 4
+categorical_feature: "auto"
+
+# ---------- Missing Value & Advanced ----------
+use_missing: true
+zero_as_missing: false
+feature_pre_filter: true
+extra_trees: false
+
+# =============================================================================
+# CLI DEFAULTS
+# =============================================================================
+cli_mode: "homo"
+cli_spatial_step: 10
+cli_num_threads: 80
+cli_modifiers:
+  - "bio01_std"
+  - "bio04_std"

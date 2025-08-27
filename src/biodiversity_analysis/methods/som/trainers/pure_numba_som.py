@@ -46,19 +46,21 @@ logger = logging.getLogger(__name__)
 
 
 @jit(nopython=True, cache=False, inline='always')
-def calc_effective_radius(radius, smooth_width=0.3):
-    """Calculate effective radius with smooth transitions to prevent QE oscillations.
+def calc_effective_radius(radius, smooth_width=0.3, delta_flexibility=0.1):
+    """Calculate effective radius with smooth transitions and delta flexibility.
     
     This function implements an enhanced continuous neighborhood function that
     prevents QE oscillations at integer radius boundaries. It uses a wider
-    smoothing range and a continuous effective radius adjustment.
+    smoothing range, continuous effective radius adjustment, and adds random
+    delta flexibility to further prevent oscillations.
     
     Args:
         radius: Current neighborhood radius
         smooth_width: Width of smoothing region around integers (default 0.3)
+        delta_flexibility: Random variation factor (default 0.1 = ±10%)
         
     Returns:
-        Effective radius with smooth transitions
+        Effective radius with smooth transitions and delta flexibility
     """
     # Enhanced continuous radius adjustment
     # Use a continuous effective radius that smoothly varies
@@ -83,6 +85,16 @@ def calc_effective_radius(radius, smooth_width=0.3):
     else:
         # In the middle - use standard radius
         effective_radius = radius
+    
+    # Add delta flexibility (±10% random variation by default)
+    # This further prevents oscillations by adding controlled randomness
+    if delta_flexibility > 0:
+        # Generate random value between -delta_flexibility and +delta_flexibility
+        random_delta = (np.random.random() - 0.5) * 2.0 * delta_flexibility
+        effective_radius = effective_radius * (1.0 + random_delta)
+    
+    # Ensure radius stays positive
+    effective_radius = max(effective_radius, 0.1)
     
     return effective_radius
 

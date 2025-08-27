@@ -47,14 +47,12 @@ methods:
   partial_correlation:
     enabled: true
 
-# Dataset paths
+# Dataset paths - Updated to new locations
 datasets:
-  plants: "data/richness_maps/daru-plants-richness.tif"
-  animals: "data/richness_maps/iucn-animal-richness.tif"
-  am_fungi: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
-  am_fungi_cv: "data/fungal/spun/AM_fungi/AM_Fungi_Richness_CoeffVar.tif"
-  ecm_fungi: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
-  ecm_fungi_cv: "data/fungal/spun/EcM_fungi/EcM_Fungi_Richness_CoeffVar.tif"
+  plants: "/maps/mwd24/richness/daru-plants-richness.tif"
+  animals: "/maps/mwd24/richness/iucn-animal-richness.tif"
+  am_fungi: "/maps/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
+  ecm_fungi: "/maps/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
   
   # Climate data with elevation for biome analysis
   climate_parquet: "biodiversity_climate_production_1x_corrected.parquet"

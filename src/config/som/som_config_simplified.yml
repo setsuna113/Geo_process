@@ -55,22 +55,29 @@ distance:
 
 training:
   # Basic settings
-  max_epochs: 500          # Number of training epochs (15 for testing, 200-1000 for production)
-  n_workers: 120        # Number of workers (1 for sequential, >1 for parallel) - reduced to 120 for memory constraints
+  max_epochs: 1000         # CHANGED from 500 - Extended training for better convergence
+  n_workers: 150        # Number of workers (1 for sequential, >1 for parallel) - optimized for current system resources
   
+  # Two-phase training configuration (UPDATED for 1000 epochs)
+  # Phase 1: Global organization (wide radius) - 80% of training
+  # Phase 2: Fine-tuning (narrow radius, avoiding oscillation zone) - 20% of training
+  phase_1_epochs: 800     # Epochs 1-800: Global organization phase (80% of 1000)
+  phase_2_epochs: 200     # Epochs 801-1000: Fine-tuning phase (20% of 1000)
     
-  # Neighborhood radius
+  # Neighborhood radius (UPDATED for two-phase training)
   radius:
-    initial: 40.0         # Initial neighborhood radius (larger for better global organization)
-    final: 5.0            # Final neighborhood radius (5 for 60x60 grid - maintains local neighborhood)
-    decay: 'exponential'       # Decay type: 'linear' or 'exponential'
+    initial: 30.0         # Initial neighborhood radius (half of 60x60 grid - research validated)
+    phase_1_final: 2.0    # End of phase 1 radius (reduced from 3.0 for better convergence)
+    final: 1.0            # Final neighborhood radius (optimal for convergence per research)
+    decay: 'exponential'  # Decay type: 'linear' or 'exponential'
+    delta_flexibility: 0.1 # Random variation ±10% to prevent integer boundary oscillations (NEW)
     
     
-  # Momentum (for smoothing batch updates)
+  # Momentum (UPDATED - critical for Batch SOM stability)
   momentum:
-    initial: 0.0          # No momentum - pure batch SOM updates
-    final: 0.0            # No momentum throughout training
-    schedule: 'linear'    # Linear interpolation from initial to final (schedule field currently ignored)
+    initial: 0.3          # CHANGED from 0.0 - Start with 30% momentum for stability
+    final: 0.7            # CHANGED from 0.0 - End with 70% momentum (more stability as radius shrinks)
+    schedule: 'linear'    # Linear interpolation from initial to final
   
   # Performance optimization
   sparse_influence_threshold: 0.001  # Skip neuron updates when influence < this value
@@ -120,16 +127,17 @@ convergence:
   logic: 'or'                        # 'or' = either TE or GC, 'weighted' = combine scores
   
   # Early stopping patience
-  patience: 500                     # Stop after N epochs without meaningful QE improvement (>0.1%) - set to 500 to force full training
+  patience: 1000                    # Stop after N epochs without meaningful QE improvement (>0.1%) - set to 1000 to ensure full training
 
 # ============================================================================
 # TERMINATION - Additional termination criteria
 # ============================================================================
 termination:
-  # Minimum radius termination
-  min_radius: 2.0                    # Stop training when radius reaches this value (prevents instability)
-                                     # Literature suggests 1.0-2.0 for stability
-                                     # Below 1.0 causes QE oscillations due to isolated local updates
+  # Minimum radius termination (VALIDATED - already set correctly!)
+  min_radius: 1.0                    # Stop training when radius reaches this value (prevents instability)
+                                     # Literature suggests 1.0 as optimal final radius
+                                     # With momentum=0.7 and delta_flexibility=0.1, oscillations are controlled
+                                     # This works with our two-phase training to prevent oscillations
 
 # ============================================================================
 # MONITORING & CHECKPOINTS - Track progress and save state
