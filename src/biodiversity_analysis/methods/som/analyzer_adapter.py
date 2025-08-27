@@ -16,12 +16,11 @@ class SOMAnalyzer(IAnalyzer):
     while maintaining compatibility with the existing pipeline.
     """
     
-    def __init__(self, config: Any, db: Any):
+    def __init__(self, config: Any):
         """Initialize SOM analyzer adapter.
         
         Args:
             config: Configuration object (used by factory)
-            db: Database manager (used by factory, ignored here)
         """
         # Extract SOM-specific config if available
         # Don't pass any config - let GeoSOMAnalyzer load its own config

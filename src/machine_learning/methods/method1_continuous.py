@@ -189,9 +189,9 @@ class Method1H0H1GLM:
         
         comparison = self.model_comparator.compare_models(models)
         
-        # Log the results
-        best_aic = comparison['rankings']['aic'][0] if comparison.get('rankings', {}).get('aic') else 'unknown'
-        best_bic = comparison['rankings']['bic'][0] if comparison.get('rankings', {}).get('bic') else 'unknown'
+        # Log the results using the correct field names
+        best_aic = comparison.get('best_model', {}).get('by_aic', 'unknown')
+        best_bic = comparison.get('best_model', {}).get('by_bic', 'unknown')
         
         logger.info(f"\nModel Comparison:")
         logger.info(f"  Best model (AIC): {best_aic}")
@@ -225,11 +225,11 @@ class Method1H0H1GLM:
                 joint_p = results['wald_tests']['joint_test'].get('p_value', 1.0)
                 wald_supports_h1 = joint_p < 0.05
         
-        # Check model comparison
+        # Check model comparison using correct field structure
         comparison = results.get('model_comparison', {})
-        rankings = comparison.get('rankings', {})
-        aic_supports_h1 = rankings.get('aic', [None])[0] == 'full'
-        bic_supports_h1 = rankings.get('bic', [None])[0] == 'full'
+        best_model = comparison.get('best_model', {})
+        aic_supports_h1 = best_model.get('by_aic') == 'full'
+        bic_supports_h1 = best_model.get('by_bic') == 'full'
         
         # Overall decision (majority vote with emphasis on LRT and Wald)
         evidence_count = sum([lrt_supports_h1, wald_supports_h1, aic_supports_h1])
@@ -302,10 +302,9 @@ class Method1H0H1GLM:
         # ========= HYPOTHESIS TEST VISUALIZATIONS =========
         # Call all visualization functions - let them handle their own errors
         
-        # 1. Forest Plot - Shows coefficients with CIs (ESSENTIAL)
-        forest_path = self._create_forest_plot(output_dir)
-        if forest_path:
-            generated_files.append(forest_path)
+        # 1. Forest Plots - Now creates TWO files: sesoi and tost
+        forest_paths = self._create_forest_plots(output_dir)
+        generated_files.extend(forest_paths)
         
         # 2. Model Comparison - AIC/BIC comparison (ESSENTIAL) 
         comparison_path = self._create_model_comparison_viz(output_dir)
@@ -321,26 +320,18 @@ class Method1H0H1GLM:
         
         # ========= MODEL DIAGNOSTIC PLOTS (NEW) =========
         # Add comprehensive model diagnostics
-        from ..diagnostics.diagnostic_plots import ResidualDiagnostics
-        diag = ResidualDiagnostics()
+        from ..diagnostics.gvif import plot_gvif_only
         
-        # Generate diagnostics for null model
-        if self.model_null:
-            paths = diag.create_all_diagnostics(
-                model_results=self.model_null,
-                output_dir=output_dir,
-                model_name="method1_null"
-            )
-            generated_files.extend(paths)
-        
-        # Generate diagnostics for full model
+        # Only generate diagnostics for full model (not null model)
         if self.model_full:
-            paths = diag.create_all_diagnostics(
+            # Create simplified GVIF-only diagnostic plot
+            path = plot_gvif_only(
                 model_results=self.model_full,
                 output_dir=output_dir,
-                model_name="method1_full"
+                filename="method1_gvif_diagnostics.png"
             )
-            generated_files.extend(paths)
+            if path:
+                generated_files.append(path)
         
         # Deviance-df comparison plot
         if self.model_null and self.model_full:
@@ -355,23 +346,31 @@ class Method1H0H1GLM:
         logger.info(f"Generated {len(generated_files)} visualizations in {output_dir}")
         return generated_files
     
-    def _create_forest_plot(self, output_dir: Path) -> Optional[Path]:
-        """Create forest plot using WaldMethod wrapper.
+    def _create_forest_plots(self, output_dir: Path) -> List[Path]:
+        """Create separate forest plots for TOST and SESOI.
+        
+        Now creates TWO separate files via the updated create_forest_plot method.
         
         Args:
-            output_dir: Directory to save plot
+            output_dir: Directory to save plots
             
         Returns:
-            Path to saved plot or None
+            List of paths to saved plots
         """
         if 'wald_tests' not in self.hypothesis_results:
-            return None
+            return []
         
-        return self.wald_method.create_forest_plot(
+        result = self.wald_method.create_forest_plot(
             results=self.hypothesis_results['wald_tests'],
             output_dir=output_dir,
-            filename="forest_plot_improved.png"
+            filename="forest_plot_improved.png"  # Ignored - will create sesoi and tost files
         )
+        
+        # The method now returns a list of paths
+        if isinstance(result, list):
+            return result
+        else:
+            return []
     
     def _create_model_comparison_viz(self, output_dir: Path) -> Optional[Path]:
         """Create model comparison visualization using ModelComparison wrapper.

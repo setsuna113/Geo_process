@@ -30,13 +30,14 @@ class InitializationMethod(Enum):
 
 @dataclass
 class SOMConfig:
-    """Configuration for SOM training."""
+    """Configuration for SOM training (Pure Batch SOM)."""
     grid_size: Tuple[int, int]
     distance_metric: DistanceMetric = DistanceMetric.EUCLIDEAN
     neighborhood_function: NeighborhoodFunction = NeighborhoodFunction.GAUSSIAN
     initialization_method: InitializationMethod = InitializationMethod.PCA
-    learning_rate: float = 0.5
-    min_learning_rate: float = 0.01
+    # Pure Batch SOM doesn't use learning rate - momentum controls updates
+    momentum_initial: float = 0.9  # High momentum for global organization
+    momentum_final: float = 0.1    # Low momentum for fine-tuning
     neighborhood_radius: float = 1.0
     min_neighborhood_radius: float = 0.1
     epochs: int = 100
@@ -48,13 +49,13 @@ class SOMConfig:
 
 @dataclass
 class SOMTrainingResult:
-    """Result of SOM training."""
+    """Result of SOM training (Pure Batch SOM)."""
     weights: np.ndarray  # Shape: (grid_rows, grid_cols, n_features)
     quantization_errors: List[float]
     topographic_errors: List[float]
     training_time: float
     convergence_epoch: Optional[int]
-    final_learning_rate: float
+    final_momentum: float  # Final momentum value (replaces learning_rate)
     final_neighborhood_radius: float
     n_samples_trained: int
     

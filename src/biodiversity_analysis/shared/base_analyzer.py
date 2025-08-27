@@ -35,7 +35,9 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
     def __init__(self, 
                  method_name: str,
                  version: str = "1.0.0",
-                 progress_callback: Optional[Callable[[str, float], None]] = None):
+                 progress_callback: Optional[Callable[[str, float], None]] = None,
+                 use_raster: bool = False,
+                 use_optimized_loaders: bool = False):
         """
         Initialize biodiversity analyzer.
         
@@ -43,6 +45,8 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
             method_name: Name of the analysis method (e.g., 'som', 'gwpca')
             version: Version of the implementation
             progress_callback: Optional callback for progress updates
+            use_raster: Whether to initialize RasterLoader for spatial data
+            use_optimized_loaders: Whether to use optimized stat loaders
         """
         self.method_name = method_name
         self.version = version
@@ -62,8 +66,21 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
         self.spatial_config = self.config.get('spatial_validation', {})
         self.method_params = self.config.get('method_params', {})
         
-        # Components
+        # Components - Always have ParquetLoader
         self.data_loader = ParquetLoader()
+        self.parquet_loader = self.data_loader  # Alias for clarity
+        
+        # Optional RasterLoader for spatial analysis
+        self.raster_loader = None
+        if use_raster:
+            from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
+            self.raster_loader = RasterLoader()
+            logger.debug(f"Initialized RasterLoader for {method_name}")
+        
+        # Optional optimized loaders (deprecated - stat methods now use statistical module)
+        self.optimized_loader = None
+        if use_optimized_loaders:
+            logger.debug(f"Optimized loaders deprecated for {method_name} - use statistical module instead")
         
         logger.info(f"Initialized {method_name} analyzer v{version}")
     
@@ -142,6 +159,75 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
         except Exception as e:
             logger.error(f"Failed to load data: {e}")
             raise
+    
+    def load_rasters(self,
+                    raster_paths: Dict[str, str],
+                    sample_factor: int = 1,
+                    align: bool = True) -> Dict[str, Any]:
+        """
+        Load biodiversity data from raster files.
+        
+        Args:
+            raster_paths: Dictionary of {name: path} for raster files
+            sample_factor: Spatial sampling factor (1 = full resolution)
+            align: Whether to align rasters to common dimensions
+            
+        Returns:
+            Dictionary of loaded raster arrays
+        """
+        if not self.raster_loader:
+            raise RuntimeError(
+                f"{self.method_name} was not initialized with use_raster=True. "
+                "Cannot load raster data without RasterLoader."
+            )
+        
+        self.update_progress("Loading raster data", 0.1)
+        
+        try:
+            data = self.raster_loader.load(
+                raster_paths,
+                sample_factor=sample_factor,
+                align=align
+            )
+            
+            # Log info about loaded rasters
+            for name, array in data.items():
+                logger.info(f"Loaded {name}: shape={array.shape}, dtype={array.dtype}")
+            
+            self.update_progress("Raster data loaded successfully", 0.2)
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to load raster data: {e}")
+            raise
+    
+    def load_optimal(self, data_source, **load_params):
+        """
+        Load data using the optimal strategy for this method.
+        
+        Args:
+            data_source: Either a parquet path (str) or raster paths (dict)
+            **load_params: Additional loading parameters
+            
+        Returns:
+            Loaded data in optimal format for this method
+        """
+        if self.optimized_loader:
+            # Use method-specific optimized loading
+            method_loader = f"load_for_{self.method_name}"
+            if hasattr(self.optimized_loader, method_loader):
+                loader_func = getattr(self.optimized_loader, method_loader)
+                return loader_func(data_source, **load_params)
+        
+        # Fallback to standard loading based on data type
+        if isinstance(data_source, str):
+            # Parquet path
+            return self.load_data(data_source, **load_params)
+        elif isinstance(data_source, dict):
+            # Raster paths
+            return self.load_rasters(data_source, **load_params)
+        else:
+            raise ValueError(f"Unsupported data source type: {type(data_source)}")
     
     
     def update_progress(self, message: str, progress: float) -> None:

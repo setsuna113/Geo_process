@@ -4,7 +4,6 @@ Provides comprehensive visualization for Wald tests including:
 - Basic forest plot (coefficients with CIs)
 - SESOI (Smallest Effect Size of Interest) forest plot
 - TOST (Two One-Sided Tests) equivalence forest plot
-- P-value significance plot
 
 Data processing and visualization in one file following Linus principles.
 """
@@ -194,46 +193,43 @@ def create_wald_visualization(
     sesoi_threshold: float = 0.1,  # Default SESOI threshold (10% change on response scale)
     tost_bounds: Tuple[float, float] = (-0.05, 0.05),  # Default TOST bounds (±5%)
     title: str = "Wald Test Analysis",
-    figsize: Tuple[int, int] = (15, 5),
+    figsize: Tuple[int, int] = (10, 8),  # Size for individual plots
     filter_mesf: bool = True  # Whether to filter MESF terms
-) -> plt.Figure:
-    """Create Wald test visualization with three hypothesis tests.
+) -> Tuple[plt.Figure, plt.Figure]:
+    """Create TWO SEPARATE Wald test visualizations.
     
-    Shows SESOI, TOST, and traditional p-value tests side by side.
+    Creates separate figures for SESOI and TOST tests instead of combining them.
     Always sorts by importance (|z-score|) and cleans names.
     
     Args:
-        wald_results: Results from Wald tests containing coefficients, std_errors, p_values
-        sesoi_threshold: Threshold for smallest effect size of interest (on log scale)
-        tost_bounds: Equivalence bounds for TOST (on log scale)
-        title: Main title for the figure
-        figsize: Figure size (default: wide layout for 3 panels)
+        wald_results: Results from Wald tests containing coefficients, std_errors
+        sesoi_threshold: Threshold for smallest effect size of interest
+        tost_bounds: Equivalence bounds for TOST
+        title: Main title for the figures
+        figsize: Figure size for each individual plot
         filter_mesf: Whether to filter out MESF spatial terms
         
     Returns:
-        matplotlib Figure with 3-panel layout
+        Tuple of (sesoi_figure, tost_figure)
     """
-    # Create figure with 3 panels
-    fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(1, 3, hspace=0.2, wspace=0.3)
-    
-    # Panel 1: SESOI Forest Plot
-    ax1 = fig.add_subplot(gs[0])
-    _plot_smart_forest(ax1, wald_results, sesoi_threshold, 
-                      filter_mesf=filter_mesf, title="SESOI Test")
-    
-    # Panel 2: TOST Forest Plot
-    ax2 = fig.add_subplot(gs[1])
-    _plot_tost_forest(ax2, wald_results, tost_bounds)
-    
-    # Panel 3: P-value Plot
-    ax3 = fig.add_subplot(gs[2])
-    _plot_pvalues(ax3, wald_results)
-    
-    fig.suptitle(title, fontsize=16, fontweight='bold')
+    # Create SESOI figure
+    fig_sesoi = plt.figure(figsize=figsize)
+    ax_sesoi = fig_sesoi.add_subplot(111)
+    _plot_smart_forest(ax_sesoi, wald_results, sesoi_threshold, 
+                      filter_mesf=filter_mesf, title="SESOI (Smallest Effect Size of Interest) Test")
+    fig_sesoi.suptitle(f"{title} - SESOI Analysis", fontsize=14, fontweight='bold')
+    plt.figure(fig_sesoi.number)
     plt.tight_layout()
     
-    return fig
+    # Create TOST figure
+    fig_tost = plt.figure(figsize=figsize)
+    ax_tost = fig_tost.add_subplot(111)
+    _plot_tost_forest(ax_tost, wald_results, tost_bounds)
+    fig_tost.suptitle(f"{title} - TOST (Two One-Sided Tests) Analysis", fontsize=14, fontweight='bold')
+    plt.figure(fig_tost.number)
+    plt.tight_layout()
+    
+    return fig_sesoi, fig_tost
 
 
 def create_method2_comparison(
@@ -351,17 +347,7 @@ def _plot_smart_forest(ax: plt.Axes, wald_results: Dict[str, Any],
     # Step 3: Add smart-specific features only
     ax.set_title(title, fontsize=12, fontweight='bold')
     
-    # Add importance scores as annotations
-    coefficients = processed_data['coefficients']
-    std_errors = processed_data['std_errors']
-    ci_upper = coefficients + 1.645 * std_errors
-    
-    for i, predictor in enumerate(processed_data['predictors']):
-        importance = processed_data['importance'][predictor]
-        ax.text(ci_upper[i] + 0.01, i, f'|z|={importance:.1f}', 
-               fontsize=8, va='center', alpha=0.7)
-    
-    # Add methodology note
+    # Add methodology note (removed |Z| annotations per user request)
     ax.text(0.98, 0.02, 'Sorted by |z-score| • 90% CI shown', transform=ax.transAxes,
            ha='right', fontsize=8, style='italic', alpha=0.7)
 
@@ -396,24 +382,24 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
     ci_lower_90 = coefficients - 1.645 * std_errors  # 90% CI
     ci_upper_90 = coefficients + 1.645 * std_errors
     
-    # Color based on SESOI test results
+    # Color based on SESOI test results (two-tailed test)
     colors = []
     markers = []
-    for i, (coef, ci_l, exceeds_sesoi) in enumerate(zip(coefficients, ci_lower_90, sesoi_results)):
+    for i, (coef, exceeds_sesoi) in enumerate(zip(coefficients, sesoi_results)):
         if exceeds_sesoi:
-            # Statistically exceeds SESOI threshold
+            # Statistically exceeds SESOI threshold (|β| > threshold with p < 0.05)
             colors.append('darkgreen' if coef > 0 else 'darkred')
             markers.append('o')  # Filled circle
-        elif ci_l > sesoi_threshold:
-            # CI suggests exceeds but not statistically confirmed
-            colors.append('lightgreen')
+        elif abs(coef) > sesoi_threshold:
+            # Magnitude exceeds threshold but not statistically significant
+            colors.append('lightgreen' if coef > 0 else 'lightcoral')
             markers.append('^')  # Triangle
         elif abs(coef) < sesoi_threshold * 0.5:
             # Clearly negligible (less than half SESOI)
             colors.append('gray')
             markers.append('s')  # Square
         else:
-            # Uncertain/borderline
+            # Borderline (between 0.5*SESOI and SESOI)
             colors.append('orange')
             markers.append('d')  # Diamond
     
@@ -425,9 +411,12 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
     y_pos = np.arange(len(predictors))
     
     for i, (coef, ci_l, ci_u, color, marker) in enumerate(zip(coefficients, ci_lower_90, ci_upper_90, colors, markers)):
+        # Plot error bar with enhanced |-| style caps for better visibility
         ax.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
-                   fmt=marker, color=color, markersize=8, 
-                   capsize=5, capthick=2, elinewidth=2)
+                   fmt=marker, color=color, markersize=10, 
+                   capsize=8, capthick=2.5, elinewidth=2.5, 
+                   markeredgecolor='black', markeredgewidth=0.5,
+                   alpha=0.9)
     
     # Reference lines
     ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1, label='Zero')
@@ -438,8 +427,8 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
     # Styling
     ax.set_yticks(y_pos)
     ax.set_yticklabels(predictors)
-    ax.set_xlabel('Coefficient (log scale)', fontsize=10)
-    ax.set_title('SESOI Minimum-Effect Test (90% CI, α=0.05)', fontsize=11, fontweight='bold')
+    ax.set_xlabel('Coefficient Value', fontsize=10)
+    ax.set_title('SESOI Two-Tailed Test: |β| > threshold', fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
     
     # Legend with proper SESOI test interpretation
@@ -448,19 +437,21 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
     
     legend_elements = [
         Line2D([0], [0], marker='o', color='w', markerfacecolor='darkgreen', 
-               markersize=8, label='Exceeds +SESOI (p<0.05)'),
+               markersize=8, label='Positive meaningful (β > SESOI, p<0.05)'),
         Line2D([0], [0], marker='o', color='w', markerfacecolor='darkred', 
-               markersize=8, label='Exceeds -SESOI (p<0.05)'),
+               markersize=8, label='Negative meaningful (β < -SESOI, p<0.05)'),
+        Line2D([0], [0], marker='^', color='w', markerfacecolor='lightgreen', 
+               markersize=8, label='Exceeds threshold but NS'),
         Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', 
-               markersize=8, label='Negligible (<50% SESOI)'),
+               markersize=8, label='Negligible (|β| < 50% SESOI)'),
         Line2D([0], [0], marker='d', color='w', markerfacecolor='orange', 
-               markersize=8, label='Uncertain/Borderline'),
+               markersize=8, label='Borderline (50-100% SESOI)'),
         Line2D([0], [0], color='red', linestyle='--', label=f'SESOI Threshold (±{sesoi_threshold:.2f})')
     ]
-    ax.legend(handles=legend_elements, loc='best', fontsize=8, title='SESOI Test Results')
+    ax.legend(handles=legend_elements, loc='best', fontsize=7, title='Two-tailed SESOI Test')
     
-    # Add note about CI level
-    ax.text(0.02, 0.98, '90% CI shown (for one-sided α=0.05)', 
+    # Add note about CI level and test nature
+    ax.text(0.02, 0.98, 'Two-tailed test: H₀: |β| ≤ SESOI vs H₁: |β| > SESOI', 
            transform=ax.transAxes, fontsize=8, style='italic', 
            verticalalignment='top', alpha=0.7)
 
@@ -525,9 +516,12 @@ def _plot_tost_forest(ax: plt.Axes, wald_results: Dict[str, Any], tost_bounds: T
     y_pos = np.arange(len(predictors))
     
     for i, (coef, ci_l, ci_u, color, marker) in enumerate(zip(coefficients, ci_lower_90, ci_upper_90, colors, markers)):
+        # Plot error bar with enhanced |-| style caps for TOST
         ax.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
-                   fmt=marker, color=color, markersize=8, 
-                   capsize=5, capthick=2, elinewidth=2)
+                   fmt=marker, color=color, markersize=10, 
+                   capsize=8, capthick=2.5, elinewidth=2.5,
+                   markeredgecolor='black', markeredgewidth=0.5,
+                   alpha=0.9)
     
     # Reference lines
     ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1)
@@ -537,7 +531,7 @@ def _plot_tost_forest(ax: plt.Axes, wald_results: Dict[str, Any], tost_bounds: T
     # Styling
     ax.set_yticks(y_pos)
     ax.set_yticklabels(predictors)
-    ax.set_xlabel('Coefficient (log scale)', fontsize=10)
+    ax.set_xlabel('Coefficient Value', fontsize=10)
     ax.set_title('TOST Forest Plot (Equivalence Testing)', fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
     
@@ -562,7 +556,11 @@ def _plot_tost_forest(ax: plt.Axes, wald_results: Dict[str, Any], tost_bounds: T
 
 
 def _plot_pvalues(ax: plt.Axes, wald_results: Dict[str, Any]):
-    """Create p-value plot showing significance levels."""
+    """Create p-value plot showing significance levels.
+    
+    NOTE: This function is kept for backward compatibility but is no longer
+    used in main visualization pipelines as p-values plots have been excluded.
+    """
     # Use data processor - no more manual extraction!
     data = ForestDataProcessor.extract_basic_data(wald_results)
     

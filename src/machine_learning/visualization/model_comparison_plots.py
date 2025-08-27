@@ -38,34 +38,22 @@ def plot_model_comparison(comparison_results: Dict[str, Any],
     Returns:
         matplotlib Figure object
     """
-    # Create figure with subplots
-    fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
+    # Create figure with subplots - simplified to 1x2 grid (integrated % improvement into AIC/BIC plot)
+    fig = plt.figure(figsize=(12, 5))
+    gs = fig.add_gridspec(1, 2, hspace=0.3, wspace=0.3)
     
     # Extract data
     models = comparison_results['models']
     weights = comparison_results.get('weights', {})
     best_model = comparison_results.get('best_model', {})
     
-    # 1. AIC/BIC Values (top left)
+    # 1. AIC/BIC Values with % Improvements (left)
     ax1 = fig.add_subplot(gs[0, 0])
     _plot_ic_values(ax1, models)
     
-    # 2. Delta IC Values (top middle)
+    # 2. R² Values (right) - keep only one R² plot
     ax2 = fig.add_subplot(gs[0, 1])
-    _plot_delta_ic(ax2, models, comparison_results.get('threshold'))
-    
-    # 3. Model Weights (top right)
-    ax3 = fig.add_subplot(gs[0, 2])
-    _plot_weights(ax3, models, weights)
-    
-    # 4. Evidence Ratios (bottom left)
-    ax4 = fig.add_subplot(gs[1, 0])
-    _plot_evidence_ratios(ax4, models, comparison_results.get('evidence_ratios', {}))
-    
-    # 5. Summary Table (bottom middle and right)
-    ax5 = fig.add_subplot(gs[1, 1:])
-    _plot_summary_table(ax5, comparison_results)
+    _plot_r_squared_values(ax2, models, comparison_results.get('improvement'))
     
     # Add main title
     fig.suptitle(title, fontsize=16, fontweight='bold')
@@ -79,54 +67,140 @@ def plot_model_comparison(comparison_results: Dict[str, Any],
 
 
 def _plot_ic_values(ax, models):
-    """Plot AIC and BIC values grouped by IC type."""
+    """Plot AIC and BIC values with percentage improvements as third bars."""
     model_names = list(models.keys())
     aics = [m.get('aic', np.nan) for m in models.values()]
     bics = [m.get('bic', np.nan) for m in models.values()]
     
-    # Group by IC type: (null_aic, full_aic), (null_bic, full_bic)
+    # Group by IC type with 3 bars each: null, full, %change
     ic_types = ['AIC', 'BIC']
-    x = np.arange(len(ic_types))
-    width = 0.35
     
-    # Get null and full values
-    null_idx = model_names.index('null') if 'null' in model_names else 0
-    full_idx = model_names.index('full') if 'full' in model_names else 1
+    # Get null and full values - handle both Method 1 ('null'/'full') and Method 2 naming
+    if 'null' in model_names:
+        null_idx = model_names.index('null')
+        full_idx = model_names.index('full') if 'full' in model_names else 1
+    elif 'Method1_Full' in model_names:
+        # For Method 2 comparison: Method1_Full is the baseline, Method2a_Continuous is the comparison
+        null_idx = model_names.index('Method1_Full')
+        full_idx = model_names.index('Method2a_Continuous') if 'Method2a_Continuous' in model_names else 1
+    else:
+        # Fallback to first two models
+        null_idx = 0
+        full_idx = 1
     
     null_values = [aics[null_idx], bics[null_idx]]
     full_values = [aics[full_idx], bics[full_idx]]
     
-    # Plot bars
-    bars1 = ax.bar(x - width/2, null_values, width, label='Null Model', color='lightcoral', alpha=0.8)
-    bars2 = ax.bar(x + width/2, full_values, width, label='Full Model', color='lightgreen', alpha=0.8)
+    # Calculate percentage improvements (scale them to be visible with IC values)
+    improvements = []
+    improvement_actual = []  # Keep actual values for labels
+    for null_val, full_val in zip(null_values, full_values):
+        if not np.isnan(null_val) and not np.isnan(full_val) and null_val != 0:
+            improvement = ((null_val - full_val) / null_val) * 100
+            improvement_actual.append(improvement)
+            # Scale the improvement to be visible on the same plot
+            # Use a scaling factor based on the IC values
+            scale_factor = null_val / 100  # Scale % to be visible relative to IC values
+            improvements.append(improvement * scale_factor)
+        else:
+            improvements.append(0)
+            improvement_actual.append(0)
+    
+    # Create DataFrame for seaborn with all three bar types
+    import pandas as pd
+    data_list = []
+    for ic_type, null_val, full_val, improv_scaled in zip(ic_types, null_values, full_values, improvements):
+        data_list.append({'IC Type': ic_type, 'Model': 'Null Model', 'Value': null_val})
+        data_list.append({'IC Type': ic_type, 'Model': 'Full Model', 'Value': full_val})
+        data_list.append({'IC Type': ic_type, 'Model': '% Improvement (scaled)', 'Value': improv_scaled})
+    
+    df = pd.DataFrame(data_list)
+    
+    # Use single seaborn barplot for all bars
+    sns.barplot(data=df, x='IC Type', y='Value', hue='Model', ax=ax,
+                palette={'Null Model': 'lightcoral', 
+                        'Full Model': 'lightgreen', 
+                        '% Improvement (scaled)': 'gold'},
+                alpha=0.8)
     
     # Add value labels
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            if not np.isnan(height):
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.1f}', ha='center', va='bottom', fontsize=9)
+    patches = ax.patches
+    # Seaborn groups patches by hue first (all Null, then all Full, then all %)
+    # So order is: Null[AIC], Null[BIC], Full[AIC], Full[BIC], %[AIC], %[BIC]
     
-    # Add improvement indicators
-    for i, ic_type in enumerate(ic_types):
-        null_val = null_values[i]
-        full_val = full_values[i]
-        if not np.isnan(null_val) and not np.isnan(full_val):
-            if full_val < null_val:  # Lower is better
-                # Show improvement
-                improvement = null_val - full_val
-                ax.text(i, max(null_val, full_val) * 1.01, 
-                       f'Δ={improvement:.0f}',
-                       ha='center', fontsize=9, fontweight='bold', color='green')
+    # Create a mapping of approximate heights to their labels
+    height_to_label = {}
+    # Map null values
+    for i, val in enumerate(null_values):
+        if not np.isnan(val):
+            height_to_label[val] = f'{val:.1e}' if abs(val) > 1000 else f'{val:.1f}'
+    # Map full values  
+    for i, val in enumerate(full_values):
+        if not np.isnan(val):
+            height_to_label[val] = f'{val:.1e}' if abs(val) > 1000 else f'{val:.1f}'
+    # Map improvement values (scaled heights to actual % labels)
+    for i, (scaled_val, actual_val) in enumerate(zip(improvements, improvement_actual)):
+        if scaled_val != 0:
+            height_to_label[scaled_val] = f'{actual_val:.1f}%'
     
-    ax.set_xlabel('Information Criterion Type')
-    ax.set_ylabel('IC Value')
-    ax.set_title('Model Comparison: AIC and BIC')
-    ax.set_xticks(x)
-    ax.set_xticklabels(ic_types)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    # Label each patch
+    for patch in patches:
+        height = patch.get_height()
+        if not np.isnan(height) and height != 0:
+            # Find the matching label
+            label = None
+            for h, l in height_to_label.items():
+                if abs(height - h) < 1e-6:  # Use small tolerance for float comparison
+                    label = l
+                    break
+            
+            if label:
+                if '%' in label:
+                    # % improvement labels
+                    ax.text(patch.get_x() + patch.get_width()/2., height,
+                           label, ha='center', va='bottom', 
+                           fontsize=9, fontweight='bold', color='darkorange')
+                else:
+                    # IC value labels
+                    ax.text(patch.get_x() + patch.get_width()/2., height,
+                           label, ha='center', va='bottom', fontsize=8, rotation=90)
+    
+    # Set up dual y-axis to show the actual percentage scale
+    ax2 = ax.twinx()
+    ax2.set_ylabel('Improvement (%)', color='darkorange', fontsize=11)
+    ax2.tick_params(axis='y', labelcolor='darkorange')
+    
+    # Hide the grid lines to avoid confusion
+    ax2.grid(False)
+    
+    # Set the secondary axis to show actual percentage values
+    # But since bars are scaled, we need to adjust the axis accordingly
+    if improvement_actual and null_values[0] and not np.isnan(null_values[0]):
+        # The scale factor used was null_val / 100
+        scale_factor = null_values[0] / 100  # Use AIC's scale factor
+        max_improvement = max(abs(i) for i in improvement_actual)
+        
+        # Set primary axis limit to accommodate scaled values
+        current_ylim = ax.get_ylim()
+        ax.set_ylim(current_ylim[0], max(current_ylim[1], max_improvement * scale_factor * 1.2))
+        
+        # Set secondary axis to show actual percentage scale
+        # This axis shows what the scaled bars actually represent in %
+        ax2.set_ylim(current_ylim[0] / scale_factor, current_ylim[1] / scale_factor)
+    
+    ax.set_xlabel('Information Criterion Type', fontsize=11)
+    ax.set_ylabel('IC Value', fontsize=11)
+    ax.set_title('Model Comparison: AIC, BIC, and % Improvements', fontsize=12, fontweight='bold')
+    
+    # Update legend to clarify scaled improvements
+    handles, labels = ax.get_legend_handles_labels()
+    for i, label in enumerate(labels):
+        if '% Improvement (scaled)' in label:
+            labels[i] = '% Improvement'
+    ax.legend(handles, labels, loc='upper left', fontsize=10)
+    
+    # Remove grid lines to avoid scale confusion
+    ax.grid(False)
 
 
 def _plot_delta_ic(ax, models, threshold=None):
@@ -147,19 +221,26 @@ def _plot_delta_ic(ax, models, threshold=None):
         return
     
     names, daic_vals, dbic_vals = zip(*valid_data)
-    x = np.arange(len(names))
-    width = 0.35
     
-    bars1 = ax.bar(x - width/2, daic_vals, width, label='ΔAIC', color='steelblue', alpha=0.8)
-    bars2 = ax.bar(x + width/2, dbic_vals, width, label='ΔBIC', color='coral', alpha=0.8)
+    # Create DataFrame for seaborn
+    import pandas as pd
+    data_list = []
+    for i, name in enumerate(names):
+        data_list.append({'Model': name, 'IC Type': 'ΔAIC', 'Value': daic_vals[i]})
+        data_list.append({'Model': name, 'IC Type': 'ΔBIC', 'Value': dbic_vals[i]})
     
-    # Add value labels
-    for bars in [bars1, bars2]:
-        for bar in bars:
-            height = bar.get_height()
-            if height != 0:  # Don't show label for 0 (best model)
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.0f}', ha='center', va='bottom', fontsize=8)
+    df = pd.DataFrame(data_list)
+    
+    # Use seaborn grouped barplot
+    sns.barplot(data=df, x='Model', y='Value', hue='IC Type', ax=ax,
+                palette={'ΔAIC': 'steelblue', 'ΔBIC': 'coral'}, alpha=0.8)
+    
+    # Add value labels on bars
+    for patch in ax.patches:
+        height = patch.get_height()
+        if height != 0:  # Don't show label for 0 (best model)
+            ax.text(patch.get_x() + patch.get_width()/2., height,
+                   f'{height:.0f}', ha='center', va='bottom', fontsize=8)
     
     # Only show the sample-size adjusted threshold - B&A thresholds are useless for large samples
     if threshold:
@@ -181,35 +262,101 @@ def _plot_delta_ic(ax, models, threshold=None):
     else:
         ax.set_title('Delta IC Values (Difference from Best)')
     
-    ax.set_xticks(x)
-    ax.set_xticklabels(names, rotation=45, ha='right')
     ax.legend(loc='upper right', fontsize=9)
+    # Rotate x-axis labels for better readability
+    for label in ax.get_xticklabels():
+        label.set_rotation(45)
+        label.set_ha('right')
     ax.grid(True, alpha=0.3)
 
 
-def _plot_weights(ax, models, weights):
-    """Plot model weights (Akaike weights)."""
+def _plot_percentage_improvement(ax, models):
+    """Plot percentage improvement of full model over null model."""
     model_names = list(models.keys())
     
-    if weights:
-        aic_weights = [weights.get(name, {}).get('aic_weight', 0) for name in model_names]
-        
-        # Create pie chart
-        colors = plt.cm.Set3(np.linspace(0, 1, len(model_names)))
-        wedges, texts, autotexts = ax.pie(aic_weights, labels=model_names, 
-                                           colors=colors, autopct='%1.1f%%',
-                                           startangle=90)
-        
-        # Make percentage text bold
-        for autotext in autotexts:
-            autotext.set_fontweight('bold')
-            autotext.set_fontsize(10)
-        
-        ax.set_title('Model Weights (AIC)')
-    else:
-        ax.text(0.5, 0.5, 'No weights available', 
+    # Get null and full model indices
+    null_idx = model_names.index('null') if 'null' in model_names else None
+    full_idx = model_names.index('full') if 'full' in model_names else None
+    
+    if null_idx is None or full_idx is None:
+        ax.text(0.5, 0.5, 'Need both null and full models', 
                ha='center', va='center', transform=ax.transAxes)
-        ax.set_title('Model Weights')
+        ax.set_title('Model Improvement')
+        ax.axis('off')
+        return
+    
+    # Get AIC and BIC values
+    null_aic = models[model_names[null_idx]].get('aic')
+    full_aic = models[model_names[full_idx]].get('aic')
+    null_bic = models[model_names[null_idx]].get('bic')
+    full_bic = models[model_names[full_idx]].get('bic')
+    
+    # Calculate percentage improvements
+    improvements = []
+    labels = []
+    colors = []
+    
+    if null_aic and full_aic:
+        aic_improvement = ((null_aic - full_aic) / null_aic) * 100
+        improvements.append(aic_improvement)
+        labels.append(f'AIC\n{aic_improvement:.2f}%')
+        colors.append('steelblue' if aic_improvement > 0 else 'lightcoral')
+    
+    if null_bic and full_bic:
+        bic_improvement = ((null_bic - full_bic) / null_bic) * 100
+        improvements.append(bic_improvement)
+        labels.append(f'BIC\n{bic_improvement:.2f}%')
+        colors.append('steelblue' if bic_improvement > 0 else 'lightcoral')
+    
+    if improvements:
+        # Create DataFrame for seaborn
+        import pandas as pd
+        df = pd.DataFrame({
+            'IC Type': ['AIC', 'BIC'][:len(improvements)],
+            'Improvement (%)': improvements,
+            'Color': colors
+        })
+        
+        # Use seaborn barplot
+        sns.barplot(data=df, x='IC Type', y='Improvement (%)', ax=ax,
+                    palette=dict(zip(df['IC Type'], colors)), alpha=0.7)
+        
+        # Add edge color to bars
+        for patch in ax.patches:
+            patch.set_edgecolor('black')
+            patch.set_linewidth(2)
+        
+        # Add a horizontal line at 0
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=1)
+        
+        # Add value labels on bars
+        for i, (patch, val) in enumerate(zip(ax.patches, improvements)):
+            height = patch.get_height()
+            ax.text(patch.get_x() + patch.get_width()/2., height,
+                   f'{val:.1f}%', ha='center', 
+                   va='bottom' if height > 0 else 'top', fontweight='bold')
+        ax.set_ylabel('Improvement (%)')
+        ax.set_title('Full Model Improvement over Null Model\n(Percentage Reduction in IC)')
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Add interpretation
+        avg_improvement = np.mean(improvements)
+        if avg_improvement > 10:
+            interpretation = f"✓ Strong improvement: {avg_improvement:.1f}%"
+            color = 'green'
+        elif avg_improvement > 5:
+            interpretation = f"✓ Moderate improvement: {avg_improvement:.1f}%"
+            color = 'orange'
+        else:
+            interpretation = f"⚠ Minimal improvement: {avg_improvement:.1f}%"
+            color = 'red'
+        
+        ax.text(0.5, 0.95, interpretation, transform=ax.transAxes,
+               ha='center', fontsize=11, fontweight='bold', color=color)
+    else:
+        ax.text(0.5, 0.5, 'No IC values available', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Model Improvement')
         ax.axis('off')
 
 
@@ -240,20 +387,178 @@ def _plot_evidence_ratios(ax, models, evidence_ratios):
             plot_ratios.append(r)
             labels.append(f'{r:.1f}')
     
-    # Plot on log scale
-    y_pos = np.arange(len(model_names))
-    bars = ax.barh(y_pos, plot_ratios, color='teal', alpha=0.7)
+    # Create DataFrame for seaborn
+    evidence_df = pd.DataFrame({
+        'Model': model_names,
+        'Evidence Ratio': plot_ratios,
+        'Label': labels
+    })
+    
+    # Plot on log scale using seaborn
+    sns.barplot(data=evidence_df, y='Model', x='Evidence Ratio', ax=ax,
+                color='teal', alpha=0.7, orient='h')
     
     # Add value labels
-    for i, (bar, label) in enumerate(zip(bars, labels)):
-        ax.text(bar.get_width(), i, label, va='center', fontsize=9)
-    
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(model_names)
+    for i, (patch, label) in enumerate(zip(ax.patches, labels)):
+        ax.text(patch.get_width(), patch.get_y() + patch.get_height()/2, 
+                label, va='center', fontsize=9)
     ax.set_xlabel('Evidence Ratio')
     ax.set_title('Evidence Ratios (vs Best Model)')
     ax.set_xscale('log')
     ax.grid(True, alpha=0.3, axis='x')
+
+
+def _plot_r_squared_values(ax, models, improvement=None):
+    """Plot R² values comparison - McFadden's, Deviance-based, and Nagelkerke's."""
+    model_names = list(models.keys())
+    mcfadden_r2s = [m.get('mcfadden_r2', np.nan) for m in models.values()]
+    deviance_r2s = [m.get('deviance_r2', np.nan) for m in models.values()]
+    nagelkerke_r2s = [m.get('nagelkerke_r2', np.nan) for m in models.values()]
+    
+    # Check if we have any R² values
+    if all(np.isnan(mcfadden_r2s)) and all(np.isnan(deviance_r2s)):
+        ax.text(0.5, 0.5, 'No R² values available\n(requires loglik and deviance data)', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Pseudo R² Comparison')
+        ax.axis('off')
+        return
+    
+    # Group by R² type
+    r2_types = ['McFadden R²', 'Deviance R²', 'Nagelkerke R²']
+    
+    # Get null and full values (assuming standard naming)
+    null_idx = model_names.index('null') if 'null' in model_names else 0
+    full_idx = model_names.index('full') if 'full' in model_names else 1
+    
+    null_r2_values = [mcfadden_r2s[null_idx], deviance_r2s[null_idx], nagelkerke_r2s[null_idx]]
+    full_r2_values = [mcfadden_r2s[full_idx], deviance_r2s[full_idx], nagelkerke_r2s[full_idx]]
+    
+    # Replace NaN with 0 for plotting (null model typically has R² = 0)
+    null_r2_values = [0 if np.isnan(v) else v for v in null_r2_values]
+    full_r2_values = [0 if np.isnan(v) else v for v in full_r2_values]
+    
+    # Create DataFrame for seaborn
+    import pandas as pd
+    data_list = []
+    for r2_type, null_val, full_val in zip(r2_types, null_r2_values, full_r2_values):
+        data_list.append({'R² Type': r2_type, 'Model': 'Null Model', 'Value': null_val})
+        data_list.append({'R² Type': r2_type, 'Model': 'Full Model', 'Value': full_val})
+    
+    df = pd.DataFrame(data_list)
+    
+    # Use seaborn barplot
+    sns.barplot(data=df, x='R² Type', y='Value', hue='Model', ax=ax,
+                palette={'Null Model': 'lightcoral', 'Full Model': 'lightgreen'},
+                alpha=0.8)
+    
+    # Add value labels on bars
+    for patch in ax.patches:
+        height = patch.get_height()
+        if height > 0:  # Only show non-zero values
+            ax.text(patch.get_x() + patch.get_width()/2., height,
+                   f'{height:.3f}', ha='center', va='bottom', fontsize=10)
+    
+    # Removed "Excellent fit" text per user request - just show R² values in bars
+    
+    # Add improvement metrics if provided (difference between null and full models)
+    if improvement:
+        improvement_text = "Improvement (Full - Null):\n"
+        if 'mcfadden_r2_pct' in improvement:
+            improvement_text += f"McFadden: {improvement['mcfadden_r2_pct']:.2f}%\n"
+        if 'deviance_r2_pct' in improvement:
+            improvement_text += f"Deviance: {improvement['deviance_r2_pct']:.2f}%\n"
+        if 'nagelkerke_r2_pct' in improvement:
+            improvement_text += f"Nagelkerke: {improvement['nagelkerke_r2_pct']:.2f}%\n"
+        improvement_text += "\n(Adding biotic predictors)"
+        
+        ax.text(0.02, 0.98, improvement_text, transform=ax.transAxes,
+                fontsize=9, verticalalignment='top',
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', alpha=0.7))
+    
+    ax.set_xlabel('R² Type')
+    ax.set_ylabel('R² Value')
+    ax.set_title('Pseudo R² Comparison')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, max(max(full_r2_values), max(null_r2_values)) * 1.2)
+
+
+def _plot_pseudo_r2_comparison(ax, models, nested_r2=None):
+    """Plot pseudo R² comparison between null and full models."""
+    model_names = list(models.keys())
+    
+    # Get null and full model indices
+    null_idx = model_names.index('null') if 'null' in model_names else None
+    full_idx = model_names.index('full') if 'full' in model_names else None
+    
+    if null_idx is None or full_idx is None:
+        ax.text(0.5, 0.5, 'Need both null and full models', 
+               ha='center', va='center', transform=ax.transAxes)
+        ax.set_title('Pseudo R² Comparison')
+        ax.axis('off')
+        return
+    
+    # Extract R² values (these compare to intercept-only model)
+    null_mcfadden = models[model_names[null_idx]].get('mcfadden_r2', 0)
+    full_mcfadden = models[model_names[full_idx]].get('mcfadden_r2', 0)
+    null_deviance_r2 = models[model_names[null_idx]].get('deviance_r2', 0)
+    full_deviance_r2 = models[model_names[full_idx]].get('deviance_r2', 0)
+    null_nagelkerke = models[model_names[null_idx]].get('nagelkerke_r2', 0)
+    full_nagelkerke = models[model_names[full_idx]].get('nagelkerke_r2', 0)
+    
+    # Create comparison data
+    categories = ['McFadden R²', 'Deviance R²', 'Nagelkerke R²']
+    null_values = [null_mcfadden, null_deviance_r2, null_nagelkerke]
+    full_values = [full_mcfadden, full_deviance_r2, full_nagelkerke]
+    
+    # Create DataFrame for seaborn
+    r2_data = []
+    for cat, null_val, full_val in zip(categories, null_values, full_values):
+        r2_data.append({'R² Type': cat, 'Model': 'Null Model', 'Value': null_val})
+        r2_data.append({'R² Type': cat, 'Model': 'Full Model', 'Value': full_val})
+    
+    r2_df = pd.DataFrame(r2_data)
+    
+    # Create bars using seaborn
+    sns.barplot(data=r2_df, x='R² Type', y='Value', hue='Model', ax=ax,
+                palette={'Null Model': 'lightcoral', 'Full Model': 'lightgreen'},
+                alpha=0.7)
+    
+    # Add edge color to bars
+    for patch in ax.patches:
+        patch.set_edgecolor('black')
+        patch.set_linewidth(1)
+    
+    # Add value labels
+    for patch in ax.patches:
+        height = patch.get_height()
+        ax.text(patch.get_x() + patch.get_width()/2., height,
+               f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    # Removed reference lines per user request
+    
+    ax.set_ylabel('Pseudo R² Value')
+    ax.set_title('Pseudo R² Comparison')
+    ax.legend(loc='upper left')
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.set_ylim([0, max(max(full_values), 0.5) * 1.1])
+    
+    # Calculate and display improvement
+    improvement_mcfadden = full_mcfadden - null_mcfadden
+    improvement_deviance = full_deviance_r2 - null_deviance_r2
+    improvement_nagelkerke = full_nagelkerke - null_nagelkerke
+    
+    improvement_text = f"Improvement (Full - Null):\n"
+    improvement_text += f"McFadden: {improvement_mcfadden:.4f} ({improvement_mcfadden*100:.2f}%)\n"
+    improvement_text += f"Deviance: {improvement_deviance:.4f} ({improvement_deviance*100:.2f}%)\n"
+    improvement_text += f"Nagelkerke: {improvement_nagelkerke:.4f} ({improvement_nagelkerke*100:.2f}%)\n"
+    improvement_text += "\n(Adding biotic predictors)"
+    
+    ax.text(0.02, 0.98, improvement_text, transform=ax.transAxes,
+            fontsize=9, verticalalignment='top',
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='lightyellow', alpha=0.7))
+    
+    # Removed fit interpretation text per user request
 
 
 def _plot_summary_table(ax, comparison_results):
@@ -282,10 +587,15 @@ def _plot_summary_table(ax, comparison_results):
         return
     
     # Format numeric columns for display only
-    numeric_cols = ['AIC', 'ΔAIC', 'AIC Weight', 'BIC', 'ΔBIC']
+    numeric_cols = ['AIC', 'ΔAIC', 'AIC Weight', 'BIC', 'ΔBIC', 'McFadden R²', 'Deviance R²']
     for col in numeric_cols:
         if col in df.columns:
-            df[col] = df[col].apply(lambda x: f'{x:.2f}' if not pd.isna(x) else '-')
+            if 'R²' in col:
+                # Special formatting for R² values (3 decimal places)
+                df[col] = df[col].apply(lambda x: f'{x:.3f}' if not pd.isna(x) else '-')
+            else:
+                # Regular formatting for other numeric columns
+                df[col] = df[col].apply(lambda x: f'{x:.2f}' if not pd.isna(x) else '-')
     
     # Create table
     ax.axis('tight')

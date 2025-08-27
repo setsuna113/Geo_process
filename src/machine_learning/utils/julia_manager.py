@@ -389,10 +389,14 @@ end
             # Use Arrow file instead
             path = arrow_path
         
+        # Validate spatial_grid_step
+        if not isinstance(spatial_grid_step, int) or spatial_grid_step < 1 or spatial_grid_step > 1000:
+            raise ValueError(f"Invalid spatial_grid_step: {spatial_grid_step}, must be integer 1-1000")
+        
         # Run Julia to load data with better error handling
         try:
             result = subprocess.run(
-                [self._julia_executable, str(self._julia_main_script), 'load', path, str(spatial_grid_step)],
+                [self._julia_executable, str(self._julia_main_script), 'load', str(path), str(spatial_grid_step)],
                 capture_output=True,
                 text=True,
                 check=True,
