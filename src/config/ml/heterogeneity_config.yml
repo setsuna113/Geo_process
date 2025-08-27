@@ -1,0 +1,45 @@
+# Heterogeneous Effects Configuration for EconML Pipeline
+# This file controls which variables modify treatment effects
+
+heterogeneity:
+  # Enable/disable heterogeneous effects
+  enabled: true
+  
+  # Variables that modify treatment effects
+  # Uncomment the set you want to use:
+  
+  # Option 1: Temperature and seasonality (default)
+  # effect_modifiers:
+  #   - bio01_std  # Mean annual temperature
+  #   - bio04_std  # Temperature seasonality
+  
+  # Option 2: Temperature seasonality only
+  # effect_modifiers:
+  #   - bio04_std
+  
+  # Option 3: All climate variables (ACTIVE - testing heterogeneity)
+  effect_modifiers:
+    - bio01_std  # Mean annual temperature
+    - bio04_std  # Temperature seasonality  
+    - bio12_std  # Annual precipitation
+  #   - bio15_std  # Precipitation seasonality
+  
+  # Option 4: Elevation focus
+  # effect_modifiers:
+  #   - elevation_std
+  #   - bio01_std  # Temperature changes with elevation
+  
+  # Option 5: Precipitation focus
+  # effect_modifiers:
+  #   - bio12_std  # Annual precipitation
+  #   - bio15_std  # Precipitation seasonality
+
+# Model parameters (optional overrides)
+model:
+  n_folds: 5
+  n_jobs: 120
+  
+# Results output
+output:
+  save_results: true
+  results_dir: "/scratch/yl998/econml_results"
