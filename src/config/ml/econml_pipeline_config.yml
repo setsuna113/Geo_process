@@ -1,0 +1,155 @@
+# =============================================================================
+# EconML Pipeline Configuration
+# =============================================================================
+# Flattened structure - all 48 accepted configuration parameters
+# Generated from refactored_pipeline.py and optimized_lgbm.py
+
+# =============================================================================
+# SECTION 0: SHARED PARAMETERS
+# =============================================================================
+# These parameters control BOTH estimators and all components
+
+num_threads: 80           # Master thread control: LightGBM + CausalForest parallelization
+cv_folds: 5              # Cross-validation folds for both LinearDML and CausalForestDML
+random_state: 42         # Random seed for reproducibility (all components)
+alpha: 0.05              # Statistical significance level (confidence & prediction intervals)
+
+# =============================================================================
+# SECTION 1: DATA & PATHS
+# =============================================================================
+
+# ---------- Paths ----------
+data_path: "/scratch/yl998/biodiversity_climate_production_1x_corrected.arrow"  # Input data file (Arrow format)
+mesf_cache_dir: "/scratch/yl998/.cache/mesf"   # MESF spatial features cache location
+output_dir: "/scratch/yl998/econml_results"    # Results output directory
+
+# ---------- Data Processing ----------
+spatial_step: 10         # Spatial subsampling rate (10 = every 10th point, ~4.3M samples with MESF)
+
+# ---------- Variable Definitions ----------
+outcome: "fungi_richness"                      # Target/dependent variable
+
+treatments:                                     # Treatment/intervention variables
+  - "plants_richness"
+  - "vertebrates_richness"
+  - "plants_x_vertebrates"
+
+effect_modifiers:                               # Heterogeneity modifiers (for CausalForestDML)
+  - "bio01_std"          # Mean annual temperature (standardized)
+  - "bio04_std"          # Temperature seasonality (standardized) - key for broadleaf
+  - "bio12_std"          # Annual precipitation (standardized)
+
+climate_confounders:                            # Climate control variables
+  - "bio01_std"          # Mean annual temperature (WorldClim bio1)
+  - "bio04_std"          # Temperature seasonality (WorldClim bio4)
+  - "bio12_std"          # Annual precipitation (WorldClim bio12)
+  - "bio15_std"          # Precipitation seasonality (WorldClim bio15)
+
+topographic_confounders:                        # Topographic control variables
+  - "elevation_std"      # Elevation (standardized)
+  - "slope_std"          # Terrain steepness (standardized)
+  - "aspect_cos_std"     # Slope aspect - cosine component (standardized)
+  - "aspect_sin_std"     # Slope aspect - sine component (standardized)
+  - "tpi_std"            # Topographic Position Index (standardized)
+
+soil_confounders:                               # Soil property control variables
+  - "soil_ph_std"        # Soil pH (standardized)
+  - "soil_organic_carbon_std"  # Soil organic carbon (standardized)
+  - "sand_content_pct_std"     # Sand content percentage (standardized)
+
+water_balance_confounders:                      # Water/energy balance variables
+  - "pet_mm_month_std"   # Potential evapotranspiration (standardized)
+
+# =============================================================================
+# SECTION 2: ESTIMATOR PARAMETERS
+# =============================================================================
+
+# ---------- HomogeneousEffectEstimator (LinearDML) ----------
+mc_iters: 1                      # Monte Carlo iterations for LinearDML
+inference_homo: "statsmodels"    # Inference method for homogeneous effects
+
+# ---------- HeterogeneousEffectEstimator (CausalForestDML) ----------
+n_estimators: 1000               # Number of trees in CausalForest (increased from 100)
+max_depth: 20                    # Maximum tree depth for CausalForest (increased from 10)
+min_samples_leaf: 50             # Min samples per leaf (reduced from 1000 to allow heterogeneity)
+subforest_size: 4                # Subforest size for variance estimation
+inference_hetero: "blb"          # Bootstrap of Little Bags for heterogeneous effects
+max_samples: 0.5                 # Fraction of samples per tree (added, was 0.45 default)
+min_impurity_decrease: 0.001    # Min impurity decrease for splits (added)
+min_balancedness_tol: 0.45      # Min balance tolerance (added, default)
+honest: true                     # Use honest trees for better confidence intervals (added)
+
+# =============================================================================
+# SECTION 3: LIGHTGBM PARAMETERS
+# =============================================================================
+
+# ---------- Core Parameters ----------
+objective: "regression"          # LightGBM objective function
+metric: "rmse"                   # Evaluation metric
+boosting_type: "gbdt"            # Gradient Boosting Decision Tree
+verbosity: -1                    # Logging level (-1=silent, 1=verbose)
+seed: 42                         # LightGBM random seed (duplicates random_state)
+
+# ---------- Tree Structure ----------
+num_leaves: 31                   # Leaves per tree (63 for >100k samples)
+min_data_in_leaf: 20             # Min samples per leaf (or n_samples // 100_000)
+lgbm_max_depth: -1               # Tree depth limit (-1 = unlimited)
+learning_rate: 0.1               # Gradient descent step size
+num_iterations: 100              # Number of boosting rounds
+
+# ---------- Histogram & Binning ----------
+max_bin: 127                     # Number of histogram bins for splitting
+
+# ---------- Sampling Parameters ----------
+feature_fraction: 0.9            # Column sampling rate (0.7 for >100 features)
+feature_fraction_bynode: 0.9     # Column sampling per tree node (0.7 for >100 features)
+bagging_fraction: 0.9            # Row sampling rate (0.8 for >1M samples)
+bagging_freq: 0                  # Bagging frequency (1 for >1M samples, 0=disabled)
+
+# ---------- Early Stopping ----------
+early_stopping_rounds: 10        # Stop if no improvement for N rounds
+first_metric_only: true          # Use only first metric for early stopping
+
+# ---------- Categorical Handling ----------
+cat_smooth: 10                   # Smoothing for categorical splits
+max_cat_to_onehot: 4            # Max cardinality for one-hot encoding
+categorical_feature: "auto"      # Automatic categorical detection
+
+# ---------- Missing Value & Advanced ----------
+use_missing: true                # Native missing value handling
+zero_as_missing: false          # Don't treat zeros as missing
+feature_pre_filter: true        # Remove useless features before training
+extra_trees: false              # Use GBDT not Extra Trees
+
+# =============================================================================
+# CLI DEFAULTS (Command Line Interface)
+# =============================================================================
+# These duplicate other parameters for CLI argument parsing
+
+cli_mode: "test"                # Default run mode: test/homo/hetero
+cli_spatial_step: 1             # Duplicates spatial_step
+cli_num_threads: 80             # Duplicates num_threads
+cli_modifiers:                  # Duplicates effect_modifiers
+  - "bio01_std"
+  - "bio04_std"
+
+# =============================================================================
+# NOTES ON PARAMETER RELATIONSHIPS
+# =============================================================================
+# 
+# Merged Parameters:
+# - num_threads: Controls both LightGBM threads and CausalForest n_jobs
+# - cv_folds: Controls n_folds (LinearDML) and cv (CausalForestDML)  
+# - random_state/seed: Currently separate but both set to 42
+# - alpha: Controls both confidence intervals (homo) and prediction intervals (hetero)
+#
+# Renamed to Avoid Conflicts:
+# - inference_homo vs inference_hetero (different methods for each estimator)
+# - max_depth vs lgbm_max_depth (CausalForest vs LightGBM tree depth)
+#
+# Dynamic Formulas (based on data size):
+# - min_samples_leaf: max(1000, n_samples // 1000)
+# - min_data_in_leaf: max(20, n_samples // 100_000)
+# - num_leaves: 31 if n_samples < 100_000 else 63
+# - feature_fraction: 0.7 if n_features > 100 else 0.9
+# - bagging_fraction: 0.8 if n_samples > 1_000_000 else 0.9

@@ -6,8 +6,16 @@ using LinearAlgebra, YAML, JLD2, Dates, NPZ, Random
 using StatsModels, HypothesisTests
 using NPZ  # For saving binary numpy files
 using Distributions: Normal, Chisq, cdf
-using LinearAlgebra: dot, inv, cond
+using LinearAlgebra: dot, inv, cond, BLAS
 using Random: MersenneTwister
+
+# Configure BLAS threads for optimal performance
+# Set to 1 to avoid competition with Julia's own parallelism
+BLAS.set_num_threads(1)
+println("BLAS threads set to: $(BLAS.get_num_threads())")
+
+# MESF is computed by Python and cached as NPY files
+# No Julia MESF module needed - just load from cache
 
 # ============================================================================
 # DATA STRUCTURES - No globals, no special cases
@@ -31,71 +39,94 @@ end
 # DATA LOADING - Simple and direct
 # ============================================================================
 
-function load_data_with_mesf(data_path::String, spatial_step::Int, method::String)
-    # Load data
-    println("Loading data from: $data_path")
-    df = DataFrame(Arrow.Table(data_path), copycols=false)  # Don't copy, save memory
-    println("Loaded $(nrow(df)) rows")
+# Process DataFrame with MESF - expects already sampled data
+function process_with_mesf(df::DataFrame, method::String)
+    # Data is already sampled at load time if needed
     
-    # Sample if needed
-    if spatial_step > 1
-        df = df[1:spatial_step:end, :]
-        println("Sampled to $(nrow(df)) rows")
+    # Load MESF from Python cache BEFORE removing NaN
+    # (cache is for full sampled data with NaN)
+    println("Loading MESF from Python cache...")
+    
+    # Generate same cache key as Python: mesf_n{n}_k{enum}
+    n = nrow(df)
+    enum = 200  # Default from Python
+    cache_key = "mesf_n$(n)_k$(enum)"
+    cache_path = "/scratch/yl998/.cache/mesf/$(cache_key).npy"
+    
+    # Load the NPY file
+    if !isfile(cache_path)
+        error("MESF cache not found at: $cache_path. Run Python MESF computation first!")
     end
     
-    # Only convert necessary columns to Float32
-    println("Converting columns to Float32...")
-    important_cols = [:bio01, :bio04, :bio12, :bio15, :elevation,
-                      :am_fungi_richness, :ecm_fungi_richness,
-                      :plants_richness, :plant_richness,
-                      :vertebrates_richness, :animal_richness, :terrestrial_richness]
+    pca_components = npzread(cache_path)  # NPZ package already imported
+    println("MESF loaded from cache: $(size(pca_components)) matrix")
     
-    for col in important_cols
-        if col in propertynames(df) && eltype(df[!, col]) <: Number
-            df[!, col] = Float32.(df[!, col])
+    # Check dimensions
+    if size(pca_components, 1) != nrow(df)
+        error("MESF dimensions mismatch: $(size(pca_components, 1)) vs $(nrow(df)) data rows")
+    end
+    
+    # Now remove rows with NaN values in any column (keep only complete cases)
+    println("Removing rows with NaN values...")
+    n_before = nrow(df)
+    
+    # Check each column for NaN and keep only rows without any NaN
+    mask = trues(n_before)
+    for col in propertynames(df)
+        col_data = df[!, col]
+        # Handle both regular numbers and Union{Missing, Number} types
+        if eltype(col_data) <: Number || eltype(col_data) <: Union{Missing, <:Number}
+            # Use a more robust NaN check that handles Union types
+            for i in 1:length(col_data)
+                val = col_data[i]
+                if !ismissing(val) && isnan(val)
+                    mask[i] = false
+                end
+            end
         end
     end
     
-    # Load or compute MESF
-    cache_dir = "/scratch/yl998/.cache/mesf"
-    mesf_path = joinpath(cache_dir, "mesf_step$(spatial_step)_n10.npy")
+    # Apply mask to both DataFrame and MESF components
+    df = df[mask, :]
+    pca_components = pca_components[mask, :]  # Filter MESF to match!
+    
+    n_after = nrow(df)
+    println("Kept $(n_after) complete rows out of $(n_before) ($(round(100*n_after/n_before, digits=1))%)")
+    
+    # First preprocess data (without MESF since we don't have it yet)
+    println("Preprocessing data...")
+    df = preprocess_data(df, method, String[])
+    
+    # Use ALL MESF components from cache (no limiting)
+    n_mesf_available = size(pca_components, 2)
+    
+    # Add ALL MESF columns to dataframe (already standardized Float32 from cache)
     mesf_columns = String[]
-    
-    if isfile(mesf_path)
-        println("Loading cached MESF: $mesf_path ($(round(filesize(mesf_path)/1e9, digits=2)) GB)")
-        mesf_array = npzread(mesf_path)
-        n_mesf = size(mesf_array, 2)
-        println("Adding $n_mesf MESF columns...")
-        
-        # Check dimensions match
-        if size(mesf_array, 1) != nrow(df)
-            error("MESF dimensions mismatch: $(size(mesf_array, 1)) vs $(nrow(df)) data rows")
-        end
-        
-        for i in 1:n_mesf
-            df[!, Symbol("mesf_$i")] = Float32.(mesf_array[:, i])
-            push!(mesf_columns, "mesf_$i")
-        end
-        println("MESF columns added")
-    else
-        println("MESF not found at: $mesf_path")
-        # Compute MESF if needed - simplified
-        mesf_columns = compute_mesf(df, spatial_step)
+    for i in 1:n_mesf_available
+        col_name = "mesf_$i"
+        df[!, Symbol(col_name)] = pca_components[:, i]  # Direct assignment, already Float32
+        push!(mesf_columns, col_name)
     end
     
-    # Preprocess based on method
-    df = preprocess_data(df, method)
+    println("Added ALL $n_mesf_available standardized MESF components from cache")
     
     return df, mesf_columns
 end
 
-function preprocess_data(df::DataFrame, method::String)
-    # Remove missing - need to copy for mutation if Arrow-backed
-    if any(ismissing, Iterators.flatten(eachcol(df)))
-        df = dropmissing(df)  # Creates a copy without missing
+function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{String})
+    # Don't use dropmissing - it's too aggressive
+    # We'll handle NaN values per column as needed
+    
+    # Convert all numeric columns to Float32 using broadcast (more efficient)
+    println("Converting columns to Float32...")
+    for col in propertynames(df)
+        if eltype(df[!, col]) <: Number
+            # Use in-place broadcast for better memory efficiency
+            df[!, col] = Float32.(df[!, col])
+        end
     end
     
-    # Create fungi_richness
+    # Create fungi_richness (no NaN handling needed - already removed)
     df.fungi_richness = df.am_fungi_richness .+ df.ecm_fungi_richness
     
     # Standardize naming
@@ -108,15 +139,35 @@ function preprocess_data(df::DataFrame, method::String)
         df.vertebrates_richness = df.terrestrial_richness
     end
     
-    # Standardize climate (2SD method)
-    for var in [:bio01, :bio04, :bio12, :bio15, :elevation]
+    # Standardize all environmental variables (2SD method) using broadcast operations
+    env_vars = [:bio01, :bio04, :bio12, :bio15, :elevation,
+                :pet_mm_month, :sand_content_pct, :soil_organic_carbon, 
+                :soil_ph, :slope, :tpi]
+    
+    for var in env_vars
         if var in propertynames(df)
             col_std = Symbol(string(var) * "_std")
-            μ = mean(skipmissing(df[!, var]))
-            σ = std(skipmissing(df[!, var]))
-            df[!, col_std] = (df[!, var] .- μ) ./ (2σ)
+            col_data = df[!, var]
+            μ = mean(col_data)  # No NaN - already removed
+            σ = std(col_data)
+            # Single broadcast operation for standardization
+            df[!, col_std] = @. (col_data - μ) / (2σ)
         end
     end
+    
+    # Aspect is already decomposed into cos/sin, standardize those
+    for var in [:aspect_cos, :aspect_sin]
+        if var in propertynames(df)
+            col_std = Symbol(string(var) * "_std")
+            col_data = df[!, var]
+            μ = mean(col_data)
+            σ = std(col_data)
+            df[!, col_std] = @. (col_data - μ) / (2σ)
+        end
+    end
+    
+    # NOTE: MESF columns handled by MESF module (already standardized)
+    # No need to standardize them here
     
     # Add elevation squared
     df.elevation_std_sq = df.elevation_std .^ 2
@@ -128,58 +179,32 @@ function preprocess_data(df::DataFrame, method::String)
         
         # Add interaction term for DML (plants × vertebrates)
         # This aligns with the paper's recommendation for 2 treatments
-        df.plants_x_vertebrates = df.plants_richness .* df.vertebrates_richness
-        println("Added interaction term: plants_x_vertebrates for DML")
+        interaction = df.plants_richness .* df.vertebrates_richness
+        # Standardize the interaction term
+        df.plants_x_vertebrates_std = (interaction .- mean(interaction)) ./ (2 .* std(interaction))
+        # Keep unstandardized for backward compatibility
+        df.plants_x_vertebrates = interaction
+        println("Added and standardized interaction term: plants_x_vertebrates_std for DML")
     else
         # GLM needs integers and log transforms
         df.fungi_richness = round.(Int, df.fungi_richness)
-        df.plants_richness_log = log.(df.plants_richness .+ 1)
-        df.vertebrates_richness_log = log.(df.vertebrates_richness .+ 1)
+        
+        # Log transform first
+        plants_log = log.(df.plants_richness .+ 1)
+        vertebrates_log = log.(df.vertebrates_richness .+ 1)
+        
+        # Then standardize using 2SD method for fair comparison
+        df.plants_richness_log_std = (plants_log .- mean(plants_log)) ./ (2 .* std(plants_log))
+        df.vertebrates_richness_log_std = (vertebrates_log .- mean(vertebrates_log)) ./ (2 .* std(vertebrates_log))
+        
+        # Keep unstandardized versions for backward compatibility
+        df.plants_richness_log = plants_log
+        df.vertebrates_richness_log = vertebrates_log
+        
+        println("Log-transformed and standardized biotic predictors (2SD method)")
     end
     
     return df
-end
-
-function compute_mesf(df::DataFrame, spatial_step::Int)
-    # Validate spatial_step is reasonable
-    if spatial_step < 1 || spatial_step > 1000
-        error("Invalid spatial_step: must be between 1 and 1000")
-    end
-    
-    # Call Python MESF processor - use proper command array, not string interpolation
-    temp_path = "/tmp/temp_mesf_$(hash(df))_$(spatial_step).arrow"
-    Arrow.write(temp_path, df)
-    
-    mesf_processor = joinpath(@__DIR__, "mesf_processor.py")
-    cache_dir = "/scratch/yl998/.cache/mesf"
-    
-    # Proper command construction - Julia's backticks handle escaping correctly
-    # when variables are passed as separate arguments
-    python_exe = joinpath(homedir(), "anaconda3", "envs", "geo", "bin", "python")
-    cmd = Cmd([python_exe, mesf_processor, temp_path, 
-               "--spatial-step", string(spatial_step),
-               "--n-eigenvectors", "10",
-               "--n-jobs", "120", 
-               "--output-dir", cache_dir])
-    
-    output = read(cmd, String)
-    rm(temp_path, force=true)
-    
-    # Parse output to get file path
-    lines = split(strip(output), '\n')
-    mesf_file = strip(lines[end])
-    
-    # Load MESF
-    mesf_columns = String[]
-    if isfile(mesf_file)
-        mesf_array = npzread(mesf_file)
-        for i in 1:size(mesf_array, 2)
-            df[!, Symbol("mesf_$i")] = Float32.(mesf_array[:, i])
-            push!(mesf_columns, "mesf_$i")
-        end
-    end
-    
-    return mesf_columns
 end
 
 # ============================================================================
@@ -315,11 +340,16 @@ end
 function fit_method1(state::PipelineState)
     results = ModelResult[]
     
-    # Features
+    # Features - now includes all environmental variables
     climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
-    elevation = ["elevation_std", "elevation_std_sq"]
-    base = vcat(climate, elevation, state.mesf_columns)
-    biotic = ["plants_richness_log", "vertebrates_richness_log"]
+    soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
+    terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std", 
+               "aspect_cos_std", "aspect_sin_std"]
+    water = ["pet_mm_month_std"]
+    
+    # Combine all abiotic features
+    base = vcat(climate, soil, terrain, water, state.mesf_columns)
+    biotic = ["plants_richness_log_std", "vertebrates_richness_log_std"]
     
     # Null model
     formula_null = Term(:fungi_richness) ~ sum(Term.(Symbol.(base)))
@@ -358,24 +388,36 @@ function fit_method2(state::PipelineState)
     df.plant_high = Int.(df.plants_richness .> median_plants)
     
     df.temperate_x_plant_high = df.temperate .* df.plant_high
-    df.bio04_std_x_plants_log = df.bio04_std .* df.plants_richness_log
+    df.bio04_std_x_plants_log_std = df.bio04_std .* df.plants_richness_log_std
     
-    # Features
+    # Features - now includes all environmental variables
     climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
-    elevation = ["elevation_std", "elevation_std_sq"]
-    biodiv = ["plants_richness_log", "vertebrates_richness_log"]
-    base = vcat(climate, elevation, biodiv, state.mesf_columns)
+    soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
+    terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
+               "aspect_cos_std", "aspect_sin_std"]
+    water = ["pet_mm_month_std"]
+    biodiv = ["plants_richness_log_std", "vertebrates_richness_log_std"]
+    
+    # Combine all features
+    base = vcat(climate, soil, terrain, water, biodiv, state.mesf_columns)
     
     # Continuous interaction
-    cont_features = vcat(base, ["bio04_std_x_plants_log"])
+    cont_features = vcat(base, ["bio04_std_x_plants_log_std"])
     formula_cont = Term(:fungi_richness) ~ sum(Term.(Symbol.(cont_features)))
     model_cont = negbin(formula_cont, df, LogLink())
     push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics(model_cont, "method2_continuous", state)))
     
-    # Categorical interaction (keep continuous main effects, add ONLY interaction term)
+    # Categorical interaction - replace continuous bio04 and plants with categorical versions
+    # Remove bio04_std and plants_richness_log from base, add categorical versions
+    climate_cat = ["bio01_std", "bio12_std", "bio15_std"]  # Removed bio04_std
+    biodiv_cat = ["vertebrates_richness_log_std"]  # Removed plants_richness_log
+    
+    base_cat = vcat(climate_cat, soil, terrain, water, biodiv_cat, state.mesf_columns)
+    
+    # Add categorical main effects and interaction
     cat_features = vcat(
-        base,  # Keep all base features including bio04_std and plants_richness_log
-        ["temperate_x_plant_high"]  # ONLY the interaction, no main effects
+        base_cat,
+        ["temperate", "plant_high", "temperate_x_plant_high"]  # Categorical main effects + interaction
     )
     formula_cat = Term(:fungi_richness) ~ sum(Term.(Symbol.(cat_features)))
     model_cat = negbin(formula_cat, df, LogLink())
@@ -400,17 +442,21 @@ function fit_method3_dml(state::PipelineState)
         end
     end
     
-    # Setup
+    # Setup - now includes all environmental variables as confounders
     climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
-    elevation = ["elevation_std", "elevation_std_sq"]
-    confounders = vcat(climate, elevation, state.mesf_columns)
+    soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
+    terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
+               "aspect_cos_std", "aspect_sin_std"]
+    water = ["pet_mm_month_std"]
+    
+    confounders = vcat(climate, soil, terrain, water, state.mesf_columns)
     
     # Include interaction term as per DML paper recommendation for 2 treatments
     # The paper notation: A = [a, b], A° = [a×b]
     treatments = Dict(
         "plants" => "plants_richness",
         "vertebrates" => "vertebrates_richness",
-        "plants_x_vertebrates" => "plants_x_vertebrates"  # Interaction term
+        "plants_x_vertebrates" => "plants_x_vertebrates_std"  # Standardized interaction term
     )
     
     # Fit DML
@@ -557,7 +603,28 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
     println("Loading data for $method")
     println("="^60)
     
-    data, mesf_columns = load_data_with_mesf(data_path, spatial_step, method)
+    # Load data once at the pipeline level
+    println("Loading data from: $data_path")
+    
+    # For Arrow files, we can't filter rows during read, but we can use memory mapping
+    arrow_table = Arrow.Table(data_path)
+    
+    # If sampling needed, create row indices first
+    if spatial_step > 1
+        # Use first column to get row count (length(arrow_table) returns column count!)
+        total_rows = length(arrow_table[1])
+        row_indices = 1:spatial_step:total_rows
+        println("Loading $(length(row_indices)) of $(total_rows) rows (step=$spatial_step)")
+        # Create DataFrame with only selected rows
+        df_raw = DataFrame(arrow_table)[row_indices, :]
+    else
+        total_rows = length(arrow_table[1])
+        println("Loading all $(total_rows) rows")
+        df_raw = DataFrame(arrow_table, copycols=false)
+    end
+    
+    # Process with MESF
+    data, mesf_columns = process_with_mesf(df_raw, method)  # Already sampled if needed
     
     # Create state
     state = PipelineState(
@@ -629,23 +696,17 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         
         # LRT comparisons - both models are now properly nested
         if haskey(all_models, "method1_full")
-            # Compare continuous interaction model
+            # Compare continuous interaction model (nested - adds interaction term)
             lrt_a = lrtest(all_models["method1_full"], all_models["method2_continuous"])
-            all_results["lrt_method1_vs_method2a"] = Dict(
+            all_results["lrt_method1_vs_method2_continuous"] = Dict(
                 "lr_statistic" => lrt_a.deviance[2],
                 "df" => lrt_a.dof[2],
                 "p_value" => lrt_a.pval[2],
                 "comparison" => "method1_full vs method2_continuous (adds continuous interaction)"
             )
             
-            # Compare categorical interaction model  
-            lrt_b = lrtest(all_models["method1_full"], all_models["method2_categorical"])
-            all_results["lrt_method1_vs_method2b"] = Dict(
-                "lr_statistic" => lrt_b.deviance[2],
-                "df" => lrt_b.dof[2],
-                "p_value" => lrt_b.pval[2],
-                "comparison" => "method1_full vs method2_categorical (adds categorical interaction)"
-            )
+            # Cannot compare categorical model - not nested (different parameterization)
+            # Method2_categorical replaces continuous vars with categorical, so LRT is invalid
         end
         
     elseif method in ["method3", "dml"]
