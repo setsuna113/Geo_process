@@ -1,18 +1,16 @@
 """
-DML Diagnostics Module
-Comprehensive diagnostics for Double Machine Learning models
+EconML Diagnostics Module
+Real diagnostics based on actual EconML public API
 """
 
-from .core_diagnostics import DMLDiagnostics
-from .residual_analysis import ResidualAnalyzer
-from .nuisance_diagnostics import NuisanceDiagnostics
-from .visualization import DiagnosticPlotter
-from .report_generator import DiagnosticReport
+from .core import (
+    EconMLDiagnostics,
+    run_full_diagnostics
+)
 
 __all__ = [
-    'DMLDiagnostics',
-    'ResidualAnalyzer',
-    'NuisanceDiagnostics',
-    'DiagnosticPlotter',
-    'DiagnosticReport'
+    'EconMLDiagnostics',
+    'run_full_diagnostics'
 ]
+
+__version__ = '1.0.0'
