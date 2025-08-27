@@ -1,17 +1,8 @@
 # Statistical Analysis Configuration
 # Single unified configuration for biodiversity statistical methods
 
-# Sampling configuration - PRODUCTION MODE (for publication quality)
-sampling:
-  enabled: false  # NO SAMPLING - use full 51M points for publication quality
-  method: none    # Options: none, spatial, random
-  
-  # Spatial sampling settings (if enabled)
-  spatial_step: 100  # Every 100th pixel (only used if enabled)
-  
-  # Random sampling settings (if enabled)
-  n_samples: 100000
-  random_seed: 42
+# Sampling configuration - DISABLED for publication quality
+# ALL sampling logic removed - use full resolution data
 
 # Method enable/disable settings
 methods:

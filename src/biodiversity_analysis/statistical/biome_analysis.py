@@ -50,13 +50,15 @@ def analyze_by_biome(
     
     # Convert BiodiversityData to DataFrame if needed
     if not isinstance(df, pd.DataFrame):
-        # Handle BiodiversityData object
-        if hasattr(df, 'features') and hasattr(df, 'coordinates'):
+        # Import the proper type for strict checking
+        from src.abstractions.types.biodiversity_types import BiodiversityData
+        
+        if isinstance(df, BiodiversityData):
             df_dict = {
                 'x': df.coordinates[:, 0],
                 'y': df.coordinates[:, 1]
             }
-            # Add features with standardized names (already standardized in loader)
+            # Add features with standardized names
             for i, name in enumerate(df.feature_names):
                 df_dict[name] = df.features[:, i]
             df = pd.DataFrame(df_dict)
