@@ -35,7 +35,7 @@ class ProcessorDependencies:
     signal_handler: Optional[Any] = None  # Type hint avoided to prevent circular imports
     progress_manager: Optional[Any] = None  # Type hint avoided to prevent circular imports
     event_bus: Optional[Any] = None  # Type hint avoided to prevent circular imports
-    database_schema: Optional[Any] = None  # Type hint avoided to prevent circular imports
+    schema: Optional[Any] = None  # Generic schema for data structure
     checkpoint_manager: Optional[Any] = None  # Type hint avoided to prevent circular imports
     config: Optional[Any] = None  # Type hint avoided to prevent circular imports
     
@@ -61,9 +61,9 @@ class ProcessorDependencies:
         self.event_bus = bus
         return self
     
-    def with_database_schema(self, schema) -> 'ProcessorDependencies':
-        """Builder method to set database schema."""
-        self.database_schema = schema
+    def with_schema(self, schema) -> 'ProcessorDependencies':
+        """Builder method to set schema."""
+        self.schema = schema
         return self
     
     def with_config(self, config) -> 'ProcessorDependencies':
@@ -129,7 +129,7 @@ class ProcessorBuilder:
             signal_handler=self.dependencies.signal_handler,
             progress_manager=self.dependencies.progress_manager,
             event_bus=self.dependencies.event_bus,
-            database_schema=self.dependencies.database_schema,
+            database_schema=self.dependencies.schema,
             config=self.dependencies.config,
             **self.custom_kwargs
         )
@@ -305,7 +305,7 @@ class BaseProcessor(ABC):
         self._progress_node_id: Optional[str] = None
         
         # Database operations - using dependency injection
-        self._database_schema = dependencies.database_schema
+        self._schema = dependencies.schema
         
         # NEW: Checkpoint management
         self.enable_checkpoints = processor_config.enable_checkpoints

@@ -27,9 +27,7 @@ Compatibility:
 
 Usage Example:
     from src.base import BaseProcessor
-    from src.core import component_registry
     
-    @component_registry.processors.register_decorator()
     class SpeciesProcessor(BaseProcessor):
         def process_single(self, species_data):
             # Process single species record

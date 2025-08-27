@@ -44,6 +44,9 @@ class ModelComparison:
         aics = []
         bics = []
         deviances = []
+        null_deviances = []
+        logliks = []
+        null_logliks = []
         n_params_list = []
         
         # Track n_observations from first model for threshold calculation
@@ -55,6 +58,9 @@ class ModelComparison:
                 aic = model.get('aic')
                 bic = model.get('bic')
                 deviance = model.get('deviance')
+                null_deviance = model.get('null_deviance')
+                loglik = model.get('loglik')
+                null_loglik = model.get('null_loglik')
                 # Standardize to n_parameters
                 n_params = model.get('n_parameters', model.get('n_params'))
                 # Standardize to n_observations
@@ -64,6 +70,9 @@ class ModelComparison:
                 aic = getattr(model, 'aic', None)
                 bic = getattr(model, 'bic', None)
                 deviance = getattr(model, 'deviance', None)
+                null_deviance = getattr(model, 'null_deviance', None)
+                loglik = getattr(model, 'loglik', None)
+                null_loglik = getattr(model, 'null_loglik', None)
                 n_params = getattr(model, 'n_parameters', getattr(model, 'n_params', None))
                 n_obs = getattr(model, 'n_observations', getattr(model, 'n_obs', None))
                 
@@ -71,6 +80,9 @@ class ModelComparison:
                 if callable(aic): aic = aic()
                 if callable(bic): bic = bic()
                 if callable(deviance): deviance = deviance()
+                if callable(null_deviance): null_deviance = null_deviance()
+                if callable(loglik): loglik = loglik()
+                if callable(null_loglik): null_loglik = null_loglik()
             
             # Store n_observations from first model that has it
             if n_observations is None and n_obs is not None:
@@ -79,13 +91,40 @@ class ModelComparison:
             aics.append(aic)
             bics.append(bic)
             deviances.append(deviance)
+            null_deviances.append(null_deviance)
+            logliks.append(loglik)
+            null_logliks.append(null_loglik)
             n_params_list.append(n_params)
+            
+            # Calculate R-squared values if we have the necessary data
+            mcfadden_r2 = None
+            deviance_r2 = None
+            nagelkerke_r2 = None
+            
+            if loglik is not None and null_loglik is not None:
+                # McFadden's R² = 1 - (log likelihood_model / log likelihood_null)
+                mcfadden_r2 = ModelComparison.calculate_mcfadden_r2(loglik, null_loglik)
+                
+                # Nagelkerke's R² - scaled version that can reach 1
+                if n_obs is not None:
+                    nagelkerke_r2 = ModelComparison.calculate_nagelkerke_r2(loglik, null_loglik, n_obs)
+            
+            if deviance is not None and null_deviance is not None:
+                # Deviance-based R² = 1 - (residual deviance / null deviance)
+                deviance_r2 = ModelComparison.calculate_deviance_r2(deviance, null_deviance)
             
             results['models'][name] = {
                 'aic': aic,
                 'bic': bic,
                 'deviance': deviance,
-                'n_parameters': n_params
+                'null_deviance': null_deviance,
+                'loglik': loglik,
+                'null_loglik': null_loglik,
+                'n_parameters': n_params,
+                'n_observations': n_obs,
+                'mcfadden_r2': mcfadden_r2,
+                'deviance_r2': deviance_r2,
+                'nagelkerke_r2': nagelkerke_r2
             }
         
         # Calculate delta values (difference from best) with error handling
@@ -148,6 +187,28 @@ class ModelComparison:
                     delta = results['models'][name].get('delta_aic', 0)
                     results['models'][name]['meaningful_difference'] = delta > threshold
         
+        # Calculate improvement metrics if we have null and full models
+        if 'null' in results['models'] and 'full' in results['models']:
+            null_model = results['models']['null']
+            full_model = results['models']['full']
+            results['improvement'] = {}
+            
+            # Calculate percent improvement in R² metrics
+            if null_model.get('mcfadden_r2') is not None and full_model.get('mcfadden_r2') is not None:
+                mcfadden_improvement = full_model['mcfadden_r2'] - null_model['mcfadden_r2']
+                results['improvement']['mcfadden_r2'] = mcfadden_improvement
+                results['improvement']['mcfadden_r2_pct'] = mcfadden_improvement * 100
+            
+            if null_model.get('deviance_r2') is not None and full_model.get('deviance_r2') is not None:
+                deviance_improvement = full_model['deviance_r2'] - null_model['deviance_r2']
+                results['improvement']['deviance_r2'] = deviance_improvement
+                results['improvement']['deviance_r2_pct'] = deviance_improvement * 100
+            
+            if null_model.get('nagelkerke_r2') is not None and full_model.get('nagelkerke_r2') is not None:
+                nagelkerke_improvement = full_model['nagelkerke_r2'] - null_model['nagelkerke_r2']
+                results['improvement']['nagelkerke_r2'] = nagelkerke_improvement
+                results['improvement']['nagelkerke_r2_pct'] = nagelkerke_improvement * 100
+        
         # Create summary table DataFrame
         results['summary_table'] = ModelComparison.create_comparison_table(results)
         
@@ -191,6 +252,81 @@ class ModelComparison:
         return np.exp(delta_ic / 2)
     
     @staticmethod
+    def calculate_mcfadden_r2(loglik: float, null_loglik: float) -> float:
+        """Calculate McFadden's R² (log-likelihood based pseudo R²).
+        
+        McFadden's R² = 1 - (log likelihood_model / log likelihood_null)
+        
+        This is the original and most commonly used pseudo R² for GLMs.
+        Values range from 0 to 1, with higher values indicating better fit.
+        Values of 0.2-0.4 are considered excellent for GLMs.
+        
+        Args:
+            loglik: Model log-likelihood
+            null_loglik: Null model log-likelihood
+            
+        Returns:
+            McFadden's R² value
+        """
+        if null_loglik == 0:
+            return np.nan
+        return 1 - (loglik / null_loglik)
+    
+    @staticmethod
+    def calculate_deviance_r2(deviance: float, null_deviance: float) -> float:
+        """Calculate deviance-based R².
+        
+        Deviance R² = 1 - (residual deviance / null deviance)
+        
+        Alternative pseudo R² formulation using deviances directly.
+        Often equivalent to McFadden's R² but calculated differently.
+        
+        Args:
+            deviance: Model residual deviance
+            null_deviance: Null model deviance
+            
+        Returns:
+            Deviance-based R² value
+        """
+        if null_deviance == 0:
+            return np.nan
+        return 1 - (deviance / null_deviance)
+    
+    @staticmethod
+    def calculate_nagelkerke_r2(loglik: float, null_loglik: float, n_obs: int) -> float:
+        """Calculate Nagelkerke's R² (scaled pseudo R²).
+        
+        Nagelkerke's R² = (1 - (L₀/L₁)^(2/n)) / (1 - L₀^(2/n))
+        
+        Where L₀ and L₁ are likelihood ratios (not log-likelihoods).
+        This is a scaled version of Cox & Snell R² that can reach 1.
+        
+        Args:
+            loglik: Model log-likelihood
+            null_loglik: Null model log-likelihood  
+            n_obs: Number of observations
+            
+        Returns:
+            Nagelkerke's R² value
+        """
+        if n_obs == 0:
+            return np.nan
+            
+        # Calculate Cox & Snell R²
+        # R²_CS = 1 - exp((2/n) * (LL_null - LL_model))
+        cox_snell = 1 - np.exp((2 / n_obs) * (null_loglik - loglik))
+        
+        # Calculate maximum possible Cox & Snell R²
+        # R²_max = 1 - exp((2/n) * LL_null) = 1 - L₀^(2/n)
+        max_cox_snell = 1 - np.exp((2 / n_obs) * null_loglik)
+        
+        if max_cox_snell == 0:
+            return np.nan
+            
+        # Nagelkerke's R² = Cox & Snell R² / maximum possible Cox & Snell R²
+        return cox_snell / max_cox_snell
+    
+    @staticmethod
     def create_comparison_table(results: Dict[str, Any]) -> pd.DataFrame:
         """Create summary table from comparison results.
         
@@ -209,6 +345,9 @@ class ModelComparison:
                 'AIC Weight': results['weights'].get(name, {}).get('aic_weight', np.nan),
                 'BIC': metrics.get('bic', np.nan),
                 'ΔBIC': metrics.get('delta_bic', np.nan),
+                'McFadden R²': metrics.get('mcfadden_r2', np.nan),
+                'Deviance R²': metrics.get('deviance_r2', np.nan),
+                'Nagelkerke R²': metrics.get('nagelkerke_r2', np.nan),
                 'Parameters': metrics.get('n_parameters', np.nan)
             }
             rows.append(row)

@@ -17,31 +17,21 @@ from typing import Dict, Any, List, Optional, Union, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Check if rpy2 is available
-try:
-    import rpy2.robjects as ro
-    from rpy2.robjects import pandas2ri, numpy2ri
-    from rpy2.robjects.packages import importr
-    from rpy2.robjects.conversion import localconverter
-    
-    # Add user R library path for emmeans
-    ro.r('.libPaths(c("~/R/libs", .libPaths()))')
-    
-    # Create converter for pandas and numpy
-    pandas_numpy_converter = ro.default_converter + pandas2ri.converter + numpy2ri.converter
-    
-    # Try to import emmeans
-    try:
-        emmeans_pkg = importr('emmeans')
-        R_AVAILABLE = True
-        logger.info("R emmeans package loaded successfully")
-    except Exception as e:
-        R_AVAILABLE = False
-        logger.warning(f"R emmeans package not available: {e}")
-except (ImportError, Exception) as e:
-    logger.warning(f"rpy2 not available or failed to initialize: {e}")
-    R_AVAILABLE = False
-    pandas_numpy_converter = None
+# R is REQUIRED - no fallbacks!
+import rpy2.robjects as ro
+from rpy2.robjects import pandas2ri, numpy2ri
+from rpy2.robjects.packages import importr
+from rpy2.robjects.conversion import localconverter
+
+# Add user R library path for emmeans - emmeans is in ~/R/libs/
+ro.r('.libPaths(c("~/R/libs", .libPaths()))')
+
+# Create converter for pandas and numpy
+pandas_numpy_converter = ro.default_converter + pandas2ri.converter + numpy2ri.converter
+
+# Import emmeans - REQUIRED!
+emmeans_pkg = importr('emmeans')
+logger.info("R emmeans package loaded successfully")
 
 
 class REMmeansWrapper:
@@ -71,8 +61,7 @@ class REMmeansWrapper:
             link: Link function (identity, log, logit, etc.)
             df_residual: Residual degrees of freedom
         """
-        if not R_AVAILABLE:
-            raise ImportError("rpy2 is required for R emmeans. Install with: pip install rpy2")
+        # R is REQUIRED - no checking needed, will fail at import if not available
         
         self.coefficients = coefficients
         self.vcov_matrix = vcov_matrix
@@ -515,135 +504,38 @@ class REMmeansWrapper:
         ])
 
 
-class SimpleEMmeansApproximation:
-    """
-    Fallback EMMs calculation when R is not available.
-    
-    WARNING: This provides only point estimates without proper standard errors.
-    Should only be used for exploratory analysis, not hypothesis testing.
-    """
-    
-    def __init__(
-        self,
-        coefficients: np.ndarray,
-        coefficient_names: List[str],
-        data: pd.DataFrame,
-        formula: str
-    ):
-        """
-        Initialize simple approximation.
-        
-        Args:
-            coefficients: Model coefficients
-            coefficient_names: Names of coefficients
-            data: Original data
-            formula: Model formula (for reference)
-        """
-        self.coefficients = dict(zip(coefficient_names, coefficients))
-        self.data = data
-        self.formula = formula
-        
-        logger.warning(
-            "Using simplified EMMs approximation without R. "
-            "Results lack proper standard errors and are not suitable for hypothesis testing."
-        )
-    
-    def compute_emmeans_2x2(
-        self,
-        factor1: str = 'plant_high',
-        factor2: str = 'temperate'
-    ) -> Dict[str, Any]:
-        """
-        Compute approximate EMMs for 2x2 design.
-        
-        Args:
-            factor1: First factor
-            factor2: Second factor
-            
-        Returns:
-            Dictionary with approximate EMMs (no standard errors)
-        """
-        # Get covariate means
-        covariates = [col for col in self.data.columns 
-                     if col not in [factor1, factor2, 'fungi_richness']]
-        covariate_means = self.data[covariates].mean()
-        
-        results = {}
-        
-        for f1_val in [0, 1]:
-            for f2_val in [0, 1]:
-                # Build prediction point
-                pred_point = covariate_means.to_dict()
-                pred_point[factor1] = f1_val
-                pred_point[factor2] = f2_val
-                
-                # Manual prediction using coefficients
-                emmean = self.coefficients.get('Intercept', 0)
-                
-                for var, value in pred_point.items():
-                    if var in self.coefficients:
-                        emmean += self.coefficients[var] * value
-                
-                # Check for interaction term
-                interaction_key = f"{factor1}:{factor2}"
-                if interaction_key in self.coefficients:
-                    emmean += self.coefficients[interaction_key] * f1_val * f2_val
-                
-                group_label = f"group_{f1_val}_{f2_val}"
-                results[group_label] = {
-                    'emmean': float(emmean),
-                    'SE': None,  # Not available without proper calculation
-                    'warning': 'No standard errors - approximation only',
-                    factor1: f1_val,
-                    factor2: f2_val
-                }
-        
-        return results
-
-
 def create_emmeans_from_h2o(
     h2o_model,
     vcov_info: Dict[str, Any],
     data: pd.DataFrame,
-    formula: str,
-    use_r: bool = True
-) -> Union[REMmeansWrapper, SimpleEMmeansApproximation]:
+    formula: str
+) -> REMmeansWrapper:
     """
-    Factory function to create appropriate EMMs calculator.
+    Create REMmeansWrapper for EMMs calculation.
+    
+    R and emmeans package are REQUIRED - no fallbacks!
     
     Args:
         h2o_model: H2O GLM model
         vcov_info: Output from vcov_extractor.get_vcov_for_emmeans()
         data: Original data as pandas DataFrame
         formula: Model formula
-        use_r: Whether to use R emmeans (if False, uses approximation)
         
     Returns:
-        Either REMmeansWrapper or SimpleEMmeansApproximation
+        REMmeansWrapper instance
     """
-    if use_r and R_AVAILABLE:
-        # Extract model family and link
-        family = h2o_model.actual_params.get('family', 'gaussian')
-        link = h2o_model.actual_params.get('link', 'identity')
-        df_residual = h2o_model.residual_degrees_of_freedom()
-        
-        return REMmeansWrapper(
-            coefficients=vcov_info['coefficients'],
-            vcov_matrix=vcov_info['vcov_matrix'],
-            coefficient_names=vcov_info['coefficient_names'],
-            data=data,
-            formula=formula,
-            family=family,
-            link=link,
-            df_residual=df_residual
-        )
-    else:
-        if use_r and not R_AVAILABLE:
-            logger.warning("R requested but not available, falling back to approximation")
-        
-        return SimpleEMmeansApproximation(
-            coefficients=vcov_info['coefficients'],
-            coefficient_names=vcov_info['coefficient_names'],
-            data=data,
-            formula=formula
-        )
+    # Extract model family and link
+    family = h2o_model.actual_params.get('family', 'gaussian')
+    link = h2o_model.actual_params.get('link', 'identity')
+    df_residual = h2o_model.residual_degrees_of_freedom()
+    
+    return REMmeansWrapper(
+        coefficients=vcov_info['coefficients'],
+        vcov_matrix=vcov_info['vcov_matrix'],
+        coefficient_names=vcov_info['coefficient_names'],
+        data=data,
+        formula=formula,
+        family=family,
+        link=link,
+        df_residual=df_residual
+    )

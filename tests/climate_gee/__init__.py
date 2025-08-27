@@ -1,1 +1,0 @@
-"""Test package for climate_gee module."""
