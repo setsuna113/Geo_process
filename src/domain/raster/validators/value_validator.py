@@ -18,7 +18,7 @@ class ValueValidator:
         self.expected_ranges = {
             'plants': (0, 20000),      # Max ~15000 in tropics
             'vertebrates': (0, 2000),   # Max ~1500 in tropics
-            'animals': (0, 5000),      # Combined terrestrial animals (formerly terrestrial)
+            'animals': (0, 5000),      # Combined animals
             'marine': (0, 3000)         # Marine species
         }
     

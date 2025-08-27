@@ -10,15 +10,16 @@ from typing import Dict, Any, Union
 import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results
+from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 logger = logging.getLogger(__name__)
 
 
 def analyze_coverage(
     data: Dict[str, np.ndarray],
-    output_dir: Union[str, Path],
+    output_dir: Path,
     **kwargs  # Ignore extra config
-) -> Dict[str, Any]:
+) -> MethodResult:
     """
     Analyze data coverage - SIMPLE version.
     
@@ -29,7 +30,7 @@ def analyze_coverage(
         output_dir: Output directory
         
     Returns:
-        Coverage statistics
+        MethodResult with coverage statistics
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -58,8 +59,7 @@ def analyze_coverage(
         
         results['datasets'][name] = stats
         
-        logger.info(f"{name}: {valid_pixels:,}/{total_pixels:,} pixels "
-                   f"({stats['coverage_percent']:.1f}% coverage)")
+        # Record: {name}: {valid_pixels:,}/{total_pixels:,} pixels ({coverage_percent}%)
     
     # Summary statistics
     n_datasets = len(results['datasets'])
@@ -82,4 +82,9 @@ def analyze_coverage(
     # Save results
     save_results(results, output_dir / 'coverage_results.json')
     
-    return results
+    return MethodResult(
+        success=True,
+        method='coverage',
+        output_dir=output_dir,
+        metrics=results
+    )

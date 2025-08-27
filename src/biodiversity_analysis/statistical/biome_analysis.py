@@ -12,28 +12,35 @@ from typing import Dict, Any, Union
 import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results
-from src.biodiversity_analysis.statistical.holdridge_classifier import (
-    classify_holdridge, get_altitudinal_belt, holdridge_to_wwf
+from src.biodiversity_analysis.statistical.holdridge_correct import (
+    classify_holdridge_correct as classify_holdridge
+)
+from src.biodiversity_analysis.statistical.holdridge_proper import (
+    get_altitudinal_belt, 
+    holdridge_to_wwf
+)
+from src.biodiversity_analysis.statistical.data_schema import DataSchema
+from src.biodiversity_analysis.statistical.result_types import MethodResult
+from src.biodiversity_analysis.statistical.optimized_visualization import (
+    precompute_boxplot_stats, plot_from_stats
 )
 
 logger = logging.getLogger(__name__)
 
 
 def analyze_by_biome(
-    df: pd.DataFrame,
-    output_dir: Union[str, Path],
-    chunk_size: int = 100000,
+    df: Any,
+    output_dir: Path,
     **kwargs
-) -> Dict[str, Any]:
+) -> MethodResult:
     """
     Analyze biodiversity data grouped by biome.
     
-    ONE input type: DataFrame. That's it.
+    NO SAMPLING. Use what pipeline gives us.
     
     Args:
         df: DataFrame with biodiversity and climate data
         output_dir: Output directory
-        chunk_size: Max rows to process (for sampling)
         
     Returns:
         Biome-grouped statistics
@@ -41,40 +48,45 @@ def analyze_by_biome(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Sample if needed for performance
-    if chunk_size and len(df) > chunk_size:
-        df = df.sample(n=chunk_size, random_state=42)
-        logger.info(f"Sampled {chunk_size:,} points for biome analysis")
+    # Convert BiodiversityData to DataFrame if needed
+    if not isinstance(df, pd.DataFrame):
+        # Handle BiodiversityData object
+        if hasattr(df, 'features') and hasattr(df, 'coordinates'):
+            df_dict = {
+                'x': df.coordinates[:, 0],
+                'y': df.coordinates[:, 1]
+            }
+            # Add features with standardized names (already standardized in loader)
+            for i, name in enumerate(df.feature_names):
+                df_dict[name] = df.features[:, i]
+            df = pd.DataFrame(df_dict)
+            logger.info(f"Converted BiodiversityData to DataFrame with {len(df)} rows")
+        else:
+            raise TypeError(f"biome_analysis expects DataFrame or BiodiversityData, got {type(df).__name__}")
     
-    # Check required columns - NO try-except bullshit
-    required_climate = ['bio01', 'bio12']
-    if not all(col in df.columns for col in required_climate):
-        raise ValueError(f"Missing required climate columns: {required_climate}")
+    # Validate and complete schema ONCE
+    df = DataSchema.validate(df, 'biome_analysis')
     
-    # Get biodiversity columns - whatever we have
-    biodiv_cols = []
-    for col in ['animal_richness', 'plant_richness', 'am_fungi_richness', 'ecm_fungi_richness']:
-        if col in df.columns:
-            biodiv_cols.append(col)
+    # Now we TRUST the schema - no more checks
+    biodiv_cols = DataSchema.get_biodiversity_columns(df)
     
-    if not biodiv_cols:
-        raise ValueError("No biodiversity columns found in DataFrame")
+    logger.info(f"Analyzing {len(df):,} points for biome classification")
+    logger.info(f"Biodiversity columns: {biodiv_cols}")
     
-    logger.info(f"Analyzing {len(biodiv_cols)} biodiversity columns across biomes")
-    
-    # Classify biomes using Holdridge
+    # Classify biomes - check if optional columns exist
     temp_celsius = df['bio01'].values / 10.0  # Convert from °C*10 to °C
     precip_mm = df['bio12'].values
     
-    # Use elevation if available, otherwise assume sea level
+    # Use elevation if available, otherwise use 0 (sea level)
     elevation_m = df['elevation'].values if 'elevation' in df.columns else np.zeros(len(df))
-    latitude = df['y'].values if 'y' in df.columns else None
     
-    df['biome'] = classify_holdridge(temp_celsius, precip_mm, elevation_m, latitude)
+    # Require latitude for proper biome classification
+    if 'y' not in df.columns:
+        raise ValueError("Biome analysis requires latitude ('y' column)")
+    latitude = df['y'].values
     
-    # Add altitudinal belt if we have both elevation and coordinates
-    if 'elevation' in df.columns and 'y' in df.columns:
-        df['altitude_belt'] = get_altitudinal_belt(elevation_m, df['y'].values)
+    df['biome'] = classify_holdridge(temp_celsius, precip_mm, elevation_m)
+    df['altitude_belt'] = get_altitudinal_belt(elevation_m, latitude)
     
     # Group by biome and calculate statistics
     results = {
@@ -110,39 +122,37 @@ def analyze_by_biome(
                     }
             results['by_biome'][biome] = biome_stats
     
-    # By altitude belt (if available)
-    if 'altitude_belt' in df.columns:
-        for belt, group in df.groupby('altitude_belt'):
-            if len(group) > 0:
-                belt_stats = {'count': int(len(group))}
-                for col in biodiv_cols:
-                    valid_data = group[col].dropna()
-                    if len(valid_data) > 0:
-                        belt_stats[col] = {
-                            'mean': float(valid_data.mean()),
-                            'std': float(valid_data.std()),
-                            'count': int(len(valid_data))
-                        }
-                results['by_altitude'][belt] = belt_stats
-    
-    # Biome-altitude matrix (if both available)
-    if 'altitude_belt' in df.columns:
-        for biome in df['biome'].unique():
-            biome_data = df[df['biome'] == biome]
-            matrix = {}
-            for belt in biome_data['altitude_belt'].unique():
-                belt_data = biome_data[biome_data['altitude_belt'] == belt]
-                if len(belt_data) > 0:
-                    matrix[belt] = {
-                        'count': int(len(belt_data)),
-                        'mean_richness': {}
+    # By altitude belt - we KNOW this column exists
+    for belt, group in df.groupby('altitude_belt'):
+        if len(group) > 0:
+            belt_stats = {'count': int(len(group))}
+            for col in biodiv_cols:
+                valid_data = group[col].dropna()
+                if len(valid_data) > 0:
+                    belt_stats[col] = {
+                        'mean': float(valid_data.mean()),
+                        'std': float(valid_data.std()),
+                        'count': int(len(valid_data))
                     }
-                    for col in biodiv_cols:
-                        valid = belt_data[col].dropna()
-                        if len(valid) > 0:
-                            matrix[belt]['mean_richness'][col] = float(valid.mean())
-            if matrix:
-                results['biome_altitude_matrix'][biome] = matrix
+            results['by_altitude'][belt] = belt_stats
+    
+    # Biome-altitude matrix
+    for biome in df['biome'].unique():
+        biome_data = df[df['biome'] == biome]
+        matrix = {}
+        for belt in biome_data['altitude_belt'].unique():
+            belt_data = biome_data[biome_data['altitude_belt'] == belt]
+            if len(belt_data) > 0:
+                matrix[belt] = {
+                    'count': int(len(belt_data)),
+                    'mean_richness': {}
+                }
+                for col in biodiv_cols:
+                    valid = belt_data[col].dropna()
+                    if len(valid) > 0:
+                        matrix[belt]['mean_richness'][col] = float(valid.mean())
+        if matrix:
+            results['biome_altitude_matrix'][biome] = matrix
     
     # Add WWF biome mapping for reference
     results['biome_mapping'] = {}
@@ -164,7 +174,12 @@ def analyze_by_biome(
     if kwargs.get('plot', True):
         _plot_biome_analysis(df, biodiv_cols, output_dir)
     
-    return results
+    return MethodResult(
+        success=True,
+        method='biome_analysis',
+        output_dir=output_dir,
+        metrics=results
+    )
 
 
 def _plot_biome_analysis(df: pd.DataFrame, biodiv_cols: list, output_dir: Path):
@@ -182,20 +197,33 @@ def _plot_biome_analysis(df: pd.DataFrame, biodiv_cols: list, output_dir: Path):
     
     for i, col in enumerate(biodiv_cols[:4]):  # Max 4 plots
         if i < len(axes):
-            # Order biomes by median richness
-            biome_order = df.groupby('biome')[col].median().sort_values(ascending=False).index
+            # Pre-compute statistics for MILLIONS of points efficiently
+            logger.info(f"Computing boxplot statistics for {col} with {len(df):,} points")
             
-            # Create boxplot
-            bp = axes[i].boxplot(
-                [df[df['biome'] == b][col].dropna() for b in biome_order],
-                labels=biome_order,
-                patch_artist=True
-            )
+            # Group by biome and collect data
+            biome_groups = df.groupby('biome')[col]
+            data_groups = []
+            labels = []
             
-            # Color boxes
-            colors = plt.cm.viridis(np.linspace(0, 1, len(biome_order)))
-            for patch, color in zip(bp['boxes'], colors):
-                patch.set_facecolor(color)
+            for biome, group in biome_groups:
+                values = group.dropna().values
+                if len(values) > 0:
+                    data_groups.append(values)
+                    labels.append(biome)
+            
+            # Pre-compute statistics (fast for any data size)
+            stats = precompute_boxplot_stats(data_groups, labels)
+            
+            # Order by median
+            ordered_stats = dict(sorted(stats.items(), 
+                                      key=lambda x: x[1]['median'] if x[1] else -np.inf,
+                                      reverse=True))
+            
+            # Plot from pre-computed statistics (instant!)
+            plot_from_stats(axes[i], ordered_stats, patch_artist=True)
+            
+            # Color boxes based on ordered stats (skip coloring for now)
+            # colors = plt.cm.viridis(np.linspace(0, 1, len(ordered_stats)))
             
             axes[i].set_xlabel('Biome')
             axes[i].set_ylabel(f'{col.replace("_", " ").title()}')

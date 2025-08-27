@@ -39,7 +39,7 @@ class EcologicalInterpreter:
         self.pattern_templates = {
             'tropical_hotspot': {
                 'lat_range': (-30, 30),
-                'features': ['plants_richness', 'terrestrial_richness'],
+                'features': ['plants_richness', 'animal_richness'],
                 'description': 'Tropical biodiversity hotspot'
             },
             'temperate_forest': {
@@ -49,7 +49,7 @@ class EcologicalInterpreter:
             },
             'polar_specialist': {
                 'lat_range': (60, 90),
-                'features': ['terrestrial_richness'],
+                'features': ['animal_richness'],
                 'description': 'Polar-adapted fauna'
             },
             'fungal_dominated': {
@@ -59,7 +59,7 @@ class EcologicalInterpreter:
             },
             'coastal_transition': {
                 'lat_range': (-90, 90),
-                'features': ['plants_richness', 'terrestrial_richness'],
+                'features': ['plants_richness', 'animal_richness'],
                 'description': 'Coastal biodiversity zone'
             }
         }
@@ -393,7 +393,7 @@ class EcologicalInterpreter:
                     feat_qualifier = "Floristic"
                 elif any('fungi' in f for f in pattern.dominant_features):
                     feat_qualifier = "Mycological"
-                elif 'terrestrial_richness' in pattern.dominant_features:
+                elif 'animal_richness' in pattern.dominant_features:
                     feat_qualifier = "Faunal"
                 else:
                     feat_qualifier = ""

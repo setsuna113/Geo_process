@@ -32,8 +32,11 @@ def calculate_biotemperature(temperature: Union[float, np.ndarray],
     # Convert to biotemperature
     # Below 0°C -> set to 0 (no biological activity)
     # Above 30°C -> cap at 30 (not set to 0! That would make deserts look polar!)
+    # LINUS: Handle NaN properly!
     biotemperature = np.where(temp_corrected < 0, 0, temp_corrected)
     biotemperature = np.where(biotemperature > 30, 30, biotemperature)
+    # Preserve NaN values
+    biotemperature = np.where(np.isnan(temperature), np.nan, biotemperature)
     
     return biotemperature
 
@@ -96,7 +99,7 @@ def classify_holdridge(temperature: Union[float, np.ndarray],
     zones[:] = "Unknown"
     
     # Altitudinal belts (based on biotemperature)
-    # These are the main temperature zones
+    # These are the OFFICIAL Holdridge temperature zones
     is_polar = biotemperature < 1.5
     is_subpolar = (biotemperature >= 1.5) & (biotemperature < 3)
     is_boreal = (biotemperature >= 3) & (biotemperature < 6)
@@ -116,8 +119,12 @@ def classify_holdridge(temperature: Union[float, np.ndarray],
     is_superhumid = pet_ratio <= 0.5
     
     # Combine temperature and moisture to get life zones
-    # Polar zones
-    zones[is_polar] = "Polar Desert"
+    # Polar zones - LINUS: Polar regions have moisture variation too!
+    zones[is_polar & (is_superarid | is_perarid | is_arid)] = "Polar Desert"
+    zones[is_polar & is_semiarid] = "Polar Dry Tundra"
+    zones[is_polar & is_subhumid] = "Polar Moist Tundra"
+    zones[is_polar & is_humid] = "Polar Wet Tundra"
+    zones[is_polar & (is_perhumid | is_superhumid)] = "Polar Ice"
     
     # Subpolar/Alpine zones (use PET ratio for consistency)
     zones[is_subpolar & is_semiarid] = "Subpolar Dry Tundra"

@@ -14,36 +14,41 @@ from rasterio.transform import from_origin
 import logging
 
 from .data_utils import save_results, save_figure
+from .smart_visualization import smart_imshow
+from .professional_map_visualizer import ProfessionalMapVisualizer
 
 logger = logging.getLogger(__name__)
+from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 
 def analyze_trust_maps(
-    data_source: Dict[str, np.ndarray],
+    data: Dict[str, np.ndarray],
     output_dir: Path,
-    downsample: int = 10,
     **kwargs
-) -> Dict[str, Any]:
+) -> MethodResult:
     """
     Analyze uncertainty in biodiversity data.
     
+    Args:
+        data: Dict[str, ndarray] - spatial arrays with uncertainty
+        output_dir: Output directory
+        **kwargs: Config including:
+            - downsample: Downsample factor for visualization (default: 10)
+    
     No class needed. Just functions doing their job.
     
-    Args:
-        data_source: Dict of dataset names to arrays
-        output_dir: Output directory
-        downsample: Downsampling factor for visualization
-        
     Returns:
-        Trust analysis results
+        MethodResult with trust analysis results
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # NO DOWNSAMPLING - smart_imshow handles it automatically
+    
     results = {}
     
     # Process each dataset
-    for name, data_array in data_source.items():
+    for name, data_array in data.items():
         if data_array is None:
             continue
             
@@ -55,23 +60,15 @@ def analyze_trust_maps(
         
         # Look for corresponding CV map
         cv_name = f"{name}_cv"
-        cv_array = data_source.get(cv_name)
+        cv_array = data.get(cv_name)
         
         if cv_array is not None:
             # Compute trust metrics
             trust_metrics = _compute_trust_metrics(data_array, cv_array)
             
-            # Generate visualizations
-            if downsample > 1:
-                data_viz = data_array[::downsample, ::downsample]
-                cv_viz = cv_array[::downsample, ::downsample] if cv_array is not None else None
-            else:
-                data_viz = data_array
-                cv_viz = cv_array
-            
-            # Create plots
+            # Create plots - smart_imshow handles large data automatically
             _plot_trust_analysis(
-                data_viz, cv_viz, name, 
+                data_array, cv_array, name, 
                 output_dir, trust_metrics
             )
             
@@ -81,17 +78,12 @@ def analyze_trust_maps(
             basic_metrics = _compute_basic_metrics(data_array)
             results[name] = basic_metrics
             
-            # Simple visualization
-            if downsample > 1:
-                data_viz = data_array[::downsample, ::downsample]
-            else:
-                data_viz = data_array
-                
-            _plot_basic_map(data_viz, name, output_dir, basic_metrics)
+            # Simple visualization - smart_imshow handles large data
+            _plot_basic_map(data_array, name, output_dir, basic_metrics)
     
     # Combined analysis if we have multiple datasets
     if len(results) > 1:
-        combined = _analyze_combined_trust(data_source, downsample)
+        combined = _analyze_combined_trust(data)
         results['combined'] = combined
         
         # Plot combined
@@ -100,10 +92,15 @@ def analyze_trust_maps(
     # Save results
     save_results(results, output_dir / 'trust_metrics.json')
     
-    return results
+    return MethodResult(
+        success=True,
+        method='trust_maps',
+        output_dir=output_dir,
+        metrics=results
+    )
 
 
-def _compute_trust_metrics(data: np.ndarray, cv: np.ndarray) -> Dict[str, Any]:
+def _compute_trust_metrics(data: np.ndarray, cv: np.ndarray) -> MethodResult:
     """Compute trust metrics from data and CV."""
     # Remove invalid pixels
     valid_mask = ~np.isnan(data) & ~np.isnan(cv) & (data > 0)
@@ -128,16 +125,15 @@ def _compute_trust_metrics(data: np.ndarray, cv: np.ndarray) -> Dict[str, Any]:
     
     # Spatial correlation of uncertainty
     if cv_valid.shape[0] > 100:
-        # Sample for efficiency
-        sample_idx = np.random.choice(len(cv_valid), min(1000, len(cv_valid)), replace=False)
+        # Use all data - no sampling
         metrics['uncertainty_data_correlation'] = float(
-            np.corrcoef(data_valid[sample_idx], cv_valid[sample_idx])[0, 1]
+            np.corrcoef(data_valid, cv_valid)[0, 1]
         )
     
     return metrics
 
 
-def _compute_basic_metrics(data: np.ndarray) -> Dict[str, Any]:
+def _compute_basic_metrics(data: np.ndarray) -> MethodResult:
     """Compute basic metrics when no CV available."""
     valid_mask = ~np.isnan(data)
     
@@ -159,18 +155,17 @@ def _compute_basic_metrics(data: np.ndarray) -> Dict[str, Any]:
 
 
 def _analyze_combined_trust(
-    data_source: Dict[str, np.ndarray], 
-    downsample: int
-) -> Dict[str, Any]:
+    data: Dict[str, np.ndarray]
+) -> MethodResult:
     """Analyze combined trust across all datasets."""
     combined_trust = []
     
-    for name, data_array in data_source.items():
+    for name, data_array in data.items():
         if '_cv' in name or data_array is None:
             continue
             
         cv_name = f"{name}_cv"
-        cv_array = data_source.get(cv_name)
+        cv_array = data.get(cv_name)
         
         if cv_array is not None:
             # Compute average trust
@@ -204,29 +199,63 @@ def _plot_trust_analysis(
     output_dir: Path,
     metrics: Dict[str, Any]
 ) -> None:
-    """Plot trust analysis visualization."""
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    """Plot trust analysis visualization with PROPER projections."""
     
-    # Data
-    im1 = axes[0].imshow(data, cmap='viridis', aspect='auto')
+    # Create three separate maps with correct projections
+    # 1. Data map
+    ProfessionalMapVisualizer.create_global_biodiversity_map(
+        data=data,
+        name=f"{name}_data",
+        output_path=output_dir / f'trust_{name}_data.png',
+        projection='robinson',
+        publication_quality=True,
+        add_features=True,
+        colormap='viridis',
+        title=f'{name} - Data'
+    )
+    
+    # 2. CV/Uncertainty map  
+    ProfessionalMapVisualizer.create_global_biodiversity_map(
+        data=cv,
+        name=f"{name}_cv",
+        output_path=output_dir / f'trust_{name}_cv.png',
+        projection='robinson',
+        publication_quality=True,
+        add_features=True,
+        colormap='hot',
+        title=f'{name} - Coefficient of Variation'
+    )
+    
+    # 3. Trust score map (inverse CV)
+    trust = 1.0 / (1.0 + cv)
+    ProfessionalMapVisualizer.create_global_biodiversity_map(
+        data=trust,
+        name=f"{name}_trust",
+        output_path=output_dir / f'trust_{name}_score.png',
+        projection='robinson',
+        publication_quality=True,
+        add_features=True,
+        colormap='RdYlGn',
+        title=f'{name} - Trust Score'
+    )
+    
+    # Also create a combined figure for comparison
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    
+    # Use smart_imshow for the combined view (quick preview)
+    im1 = smart_imshow(axes[0], data, cmap='viridis', aspect='auto')
     axes[0].set_title(f'{name} - Data')
     axes[0].axis('off')
-    plt.colorbar(im1, ax=axes[0], shrink=0.8)
     
-    # CV/Uncertainty
-    im2 = axes[1].imshow(cv, cmap='hot', aspect='auto')
-    axes[1].set_title(f'{name} - Coefficient of Variation')
+    im2 = smart_imshow(axes[1], cv, cmap='hot', aspect='auto')
+    axes[1].set_title('Coefficient of Variation')
     axes[1].axis('off')
-    plt.colorbar(im2, ax=axes[1], shrink=0.8)
     
-    # Trust map (inverse CV)
-    trust = 1.0 / (1.0 + cv)
-    im3 = axes[2].imshow(trust, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
-    axes[2].set_title(f'{name} - Trust Score')
+    im3 = smart_imshow(axes[2], trust, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
+    axes[2].set_title('Trust Score')
     axes[2].axis('off')
-    plt.colorbar(im3, ax=axes[2], shrink=0.8)
     
-    # Add metrics text
+    # Add metrics
     fig.text(0.5, 0.02, 
              f"Trust Score: {metrics.get('trust_score', 0):.2f} | "
              f"Mean CV: {metrics.get('mean_cv', 0):.2f} | "
@@ -234,7 +263,7 @@ def _plot_trust_analysis(
              ha='center', fontsize=10)
     
     plt.tight_layout()
-    save_figure(fig, output_dir / f'trust_{name}.png')
+    save_figure(fig, output_dir / f'trust_{name}_combined.png')
     plt.close(fig)
 
 
@@ -244,24 +273,21 @@ def _plot_basic_map(
     output_dir: Path,
     metrics: Dict[str, Any]
 ) -> None:
-    """Plot basic map when no uncertainty available."""
-    fig, ax = plt.subplots(figsize=(10, 6))
+    """Plot basic map with PROPER projection when no uncertainty available."""
     
-    im = ax.imshow(data, cmap='viridis', aspect='auto')
-    ax.set_title(f'{name} - No uncertainty data available')
-    ax.axis('off')
-    plt.colorbar(im, ax=ax, shrink=0.8)
+    # Use ProfessionalMapVisualizer for correct projection
+    ProfessionalMapVisualizer.create_global_biodiversity_map(
+        data=data,
+        name=name,
+        output_path=output_dir / f'map_{name}.png',
+        projection='robinson',  # Standard for global biodiversity
+        publication_quality=True,
+        add_features=True,
+        colormap='viridis',
+        title=f'{name} - No uncertainty data available'
+    )
     
-    # Add metrics
-    fig.text(0.5, 0.02,
-             f"Mean: {metrics.get('mean', 0):.2f} | "
-             f"Std: {metrics.get('std', 0):.2f} | "
-             f"Coverage: {metrics.get('data_coverage', 0)*100:.1f}%",
-             ha='center', fontsize=10)
-    
-    plt.tight_layout()
-    save_figure(fig, output_dir / f'map_{name}.png')
-    plt.close(fig)
+    logger.info(f"Created properly projected map for {name} (no uncertainty data)")
 
 
 def _plot_combined_trust(combined: Dict[str, Any], output_dir: Path) -> None:
