@@ -6,6 +6,15 @@ regression_analysis:
   
   data:
     spatial_grid_step: 1
+
+# Ridge regression configuration for GLM models
+ridge:
+  enabled: false  # Disabled - not effective with 4.3M observations
+  # Ridge faces fundamental scaling issues with big data:
+  # - Lambda for good prediction: ~100-1000
+  # - Lambda for meaningful shrinkage: ~1,000,000+
+  # - These objectives are incompatible at this scale
+  # Standard GLM performs better with large samples
     
   models:
     family: "negative_binomial"
