@@ -1,10 +1,20 @@
 """Spatial analysis utilities for ML regression."""
 
-from .mesf import StandardMESF, NystromMESF, compute_mesf
+# Import the optimized MESF implementation
+from .mesf import (
+    compute_mesf_with_cache,
+    compute_mesf,
+    meigen_f,
+    compute_haversine_distances_numba
+)
 
-# Alias for backwards compatibility (will be removed in future)
-compute_mesf_optimized = compute_mesf
+# Import worker control for thread management
+from .worker_control import WorkerController
 
 __all__ = [
-    'StandardMESF', 'NystromMESF', 'compute_mesf', 'compute_mesf_optimized'
+    'compute_mesf_with_cache',
+    'compute_mesf',
+    'meigen_f',
+    'compute_haversine_distances_numba',
+    'WorkerController'
 ]

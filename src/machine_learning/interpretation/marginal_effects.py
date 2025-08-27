@@ -25,6 +25,74 @@ class MarginalEffects:
             model: Fitted GLM model (H2O or similar)
         """
         self.model = model
+    
+    @staticmethod
+    def compute_marginal_effects_at_values(model: Any,
+                                          focal_var: str,
+                                          moderator_var: str,
+                                          moderator_values: List[float],
+                                          data: Any,
+                                          model_type: str = 'h2o_glm') -> List[Dict[str, Any]]:
+        """Compute marginal effects of focal variable at specific moderator values.
+        
+        For testing H2: How does plant effect change at different bio4 levels?
+        
+        Args:
+            model: Fitted model with interaction
+            focal_var: Variable whose effect we're computing (e.g., 'plants_richness_log')
+            moderator_var: Variable that moderates the effect (e.g., 'bio04_std')
+            moderator_values: Values of moderator to compute effects at
+            data: Data frame (H2O or pandas)
+            model_type: Type of model ('h2o_glm' or 'statsmodels')
+            
+        Returns:
+            List of dictionaries with marginal effects at each moderator value
+        """
+        results = []
+        
+        # Access the actual model
+        if hasattr(model, 'model'):
+            h2o_model = model.model
+        else:
+            h2o_model = model
+            
+        # Get coefficients
+        if hasattr(h2o_model, 'coef'):
+            coeffs = h2o_model.coef()
+        elif hasattr(model, 'get_all_coefficients'):
+            coeffs = model.get_all_coefficients()
+        else:
+            logger.error("Cannot extract coefficients from model")
+            return []
+        
+        # Find the main effect and interaction coefficients
+        main_coef = coeffs.get(focal_var, 0)
+        
+        # Look for interaction term (could be named various ways)
+        interaction_coef = 0
+        for coef_name in coeffs.keys():
+            if focal_var in coef_name and moderator_var in coef_name:
+                interaction_coef = coeffs[coef_name]
+                break
+        
+        # For each moderator value, compute marginal effect
+        for mod_val in moderator_values:
+            # Marginal effect = β_focal + β_interaction * moderator_value
+            marginal_effect = main_coef + interaction_coef * mod_val
+            
+            # For log-link models, this is the effect on log scale
+            # Convert to multiplicative effect on response scale
+            multiplicative_effect = np.exp(marginal_effect)
+            
+            results.append({
+                'moderator_value': mod_val,
+                'moderator_label': f"{moderator_var}={mod_val:.1f}",
+                'marginal_effect': marginal_effect,
+                'multiplicative_effect': multiplicative_effect,
+                'interpretation': f"At {moderator_var}={mod_val:.1f}, 1-unit increase in {focal_var} → {multiplicative_effect:.3f}x change in outcome"
+            })
+        
+        return results
         
     def compute_marginal_effects(self, 
                                 data: Union[h2o.H2OFrame, pd.DataFrame],

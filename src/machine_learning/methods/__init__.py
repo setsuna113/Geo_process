@@ -13,9 +13,9 @@ REFACTORED VERSION 3.0:
 """
 
 # Import refactored versions
-from .method1_continuous_refactored import Method1H0H1GLM
-from .method2_categorical_refactored import Method2H2Testing
-from .method3_dml_refactored import Method3DML
+from .method1_continuous import Method1H0H1GLM
+from .method2_categorical import Method2H2Testing
+from .method3_dml_julia import Method3DML  # Use Julia-compatible version
 
 __all__ = [
     'Method1H0H1GLM',

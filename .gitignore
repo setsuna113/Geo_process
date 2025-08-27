@@ -1,5 +1,7 @@
 gpkg_data/
 outputs/
+output/
+results/
 data/
 test_output/
 checkpoints/

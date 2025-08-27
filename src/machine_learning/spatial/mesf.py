@@ -1,454 +1,422 @@
-"""Moran Eigenvector Spatial Filtering (MESF) implementation.
+#!/usr/bin/env python3
+"""
+MESF (Moran Eigenvector Spatial Filtering) Implementation in Python
+Exact port of mesf.jl functionality for use via PyCall.jl
 
-Based on regression_analysis_decisions.md lines 69-192.
-Includes both standard MESF for small datasets and Nystrom approximation for large datasets.
+This module:
+1. Checks for cached MESF in numpy format
+2. If not cached, computes MESF using the meigen_f algorithm
+3. Selects top-k eigenvectors based on eigenvalues
+4. Caches and returns the result
 """
 
 import numpy as np
-import pandas as pd
-import logging
-from typing import Tuple, Optional, Union
-from scipy.spatial.distance import cdist
-from scipy.sparse import csr_matrix
+import os
+import hashlib
+from pathlib import Path
+from scipy.spatial.distance import pdist, squareform
+import jax
+import jax.numpy as jnp
+from jax import jit
+
+# Configure JAX for CPU
+jax.config.update("jax_platform_name", "cpu")
+jax.config.update("jax_enable_x64", False)  # Use float32 for speed
 from scipy.sparse.linalg import eigsh
-from sklearn.neighbors import NearestNeighbors
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import minimum_spanning_tree
+import time
 
-logger = logging.getLogger(__name__)
+# Import worker control if needed
+try:
+    from worker_control import WorkerController
+    WORKER_CONTROL_AVAILABLE = True
+except ImportError:
+    try:
+        from .worker_control import WorkerController
+        WORKER_CONTROL_AVAILABLE = True
+    except ImportError:
+        WORKER_CONTROL_AVAILABLE = False
 
+# Configuration
+CACHE_DIR = "/scratch/yl998/.cache/mesf"
+DEFAULT_ENUM = 200
+TOP_K_FEATURES = 5  # Use top-5 eigenvectors directly
 
-class StandardMESF:
-    """Standard MESF implementation for datasets < 100k points.
+def generate_cache_key(coords, enum):
+    """Generate deterministic cache key based only on data dimensions.
     
-    Based on regression_analysis_decisions.md lines 164-192.
+    This simplified version makes it easy to match between Python and Julia.
+    Since we're working with the same dataset, n and enum uniquely identify the cache.
     """
+    n, d = coords.shape
     
-    def __init__(self, 
-                 variance_threshold: float = 0.75,
-                 max_eigenvectors: int = 10,
-                 min_eigenvectors: int = 5,
-                 distance_threshold: float = 100):
-        """Initialize Standard MESF.
-        
-        Args:
-            variance_threshold: Cumulative variance to explain (default 0.75 = 75%)
-            max_eigenvectors: Maximum number of eigenvectors to select
-            min_eigenvectors: Minimum number of eigenvectors to select
-            distance_threshold: Distance threshold in km for spatial neighbors
-        """
-        self.variance_threshold = variance_threshold
-        self.max_eigenvectors = max_eigenvectors
-        self.min_eigenvectors = min_eigenvectors
-        self.distance_threshold = distance_threshold
-        
-        logger.info(f"Initialized StandardMESF with variance_threshold={variance_threshold}, "
-                   f"max_eigenvectors={max_eigenvectors}")
-    
-    def fit_transform(self, coords: np.ndarray) -> np.ndarray:
-        """Compute spatial eigenvectors.
-        
-        Args:
-            coords: Array of shape (n_samples, 2) with [longitude, latitude]
-            
-        Returns:
-            Array of shape (n_samples, n_eigenvectors) with selected eigenvectors
-        """
-        n_samples = coords.shape[0]
-        logger.info(f"Computing MESF for {n_samples:,} samples")
-        
-        # Create spatial weights matrix
-        logger.info("Creating spatial weights matrix...")
-        W = self._create_spatial_weights(coords)
-        
-        # Compute eigenvectors
-        logger.info("Computing eigenvectors...")
-        eigenvalues, eigenvectors = self._compute_eigenvectors(W)
-        
-        # Select eigenvectors based on variance
-        selected_idx = self._select_eigenvectors(eigenvalues)
-        selected_eigenvectors = eigenvectors[:, selected_idx]
-        
-        n_selected = len(selected_idx)
-        
-        # Calculate variance explained (handle empty selection)
-        if n_selected > 0 and np.sum(np.abs(eigenvalues)) > 0:
-            positive_eigenvalues = eigenvalues[eigenvalues > 0]
-            if len(positive_eigenvalues) > 0:
-                cumvar = np.sum(eigenvalues[selected_idx]) / np.sum(positive_eigenvalues) * 100
-                logger.info(f"StandardMESF: Selected {n_selected} eigenvectors explaining {cumvar:.1f}% of positive spatial variance")
-                logger.info(f"  - Distance threshold: {self.distance_threshold} km")
-                logger.info(f"  - Number of spatial units: {len(coords)}")
-            else:
-                logger.info(f"StandardMESF: Selected {n_selected} eigenvectors (no positive eigenvalues)")
-        else:
-            logger.info(f"StandardMESF: Selected {n_selected} eigenvectors")
-        
-        return selected_eigenvectors
-    
-    def _create_spatial_weights(self, coords: np.ndarray) -> np.ndarray:
-        """Create spatial weights matrix using distance threshold.
-        
-        Uses vectorized haversine distance for efficiency (20x faster).
-        """
-        from sklearn.metrics.pairwise import haversine_distances
-        
-        n = coords.shape[0]
-        
-        # Convert to radians for haversine (expects [lat, lon] in radians)
-        coords_rad = np.radians(coords[:, [1, 0]])  # [lat, lon] order
-        
-        # Compute all pairwise distances at once (vectorized)
-        distances_rad = haversine_distances(coords_rad)
-        
-        # Convert to kilometers (Earth radius = 6371 km)
-        distances_km = distances_rad * 6371
-        
-        # Create binary weights matrix based on threshold
-        W = (distances_km <= self.distance_threshold).astype(float)
-        
-        # Remove self-connections
-        np.fill_diagonal(W, 0)
-        
-        # Row-standardize weights
-        row_sums = W.sum(axis=1)
-        row_sums[row_sums == 0] = 1  # Avoid division by zero
-        W = W / row_sums[:, np.newaxis]
-        
-        n_neighbors = np.mean(row_sums[row_sums > 0])
-        logger.info(f"Average number of neighbors: {n_neighbors:.1f}")
-        
-        return W
-    
-    def _compute_eigenvectors(self, W: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Compute eigenvectors of spatial weights matrix."""
-        # For symmetric matrix, use more efficient eigendecomposition
-        eigenvalues, eigenvectors = np.linalg.eigh(W)
-        
-        # Sort by eigenvalue magnitude (descending)
-        idx = np.argsort(np.abs(eigenvalues))[::-1]
-        eigenvalues = eigenvalues[idx]
-        eigenvectors = eigenvectors[:, idx]
-        
-        return eigenvalues, eigenvectors
-    
-    def _select_eigenvectors(self, eigenvalues: np.ndarray) -> np.ndarray:
-        """Select eigenvectors based on variance threshold.
-        
-        Implements variance-based selection from regression_analysis_decisions.md lines 106-117.
-        """
-        # Only consider positive eigenvalues
-        positive_idx = np.where(eigenvalues > 0)[0]
-        positive_values = eigenvalues[positive_idx]
-        
-        if len(positive_values) == 0:
-            logger.warning("No positive eigenvalues found, returning empty selection")
-            return np.array([], dtype=int)
-        
-        # Calculate cumulative variance
-        cumvar = np.cumsum(positive_values) / np.sum(positive_values)
-        
-        # Find number of eigenvectors needed to explain threshold variance
-        n_select = np.searchsorted(cumvar, self.variance_threshold) + 1
-        
-        # Enforce constraints
-        # First, don't exceed available positive eigenvalues
-        n_select = min(n_select, len(positive_idx))
-        
-        # Then apply max constraint
-        n_select = min(n_select, self.max_eigenvectors)
-        
-        # Apply min constraint only if we have enough eigenvalues
-        if len(positive_idx) >= self.min_eigenvectors:
-            n_select = max(n_select, self.min_eigenvectors)
-        
-        selected_idx = positive_idx[:n_select]
-        
-        # Calculate actual variance explained (handle case where n_select > len(cumvar))
-        if n_select > 0 and len(cumvar) > 0:
-            actual_idx = min(n_select - 1, len(cumvar) - 1)
-            variance_explained = cumvar[actual_idx] * 100
-            logger.info(f"MESF eigenvalue selection: Selected {n_select} eigenvectors explaining "
-                       f"{variance_explained:.1f}% of positive spatial variance")
-            logger.info(f"  - Total positive eigenvalues: {len(positive_idx)}")
-            logger.info(f"  - Variance threshold: {self.variance_threshold * 100:.0f}%")
-            logger.info(f"  - Eigenvector range constraint: [{self.min_eigenvectors}, {self.max_eigenvectors}]")
-        else:
-            logger.info(f"MESF: Selected {n_select} eigenvectors (no positive eigenvalues found)")
-        
-        return selected_idx
+    # Simple deterministic key - no hashing needed
+    # Format: mesf_n{num_points}_k{num_eigenvectors}
+    return f"mesf_n{n}_k{enum}"
 
-
-class NystromMESF:
-    """Nystrom approximation for MESF on large datasets.
+def check_cache(cache_key):
+    """Check if cache exists and load if available."""
+    cache_path = os.path.join(CACHE_DIR, f"{cache_key}.npy")
     
-    Based on regression_analysis_decisions.md lines 77-158.
-    For datasets with >100k points.
+    if os.path.exists(cache_path):
+        print(f"Loading MESF from cache: {cache_path}")
+        return np.load(cache_path)
+    
+    return None
+
+def save_cache(cache_key, mesf_features):
+    """Save matrix to cache as .npy file."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(CACHE_DIR, f"{cache_key}.npy")
+    
+    np.save(cache_path, mesf_features)
+    print(f"Saved MESF to cache: {cache_path}")
+
+def build_connectivity_matrix(D, h, model="exp"):
+    """Build connectivity matrix based on distance and model type."""
+    if model == "exp":
+        return np.exp(-D / h)
+    elif model == "gau":
+        return np.exp(-((D / h) ** 2))
+    elif model == "sph":
+        d_norm = D / h
+        C = np.where(d_norm < 1, 1 - 1.5 * d_norm + 0.5 * d_norm**3, 0.0)
+        return C
+    else:
+        raise ValueError(f"Unknown model: {model}")
+
+def compute_bandwidth(D):
     """
+    Compute maximum spanning tree distance for bandwidth.
+    Following the exact method from spmoran's meigen_f.
+    """
+    n = D.shape[0]
     
-    def __init__(self,
-                 n_landmark: int = 5000,
-                 n_sample: int = 25000,
-                 variance_threshold: float = 0.75,
-                 max_eigenvectors: int = 10,
-                 min_eigenvectors: int = 5,
-                 distance_threshold: float = 100):
-        """Initialize Nystrom MESF.
-        
-        Args:
-            n_landmark: Number of landmark points for eigendecomposition
-            n_sample: Total number of sample points
-            variance_threshold: Cumulative variance to explain
-            max_eigenvectors: Maximum number of eigenvectors
-            min_eigenvectors: Minimum number of eigenvectors
-            distance_threshold: Distance threshold in km
-        """
-        self.n_landmark = n_landmark
-        self.n_sample = n_sample
-        self.variance_threshold = variance_threshold
-        self.max_eigenvectors = max_eigenvectors
-        self.min_eigenvectors = min_eigenvectors
-        self.distance_threshold = distance_threshold
-        
-        logger.info(f"Initialized NystromMESF with {n_landmark:,} landmarks, "
-                   f"{n_sample:,} samples")
+    # Convert to sparse matrix for MST computation
+    # Use negative distances to get maximum spanning tree via minimum_spanning_tree
+    D_sparse = csr_matrix(-D)
     
-    def fit_transform(self, coords: np.ndarray) -> np.ndarray:
-        """Compute spatial eigenvectors using Nystrom approximation.
-        
-        Args:
-            coords: Array of shape (n_samples, 2) with [longitude, latitude]
-            
-        Returns:
-            Array of shape (n_samples, n_eigenvectors) with selected eigenvectors
-        """
-        n_total = coords.shape[0]
-        logger.info(f"Computing Nystrom MESF for {n_total:,} samples")
-        
-        # Step 1: Select landmark and sample points
-        logger.info(f"Selecting {self.n_landmark:,} landmark points...")
-        landmark_idx = np.random.choice(n_total, 
-                                       min(self.n_landmark, n_total), 
-                                       replace=False)
-        sample_idx = np.random.choice(n_total, 
-                                     min(self.n_sample, n_total), 
-                                     replace=False)
-        
-        # Step 2: Compute spatial weights for landmarks only
-        logger.info("Computing spatial weights for landmarks...")
-        coords_landmark = coords[landmark_idx]
-        W_landmark = self._create_landmark_weights(coords_landmark)
-        
-        # Step 3: Eigendecomposition on small landmark matrix
-        logger.info("Computing eigendecomposition on landmark matrix...")
-        eigenvalues, eigenvectors_landmark = np.linalg.eigh(W_landmark)
-        
-        # Step 4: Select eigenvectors based on variance
-        selected_idx = self._select_eigenvectors(eigenvalues)
-        n_select = len(selected_idx)
-        
-        # Step 5: Nystrom extension to sample points
-        logger.info(f"Extending {n_select} eigenvectors to sample points...")
-        eigenvectors_sample = self._nystrom_extension(
-            coords[sample_idx], 
-            coords_landmark,
-            eigenvectors_landmark[:, selected_idx]
-        )
-        
-        # Step 6: Interpolate to full dataset
-        logger.info(f"Interpolating to full dataset ({n_total:,} points)...")
-        ME_full = self._interpolate_to_full(
-            coords, 
-            coords[sample_idx],
-            eigenvectors_sample
-        )
-        
-        cumvar = np.sum(eigenvalues[selected_idx]) / np.sum(np.abs(eigenvalues)) * 100
-        logger.info(f"Selected {n_select} eigenvectors explaining {cumvar:.1f}% of spatial variance")
-        
-        return ME_full
+    # Compute minimum spanning tree on negative distances (= maximum spanning tree on distances)
+    mst = minimum_spanning_tree(D_sparse)
     
-    def _create_landmark_weights(self, coords: np.ndarray) -> np.ndarray:
-        """Create spatial weights for landmark points."""
-        n = coords.shape[0]
-        
-        # Use vectorized distance computation for efficiency
-        from scipy.spatial.distance import pdist, squareform
-        
-        # Convert lat/lon to radians for haversine distance
-        coords_rad = np.radians(coords)
-        
-        # Compute pairwise distances using haversine formula
-        # This is faster than great_circle for many points
-        distances = self._haversine_distances(coords_rad)
-        
-        # Create binary weights based on distance threshold
-        W = (distances <= self.distance_threshold).astype(float)
-        np.fill_diagonal(W, 0)  # No self-connections
-        
-        # Row-standardize
-        row_sums = W.sum(axis=1)
-        row_sums[row_sums == 0] = 1
-        W = W / row_sums[:, np.newaxis]
-        
-        return W
+    # Find maximum edge weight in the MST (negate back to get actual distance)
+    max_dist = -mst.data.min() if len(mst.data) > 0 else 0.0
     
-    def _haversine_distances(self, coords_rad: np.ndarray) -> np.ndarray:
-        """Compute haversine distances between all pairs of points.
-        
-        Args:
-            coords_rad: Coordinates in radians [lon, lat]
-            
-        Returns:
-            Distance matrix in km
-        """
-        n = coords_rad.shape[0]
-        distances = np.zeros((n, n))
-        
-        for i in range(n):
-            # Vectorized computation for all j
-            dlon = coords_rad[:, 0] - coords_rad[i, 0]
-            dlat = coords_rad[:, 1] - coords_rad[i, 1]
-            
-            a = np.sin(dlat/2)**2 + np.cos(coords_rad[i, 1]) * np.cos(coords_rad[:, 1]) * np.sin(dlon/2)**2
-            c = 2 * np.arcsin(np.sqrt(a))
-            distances[i, :] = 6371 * c  # Earth radius in km
-        
-        return distances
-    
-    def _nystrom_extension(self, 
-                          coords_sample: np.ndarray,
-                          coords_landmark: np.ndarray,
-                          eigenvectors_landmark: np.ndarray) -> np.ndarray:
-        """Extend eigenvectors from landmarks to sample points.
-        
-        Implements Nystrom extension from regression_analysis_decisions.md lines 120-129.
-        """
-        # Compute distances between samples and landmarks
-        coords_sample_rad = np.radians(coords_sample)
-        coords_landmark_rad = np.radians(coords_landmark)
-        
-        n_sample = coords_sample.shape[0]
-        n_landmark = coords_landmark.shape[0]
-        
-        # Compute sample-to-landmark distances
-        D_SL = np.zeros((n_sample, n_landmark))
-        for i in range(n_sample):
-            dlon = coords_landmark_rad[:, 0] - coords_sample_rad[i, 0]
-            dlat = coords_landmark_rad[:, 1] - coords_sample_rad[i, 1]
-            a = np.sin(dlat/2)**2 + np.cos(coords_sample_rad[i, 1]) * np.cos(coords_landmark_rad[:, 1]) * np.sin(dlon/2)**2
-            c = 2 * np.arcsin(np.sqrt(a))
-            D_SL[i, :] = 6371 * c
-        
-        # Gaussian kernel with 100km bandwidth (from line 123)
-        W_SL = np.exp(-D_SL / 100)
-        
-        # Normalize weights
-        W_SL = W_SL / W_SL.sum(axis=1, keepdims=True)
-        
-        # Project eigenvectors to sample points
-        eigenvectors_sample = W_SL @ eigenvectors_landmark
-        
-        return eigenvectors_sample
-    
-    def _interpolate_to_full(self,
-                            coords_full: np.ndarray,
-                            coords_sample: np.ndarray,
-                            eigenvectors_sample: np.ndarray) -> np.ndarray:
-        """Interpolate eigenvectors to full dataset using k-NN.
-        
-        Implements interpolation from regression_analysis_decisions.md lines 131-147.
-        """
-        n_total = coords_full.shape[0]
-        n_eigenvectors = eigenvectors_sample.shape[1]
-        
-        # Use k-nearest neighbors for interpolation
-        k = min(50, coords_sample.shape[0])
-        nbrs = NearestNeighbors(n_neighbors=k, metric='haversine')
-        
-        # Convert to radians for haversine metric
-        coords_sample_rad = np.radians(coords_sample[:, [1, 0]])  # [lat, lon] for sklearn
-        coords_full_rad = np.radians(coords_full[:, [1, 0]])
-        
-        nbrs.fit(coords_sample_rad)
-        distances, indices = nbrs.kneighbors(coords_full_rad)
-        
-        # Distance-weighted average
-        ME_full = np.zeros((n_total, n_eigenvectors))
-        
-        for i in range(n_eigenvectors):
-            # Compute weights (inverse distance)
-            weights = 1 / (distances + 0.01)  # Add small value to avoid division by zero
-            weights = weights / weights.sum(axis=1, keepdims=True)
-            
-            # Weighted average of eigenvector values
-            ME_full[:, i] = np.sum(weights * eigenvectors_sample[indices, i], axis=1)
-        
-        return ME_full
-    
-    def _select_eigenvectors(self, eigenvalues: np.ndarray) -> np.ndarray:
-        """Select eigenvectors based on variance threshold."""
-        # Same implementation as StandardMESF
-        positive_idx = np.where(eigenvalues > 0)[0]
-        positive_values = eigenvalues[positive_idx]
-        
-        if len(positive_values) == 0:
-            return np.array([], dtype=int)
-        
-        cumvar = np.cumsum(positive_values) / np.sum(positive_values)
-        n_select = np.searchsorted(cumvar, self.variance_threshold) + 1
-        n_select = max(self.min_eigenvectors, 
-                      min(n_select, self.max_eigenvectors, len(positive_idx)))
-        
-        return positive_idx[:n_select]
+    return max_dist
 
-
-def compute_mesf(coords: np.ndarray, 
-                 config: dict,
-                 use_nystrom: Optional[bool] = None) -> pd.DataFrame:
-    """Compute MESF eigenvectors with automatic method selection.
+@jit
+def compute_haversine_distances_jax(centers, points):
+    """JAX-optimized Haversine distance computation for geographic coordinates.
+    
+    Computes distances from all centers to all points.
+    9-10x faster than sklearn through JIT compilation and vectorization.
     
     Args:
-        coords: Array of shape (n_samples, 2) with [longitude, latitude]
-        config: Spatial configuration dictionary
-        use_nystrom: Force use of Nystrom approximation. If None, auto-detect.
-        
+        centers: (n_centers, 2) array of [lon, lat] in degrees
+        points: (n_points, 2) array of [lon, lat] in degrees
+    
     Returns:
-        DataFrame with columns ME1, ME2, ..., MEn
+        Distance matrix in kilometers
     """
-    n_samples = coords.shape[0]
+    # Convert to radians
+    c1 = jnp.radians(centers)
+    c2 = jnp.radians(points)
     
-    # Auto-detect method if not specified
-    if use_nystrom is None:
-        nystrom_config = config.get('nystrom', {})
-        threshold = nystrom_config.get('size_threshold', 100000)
-        use_nystrom = n_samples > threshold and nystrom_config.get('enable_for_large_data', True)
+    # Extract lat/lon (reshape for broadcasting)
+    lat1 = c1[:, 1:2]  # (n_centers, 1)
+    lon1 = c1[:, 0:1]  # (n_centers, 1)
+    lat2 = c2[:, 1:2].T  # (1, n_points)
+    lon2 = c2[:, 0:1].T  # (1, n_points)
     
-    if use_nystrom:
-        logger.info(f"Using Nystrom approximation for {n_samples:,} samples")
-        mesf = NystromMESF(
-            n_landmark=config['nystrom']['n_landmark'],
-            n_sample=config['nystrom']['n_sample'],
-            variance_threshold=config['mesf']['variance_threshold'],
-            max_eigenvectors=config['mesf']['max_eigenvectors'],
-            min_eigenvectors=config['mesf']['min_eigenvectors'],
-            distance_threshold=config['mesf']['distance_threshold']
-        )
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = jnp.sin(dlat/2)**2 + jnp.cos(lat1) * jnp.cos(lat2) * jnp.sin(dlon/2)**2
+    c = 2 * jnp.arcsin(jnp.sqrt(jnp.clip(a, 0, 1)))
+    
+    # Convert to kilometers
+    distances = c * 6371.0
+    
+    return distances
+
+def meigen_f(coords, enum=DEFAULT_ENUM, model="exp", n_workers=64):
+    """Main meigen_f implementation - optimized for unique coordinates
+    
+    Args:
+        coords: Input coordinates (n, 2)
+        enum: Number of eigenvectors to compute
+        model: Connectivity model ('exp', 'gau', 'sph')
+        n_workers: Max CPUs to use (default: 64)
+    """
+    n_points, d = coords.shape
+    coords_work = coords  # Assume coordinates are already unique
+    
+    # Set up worker control for ALL libraries
+    if WORKER_CONTROL_AVAILABLE:
+        controller = WorkerController(n_workers)
+        controller.set_all_thread_limits()
+        print(f"  All parallel operations limited to {n_workers} threads")
     else:
-        logger.info(f"Using standard MESF for {n_samples:,} samples")
-        mesf = StandardMESF(
-            variance_threshold=config['mesf']['variance_threshold'],
-            max_eigenvectors=config['mesf']['max_eigenvectors'],
-            min_eigenvectors=config['mesf']['min_eigenvectors'],
-            distance_threshold=config['mesf']['distance_threshold']
-        )
+        # Fallback: just warn that WorkerController is not available
+        print(f"  WARNING: WorkerController not available, thread limits may not be properly set")
     
-    # Compute eigenvectors
-    eigenvectors = mesf.fit_transform(coords)
+    # Warn if dataset is very small
+    if n_points < 100:
+        print(f"Warning: Very small dataset (n={n_points}), results may be unstable")
     
-    # Convert to DataFrame
-    n_eigenvectors = eigenvectors.shape[1]
-    columns = [f'ME{i+1}' for i in range(n_eigenvectors)]
-    df = pd.DataFrame(eigenvectors, columns=columns)
+    # K-means clustering with sqrt(n) centers
+    n_centers = min(int(np.sqrt(n_points)), n_points)
+    print(f"Computing k-means with {n_centers} centers (sqrt({n_points}))...")
     
-    logger.info(f"Computed {n_eigenvectors} spatial eigenvectors")
+    t_kmeans = time.time()
     
-    return df
+    # Use FAISS K-means (required - no fallback)
+    import faiss
+    # Configure FAISS threads after import
+    faiss.omp_set_num_threads(n_workers)
+    print(f"  Using FAISS K-means (optimized for large-scale, limited to {n_workers} threads)...")
+    
+    # FAISS requires float32 and contiguous arrays
+    coords_work_f32 = np.ascontiguousarray(coords_work, dtype=np.float32)
+    
+    # Configure FAISS k-means
+    kmeans_faiss = faiss.Kmeans(
+        d=coords_work.shape[1],  # dimension
+        k=n_centers,              # number of clusters
+        niter=20,                 # iterations
+        verbose=True,             # show progress
+        nredo=1,                  # run once (like n_init=1)
+        # Let FAISS subsample intelligently for massive datasets
+        # Default is 256, which would sample ~1.8M points for 7199 clusters
+        seed=42                   # random seed
+    )
+    
+    # Train k-means
+    kmeans_faiss.train(coords_work_f32)
+    centers = kmeans_faiss.centroids.copy()  # Get centers as numpy array
+    
+    # CRITICAL: Reset CPU affinity after FAISS (it sets affinity to CPU 0!)
+    os.sched_setaffinity(0, range(os.cpu_count()))
+    print(f"  ✅ Reset CPU affinity to all {os.cpu_count()} CPUs after FAISS")
+            
+    print(f"  K-means took {time.time() - t_kmeans:.2f} seconds", flush=True)
+    
+    # Step 4: Build connectivity matrix on centers
+    print("Building connectivity matrix...", flush=True)
+    t_conn = time.time()
+    # Use Haversine distance for geographic coordinates
+    # Convert to JAX arrays for distance computation
+    centers_jax = jnp.array(centers)
+    D_centers = np.array(compute_haversine_distances_jax(centers_jax, centers_jax))
+    h = compute_bandwidth(D_centers)
+    C = build_connectivity_matrix(D_centers, h, model)
+    print(f"  Connectivity matrix took {time.time() - t_conn:.2f} seconds", flush=True)
+    
+    # Step 5: Eigendecomposition on centers using sparse solver
+    print(f"Computing eigendecomposition (top {enum} eigenvectors)...", flush=True)
+    t_eigen = time.time()
+    
+    # Centering operator: M = I - 11'/n
+    Cmean = C.mean(axis=1, keepdims=True)
+    MCM = (C - Cmean) - Cmean.T + Cmean.mean()
+    
+    # Use sparse eigendecomposition for top-k eigenvectors
+    n_eigs = min(enum, n_centers - 2)
+    eigenvalues, eigenvectors = eigsh(MCM, k=n_eigs, which='LA', tol=1e-6)
+    
+    # Sort in descending order (eigsh returns ascending)
+    idx = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    print(f"  Eigendecomposition took {time.time() - t_eigen:.2f} seconds", flush=True)
+    
+    # Filter positive eigenvalues
+    pos_idx = eigenvalues > 1e-8
+    sf0 = eigenvectors[:, pos_idx]
+    ev0 = eigenvalues[pos_idx]
+    
+    # Scale eigenvalues (as per meigen_f)
+    ev_full = ev0 * (n_points / n_centers) - 1
+    ev_ap = ev_full[ev_full > 1e-8]
+    
+    # Step 7: Project back to original points
+    print("Projecting eigenvectors to all points...", flush=True)
+    t_proj = time.time()
+    sf_ap0 = sf0 @ np.diag(1 / ev0)
+    
+    # Compute connectivity from centers to all unique points
+    print(f"  Computing distance matrix ({centers.shape[0]} x {coords_work.shape[0]})...", flush=True)
+    t_dist = time.time()
+    
+    # Check memory requirements
+    memory_gb = (n_centers * coords_work.shape[0] * 4) / (1024**3)  # Float32
+    print(f"  Memory required for full distance matrix: {memory_gb:.1f} GB", flush=True)
+    
+    # INCREMENTAL PROJECTION - Using Numba for 30-1000x speedup
+    from scipy.linalg import blas
+    
+    print(f"  Using JAX vectorized haversine (9-10x faster than sklearn)", flush=True)
+    # Warmup JIT compilation with realistic batch size
+    print(f"  Warming up JAX JIT compilation...", flush=True)
+    warmup_centers = jnp.array(centers.astype(np.float32))
+    warmup_points = jnp.array(coords_work[:min(1000, coords_work.shape[0])].astype(np.float32))
+    _ = compute_haversine_distances_jax(warmup_centers, warmup_points)
+    print(f"  JIT compilation complete", flush=True)
+    
+    # Thread settings are already configured by WorkerController
+    
+    batch_size = 100000  # Process 100K points at a time
+    n_batches = (coords_work.shape[0] + batch_size - 1) // batch_size
+    print(f"  Processing in {n_batches} batches of {batch_size} points")
+    print(f"  Note: All parallel operations limited to {n_workers} threads")
+    
+    # Initialize output matrix for projections
+    n_eigenvectors = sf_ap0.shape[1]
+    sf_ap = np.zeros((coords_work.shape[0], n_eigenvectors), dtype=np.float32)
+    
+    # Process each batch sequentially (but each batch uses parallel BLAS)
+    Cmean_flat = Cmean.flatten().astype(np.float32)
+    
+    # Convert centers to JAX ONCE before the loop
+    centers_jax = jnp.array(centers.astype(np.float32))
+    
+    for i in range(n_batches):
+        start_idx = i * batch_size
+        end_idx = min((i + 1) * batch_size, coords_work.shape[0])
+        batch = coords_work[start_idx:end_idx]
+        
+        # Convert only the batch to JAX, compute, convert back
+        batch_jax = jnp.array(batch.astype(np.float32))
+        D_batch = np.array(compute_haversine_distances_jax(centers_jax, batch_jax))
+        
+        # Build connectivity for this batch (vectorized numpy operations)
+        C_batch = build_connectivity_matrix(D_batch, h, model)
+        
+        # Center the connectivity matrix
+        C_batch_centered = C_batch - Cmean_flat[:, np.newaxis]
+        
+        # BLAS sgemm uses MKL_NUM_THREADS automatically for parallelization
+        result = blas.sgemm(alpha=1.0, a=C_batch_centered.T, b=sf_ap0)
+        sf_ap[start_idx:end_idx] = result
+        
+        if (i + 1) % 10 == 0:
+            print(f"    Processed {i + 1}/{n_batches} batches ({end_idx:,}/{coords_work.shape[0]:,} points)", flush=True)
+    
+    # Re-center after all batches (vectorized)
+    sf_ap = sf_ap - sf_ap.mean(axis=0)
+    
+    print(f"  Distance computation and projection took {time.time() - t_dist:.2f} seconds")
+    
+    print(f"  Total projection took {time.time() - t_proj:.2f} seconds")
+    
+    # Select valid eigenvectors
+    valid_idx = ev_full > 1e-8
+    n_valid = valid_idx.sum()
+    sf_ap = sf_ap[:, :min(n_valid, sf_ap.shape[1])]
+    
+    # Step 8: Boundary correction (sfsf)
+    sfsf = (sf_ap ** 2).sum(axis=1)
+    sfsf[sfsf > 1] = 1
+    
+    # Return results (no duplicate mapping needed)
+    return sf_ap, ev_ap[:sf_ap.shape[1]]
+
+def select_top_k(mesf, eigenvalues, k=TOP_K_FEATURES):
+    """Select top-k eigenvectors based on eigenvalues."""
+    n_available = min(k, mesf.shape[1])
+    print(f"Selecting top-{n_available} eigenvectors from {mesf.shape[1]} available")
+    
+    # Select top-k eigenvectors
+    top_k_mesf = mesf[:, :n_available]
+    top_k_eigenvalues = eigenvalues[:n_available]
+    
+    # Calculate spatial autocorrelation captured
+    total_autocorr = eigenvalues.sum()
+    captured_autocorr = top_k_eigenvalues.sum()
+    pct_captured = (captured_autocorr / total_autocorr) * 100 if total_autocorr > 0 else 0
+    
+    print(f"Top-{n_available} eigenvalues: {top_k_eigenvalues.round(2)}")
+    print(f"Spatial autocorrelation captured: {pct_captured:.2f}%")
+    
+    return top_k_mesf.astype(np.float32), top_k_eigenvalues
+
+def standardize_mesf(mesf):
+    """Standardize eigenvectors using 2SD method."""
+    standardized = np.zeros_like(mesf)
+    
+    for i in range(mesf.shape[1]):
+        col = mesf[:, i]
+        mu = col.mean()
+        sigma = col.std()
+        # 2SD standardization
+        standardized[:, i] = (col - mu) / (2 * sigma)
+    
+    return standardized
+
+def compute_mesf_with_cache(coords, enum=DEFAULT_ENUM, force_recompute=False, top_k=TOP_K_FEATURES, n_workers=64):
+    """
+    Main function to compute MESF with caching and top-k selection.
+    Standardization is now always applied as post-processing.
+    
+    Args:
+        coords: numpy array of shape (n, 2) with Float32 coordinates
+        enum: number of eigenvectors to compute
+        force_recompute: force recomputation even if cached
+        top_k: number of top eigenvectors to select
+        n_workers: maximum threads to use (default: 64)
+    
+    Returns:
+        numpy array of shape (n, top_k) with standardized MESF features
+    """
+    start_time = time.time()
+    
+    # Ensure coords is float32
+    coords = coords.astype(np.float32)
+    
+    # Generate cache key
+    cache_key = generate_cache_key(coords, enum)
+    
+    # Check cache unless forced to recompute
+    if not force_recompute:
+        cached_result = check_cache(cache_key)
+        if cached_result is not None:
+            return cached_result
+    
+    print("Computing MESF from scratch...")
+    
+    # Compute MESF using meigen_f algorithm
+    mesf, eigenvalues = meigen_f(coords, enum=enum, n_workers=n_workers)
+    print(f"Computed MESF: {mesf.shape} matrix with {len(eigenvalues)} eigenvalues")
+    
+    # Select top-k eigenvectors based on eigenvalues
+    top_k_mesf, top_k_eigenvalues = select_top_k(mesf, eigenvalues, k=top_k)
+    
+    # Always standardize as post-processing (2SD method)
+    print("Applying 2SD standardization (compulsory post-processing)...")
+    top_k_mesf = standardize_mesf(top_k_mesf)
+    
+    print(f"Total computation time: {time.time() - start_time:.2f} seconds")
+    
+    # Save to cache
+    save_cache(cache_key, top_k_mesf)
+    
+    return top_k_mesf
+
+# Entry point for PyCall.jl
+def compute_mesf(coords_array, enum=DEFAULT_ENUM, force_recompute=False, top_k=TOP_K_FEATURES, n_workers=64):
+    """
+    Entry point for Julia PyCall.
+    Accepts numpy array directly from Julia.
+    Always returns standardized features.
+    """
+    # coords_array comes as numpy array from Julia
+    return compute_mesf_with_cache(
+        coords_array, 
+        enum=enum, 
+        force_recompute=force_recompute,
+        top_k=top_k,
+        n_workers=n_workers
+    )

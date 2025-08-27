@@ -660,6 +660,13 @@ class GeoSOM:
     def _train_single_epoch(self, epoch: int, data: np.ndarray, coordinates: Optional[np.ndarray],
                           training_state: Dict[str, Any], progress_callback: Optional[Callable]) -> Dict[str, Any]:
         """Train a single epoch."""
+        # Check for phase transition
+        phase_1_epochs = self._get_config('phase_1_epochs', 400, 'training')
+        if epoch == 0:
+            logger.info(f"Starting Phase 1 (Global Organization): epochs 1-{phase_1_epochs}")
+        elif epoch == phase_1_epochs:
+            logger.info(f"Starting Phase 2 (Fine-tuning): epochs {phase_1_epochs+1}-{self.max_epochs}")
+        
         logger.info(f"Starting epoch {epoch+1}/{self.max_epochs}")
         
         # Update radius
@@ -733,8 +740,13 @@ class GeoSOM:
         # Get momentum value (decay from initial to final)
         # Note: velocity is already initialized in _initialize_training_state
         progress = epoch / self.config.max_epochs
-        momentum = self._get_config('initial_momentum', 0.9, 'training.momentum') * (1 - progress) + \
-                  self._get_config('final_momentum', 0.1, 'training.momentum') * progress
+        initial_momentum = self._get_config('initial', 0.3, 'training.momentum')
+        final_momentum = self._get_config('final', 0.7, 'training.momentum')
+        momentum = initial_momentum * (1 - progress) + final_momentum * progress
+        
+        # Log momentum values periodically
+        if epoch % 50 == 0:
+            logger.info(f"Momentum: {momentum:.3f} (from {initial_momentum} to {final_momentum})")
         
         # Calculate weight changes from pure Batch SOM update
         # Note: Pure Batch SOM directly assigns weighted averages (no learning rate)
@@ -903,18 +915,39 @@ class GeoSOM:
     # Pure Batch SOM doesn't use learning rate adaptation
     
     def _get_scheduled_radius(self, epoch: int) -> float:
-        """Get the scheduled radius for a given epoch without adjustment."""
+        """Get the scheduled radius for a given epoch with two-phase training support."""
+        # Get phase configuration
+        phase_1_epochs = self._get_config('phase_1_epochs', 400, 'training')
+        phase_1_final = self._get_config('phase_1_final', 3.0, 'training.radius')
+        
+        # Determine which phase we're in
+        if epoch < phase_1_epochs:
+            # Phase 1: Initial radius -> phase_1_final
+            initial_radius = self.config.initial_radius
+            target_radius = phase_1_final
+            phase_epochs = phase_1_epochs
+            phase_progress = epoch / phase_epochs
+        else:
+            # Phase 2: phase_1_final -> final_radius
+            initial_radius = phase_1_final
+            target_radius = self.config.final_radius
+            phase_epochs = self.config.max_epochs - phase_1_epochs
+            phase_progress = (epoch - phase_1_epochs) / phase_epochs
+        
+        # Apply decay within the current phase
         if self.config.radius_decay == "linear":
-            progress = epoch / self.config.max_epochs
-            return self.config.initial_radius * (1 - progress) + \
-                   self.config.final_radius * progress
+            radius = initial_radius * (1 - phase_progress) + target_radius * phase_progress
         elif self.config.radius_decay == "exponential":
-            # Exponential decay: r(t) = r_init * exp(-lambda * t)
-            # where lambda is chosen so that r(max_epochs) ≈ r_final
-            decay_rate = -np.log(self.config.final_radius / self.config.initial_radius) / self.config.max_epochs
-            return self.config.initial_radius * np.exp(-decay_rate * epoch)
+            # Exponential decay within phase
+            if initial_radius > 0 and target_radius > 0:
+                decay_rate = -np.log(target_radius / initial_radius)
+                radius = initial_radius * np.exp(-decay_rate * phase_progress)
+            else:
+                radius = target_radius
         else:
             raise NotImplementedError(f"Decay {self.config.radius_decay} not implemented")
+        
+        return radius
     
     def _update_radius(self, epoch: int):
         """Update neighborhood radius with optional TE-based adjustment."""
@@ -1433,7 +1466,8 @@ class GeoSOM:
                 'current_radius': float(checkpoint['current_radius']),
                 'best_qe': float(checkpoint['best_qe']),
                 'patience_counter': int(checkpoint['patience_counter']),
-                'training_history': json.loads(str(checkpoint['training_history']))
+                'training_history': json.loads(str(checkpoint['training_history'])),
+                'input_dim': int(checkpoint['input_dim']) if 'input_dim' in checkpoint else None
             }
             
             # Validate checkpoint compatibility (convert both to list for comparison)
@@ -1454,13 +1488,14 @@ class GeoSOM:
             if 'checkpoint' in locals():
                 checkpoint.close()
         
-        # Only check input_dim if already initialized
-        if self.input_dim is not None and int(checkpoint['input_dim']) != self.input_dim:
-            raise ValueError(f"Input dimension mismatch: checkpoint has {checkpoint['input_dim']}, "
-                           f"current data has {self.input_dim}")
-        elif self.input_dim is None:
-            # Set input_dim from checkpoint when resuming
-            self.input_dim = int(checkpoint['input_dim'])
+        # Only check input_dim if already initialized and checkpoint has it
+        if checkpoint_data.get('input_dim') is not None:
+            if self.input_dim is not None and checkpoint_data['input_dim'] != self.input_dim:
+                raise ValueError(f"Input dimension mismatch: checkpoint has {checkpoint_data['input_dim']}, "
+                               f"current data has {self.input_dim}")
+            elif self.input_dim is None:
+                # Set input_dim from checkpoint when resuming
+                self.input_dim = checkpoint_data['input_dim']
         
         # Restore state
         self.weights = checkpoint_data['weights']
