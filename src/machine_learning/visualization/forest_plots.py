@@ -411,9 +411,12 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
     y_pos = np.arange(len(predictors))
     
     for i, (coef, ci_l, ci_u, color, marker) in enumerate(zip(coefficients, ci_lower_90, ci_upper_90, colors, markers)):
+        # Plot error bar with enhanced |-| style caps for better visibility
         ax.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
-                   fmt=marker, color=color, markersize=8, 
-                   capsize=5, capthick=2, elinewidth=2)
+                   fmt=marker, color=color, markersize=10, 
+                   capsize=8, capthick=2.5, elinewidth=2.5, 
+                   markeredgecolor='black', markeredgewidth=0.5,
+                   alpha=0.9)
     
     # Reference lines
     ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1, label='Zero')
@@ -513,9 +516,12 @@ def _plot_tost_forest(ax: plt.Axes, wald_results: Dict[str, Any], tost_bounds: T
     y_pos = np.arange(len(predictors))
     
     for i, (coef, ci_l, ci_u, color, marker) in enumerate(zip(coefficients, ci_lower_90, ci_upper_90, colors, markers)):
+        # Plot error bar with enhanced |-| style caps for TOST
         ax.errorbar(coef, i, xerr=[[coef - ci_l], [ci_u - coef]], 
-                   fmt=marker, color=color, markersize=8, 
-                   capsize=5, capthick=2, elinewidth=2)
+                   fmt=marker, color=color, markersize=10, 
+                   capsize=8, capthick=2.5, elinewidth=2.5,
+                   markeredgecolor='black', markeredgewidth=0.5,
+                   alpha=0.9)
     
     # Reference lines
     ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1)

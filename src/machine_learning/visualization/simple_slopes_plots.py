@@ -44,23 +44,39 @@ def visualize_simple_slopes(
     slope_high = simple_slopes_results.get('slope_temperate_in_high_plant', {})
     interaction = simple_slopes_results.get('interaction_effect', {})
     
-    # Panel 1: Simple slopes plot
+    # Panel 1: Simple slopes plot using seaborn lineplot
     ax1 = axes[0]
     
-    # Define x positions for plant levels
-    x_pos = [0, 1]
+    # Create DataFrame for seaborn
+    import pandas as pd
+    data_list = []
     plant_labels = ['Low Plant', 'High Plant']
     
-    # Plot lines for each temperate level
-    # Non-temperate: groups 0 (low plant) and 1 (high plant)
-    ax1.plot(x_pos, [emmeans[0], emmeans[1]], 'o-', 
-            color='blue', linewidth=2.5, markersize=10,
-            label='Non-temperate')
+    # Non-temperate data
+    data_list.append({'Plant Level': plant_labels[0], 'Climate': 'Non-temperate', 
+                     'Fungi Richness': emmeans[0], 'x': 0})
+    data_list.append({'Plant Level': plant_labels[1], 'Climate': 'Non-temperate', 
+                     'Fungi Richness': emmeans[1], 'x': 1})
     
-    # Temperate: groups 2 (low plant) and 3 (high plant)
-    ax1.plot(x_pos, [emmeans[2], emmeans[3]], 's--',
-            color='red', linewidth=2.5, markersize=10,
-            label='Temperate')
+    # Temperate data
+    data_list.append({'Plant Level': plant_labels[0], 'Climate': 'Temperate', 
+                     'Fungi Richness': emmeans[2], 'x': 0})
+    data_list.append({'Plant Level': plant_labels[1], 'Climate': 'Temperate', 
+                     'Fungi Richness': emmeans[3], 'x': 1})
+    
+    df = pd.DataFrame(data_list)
+    
+    # Use seaborn lineplot
+    sns.lineplot(data=df, x='x', y='Fungi Richness', hue='Climate', 
+                style='Climate', markers={'Non-temperate': 'o', 'Temperate': 's'},
+                markersize=10, linewidth=2.5, 
+                palette={'Non-temperate': 'blue', 'Temperate': 'red'},
+                dashes={'Non-temperate': '', 'Temperate': (5, 5)},
+                ax=ax1)
+    
+    # Fix x-axis
+    ax1.set_xticks([0, 1])
+    ax1.set_xticklabels(plant_labels)
     
     # Add annotations for slopes
     # Low plant slope
@@ -87,12 +103,10 @@ def visualize_simple_slopes(
                     bbox=dict(boxstyle='round,pad=0.3',
                              facecolor=color, alpha=0.7))
     
-    ax1.set_xticks(x_pos)
-    ax1.set_xticklabels(plant_labels)
     ax1.set_xlabel('Plant Richness Level', fontsize=11)
     ax1.set_ylabel('Predicted Fungi Richness', fontsize=11)
     ax1.set_title('Simple Slopes Analysis', fontsize=12, fontweight='bold')
-    ax1.legend(loc='best', fontsize=10)
+    ax1.legend(title='Climate', loc='best', fontsize=10)
     ax1.grid(True, alpha=0.3)
     
     # Panel 2: Slope comparison
@@ -116,11 +130,23 @@ def visualize_simple_slopes(
         colors.append('red' if slope_high.get('significant', False) else 'gray')
     
     if slope_estimates:
-        y_pos = np.arange(len(slope_estimates))
+        # Create DataFrame for seaborn
+        bar_df = pd.DataFrame({
+            'Slope': slope_estimates,
+            'SE': slope_ses,
+            'Region': slope_labels,
+            'Color': colors
+        })
         
-        # Plot horizontal bars with error bars
-        bars = ax2.barh(y_pos, slope_estimates, xerr=slope_ses,
-                       color=colors, alpha=0.7, capsize=5)
+        # Use seaborn barplot (horizontal)
+        sns.barplot(data=bar_df, y='Region', x='Slope', ax=ax2,
+                   palette=dict(zip(slope_labels, colors)), alpha=0.7,
+                   orient='h')
+        
+        # Add error bars manually
+        y_pos = np.arange(len(slope_estimates))
+        ax2.errorbar(slope_estimates, y_pos, xerr=slope_ses,
+                    fmt='none', c='black', capsize=5)
         
         # Add reference line at 0
         ax2.axvline(x=0, color='black', linestyle='-', linewidth=1)

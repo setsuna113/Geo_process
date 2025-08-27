@@ -14,7 +14,7 @@ import seaborn as sns
 from scipy import stats
 from typing import Dict, Any, List, Optional, Tuple, Union
 
-from ..evaluation.emmeans_core import REMmeansWrapper, SimpleEMmeansApproximation
+from ..evaluation.emmeans_core import REMmeansWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +34,12 @@ class ContrastAnalysis:
     than high-plant non-temperate regions.
     """
     
-    def __init__(self, emmeans_wrapper: Union[REMmeansWrapper, SimpleEMmeansApproximation], 
+    def __init__(self, emmeans_wrapper: REMmeansWrapper, 
                  vcov_matrix: Optional[np.ndarray] = None):
         """Initialize contrast analyzer.
         
         Args:
-            emmeans_wrapper: REMmeansWrapper or SimpleEMmeansApproximation instance
+            emmeans_wrapper: REMmeansWrapper instance
             vcov_matrix: Optional variance-covariance matrix for proper SE calculation
         """
         self.emmeans_wrapper = emmeans_wrapper
@@ -74,18 +74,8 @@ class ContrastAnalysis:
         """
         logger.info(f"Testing H2 with contrast vector: {contrast_vector}")
         
-        # Get emmeans in standard order
-        if isinstance(self.emmeans_wrapper, REMmeansWrapper):
-            emmeans = self.emmeans_wrapper.get_emmeans_array()
-        else:
-            # For SimpleEMmeansApproximation
-            emmeans_dict = self.emmeans_wrapper.compute_emmeans_2x2()
-            emmeans = np.array([
-                emmeans_dict['group_0_0']['emmean'],
-                emmeans_dict['group_1_0']['emmean'],
-                emmeans_dict['group_0_1']['emmean'],
-                emmeans_dict['group_1_1']['emmean']
-            ])
+        # Get emmeans in standard order - R is REQUIRED
+        emmeans = self.emmeans_wrapper.get_emmeans_array()
         
         # Apply contrast
         contrast_estimate = np.dot(contrast_vector, emmeans)
@@ -128,18 +118,8 @@ class ContrastAnalysis:
         Returns:
             Dictionary with results for each contrast
         """
-        # Get emmeans in standard order
-        if isinstance(self.emmeans_wrapper, REMmeansWrapper):
-            emmeans = self.emmeans_wrapper.get_emmeans_array()
-        else:
-            # For SimpleEMmeansApproximation
-            emmeans_dict = self.emmeans_wrapper.compute_emmeans_2x2()
-            emmeans = np.array([
-                emmeans_dict['group_0_0']['emmean'],
-                emmeans_dict['group_1_0']['emmean'],
-                emmeans_dict['group_0_1']['emmean'],
-                emmeans_dict['group_1_1']['emmean']
-            ])
+        # Get emmeans in standard order - R is REQUIRED
+        emmeans = self.emmeans_wrapper.get_emmeans_array()
         results = {}
         
         for name, contrast_vector in contrasts.items():
