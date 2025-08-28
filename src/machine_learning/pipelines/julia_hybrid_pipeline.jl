@@ -1,13 +1,21 @@
 #!/usr/bin/env julia
 # Output structure: see docs/julia_pipeline_output_structure.md
 
-using DataFrames, Arrow, Statistics, GLM, Distributions, JSON, StatsBase
+using DataFrames, Arrow, Statistics, Distributions, JSON, StatsBase
 using LinearAlgebra, YAML, JLD2, Dates, NPZ, Random
 using StatsModels, HypothesisTests
 using NPZ  # For saving binary numpy files
 using Distributions: Normal, Chisq, cdf
 using LinearAlgebra: dot, inv, cond, BLAS
 using Random: MersenneTwister
+
+# Use RidgeNegBin instead of GLM for negative binomial models
+include("RidgeNegBin.jl")
+using .RidgeNegBin  # Provides negbin() with ridge option
+# Import GLM functions that we still need for diagnostics and LRT
+using GLM: LogLink, lrtest, predict, response, modelmatrix,
+           coefnames, stderror, vcov, dof_residual, nulldeviance, nullloglikelihood,
+           dispersion, coeftable, confint, gvif
 
 # Configure BLAS threads for optimal performance
 # Set to 1 to avoid competition with Julia's own parallelism
@@ -212,10 +220,19 @@ end
 # ============================================================================
 
 function extract_diagnostics(model, model_name::String, state::PipelineState)
+    # Handle both standard GLM and RidgeNegBinModel wrapper
+    if isa(model, RidgeNegBinModel)
+        actual_model = model.model
+        θ = actual_model.model.rr.d.r
+    else
+        actual_model = model
+        θ = model.model.rr.d.r
+    end
+    
     # Calculate residuals but DON'T put in JSON
-    y = response(model)
-    μ = predict(model)
-    θ = model.model.rr.d.r
+    y = response(actual_model)
+    μ = predict(actual_model)
+    # θ already extracted above
     
     response_resid = y .- μ
     deviance_resid = sign.(y .- μ) .* sqrt.(2 .* (
@@ -234,17 +251,17 @@ function extract_diagnostics(model, model_name::String, state::PipelineState)
     # Only return summary stats in JSON
     diagnostics = Dict(
         # Core stats (keep these - they're small)
-        "coefficients" => coef(model),
-        "coef_names" => coefnames(model),
-        "std_errors" => stderror(model),
-        "vcov" => vcov(model),
-        "aic" => aic(model),
-        "bic" => bic(model),
-        "loglik" => loglikelihood(model),
-        "deviance" => deviance(model),
-        "df_residual" => dof_residual(model),
-        "n_obs" => nobs(model),
-        "theta" => model.model.rr.d.r,
+        "coefficients" => coef(actual_model),
+        "coef_names" => coefnames(actual_model),
+        "std_errors" => stderror(actual_model),
+        "vcov" => vcov(actual_model),
+        "aic" => aic(model),  # Use wrapper for AIC (handles ridge)
+        "bic" => bic(model),  # Use wrapper for BIC (handles ridge)
+        "loglik" => loglikelihood(actual_model),
+        "deviance" => deviance(actual_model),
+        "df_residual" => dof_residual(actual_model),
+        "n_obs" => nobs(actual_model),
+        "theta" => θ,
         
         # Residual summaries only (not full arrays)
         "residuals_file" => residuals_file,
@@ -258,17 +275,17 @@ function extract_diagnostics(model, model_name::String, state::PipelineState)
         ),
         
         # Extended stats (NEW - prefixed)
-        "null_deviance" => nulldeviance(model),
-        "null_loglik" => nullloglikelihood(model),
-        "dispersion" => dispersion(model.model)  # Need the actual GLM, not wrapper
+        "null_deviance" => nulldeviance(actual_model),
+        "null_loglik" => nullloglikelihood(actual_model),
+        "dispersion" => dispersion(actual_model.model)  # Need the actual GLM, not wrapper
     )
     
     # Inference (NEW - flat with prefixes)
     try
-        ct = coeftable(model)
+        ct = coeftable(actual_model)
         diagnostics["coef_z_values"] = ct.cols[3]
         diagnostics["coef_p_values"] = ct.cols[4]
-        diagnostics["confint_95"] = confint(model, 0.95)
+        diagnostics["confint_95"] = confint(actual_model, 0.95)
     catch e
         # If inference fails, just skip those fields
         println("Note: Inference stats not available: $e")
@@ -276,7 +293,7 @@ function extract_diagnostics(model, model_name::String, state::PipelineState)
     
     # Multicollinearity (NEW - flat with prefixes)
     try
-        vif_values = gvif(model)
+        vif_values = gvif(actual_model)
         diagnostics["gvif"] = vif_values
         diagnostics["gvif_max"] = maximum(vif_values)
         if maximum(vif_values) > 10
@@ -337,7 +354,7 @@ function extract_diagnostics(model, model_name::String, state::PipelineState)
     return diagnostics
 end
 
-function fit_method1(state::PipelineState)
+function fit_method1(state::PipelineState; use_ridge::Bool=true)
     results = ModelResult[]
     
     # Features - now includes all environmental variables
@@ -351,14 +368,14 @@ function fit_method1(state::PipelineState)
     base = vcat(climate, soil, terrain, water, state.mesf_columns)
     biotic = ["plants_richness_log_std", "vertebrates_richness_log_std"]
     
-    # Null model
+    # Null model - use ridge when we have 200+ MESF components
     formula_null = Term(:fungi_richness) ~ sum(Term.(Symbol.(base)))
-    model_null = negbin(formula_null, state.data, LogLink())
+    model_null = negbin(formula_null, state.data, LogLink(), ridge=use_ridge)
     push!(results, ModelResult("method1_null", model_null, extract_diagnostics(model_null, "method1_null", state)))
     
-    # Full model
+    # Full model - use ridge when we have 200+ MESF components
     formula_full = Term(:fungi_richness) ~ sum(Term.(Symbol.(vcat(base, biotic))))
-    model_full = negbin(formula_full, state.data, LogLink())
+    model_full = negbin(formula_full, state.data, LogLink(), ridge=use_ridge)
     push!(results, ModelResult("method1_full", model_full, extract_diagnostics(model_full, "method1_full", state)))
     
     # LRT
@@ -376,7 +393,7 @@ function fit_method1(state::PipelineState)
     return results, lrt_result
 end
 
-function fit_method2(state::PipelineState)
+function fit_method2(state::PipelineState; use_ridge::Bool=true)
     results = ModelResult[]
     
     # Add categorical features
@@ -384,8 +401,9 @@ function fit_method2(state::PipelineState)
     median_bio4 = median(df.bio04_std)
     df.temperate = Int.(df.bio04_std .> median_bio4)
     
-    median_plants = median(df.plants_richness)
-    df.plant_high = Int.(df.plants_richness .> median_plants)
+    # FIXED: Use log-transformed plants to match continuous model
+    median_plants = median(df.plants_richness_log_std)
+    df.plant_high = Int.(df.plants_richness_log_std .> median_plants)
     
     df.temperate_x_plant_high = df.temperate .* df.plant_high
     df.bio04_std_x_plants_log_std = df.bio04_std .* df.plants_richness_log_std
@@ -401,10 +419,10 @@ function fit_method2(state::PipelineState)
     # Combine all features
     base = vcat(climate, soil, terrain, water, biodiv, state.mesf_columns)
     
-    # Continuous interaction
+    # Continuous interaction - use ridge when we have 200+ MESF components
     cont_features = vcat(base, ["bio04_std_x_plants_log_std"])
     formula_cont = Term(:fungi_richness) ~ sum(Term.(Symbol.(cont_features)))
-    model_cont = negbin(formula_cont, df, LogLink())
+    model_cont = negbin(formula_cont, df, LogLink(), ridge=use_ridge)
     push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics(model_cont, "method2_continuous", state)))
     
     # Categorical interaction - replace continuous bio04 and plants with categorical versions
@@ -420,7 +438,7 @@ function fit_method2(state::PipelineState)
         ["temperate", "plant_high", "temperate_x_plant_high"]  # Categorical main effects + interaction
     )
     formula_cat = Term(:fungi_richness) ~ sum(Term.(Symbol.(cat_features)))
-    model_cat = negbin(formula_cat, df, LogLink())
+    model_cat = negbin(formula_cat, df, LogLink(), ridge=use_ridge)
     push!(results, ModelResult("method2_categorical", model_cat, extract_diagnostics(model_cat, "method2_categorical", state)))
     
     println("Method 2: AIC cont=$(round(aic(model_cont), digits=2)), cat=$(round(aic(model_cat), digits=2))")
@@ -673,8 +691,19 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
     all_results = Dict{String, Any}()
     all_models = Dict{String, Any}()
     
+    # Get ridge configuration from YAML
+    ridge_config = get(state.config, "ridge", Dict())
+    use_ridge = get(ridge_config, "enabled", false)
+    
+    if use_ridge
+        println("Using Ridge regularization (automatic lambda selection via CV)")
+        println("  MESF components: $(length(state.mesf_columns))")
+    else
+        println("Using standard GLM (no regularization)")
+    end
+    
     if method == "method1"
-        models, lrt = fit_method1(state)
+        models, lrt = fit_method1(state, use_ridge=use_ridge)
         for m in models
             all_results[m.name] = m.diagnostics
             all_models[m.name] = m.model
@@ -683,12 +712,12 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         
     elseif method == "method2"
         # First fit method1 for comparisons
-        models1, _ = fit_method1(state)
+        models1, _ = fit_method1(state, use_ridge=use_ridge)
         for m in models1
             all_models[m.name] = m.model
         end
         
-        models2 = fit_method2(state)
+        models2 = fit_method2(state, use_ridge=use_ridge)
         for m in models2
             all_results[m.name] = m.diagnostics
             all_models[m.name] = m.model
