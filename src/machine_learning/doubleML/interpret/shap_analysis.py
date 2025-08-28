@@ -352,8 +352,8 @@ def _create_dependence_plots(shap_by_treatment, X_shap, effect_modifiers, treatm
 
 def _create_violin_plots(shap_by_treatment, effect_modifiers, treatment_names, output_dir,
                         shap_sample_size, verbose):
-    """Create fixed violin plots (EXACT copy from original)"""
-    # Create a single figure with all violins for comparison
+    """Create violin plots with seaborn for proper KDE extension"""
+    # Use original height - the cutoff issue is KDE truncation, not height
     fig, axes = plt.subplots(2, 1, figsize=(12, 10))
     
     for treat_idx, treatment in enumerate(['plants_richness', 'vertebrates_richness']):
@@ -370,15 +370,64 @@ def _create_violin_plots(shap_by_treatment, effect_modifiers, treatment_names, o
             positions.append(feat_idx)
             labels.append(feature_name)
         
-        # Create violin plot with all features side by side
-        parts = ax.violinplot(all_data, positions=positions, widths=0.8,
-                             showmeans=True, showmedians=True, showextrema=True)
+        # Use seaborn for proper KDE extension beyond data range
+        import pandas as pd
+        import seaborn as sns
         
-        # Color the violins
+        # Create DataFrame for seaborn
+        dfs = []
+        for i, (data, label) in enumerate(zip(all_data, labels)):
+            df_temp = pd.DataFrame({
+                'value': data,
+                'feature': label,
+                'position': i
+            })
+            dfs.append(df_temp)
+        df_combined = pd.concat(dfs, ignore_index=True)
+        
+        # Create violin plot with seaborn (default cut=2 extends KDE properly)
+        # Use palette to set colors directly
         colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']  # Different color for each feature
-        for i, pc in enumerate(parts['bodies']):
-            pc.set_facecolor(colors[i % len(colors)])
-            pc.set_alpha(0.7)
+        sns.violinplot(data=df_combined, x='feature', y='value', ax=ax,
+                      inner=None, cut=2, linewidth=0,
+                      palette=colors[:len(labels)])
+        
+        # Add subtle box plot overlay - no caps on whiskers, thinner lines
+        # Don't show means or medians - we'll draw means separately
+        bp = ax.boxplot(all_data, positions=positions, widths=0.2,
+                        patch_artist=True, showmeans=False, meanline=False,
+                        notch=False,  # Remove notch for cleaner look
+                        capprops=dict(linewidth=0),  # Remove caps
+                        whiskerprops=dict(linewidth=1.2, color='gray', alpha=0.7),
+                        boxprops=dict(facecolor='white', edgecolor='gray', linewidth=1.0, alpha=0.5),
+                        medianprops=dict(linewidth=0, color='none'),  # Hide median line
+                        flierprops=dict(marker='.', markerfacecolor='gray', markersize=2, alpha=0.3))
+        
+        # Draw mean markers separately with size based on confidence interval
+        for i, data in enumerate(all_data):
+            mean_val = np.mean(data)
+            sem = np.std(data) / np.sqrt(len(data))
+            ci_95 = 1.96 * sem
+            
+            # Calculate marker size based on CI
+            # Smaller CI = more confidence = larger dot
+            all_cis = [1.96 * np.std(d) / np.sqrt(len(d)) for d in all_data]
+            min_ci = min(all_cis)
+            max_ci = max(all_cis)
+            
+            # Map CI to marker size (larger dot for smaller CI)
+            if max_ci > min_ci:
+                # Normalize: 0 (smallest CI) to 1 (largest CI)
+                ci_normalized = (ci_95 - min_ci) / (max_ci - min_ci)
+                # Invert and scale: size from 12 (largest CI) down to 4 (smallest CI)
+                marker_size = 12 - (ci_normalized * 8)
+            else:
+                marker_size = 8  # Default if all CIs are the same
+            
+            # Draw the mean marker
+            ax.plot(positions[i], mean_val, 'o', 
+                   markerfacecolor='white', markeredgecolor='black',
+                   markersize=marker_size, markeredgewidth=1.2, zorder=10)
         
         # Customize the plot
         ax.set_xticks(positions)
@@ -388,32 +437,52 @@ def _create_violin_plots(shap_by_treatment, effect_modifiers, treatment_names, o
         ax.grid(True, alpha=0.3, axis='y')
         ax.axhline(y=0, color='black', linestyle='--', alpha=0.5, linewidth=0.8)
         
-        # Add statistics annotations
-        for i, (data, label) in enumerate(zip(all_data, labels)):
-            stats_text = f'μ={np.mean(data):.4f}\nσ={np.std(data):.4f}'
+        # Set generous ylim like seaborn does to avoid visual cutoff
+        all_vals = np.concatenate(all_data)
+        y_range = all_vals.max() - all_vals.min()
+        y_margin = y_range * 0.3  # 30% margin like seaborn
+        ax.set_ylim(all_vals.min() - y_margin, all_vals.max() + y_margin)
+        
+        # Add clean statistics annotations
+        for i, (data, feature_name) in enumerate(zip(all_data, effect_modifiers)):
+            mean_val = np.mean(data)
+            sem = np.std(data) / np.sqrt(len(data))
+            
+            # Simple annotation with just mean and SE
+            stats_text = f'μ={mean_val:.3f}±{1.96*sem:.3f}'
             ax.text(i, ax.get_ylim()[1] * 0.95, stats_text, 
-                   ha='center', va='top', fontsize=8,
-                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                   ha='center', va='top', fontsize=7,
+                   bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.8))
+        
+        # Add minimal legend
+        from matplotlib.patches import Patch
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', markerfacecolor='white', 
+                   markeredgecolor='black', markersize=8, linestyle='', label='Mean (size ∝ 1/CI)'),
+            Line2D([0], [0], color='gray', linewidth=1.0, alpha=0.5, label='IQR'),
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=7, framealpha=0.9)
     
-    plt.suptitle(f'SHAP Value Distributions by Feature ({shap_sample_size:,} samples)', 
+    plt.suptitle(f'SHAP Value Distributions ({shap_sample_size:,} samples)', 
                 fontsize=15, y=1.02)
     plt.tight_layout()
     plt.savefig(output_dir / 'shap_distributions_10k.png', dpi=150, bbox_inches='tight')
     plt.close()
     if verbose:
-        print("  ✓ Saved: shap_distributions_10k.png")
+        print("  ✓ Saved: shap_distributions_10k.png (refined with subtle statistical overlays)")
 
 
 def _create_comparative_violin_plot(shap_by_treatment, effect_modifiers, treatment_names,
                                    output_dir, shap_sample_size, verbose):
-    """Create comparative violin plot (EXACT copy from original)"""
-    fig, ax = plt.subplots(figsize=(14, 8))
+    """Create comparative violin plot with proper dimensions"""
+    # Use taller figure to prevent cutoff
+    fig, ax = plt.subplots(figsize=(12, 10))
     
     # Prepare data for comparison
     all_data = []
     positions = []
     colors_list = []
-    labels_list = []
     
     for treat_idx, treatment in enumerate(['plants_richness', 'vertebrates_richness']):
         for feat_idx, feature_name in enumerate(effect_modifiers):
@@ -426,10 +495,6 @@ def _create_comparative_violin_plot(shap_by_treatment, effect_modifiers, treatme
             
             # Colors: different for each treatment
             colors_list.append('green' if treat_idx == 0 else 'blue')
-            
-            # Labels
-            if treat_idx == 0:
-                labels_list.append(feature_name)
     
     # Create violin plot
     parts = ax.violinplot(all_data, positions=positions, widths=0.8,
@@ -449,17 +514,43 @@ def _create_comparative_violin_plot(shap_by_treatment, effect_modifiers, treatme
     ax.grid(True, alpha=0.3, axis='y')
     ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
     
+    # Ensure proper ylim to show full violins
+    all_vals = np.concatenate(all_data)
+    y_range = all_vals.max() - all_vals.min()
+    y_margin = y_range * 0.15
+    ax.set_ylim(all_vals.min() - y_margin, all_vals.max() + y_margin)
+    
     # Add legend
     from matplotlib.patches import Patch
     legend_elements = [Patch(facecolor='green', alpha=0.6, label='Plants richness'),
                       Patch(facecolor='blue', alpha=0.6, label='Vertebrates richness')]
     ax.legend(handles=legend_elements, loc='upper right')
     
+    # Add clean statistical summary
+    y_min, y_max = ax.get_ylim()
+    for feat_idx, feature_name in enumerate(effect_modifiers):
+        x_center = feat_idx * 2.5 + 0.45
+        
+        # Calculate statistics
+        plants_data = shap_by_treatment['plants_richness'][:, feat_idx]
+        plants_mean = np.mean(plants_data)
+        plants_median = np.median(plants_data)
+        
+        verts_data = shap_by_treatment['vertebrates_richness'][:, feat_idx]
+        verts_mean = np.mean(verts_data)
+        verts_median = np.median(verts_data)
+        
+        # Compact annotation showing mean/median
+        stats_text = f'P: μ={plants_mean:.2f}, m={plants_median:.2f}\nV: μ={verts_mean:.2f}, m={verts_median:.2f}'
+        ax.text(x_center, y_max * 0.97, stats_text, 
+               ha='center', va='top', fontsize=6,
+               bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.6))
+    
     plt.tight_layout()
     plt.savefig(output_dir / 'shap_distributions_comparative_10k.png', dpi=150, bbox_inches='tight')
     plt.close()
     if verbose:
-        print("  ✓ Saved: shap_distributions_comparative_10k.png")
+        print("  ✓ Saved: shap_distributions_comparative_10k.png (refined with subtle statistical overlays)")
 
 
 def _create_interaction_heatmaps(shap_by_treatment, X_shap, effect_modifiers,

@@ -24,7 +24,7 @@ mesf_cache_dir: "/scratch/yl998/.cache/mesf"   # MESF spatial features cache loc
 output_dir: "/scratch/yl998/econml_results"    # Results output directory
 
 # ---------- Data Processing ----------
-spatial_step: 10         # Spatial subsampling rate (10 = every 10th point, ~4.3M samples with MESF)
+spatial_step: 500        # Spatial subsampling rate (500 = every 500th point, ~100K samples with MESF)
 
 # ---------- Variable Definitions ----------
 outcome: "fungi_richness"                      # Target/dependent variable
@@ -69,9 +69,9 @@ mc_iters: 1                      # Monte Carlo iterations for LinearDML
 inference_homo: "statsmodels"    # Inference method for homogeneous effects
 
 # ---------- HeterogeneousEffectEstimator (CausalForestDML) ----------
-n_estimators: 500                # Number of trees in CausalForest (optimized for speed/accuracy)
-max_depth: 20                    # Maximum tree depth for CausalForest (increased from 10)
-min_samples_leaf: 200            # Min samples per leaf (optimized to avoid zeros while being fast)
+n_estimators: 200                # Number of trees (EconML example default)
+max_depth: 50                    # Maximum tree depth (EconML example: 50)
+min_samples_leaf: 5              # Min samples per leaf (EconML default: 5)
 subforest_size: 4                # Subforest size for variance estimation
 inference_hetero: "blb"          # Bootstrap of Little Bags for heterogeneous effects
 max_samples: 0.5                 # Fraction of samples per tree (added, was 0.45 default)
