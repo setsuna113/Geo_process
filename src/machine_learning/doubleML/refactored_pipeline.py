@@ -584,10 +584,22 @@ class HeterogeneousEffectEstimator:
         print(f"Effect modifiers: {n_modifiers}")
         print(f"Confounders: {n_confounders}")
         
-        # Use configured min_samples_leaf or calculate based on data size
-        actual_min_samples_leaf = max(self.min_samples_leaf, n_samples // 1000)
-        if actual_min_samples_leaf != self.min_samples_leaf:
-            print(f"Adjusted min_samples_leaf from {self.min_samples_leaf} to {actual_min_samples_leaf}")
+        # Use configured min_samples_leaf directly - no adjustment needed
+        actual_min_samples_leaf = self.min_samples_leaf
+        
+        # LOG CRITICAL PARAMETERS
+        print("\n" + "="*70)
+        print("CAUSALFOREST PARAMETERS (DEBUG)")
+        print("="*70)
+        print(f"min_samples_leaf configured: {self.min_samples_leaf}")
+        print(f"min_samples_leaf actual: {actual_min_samples_leaf}")
+        print(f"n_estimators: {self.n_estimators}")
+        print(f"max_depth: {self.max_depth}")
+        print(f"max_samples: {self.max_samples}")
+        print(f"honest: {self.honest}")
+        print(f"subforest_size: {self.subforest_size}")
+        print(f"num_threads: {self.num_threads}")
+        print("="*70 + "\n")
         
         # Create standardized nuisance models with config
         model_y, model_t = create_nuisance_models(n_samples, n_treatments, self.num_threads, self.config)
