@@ -55,9 +55,9 @@ def get_hetero_inference(estimator, X: np.ndarray, max_samples: int = 100000, ma
     inf = estimator.const_marginal_effect_inference(X_inference)
     pvalues = inf.pvalue(value=0)
     
-    # Rank top 20% regions by impact (magnitude × significance)
-    significant_mask = pvalues < 0.05
-    impact_scores = np.sum(np.abs(coef) * significant_mask, axis=1)
+    # Rank top 20% regions by impact (magnitude only, since significance is on subset)
+    # Use magnitude of effects across all treatments
+    impact_scores = np.sum(np.abs(coef), axis=1)
     ranked_indices = np.argsort(impact_scores)[::-1]
     n_top = int(len(ranked_indices) * 0.2)
     top_20_percent = ranked_indices[:n_top]
@@ -133,7 +133,7 @@ if __name__ == "__main__":
     from src.machine_learning.doubleML.refactored_pipeline import HeterogeneousEffectEstimator
     import time
     
-    model_path = "/scratch/yl998/econml_results/hetero_results_step10.pkl"
+    model_path = "/scratch/yl998/econml_results_5m/hetero_results_step10.pkl"
     data_path = "/scratch/yl998/biodiversity_climate_production_1x_corrected.arrow"
     
     # Load model
@@ -156,18 +156,20 @@ if __name__ == "__main__":
     df = feather.read_feather(data_path)
     print(f"Data loaded in {time.time()-t0:.1f}s, shape: {df.shape}")
     
-    print("Extracting effect modifiers...")
+    print("Extracting effect modifiers (will standardize them)...")
     X = df[['bio01', 'bio04', 'bio12']].values
     
     print("Removing NaN values...")
     X = X[~np.isnan(X).any(axis=1)]
     print(f"Clean data shape: {X.shape}")
     
-    # TEMPORARY: Sample to 10k for testing
-    if X.shape[0] > 10000:
-        print(f"TEMP: Sampling to 10,000 for testing...")
-        idx = np.random.choice(X.shape[0], 10000, replace=False)
-        X = X[idx]
+    # Standardize the data (same as pipeline preprocessing)
+    print("Standardizing effect modifiers...")
+    X_std = (X - np.mean(X, axis=0)) / np.std(X, axis=0)
+    X = X_std
+    print(f"Standardized X: mean={np.mean(X, axis=0)}, std={np.std(X, axis=0)}")
+    
+    # Let get_hetero_inference() handle sampling automatically
     
     print(f"Running inference on {X.shape[0]} samples...")
     results = get_hetero_inference(model, X, max_samples=100000)
@@ -180,12 +182,12 @@ if __name__ == "__main__":
     report.append(f"Model: {model.__class__.__name__}")
     report.append(f"Samples analyzed: {results['n_effects']} locations")
     report.append(f"Samples for inference: {results['n_inference']}")
-    report.append(f"Effect modifiers: bio01, bio04, bio12")
+    report.append(f"Effect modifiers: bio01_std, bio04_std, bio12_std")
     
     # Add feature importances if available
     if hasattr(model, 'feature_importances_'):
         report.append(f"\nFeature Importances:")
-        for i, name in enumerate(['bio01', 'bio04', 'bio12']):
+        for i, name in enumerate(['bio01_std', 'bio04_std', 'bio12_std']):
             report.append(f"  {name}: {model.feature_importances_[i]:.3f}")
     report.append("")
     
@@ -233,7 +235,7 @@ if __name__ == "__main__":
     report.append("CLIMATE CORRELATIONS")
     report.append("-"*30)
     
-    climate_names = ['bio01 (Temp)', 'bio04 (Temp Season)', 'bio12 (Precip)']
+    climate_names = ['bio01_std (Temp)', 'bio04_std (Temp Season)', 'bio12_std (Precip)']
     for t_idx, treatment in enumerate(treatment_names):
         effects = results['coefficients'][:, t_idx] if results['coefficients'].ndim > 1 else [results['coefficients'][t_idx]]
         report.append(f"\n{treatment} correlations:")
@@ -246,11 +248,15 @@ if __name__ == "__main__":
     with open(report_path, 'w') as f:
         f.write('\n'.join(report))
     
-    # Also save summary CSV for easy analysis
+    # Also save summary CSV for easy analysis (using inference subset for consistent lengths)
+    n_inference = results['n_inference']  # 100k samples
+    
+    # Create DataFrame using inference data only (all same length)
+    coef_inference = results['coefficients'][:n_inference]  # Take first 100k effects to match inference
     summary_df = pd.DataFrame({
-        'treatment': treatment_names * len(effects),
-        'effect': results['coefficients'].flatten(),
-        'stderr': results['stderr'].flatten() if results['stderr'].size > 1 else results['stderr'],
+        'treatment': treatment_names * n_inference,
+        'effect': coef_inference.flatten(),
+        'stderr': results['stderr'].flatten(),
         'pvalue': results['pvalues'].flatten()
     })
     csv_path = "/scratch/yl998/econml_results/hetero_effects_summary.csv"

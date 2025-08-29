@@ -74,12 +74,12 @@ build_formulas <- function(meta) {
   # Biotic features
   biotic <- c("plants_richness_log", "vertebrates_richness_log")
   
-  # Build formula strings
+  # Build formula strings - use R's interaction syntax
   formulas <- list(
     method1_null = paste("fungi_richness ~", paste(base, collapse = " + ")),
     method1_full = paste("fungi_richness ~", paste(c(base, biotic), collapse = " + ")),
-    method2_continuous = paste("fungi_richness ~", paste(c(base, biotic, "bio04_std_x_plants_log"), collapse = " + ")),
-    method2_categorical = paste("fungi_richness ~", paste(c(base, biotic, "temperate_x_plant_high"), collapse = " + "))
+    method2_continuous = paste("fungi_richness ~", paste(c(base, biotic), collapse = " + "), "+ bio04_std:plants_richness_log"),
+    method2_categorical = paste("fungi_richness ~", paste(c(base, biotic), collapse = " + "), "+ I((bio04_std > 0) * (plants_richness_log > median(plants_richness_log)))")
   )
   
   return(formulas)
@@ -203,11 +203,11 @@ save_dharma_plots <- function(results, output_dir) {
     if (result$model_name == "method1_full") {
       save_all_residual_plots(result, output_dir)
     } else if (result$model_name == "method2_continuous") {
-      # Only create interaction plot for method2_continuous
-      save_interaction_plot(result, output_dir, "bio04_std_x_plants_log")
+      # Create plots for key continuous interaction variables
+      save_key_variable_plots(result, output_dir, c("bio04_std", "plants_richness_log"))
     } else if (result$model_name == "method2_categorical") {
-      # Create plots for categorical variables and interaction
-      save_categorical_plots(result, output_dir)
+      # Create plots for key categorical model variables
+      save_key_variable_plots(result, output_dir, c("bio04_std", "plants_richness_log"))
     }
   }
 }
@@ -240,50 +240,30 @@ save_all_residual_plots <- function(result, output_dir) {
   cat("  Created", length(predictor_names), "residual plots\n")
 }
 
-save_interaction_plot <- function(result, output_dir, var_name) {
-  "Save specific interaction plot"
-  
-  dharma_obj <- result$dharma_object
-  model_data <- dharma_obj$fittedModel$model
-  
-  if (!is.null(model_data) && var_name %in% names(model_data)) {
-    plot_file <- file.path(output_dir, paste0(result$model_name, "_", var_name, ".png"))
-    
-    png(plot_file, width = 800, height = 600, units = "px", res = 100)
-    plotResiduals(dharma_obj, form = model_data[[var_name]], 
-                  xlab = var_name, main = paste(result$model_name, "-", var_name))
-    dev.off()
-    cat("  Created interaction plot:", var_name, "\n")
-  }
-}
-
-save_categorical_plots <- function(result, output_dir) {
-  "Save plots for categorical model key variables"
+save_key_variable_plots <- function(result, output_dir, var_names) {
+  "Save plots for key variables"
   
   dharma_obj <- result$dharma_object
   model_data <- dharma_obj$fittedModel$model
   
   if (is.null(model_data)) {
-    cat("  Cannot extract model data for residual plots\n")
+    cat("  Cannot extract model data for variable plots\n")
     return()
   }
   
-  # Key variables for categorical model
-  key_vars <- c("plants_richness_log", "temperate_x_plant_high")
-  
-  for (var in key_vars) {
-    if (var %in% names(model_data)) {
-      plot_file <- file.path(output_dir, paste0(result$model_name, "_", var, ".png"))
+  for (var_name in var_names) {
+    if (var_name %in% names(model_data)) {
+      plot_file <- file.path(output_dir, paste0(result$model_name, "_", var_name, ".png"))
       
       png(plot_file, width = 800, height = 600, units = "px", res = 100)
-      plotResiduals(dharma_obj, form = model_data[[var]], 
-                    xlab = var, main = paste(result$model_name, "-", var))
+      plotResiduals(dharma_obj, form = model_data[[var_name]], 
+                    xlab = var_name, main = paste(result$model_name, "-", var_name))
       dev.off()
     }
   }
-  
-  cat("  Created categorical model plots\n")
+  cat("  Created plots for key variables:", paste(var_names, collapse = ", "), "\n")
 }
+
 
 # ============================================================================
 # Main execution
