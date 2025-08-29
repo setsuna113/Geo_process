@@ -15,7 +15,7 @@ using GLM
 using StatsModels  
 using LinearAlgebra
 using DataFrames
-using Distributions: Chisq, ccdf
+using Distributions: Chisq, ccdf, NegativeBinomial
 using Distributions
 using StatsBase
 using Random
@@ -108,24 +108,32 @@ function GLM.lrtest(m0::RidgeNegBinModel, m1::GLM.GeneralizedLinearModel)
 end
 
 """
-    negbin(formula, data, link; ridge=false)
+    negbin(formula, data, link; ridge=false, theta=nothing)
 
-Fit a negative binomial GLM with optional ridge regularization.
+Fit a negative binomial GLM with optional ridge regularization and fixed theta.
 
 # Arguments
 - `formula`: StatsModels formula
 - `data`: DataFrame
 - `link`: Link function (typically LogLink())
 - `ridge`: If true, use ridge with automatic lambda selection
+- `theta`: If provided (Float64), use fixed theta; otherwise estimate from data
 
 # Returns
 GLM model (standard if ridge=false, ridge if ridge=true)
 """
-function negbin(formula::FormulaTerm, data::DataFrame, link; ridge::Bool=false)
+function negbin(formula::FormulaTerm, data::DataFrame, link; ridge::Bool=false, theta::Union{Float64, Nothing}=nothing)
     
     # No ridge - return standard model
     if !ridge
-        return GLM.negbin(formula, data, link)
+        if isnothing(theta)
+            # Estimate theta from data
+            return GLM.negbin(formula, data, link)
+        else
+            # Use fixed theta
+            println("Using fixed theta = $theta")
+            return GLM.glm(formula, data, NegativeBinomial(theta), link)
+        end
     end
     
     # Ridge - ALWAYS subsample and select lambda
@@ -143,20 +151,32 @@ function negbin(formula::FormulaTerm, data::DataFrame, link; ridge::Bool=false)
     data_cv = data[sample_idx, :]
     
     # Fit base model on subsample
-    base_model_cv = GLM.negbin(formula, data_cv, link)
+    if isnothing(theta)
+        base_model_cv = GLM.negbin(formula, data_cv, link)
+        θ_cv = base_model_cv.model.rr.d.r
+    else
+        println("Using fixed theta = $theta for CV")
+        base_model_cv = GLM.glm(formula, data_cv, NegativeBinomial(theta), link)
+        θ_cv = theta
+    end
     X_cv = modelmatrix(base_model_cv.mf)
     y_cv = response(base_model_cv.mf)
-    θ_cv = base_model_cv.model.rr.d.r
     
     # Select lambda via CV
     λ = select_lambda_cv(X_cv, y_cv, θ_cv, λ_path, 5)
     
     # Fit on FULL data with selected lambda
     println("\nFitting final ridge model with λ=$(round(λ, digits=4)) on full dataset ($n_rows rows)")
-    base_model = GLM.negbin(formula, data, link)
+    if isnothing(theta)
+        base_model = GLM.negbin(formula, data, link)
+        θ = base_model.model.rr.d.r
+    else
+        println("Using fixed theta = $theta for final model")
+        base_model = GLM.glm(formula, data, NegativeBinomial(theta), link)
+        θ = theta
+    end
     X = modelmatrix(base_model.mf)
     y = response(base_model.mf)
-    θ = base_model.model.rr.d.r
     
     # Apply ridge regularization (verbose for final fit)
     β_ridge = apply_ridge(X, y, θ, coef(base_model), λ, verbose=true)

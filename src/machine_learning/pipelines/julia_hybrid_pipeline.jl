@@ -17,6 +17,11 @@ using GLM: LogLink, lrtest, predict, response, modelmatrix,
            coefnames, stderror, vcov, dof_residual, nulldeviance, nullloglikelihood,
            dispersion, coeftable, confint, gvif
 
+# Import post-processing module - separation of concerns
+include("post_process.jl")
+using .Main: extract_diagnostics_and_save, process_dml_results,
+             save_glm_results, save_bootstrap_results, dump_for_r_dharma, save_dml_results
+
 # Configure BLAS threads for optimal performance
 # Set to 1 to avoid competition with Julia's own parallelism
 BLAS.set_num_threads(1)
@@ -74,29 +79,22 @@ function process_with_mesf(df::DataFrame, method::String)
         error("MESF dimensions mismatch: $(size(pca_components, 1)) vs $(nrow(df)) data rows")
     end
     
-    # Now remove rows with NaN values in any column (keep only complete cases)
+    # Remove rows with NaN values (keep only complete cases)
     println("Removing rows with NaN values...")
     n_before = nrow(df)
     
-    # Check each column for NaN and keep only rows without any NaN
-    mask = trues(n_before)
+    # Check for NaN in all numeric columns (completecases only checks missing, not NaN!)
+    complete_rows = trues(nrow(df))
     for col in propertynames(df)
-        col_data = df[!, col]
-        # Handle both regular numbers and Union{Missing, Number} types
-        if eltype(col_data) <: Number || eltype(col_data) <: Union{Missing, <:Number}
-            # Use a more robust NaN check that handles Union types
-            for i in 1:length(col_data)
-                val = col_data[i]
-                if !ismissing(val) && isnan(val)
-                    mask[i] = false
-                end
-            end
+        if eltype(df[!, col]) <: Union{Number, Union{Missing, <:Number}}
+            # Skip missing values but check for NaN
+            complete_rows .&= (ismissing.(df[!, col]) .| .!isnan.(coalesce.(df[!, col], 0.0)))
         end
     end
     
-    # Apply mask to both DataFrame and MESF components
-    df = df[mask, :]
-    pca_components = pca_components[mask, :]  # Filter MESF to match!
+    # Apply to both DataFrame and MESF components
+    df = df[complete_rows, :]
+    pca_components = pca_components[complete_rows, :]  # Filter MESF to match!
     
     n_after = nrow(df)
     println("Kept $(n_after) complete rows out of $(n_before) ($(round(100*n_after/n_before, digits=1))%)")
@@ -125,27 +123,22 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
     # Don't use dropmissing - it's too aggressive
     # We'll handle NaN values per column as needed
     
-    # Convert all numeric columns to Float32 using broadcast (more efficient)
+    # Convert all numeric columns to Float32 using broadcast
     println("Converting columns to Float32...")
     for col in propertynames(df)
         if eltype(df[!, col]) <: Number
-            # Use in-place broadcast for better memory efficiency
             df[!, col] = Float32.(df[!, col])
         end
     end
     
-    # Create fungi_richness (no NaN handling needed - already removed)
-    df.fungi_richness = df.am_fungi_richness .+ df.ecm_fungi_richness
-    
-    # Standardize naming
-    if :plant_richness in propertynames(df)
-        df.plants_richness = df.plant_richness
-    end
-    if :animal_richness in propertynames(df)
-        df.vertebrates_richness = df.animal_richness
-    elseif :terrestrial_richness in propertynames(df)
+    # Handle column naming: terrestrial_richness might be called vertebrates_richness
+    if :terrestrial_richness in propertynames(df) && !(:vertebrates_richness in propertynames(df))
         df.vertebrates_richness = df.terrestrial_richness
+        println("Using terrestrial_richness as vertebrates_richness")
     end
+    
+    # Create fungi_richness
+    df.fungi_richness = df.am_fungi_richness .+ df.ecm_fungi_richness
     
     # Standardize all environmental variables (2SD method) using broadcast operations
     env_vars = [:bio01, :bio04, :bio12, :bio15, :elevation,
@@ -153,25 +146,20 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
                 :soil_ph, :slope, :tpi]
     
     for var in env_vars
-        if var in propertynames(df)
-            col_std = Symbol(string(var) * "_std")
-            col_data = df[!, var]
-            μ = mean(col_data)  # No NaN - already removed
-            σ = std(col_data)
-            # Single broadcast operation for standardization
-            df[!, col_std] = @. (col_data - μ) / (2σ)
-        end
+        col_std = Symbol(string(var) * "_std")
+        col_data = df[!, var]
+        μ = mean(col_data)
+        σ = std(col_data)
+        df[!, col_std] = @. (col_data - μ) / (2σ)
     end
     
     # Aspect is already decomposed into cos/sin, standardize those
     for var in [:aspect_cos, :aspect_sin]
-        if var in propertynames(df)
-            col_std = Symbol(string(var) * "_std")
-            col_data = df[!, var]
-            μ = mean(col_data)
-            σ = std(col_data)
-            df[!, col_std] = @. (col_data - μ) / (2σ)
-        end
+        col_std = Symbol(string(var) * "_std")
+        col_data = df[!, var]
+        μ = mean(col_data)
+        σ = std(col_data)
+        df[!, col_std] = @. (col_data - μ) / (2σ)
     end
     
     # NOTE: MESF columns handled by MESF module (already standardized)
@@ -219,142 +207,9 @@ end
 # MODEL FITTING - Clean and simple
 # ============================================================================
 
-function extract_diagnostics(model, model_name::String, state::PipelineState)
-    # Handle both standard GLM and RidgeNegBinModel wrapper
-    if isa(model, RidgeNegBinModel)
-        actual_model = model.model
-        θ = actual_model.model.rr.d.r
-    else
-        actual_model = model
-        θ = model.model.rr.d.r
-    end
-    
-    # Calculate residuals but DON'T put in JSON
-    y = response(actual_model)
-    μ = predict(actual_model)
-    # θ already extracted above
-    
-    response_resid = y .- μ
-    deviance_resid = sign.(y .- μ) .* sqrt.(2 .* (
-        y .* log.((y .+ 1e-10) ./ μ) .- (y .+ θ) .* log.((y .+ θ) ./ (μ .+ θ))
-    ))
-    
-    # Save residuals to binary file (NPY format)
-    residuals_file = joinpath(state.output_dir, "$(model_name)_residuals.npz")
-    npzwrite(residuals_file, Dict(
-        "y_values" => Float32.(y),
-        "fitted_values" => Float32.(μ),
-        "response_residuals" => Float32.(response_resid),
-        "deviance_residuals" => Float32.(deviance_resid)
-    ))
-    
-    # Only return summary stats in JSON
-    diagnostics = Dict(
-        # Core stats (keep these - they're small)
-        "coefficients" => coef(actual_model),
-        "coef_names" => coefnames(actual_model),
-        "std_errors" => stderror(actual_model),
-        "vcov" => vcov(actual_model),
-        "aic" => aic(model),  # Use wrapper for AIC (handles ridge)
-        "bic" => bic(model),  # Use wrapper for BIC (handles ridge)
-        "loglik" => loglikelihood(actual_model),
-        "deviance" => deviance(actual_model),
-        "df_residual" => dof_residual(actual_model),
-        "n_obs" => nobs(actual_model),
-        "theta" => θ,
-        
-        # Residual summaries only (not full arrays)
-        "residuals_file" => residuals_file,
-        "residuals_summary" => Dict(
-            "mean_response" => mean(response_resid),
-            "std_response" => std(response_resid),
-            "mean_deviance" => mean(deviance_resid),
-            "std_deviance" => std(deviance_resid),
-            "min_deviance" => minimum(deviance_resid),
-            "max_deviance" => maximum(deviance_resid)
-        ),
-        
-        # Extended stats (NEW - prefixed)
-        "null_deviance" => nulldeviance(actual_model),
-        "null_loglik" => nullloglikelihood(actual_model),
-        "dispersion" => dispersion(actual_model.model)  # Need the actual GLM, not wrapper
-    )
-    
-    # Inference (NEW - flat with prefixes)
-    try
-        ct = coeftable(actual_model)
-        diagnostics["coef_z_values"] = ct.cols[3]
-        diagnostics["coef_p_values"] = ct.cols[4]
-        diagnostics["confint_95"] = confint(actual_model, 0.95)
-    catch e
-        # If inference fails, just skip those fields
-        println("Note: Inference stats not available: $e")
-    end
-    
-    # Multicollinearity (NEW - flat with prefixes)
-    try
-        vif_values = gvif(actual_model)
-        diagnostics["gvif"] = vif_values
-        diagnostics["gvif_max"] = maximum(vif_values)
-        if maximum(vif_values) > 10
-            println("⚠ High multicollinearity: max GVIF = $(maximum(vif_values))")
-        end
-    catch e
-        # If GVIF fails, skip
-        println("Note: GVIF not available: $e")
-    end
-    
-    # Diagnostic tests (NEW - flat with prefixes)
-    try
-        # Use the deviance_resid we already calculated above
-        dev_resid = deviance_resid
-        
-        # Jarque-Bera normality test
-        jb = JarqueBeraTest(dev_resid)
-        diagnostics["test_jarque_bera_stat"] = jb.JB
-        diagnostics["test_jarque_bera_p"] = pvalue(jb)
-        
-        # Outlier detection (for NB GLM: |deviance residual| > 3)
-        outlier_threshold = 3.0
-        n_outliers = sum(abs.(dev_resid) .> outlier_threshold)
-        diagnostics["test_outliers_count"] = n_outliers
-        diagnostics["test_outliers_percent"] = 100.0 * n_outliers / length(dev_resid)
-        diagnostics["test_outliers_threshold"] = outlier_threshold
-        
-        # Heteroscedasticity check via residual variance in bins
-        # For NB GLM: check if variance changes with fitted values
-        n_bins = min(10, Int(ceil(sqrt(length(μ)))))
-        sorted_idx = sortperm(μ)
-        bin_size = length(μ) ÷ n_bins
-        bin_variances = Float64[]
-        for i in 1:n_bins
-            start_idx = (i-1) * bin_size + 1
-            end_idx = i == n_bins ? length(μ) : i * bin_size
-            bin_resids = dev_resid[sorted_idx[start_idx:end_idx]]
-            push!(bin_variances, var(bin_resids))
-        end
-        # Coefficient of variation of bin variances (should be low for homoscedasticity)
-        heterosced_cv = std(bin_variances) / mean(bin_variances)
-        diagnostics["test_heteroscedasticity_cv"] = heterosced_cv
-        diagnostics["test_heteroscedasticity_high"] = heterosced_cv > 0.5
-        
-        # Skewness and Kurtosis of deviance residuals
-        # For well-fitted NB GLM, deviance residuals should be approximately normal
-        resid_skewness = StatsBase.skewness(dev_resid)
-        resid_kurtosis = StatsBase.kurtosis(dev_resid)  # Excess kurtosis (0 for normal)
-        diagnostics["test_skewness"] = resid_skewness
-        diagnostics["test_kurtosis_excess"] = resid_kurtosis
-        diagnostics["test_skewness_high"] = abs(resid_skewness) > 1.0
-        diagnostics["test_kurtosis_high"] = abs(resid_kurtosis) > 3.0
-    catch e
-        # If tests fail, skip
-        println("Note: Diagnostic tests not available: $e")
-    end
-    
-    return diagnostics
-end
+# NOTE: extract_diagnostics moved to post_process.jl for separation of concerns
 
-function fit_method1(state::PipelineState; use_ridge::Bool=true)
+function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Float64, Nothing}=nothing)
     results = ModelResult[]
     
     # Features - now includes all environmental variables
@@ -370,13 +225,13 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true)
     
     # Null model - use ridge when we have 200+ MESF components
     formula_null = Term(:fungi_richness) ~ sum(Term.(Symbol.(base)))
-    model_null = negbin(formula_null, state.data, LogLink(), ridge=use_ridge)
-    push!(results, ModelResult("method1_null", model_null, extract_diagnostics(model_null, "method1_null", state)))
+    model_null = negbin(formula_null, state.data, LogLink(), ridge=use_ridge, theta=theta)
+    push!(results, ModelResult("method1_null", model_null, extract_diagnostics_and_save(model_null, "method1_null", state)))
     
     # Full model - use ridge when we have 200+ MESF components
     formula_full = Term(:fungi_richness) ~ sum(Term.(Symbol.(vcat(base, biotic))))
-    model_full = negbin(formula_full, state.data, LogLink(), ridge=use_ridge)
-    push!(results, ModelResult("method1_full", model_full, extract_diagnostics(model_full, "method1_full", state)))
+    model_full = negbin(formula_full, state.data, LogLink(), ridge=use_ridge, theta=theta)
+    push!(results, ModelResult("method1_full", model_full, extract_diagnostics_and_save(model_full, "method1_full", state)))
     
     # LRT
     lrt = lrtest(model_null, model_full)
@@ -393,7 +248,7 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true)
     return results, lrt_result
 end
 
-function fit_method2(state::PipelineState; use_ridge::Bool=true)
+function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Float64, Nothing}=nothing)
     results = ModelResult[]
     
     # Add categorical features
@@ -422,8 +277,8 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true)
     # Continuous interaction - use ridge when we have 200+ MESF components
     cont_features = vcat(base, ["bio04_std_x_plants_log_std"])
     formula_cont = Term(:fungi_richness) ~ sum(Term.(Symbol.(cont_features)))
-    model_cont = negbin(formula_cont, df, LogLink(), ridge=use_ridge)
-    push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics(model_cont, "method2_continuous", state)))
+    model_cont = negbin(formula_cont, df, LogLink(), ridge=use_ridge, theta=theta)
+    push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics_and_save(model_cont, "method2_continuous", state)))
     
     # Categorical interaction - replace continuous bio04 and plants with categorical versions
     # Remove bio04_std and plants_richness_log from base, add categorical versions
@@ -438,8 +293,8 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true)
         ["temperate", "plant_high", "temperate_x_plant_high"]  # Categorical main effects + interaction
     )
     formula_cat = Term(:fungi_richness) ~ sum(Term.(Symbol.(cat_features)))
-    model_cat = negbin(formula_cat, df, LogLink(), ridge=use_ridge)
-    push!(results, ModelResult("method2_categorical", model_cat, extract_diagnostics(model_cat, "method2_categorical", state)))
+    model_cat = negbin(formula_cat, df, LogLink(), ridge=use_ridge, theta=theta)
+    push!(results, ModelResult("method2_categorical", model_cat, extract_diagnostics_and_save(model_cat, "method2_categorical", state)))
     
     println("Method 2: AIC cont=$(round(aic(model_cont), digits=2)), cat=$(round(aic(model_cat), digits=2))")
     
@@ -481,137 +336,23 @@ function fit_method3_dml(state::PipelineState)
     dml = MultivariableDML(n_folds=5, config_path="src/config/ml/ml_config.yml", verbose=true)
     fit_dml!(dml, state.data, confounders, treatments, "fungi_richness")
     
-    # Compute comprehensive statistics
-    
-    # Initialize result with basic info
-    result = Dict(
-        "coefficients" => dml.coefficients,
-        "coef_names" => dml.treatment_names,
-        "std_errors" => dml.std_errors,
-        "vcov" => dml.vcov,
-        "n_obs" => dml.n_obs,
-        "method_note" => "DML with cross-fitting and LightGBM",
-        "bdml_stats" => dml.bdml_stats,  # Include BDML statistics directly
-        "treatments" => Dict{String, Any}()
-    )
-    
-    # Compute detailed statistics for each treatment
-    for (i, name) in enumerate(dml.treatment_names)
-        coef = dml.coefficients[i]
-        se = dml.std_errors[i]
-        z = coef / se
-        p = 2 * (1 - cdf(Normal(), abs(z)))
-        ci_lower = coef - 1.96 * se
-        ci_upper = coef + 1.96 * se
-        
-        result["treatments"][name] = Dict(
-            "coefficient" => coef,
-            "std_error" => se,
-            "z_statistic" => z,
-            "p_value" => p,
-            "ci_95" => [ci_lower, ci_upper],
-            "statistically_significant" => p < 0.05
-        )
-    end
-    
-    # Overall model statistics
-    result["model_stats"] = Dict(
-        "condition_number" => cond(dml.vcov),
-        "joint_test" => Dict(
-            "chi2_statistic" => dot(dml.coefficients, inv(dml.vcov) * dml.coefficients),
-            "df" => length(dml.coefficients),
-            "p_value" => 1 - cdf(Chisq(length(dml.coefficients)), 
-                                 dot(dml.coefficients, inv(dml.vcov) * dml.coefficients))
-        )
-    )
+    # Use clean I/O module to process results
+    result = process_dml_results(dml)
     
     println("Method 3 DML completed")
     
     return result
 end
 
-function save_bootstrap_results(results::Dict, output_dir::String, method::String)
-    """Save bootstrap results in NPZ format for Python visualization."""
-    mkpath(output_dir)
-    
-    npz_path = joinpath(output_dir, "bootstrap_$(method).npz")
-    
-    # Prepare data for NPZ
-    npz_data = Dict{String, Any}()
-    sample_sizes = results["sample_sizes"]
-    
-    # Metadata
-    npz_data["sample_sizes"] = sample_sizes
-    npz_data["optimal_n"] = results["optimal_n"]
-    npz_data["N_total"] = results["N"]
-    npz_data["n_iterations"] = results["n_iterations"]
-    
-    # Results for each sample size
-    for n in sample_sizes
-        sr = results["sample_results"][n]
-        npz_data["n$(n)_plants_effects"] = sr["plants_effects"]
-        npz_data["n$(n)_vertebrates_effects"] = sr["vertebrates_effects"]
-        npz_data["n$(n)_p_values"] = sr["p_values"]
-        npz_data["n$(n)_r2_improvements"] = sr["r2_improvements"]
-        npz_data["n$(n)_power"] = sr["power"]
-        npz_data["n$(n)_eco_power"] = sr["ecological_power"]
-        npz_data["n$(n)_plants_mean"] = sr["plants_effect"]["mean"]
-        npz_data["n$(n)_plants_std"] = sr["plants_effect"]["std"]
-    end
-    
-    npzwrite(npz_path, npz_data)
-    println("\nBootstrap results saved to: $npz_path")
-end
-
-# ============================================================================
-# DHARMA DIAGNOSTIC SUPPORT (minimal, clean)
-# ============================================================================
-
-function dump_for_r_dharma(state::PipelineState, method::String; sample_frac::Float64=0.1)
-    """Dump sampled preprocessed data for R DHARMa diagnostics."""
-    cache_dir = "/scratch/yl998/.cache/dharma"
-    mkpath(cache_dir)
-    
-    # Sample data (DHARMa doesn't need full dataset)
-    n_rows = nrow(state.data)
-    n_sample = max(10000, Int(floor(n_rows * sample_frac)))  # At least 10k rows
-    n_sample = min(n_sample, 100000)  # Cap at 100k for efficiency
-    Random.seed!(42)  # Reproducible sampling
-    sample_idx = sort(sample(1:n_rows, n_sample, replace=false))
-    
-    df_sample = state.data[sample_idx, :]
-    
-    # Use Arrow for efficient R reading
-    arrow_file = joinpath(cache_dir, "dharma_data.arrow")
-    Arrow.write(arrow_file, df_sample)
-    
-    # Save minimal metadata (just data info, no formulas)
-    metadata = Dict(
-        "data_file" => arrow_file,
-        "n_sampled" => n_sample,
-        "n_total" => n_rows,
-        "sample_frac" => n_sample / n_rows,
-        "mesf_columns" => state.mesf_columns,  # R needs to know which are MESF
-        "timestamp" => Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-    )
-    
-    json_file = joinpath(cache_dir, "dharma_meta.json")
-    open(json_file, "w") do f
-        JSON.print(f, metadata, 2)
-    end
-    
-    println("DHARMa cache saved:")
-    println("  Data: $arrow_file ($(round(filesize(arrow_file)/1e6, digits=1)) MB)")
-    println("  Meta: $json_file")
-    println("  Sampled: $n_sample / $n_rows rows ($(round(100*n_sample/n_rows, digits=1))%)")
-end
+# NOTE: save_bootstrap_results and dump_for_r_dharma moved to post_process.jl
 
 # ============================================================================
 # PIPELINE RUNNER
 # ============================================================================
 
 function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
-                     mode::String="normal", bootstrap_iterations::Int=100, dump_for_dharma::Bool=false)
+                     mode::String="normal", bootstrap_iterations::Int=100, dump_for_dharma::Bool=false,
+                     compute_lmg::Bool=false, lmg_samples::Int=100000, lmg_parallel::Int=30, lmg_response::String="fungi")
     # Load config
     config_path = "src/config/ml/ml_config.yml"
     config = YAML.load_file(config_path)
@@ -660,6 +401,53 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         return Dict("status" => "dharma_cache_saved")
     end
     
+    # LMG IMPORTANCE ANALYSIS MODE
+    if compute_lmg
+        println("\n" * "="^60)
+        println("RUNNING LMG IMPORTANCE ANALYSIS")
+        println("="^60)
+        
+        # Save preprocessed data to temporary Arrow file
+        temp_path = "/tmp/lmg_temp_$(round(Int, time() * 1000)).arrow"
+        println("Saving preprocessed data to: $temp_path")
+        
+        Arrow.write(temp_path, state.data)
+        println("Data saved: $(nrow(state.data)) rows, $(ncol(state.data)) columns")
+        
+        # Determine max orderings (default 1000 for sampling, or "all" for complete)
+        max_orderings = lmg_samples >= 1000000 ? 1000000 : 1000  # If huge sample, allow more orderings
+        
+        # Call standalone LMG script with preprocessed data
+        println("Calling LMG analysis script...")
+        
+        # Choose the appropriate LMG script based on response variable
+        lmg_script = if lmg_response == "plant"
+            joinpath(@__DIR__, "run_lmg_plant_analysis.jl")
+        elseif lmg_response == "animal"
+            joinpath(@__DIR__, "run_lmg_animal_analysis.jl")
+        else  # default to fungi
+            joinpath(@__DIR__, "run_lmg_analysis.jl")
+        end
+        
+        println("Using LMG script for $(lmg_response) response: $lmg_script")
+        
+        try
+            run(`julia $lmg_script $temp_path $lmg_samples $max_orderings`)
+            println("LMG analysis completed successfully!")
+        catch e
+            println("ERROR in LMG analysis: $e")
+            # Clean up temp file even on error
+            isfile(temp_path) && rm(temp_path)
+            rethrow(e)
+        end
+        
+        # Clean up temporary file
+        rm(temp_path)
+        println("Temporary data file cleaned up.")
+        
+        return Dict("status" => "lmg_complete", "samples" => lmg_samples)
+    end
+    
     # BOOTSTRAP MODE
     if mode == "bootstrap"
         println("\n" * "="^60)
@@ -695,6 +483,10 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
     ridge_config = get(state.config, "ridge", Dict())
     use_ridge = get(ridge_config, "enabled", false)
     
+    # Get negative binomial configuration from YAML
+    negbin_config = get(state.config, "negbin", Dict())
+    fixed_theta = get(negbin_config, "fixed_theta", nothing)
+    
     if use_ridge
         println("Using Ridge regularization (automatic lambda selection via CV)")
         println("  MESF components: $(length(state.mesf_columns))")
@@ -702,8 +494,14 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         println("Using standard GLM (no regularization)")
     end
     
+    if !isnothing(fixed_theta)
+        println("Using fixed theta = $fixed_theta for all models (ensures comparable pseudo R²)")
+    else
+        println("Estimating theta separately for each model")
+    end
+    
     if method == "method1"
-        models, lrt = fit_method1(state, use_ridge=use_ridge)
+        models, lrt = fit_method1(state, use_ridge=use_ridge, theta=fixed_theta)
         for m in models
             all_results[m.name] = m.diagnostics
             all_models[m.name] = m.model
@@ -712,12 +510,12 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         
     elseif method == "method2"
         # First fit method1 for comparisons
-        models1, _ = fit_method1(state, use_ridge=use_ridge)
+        models1, _ = fit_method1(state, use_ridge=use_ridge, theta=fixed_theta)
         for m in models1
             all_models[m.name] = m.model
         end
         
-        models2 = fit_method2(state, use_ridge=use_ridge)
+        models2 = fit_method2(state, use_ridge=use_ridge, theta=fixed_theta)
         for m in models2
             all_results[m.name] = m.diagnostics
             all_models[m.name] = m.model
@@ -745,83 +543,17 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         error("Unknown method: $method")
     end
     
-    # Save results
-    save_results(all_results, state)
+    # Save results using appropriate function based on method
+    if method in ["method3", "dml"]
+        save_dml_results(all_results["method3_dml"], state.output_dir)
+    else
+        save_glm_results(all_results, state)
+    end
     
     return all_results
 end
 
-function save_results(results::Dict, state::PipelineState)
-    mkpath(state.output_dir)
-    
-    timestamp = Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
-    
-    # Prepare output
-    output = Dict(
-        "models" => results,
-        "metadata" => Dict(
-            "n_rows" => nrow(state.data),
-            "n_cols" => ncol(state.data),
-            "mesf_count" => length(state.mesf_columns)
-        ),
-        "timestamp" => timestamp,
-        "julia_version" => string(VERSION)
-    )
-    
-    # Save JSON
-    json_file = joinpath(state.output_dir, "julia_results_$(timestamp).json")
-    open(json_file, "w") do f
-        JSON.print(f, output, 4)
-    end
-    println("Results saved: $json_file")
-    
-    # Save JLD2
-    jld2_file = joinpath(state.output_dir, "julia_results_$(timestamp).jld2")
-    @save jld2_file output
-    
-    # Save BDML statistics separately if DML was run
-    if haskey(results, "method3_dml") && haskey(results["method3_dml"], "bdml_stats")
-        bdml_stats = results["method3_dml"]["bdml_stats"]
-        if bdml_stats !== nothing
-            # Save as NPZ with same timestamp for easy matching
-            bdml_file = joinpath(state.output_dir, "bdml_stats_$(timestamp).npz")
-            
-            # NPZ can't save strings, so save only numeric arrays
-            bdml_numeric = Dict(
-                "covariance_matrix" => bdml_stats["covariance_matrix"],
-                "n_obs" => bdml_stats["n_obs"],
-                "n_treatments" => bdml_stats["n_treatments"],
-                "residual_means" => bdml_stats["residual_means"],
-                "residual_stds" => bdml_stats["residual_stds"],
-                "correlation_matrix" => bdml_stats["correlation_matrix"],
-                "condition_number" => [bdml_stats["condition_number"]]  # Wrap scalar in array
-            )
-            npzwrite(bdml_file, bdml_numeric)
-            
-            # Save treatment names separately in JSON for reference
-            bdml_meta_file = joinpath(state.output_dir, "bdml_meta_$(timestamp).json")
-            open(bdml_meta_file, "w") do f
-                JSON.print(f, Dict(
-                    "treatment_names" => bdml_stats["treatment_names"],
-                    "is_positive_definite" => bdml_stats["is_positive_definite"],
-                    "bdml_stats_file" => bdml_file
-                ), 2)
-            end
-            
-            println("BDML statistics saved: $bdml_file ($(round(filesize(bdml_file)/1024, digits=1)) KB)")
-            println("BDML metadata saved: $bdml_meta_file")
-            
-            # Add references to main results
-            results["method3_dml"]["bdml_stats_file"] = bdml_file
-            results["method3_dml"]["bdml_meta_file"] = bdml_meta_file
-        end
-    end
-    
-    # Update symlink
-    latest = joinpath(state.output_dir, "julia_results_latest.json")
-    rm(latest, force=true)
-    symlink(basename(json_file), latest)
-end
+# NOTE: save_results removed - using specific save functions from post_process.jl
 
 # ============================================================================
 # CLI
@@ -830,8 +562,77 @@ end
 if length(ARGS) > 0
     method = ARGS[1]
     
+    # Check for LMG importance analysis mode
+    if method == "lmg"
+        # LMG mode: lmg <model> <data_path> [spatial_step] [n_samples]
+        if length(ARGS) < 3
+            println("Usage: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
+            println("Models: method1, method2")
+            exit(1)
+        end
+        
+        model = ARGS[2]
+        data_path = ARGS[3]
+        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
+        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
+        
+        println("Running LMG importance analysis...")
+        println("  Model: $model")
+        println("  Data: $data_path")
+        println("  Spatial step: $spatial_step")
+        println("  Sample size: $n_samples")
+        
+        run_pipeline(model, data_path, spatial_step, 
+                    compute_lmg=true, lmg_samples=n_samples)
+    
+    # Check for LMG with plant response
+    elseif method == "lmg_plant"
+        # LMG mode with plant as response
+        if length(ARGS) < 3
+            println("Usage: julia $PROGRAM_FILE lmg_plant <model> <data_path> [spatial_step] [n_samples]")
+            println("Models: method1, method2")
+            exit(1)
+        end
+        
+        model = ARGS[2]
+        data_path = ARGS[3]
+        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
+        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
+        
+        println("Running LMG importance analysis with PLANT response...")
+        println("  Model: $model")
+        println("  Data: $data_path")
+        println("  Spatial step: $spatial_step")
+        println("  Sample size: $n_samples")
+        
+        run_pipeline(model, data_path, spatial_step, 
+                    compute_lmg=true, lmg_samples=n_samples, lmg_response="plant")
+    
+    # Check for LMG with animal response
+    elseif method == "lmg_animal"
+        # LMG mode with animal as response
+        if length(ARGS) < 3
+            println("Usage: julia $PROGRAM_FILE lmg_animal <model> <data_path> [spatial_step] [n_samples]")
+            println("Models: method1, method2")
+            exit(1)
+        end
+        
+        model = ARGS[2]
+        data_path = ARGS[3]
+        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
+        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
+        
+        println("Running LMG importance analysis with ANIMAL response...")
+        println("  Model: $model")
+        println("  Data: $data_path")
+        println("  Spatial step: $spatial_step")
+        println("  Sample size: $n_samples")
+        
+        run_pipeline(model, data_path, spatial_step, 
+                    compute_lmg=true, lmg_samples=n_samples, lmg_response="animal")
+    
     # Check for dharma mode
-    if method == "dharma"
+    elseif method == "dharma"
         # DHARMa dump mode: dharma <data_path> [spatial_step]
         if length(ARGS) < 2
             println("Usage: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
@@ -888,6 +689,7 @@ if length(ARGS) > 0
         println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
         println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
         println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
+        println("  LMG: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
         println("Methods: method1, method2, method3/dml")
     end
 else
@@ -895,4 +697,5 @@ else
     println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
     println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
     println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
+    println("  LMG: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
 end

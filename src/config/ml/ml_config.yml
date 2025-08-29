@@ -15,6 +15,15 @@ ridge:
   # - Lambda for meaningful shrinkage: ~1,000,000+
   # - These objectives are incompatible at this scale
   # Standard GLM performs better with large samples
+
+# Negative Binomial GLM configuration
+negbin:
+  # Fixed theta for fair model comparison
+  # Using median of observed thetas (22.10, 25.55, 27.89, 25.16) = 25.35
+  # This ensures all models have the same null log-likelihood baseline
+  # making pseudo R² values directly comparable
+  fixed_theta: 25.35
+  # Set to null or remove to estimate theta for each model
     
   models:
     family: "negative_binomial"

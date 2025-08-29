@@ -606,37 +606,37 @@ class HeterogeneousEffectEstimator:
         
         # Create and fit CausalForestDML
         # Ensure n_estimators is divisible by subforest_size
-        if self.n_estimators % self.subforest_size != 0:
-            adjusted_estimators = (self.n_estimators // self.subforest_size + 1) * self.subforest_size
-            print(f"Adjusted n_estimators from {self.n_estimators} to {adjusted_estimators} (divisible by {self.subforest_size})")
-            self.n_estimators = adjusted_estimators
+        actual_n_estimators = self.n_estimators
+        if actual_n_estimators % self.subforest_size != 0:
+            actual_n_estimators = (actual_n_estimators // self.subforest_size + 1) * self.subforest_size
+            print(f"Adjusted n_estimators from {self.n_estimators} to {actual_n_estimators} (divisible by {self.subforest_size})")
         
         self.estimator = CausalForestDML(
             model_y=model_y,
             model_t=model_t,
-            n_estimators=self.n_estimators,
+            n_estimators=actual_n_estimators,
             max_depth=self.max_depth,
             min_samples_leaf=actual_min_samples_leaf,
             max_samples=self.max_samples,
-            min_impurity_decrease=self.min_impurity_decrease,
+            # min_impurity_decrease=self.min_impurity_decrease,  # REMOVED: Causes zeros with larger datasets
             min_balancedness_tol=self.min_balancedness_tol,
             honest=self.honest,
             discrete_treatment=False,
             cv=self.cv_folds,
             random_state=self.random_state,
             n_jobs=self.num_threads,
-            inference=self.inference if self.inference != 'blb' else True
+            inference=self.inference  # Pass inference directly, 'blb' is valid
         )
         
-        print(f"Fitting CausalForest with {self.n_estimators} trees...")
+        print(f"Fitting CausalForest with {actual_n_estimators} trees...")
         start_time = time.time()
         
         self.estimator.fit(
             Y, T,
             X=X,  # Effect modifiers REQUIRED
             W=W,
-            inference=self.inference,
             cache_values=True
+            # Note: inference is already set in the constructor, don't pass it here
         )
         
         self.fit_time = time.time() - start_time

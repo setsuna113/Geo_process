@@ -32,7 +32,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, '/home/yl998/Geo_process')
 
 from interpret import shap_analysis, SubgroupAnalyzer
-from src.machine_learning.doubleML.refactored_pipeline import HeterogeneousEffectEstimator
+from src.machine_learning.doubleML.refactored_pipeline import HeterogeneousEffectEstimator, HomogeneousEffectEstimator
 
 
 class HeterogeneousEffectsVisualizer:
@@ -40,35 +40,38 @@ class HeterogeneousEffectsVisualizer:
     Complete visualization suite for heterogeneous treatment effects
     """
     
-    def __init__(self, model_path: str, results_path: str, data_path: str):
+    def __init__(self, model_path: str, results_path: Optional[str], data_path: str):
         """
-        Initialize visualizer with saved model and results
+        Initialize visualizer with saved model and optionally results
         
         Args:
             model_path: Path to saved .pkl model file
-            results_path: Path to saved .json results file
+            results_path: Path to saved .json results file (OPTIONAL - can be None)
             data_path: Path to preprocessed data (.npz file) - REQUIRED
         """
         self.model_path = Path(model_path)
-        self.results_path = Path(results_path)
+        self.results_path = Path(results_path) if results_path else None
         self.data_path = Path(data_path)
         
         if not self.data_path.exists():
             raise FileNotFoundError(f"Data file not found: {self.data_path}")
         
-        # Load model and results
-        self.model = self._load_model()
-        self.results = self._load_results()
+        # Load model (required) and results (optional)
+        self.model_wrapper = self._load_model()
+        self.results = self._load_results() if self.results_path else {}
         
-        # Extract configuration from results
+        # Extract configuration from model or results
         self._extract_config()
         
         # Initialize subgroup analyzer
         self.subgroup_analyzer = None
         
         print(f"✓ Loaded model from: {self.model_path}")
-        print(f"✓ Loaded results from: {self.results_path}")
-        print(f"✓ Model type: {self.results['model_info']['estimator_type']}")
+        if self.results_path:
+            print(f"✓ Loaded results from: {self.results_path}")
+        else:
+            print(f"✓ No JSON results provided - using model information only")
+        print(f"✓ Model type: {self.model_type}")
         print(f"✓ Heterogeneous: {self.is_heterogeneous}")
         if self.is_heterogeneous:
             print(f"✓ Effect modifiers: {self.effect_modifiers}")
@@ -78,10 +81,16 @@ class HeterogeneousEffectsVisualizer:
         with open(self.model_path, 'rb') as f:
             model = pickle.load(f)
             
+        # Store the wrapper to extract metadata
+        self.wrapper = model if hasattr(model, 'estimator') else None
+            
         # If it's a wrapper, extract the actual estimator
         if hasattr(model, 'estimator'):
             print(f"  Extracted estimator from wrapper: {type(model.estimator).__name__}")
-            return model.estimator
+            self.model = model.estimator
+            return model  # Return wrapper for metadata
+        
+        self.model = model
         return model
     
     def _load_results(self) -> Dict:
@@ -90,9 +99,40 @@ class HeterogeneousEffectsVisualizer:
             return json.load(f)
     
     def _extract_config(self):
-        """Extract configuration from results"""
-        self.is_heterogeneous = self.results.get('model_info', {}).get('heterogeneous', False)
-        self.effect_modifiers = self.results.get('effect_modifiers', [])
+        """Extract configuration from model and/or results"""
+        # Try to get info from wrapper first, then results, then defaults
+        if self.wrapper:
+            # We have a wrapper - extract from it
+            self.model_type = type(self.model).__name__
+            self.is_heterogeneous = 'Forest' in self.model_type or 'Heterogeneous' in type(self.wrapper).__name__
+            
+            # Get effect modifiers from wrapper results or feature importances
+            if hasattr(self.wrapper, 'results') and self.wrapper.results:
+                feature_imps = self.wrapper.results.get('feature_importances', {})
+                self.effect_modifiers = list(feature_imps.keys()) if feature_imps else ['bio01_std', 'bio04_std', 'bio12_std']
+            elif hasattr(self.model, 'feature_importances_'):
+                # Default names if we only have importances array
+                n_features = len(self.model.feature_importances_)
+                self.effect_modifiers = ['bio01_std', 'bio04_std', 'bio12_std'][:n_features]
+            else:
+                self.effect_modifiers = self.results.get('effect_modifiers', ['bio01_std', 'bio04_std', 'bio12_std'])
+        else:
+            # No wrapper - extract from model directly or results
+            self.model_type = type(self.model).__name__
+            self.is_heterogeneous = 'Forest' in self.model_type
+            
+            if self.results:
+                # Use results if available
+                self.is_heterogeneous = self.results.get('type') == 'heterogeneous' or \
+                                       self.results.get('model_info', {}).get('heterogeneous', self.is_heterogeneous)
+                self.effect_modifiers = self.results.get('effect_modifiers', [])
+                if not self.effect_modifiers and 'feature_importances' in self.results:
+                    self.effect_modifiers = list(self.results['feature_importances'].keys())
+            else:
+                # Default values
+                self.effect_modifiers = ['bio01_std', 'bio04_std', 'bio12_std']
+        
+        # Treatment names are standard
         self.treatment_names = self.results.get('treatment_names', 
                                                ['plants_richness', 'vertebrates_richness', 'plants_x_vertebrates'])
         self.n_observations = self.results.get('n_observations', 0)
@@ -372,17 +412,44 @@ class HeterogeneousEffectsVisualizer:
         print("MODEL SUMMARY")
         print("="*60)
         
-        print(f"\nModel Type: {self.results['model_info']['estimator_type']}")
-        print(f"Observations: {self.n_observations:,}")
-        print(f"CV Folds: {self.results['model_info']['cv_folds']}")
-        print(f"Fit Time: {self.results.get('fit_time_seconds', 'N/A'):.2f} seconds")
+        print(f"\nModel Type: {self.model_type}")
+        if self.n_observations:
+            print(f"Observations: {self.n_observations:,}")
+        
+        # Get metadata from wrapper if available
+        if self.wrapper:
+            if hasattr(self.wrapper, 'cv_folds'):
+                print(f"CV Folds: {self.wrapper.cv_folds}")
+            if hasattr(self.wrapper, 'fit_time'):
+                print(f"Fit Time: {self.wrapper.fit_time:.2f} seconds")
+            if hasattr(self.wrapper, 'n_estimators'):
+                print(f"N Estimators: {self.wrapper.n_estimators}")
+        elif self.results:
+            # Fall back to results if available
+            if 'model_info' in self.results:
+                print(f"CV Folds: {self.results['model_info'].get('cv_folds', 'N/A')}")
+            if 'fit_time' in self.results or 'fit_time_seconds' in self.results:
+                fit_time = self.results.get('fit_time', self.results.get('fit_time_seconds', 'N/A'))
+                if fit_time != 'N/A':
+                    print(f"Fit Time: {fit_time:.2f} seconds")
         
         if self.is_heterogeneous:
             print(f"\nHeterogeneous Effects Model")
             print(f"Effect Modifiers: {', '.join(self.effect_modifiers)}")
-            print(f"Heterogeneity Range: {self.results.get('heterogeneity_range', 'N/A'):.6f}")
             
-            if 'effects_by_location' in self.results:
+            # Print feature importances if available
+            if hasattr(self.model, 'feature_importances_'):
+                print("\nFeature Importances:")
+                for mod, imp in zip(self.effect_modifiers, self.model.feature_importances_):
+                    print(f"  {mod}: {imp:.4f}")
+            elif self.wrapper and hasattr(self.wrapper, 'results') and self.wrapper.results:
+                if 'feature_importances' in self.wrapper.results:
+                    print("\nFeature Importances:")
+                    for mod, imp in self.wrapper.results['feature_importances'].items():
+                        print(f"  {mod}: {imp:.4f}")
+            
+            # Only show effects_by_location if it exists in results
+            if self.results and 'effects_by_location' in self.results:
                 print("\nEffects by Condition:")
                 for location, data in self.results['effects_by_location'].items():
                     print(f"\n  {location}:")
@@ -392,7 +459,7 @@ class HeterogeneousEffectsVisualizer:
                               f"(p={stats['p_value']:.4f})")
         else:
             print(f"\nConstant Effects Model")
-            if 'treatments' in self.results:
+            if self.results and 'treatments' in self.results:
                 print("\nTreatment Effects:")
                 for treatment, stats in self.results['treatments'].items():
                     print(f"  {treatment}: {stats['coefficient']:.6f} "
@@ -405,7 +472,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='Visualize EconML heterogeneous treatment effects')
     parser.add_argument('--model', type=str, required=True, help='Path to saved .pkl model file')
-    parser.add_argument('--results', type=str, required=True, help='Path to saved .json results file')
+    parser.add_argument('--results', type=str, default=None, help='Path to saved .json results file (OPTIONAL)')
     parser.add_argument('--data', type=str, required=True, help='Path to preprocessed .npz data file (REQUIRED)')
     parser.add_argument('--output', type=str, default='./figures', help='Output directory for figures')
     parser.add_argument('--format', type=str, default='png', choices=['png', 'pdf', 'svg'],
@@ -415,7 +482,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Create visualizer with REQUIRED data path
+    # Create visualizer with optional results path
     visualizer = HeterogeneousEffectsVisualizer(args.model, args.results, args.data)
     
     # Print summary

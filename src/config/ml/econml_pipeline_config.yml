@@ -1,155 +1,140 @@
 # =============================================================================
-# EconML Pipeline Configuration
+# EconML Pipeline Configuration - OPTIMIZED FOR 5M SAMPLES
 # =============================================================================
-# Flattened structure - all 48 accepted configuration parameters
-# Generated from refactored_pipeline.py and optimized_lgbm.py
+# Based on the debugged version with min_impurity_decrease REMOVED
+# and parameters optimized for large-scale data
 
 # =============================================================================
 # SECTION 0: SHARED PARAMETERS
 # =============================================================================
-# These parameters control BOTH estimators and all components
-
-num_threads: 80           # Master thread control: LightGBM + CausalForest parallelization
-cv_folds: 5              # Cross-validation folds for both LinearDML and CausalForestDML
-random_state: 42         # Random seed for reproducibility (all components)
-alpha: 0.05              # Statistical significance level (confidence & prediction intervals)
+num_threads: 80           # Master thread control
+cv_folds: 3              # Reduced from 5 for faster training with 5M samples
+random_state: 42         # Random seed for reproducibility
+alpha: 0.05              # Statistical significance level
 
 # =============================================================================
 # SECTION 1: DATA & PATHS
 # =============================================================================
 
 # ---------- Paths ----------
-data_path: "/scratch/yl998/biodiversity_climate_production_1x_corrected.arrow"  # Input data file (Arrow format)
-mesf_cache_dir: "/scratch/yl998/.cache/mesf"   # MESF spatial features cache location
-output_dir: "/scratch/yl998/econml_results"    # Results output directory
+data_path: "/scratch/yl998/biodiversity_climate_production_1x_corrected.arrow"  # Original data file
+mesf_cache_dir: "/scratch/yl998/.cache/mesf"
+output_dir: "/scratch/yl998/econml_results_5m"
 
 # ---------- Data Processing ----------
-spatial_step: 500        # Spatial subsampling rate (500 = every 500th point, ~100K samples with MESF)
+spatial_step: 10        # Sample every 10th point for faster processing
 
-# ---------- Variable Definitions ----------
-outcome: "fungi_richness"                      # Target/dependent variable
+# ---------- Variable Definitions (unchanged) ----------
+outcome: "fungi_richness"
 
-treatments:                                     # Treatment/intervention variables
+treatments:
   - "plants_richness"
   - "vertebrates_richness"
   - "plants_x_vertebrates"
 
-effect_modifiers:                               # Heterogeneity modifiers (for CausalForestDML)
-  - "bio01_std"          # Mean annual temperature (standardized)
-  - "bio04_std"          # Temperature seasonality (standardized) - key for broadleaf
-  - "bio12_std"          # Annual precipitation (standardized)
+effect_modifiers:
+  - "bio01_std"          # Mean annual temperature
+  - "bio04_std"          # Temperature seasonality
+  - "bio12_std"          # Annual precipitation
 
-climate_confounders:                            # Climate control variables
-  - "bio01_std"          # Mean annual temperature (WorldClim bio1)
-  - "bio04_std"          # Temperature seasonality (WorldClim bio4)
-  - "bio12_std"          # Annual precipitation (WorldClim bio12)
-  - "bio15_std"          # Precipitation seasonality (WorldClim bio15)
+climate_confounders:
+  - "bio01_std"
+  - "bio04_std"
+  - "bio12_std"
+  - "bio15_std"
 
-topographic_confounders:                        # Topographic control variables
-  - "elevation_std"      # Elevation (standardized)
-  - "slope_std"          # Terrain steepness (standardized)
-  - "aspect_cos_std"     # Slope aspect - cosine component (standardized)
-  - "aspect_sin_std"     # Slope aspect - sine component (standardized)
-  - "tpi_std"            # Topographic Position Index (standardized)
+topographic_confounders:
+  - "elevation_std"
+  - "slope_std"
+  - "aspect_cos_std"
+  - "aspect_sin_std"
+  - "tpi_std"
 
-soil_confounders:                               # Soil property control variables
-  - "soil_ph_std"        # Soil pH (standardized)
-  - "soil_organic_carbon_std"  # Soil organic carbon (standardized)
-  - "sand_content_pct_std"     # Sand content percentage (standardized)
+soil_confounders:
+  - "soil_ph_std"
+  - "soil_organic_carbon_std"
+  - "sand_content_pct_std"
 
-water_balance_confounders:                      # Water/energy balance variables
-  - "pet_mm_month_std"   # Potential evapotranspiration (standardized)
+water_balance_confounders:
+  - "pet_mm_month_std"
 
 # =============================================================================
-# SECTION 2: ESTIMATOR PARAMETERS
+# SECTION 2: ESTIMATOR PARAMETERS - OPTIMIZED FOR 5M
 # =============================================================================
 
 # ---------- HomogeneousEffectEstimator (LinearDML) ----------
-mc_iters: 1                      # Monte Carlo iterations for LinearDML
-inference_homo: "statsmodels"    # Inference method for homogeneous effects
+mc_iters: 1
+inference_homo: "statsmodels"
 
 # ---------- HeterogeneousEffectEstimator (CausalForestDML) ----------
-n_estimators: 200                # Number of trees (EconML example default)
-max_depth: 50                    # Maximum tree depth (EconML example: 50)
-min_samples_leaf: 5              # Min samples per leaf (EconML default: 5)
-subforest_size: 4                # Subforest size for variance estimation
-inference_hetero: "blb"          # Bootstrap of Little Bags for heterogeneous effects
-max_samples: 0.5                 # Fraction of samples per tree (added, was 0.45 default)
-min_impurity_decrease: 0.001    # Min impurity decrease for splits (added)
-min_balancedness_tol: 0.45      # Min balance tolerance (added, default)
-honest: true                     # Use honest trees for better confidence intervals (added)
+n_estimators: 100                # Reduced from 200 for speed
+max_depth: 30                    # Reduced from 50 to prevent overfitting
+min_samples_leaf: 5000           # Increased from 5 to 5000 (0.1% of 5M)
+subforest_size: 4
+inference_hetero: "blb"
+max_samples: 0.2                 # Reduced from 0.5 (uses 1M samples per tree)
+# min_impurity_decrease: REMOVED - THIS WAS CAUSING ZEROS!
+min_balancedness_tol: 0.45
+honest: true
 
 # =============================================================================
-# SECTION 3: LIGHTGBM PARAMETERS
+# SECTION 3: LIGHTGBM PARAMETERS - OPTIMIZED FOR 5M
 # =============================================================================
 
 # ---------- Core Parameters ----------
-objective: "regression"          # LightGBM objective function
-metric: "rmse"                   # Evaluation metric
-boosting_type: "gbdt"            # Gradient Boosting Decision Tree
-verbosity: -1                    # Logging level (-1=silent, 1=verbose)
-seed: 42                         # LightGBM random seed (duplicates random_state)
+objective: "regression"
+metric: "rmse"
+boosting_type: "gbdt"
+verbosity: -1
+seed: 42
 
-# ---------- Tree Structure ----------
-num_leaves: 31                   # Leaves per tree (63 for >100k samples)
-min_data_in_leaf: 20             # Min samples per leaf (or n_samples // 100_000)
-lgbm_max_depth: -1               # Tree depth limit (-1 = unlimited)
-learning_rate: 0.1               # Gradient descent step size
-num_iterations: 100              # Number of boosting rounds
+# ---------- Tree Structure (optimized for 5M) ----------
+num_leaves: 31                   # Keeping at 31 for stability
+min_data_in_leaf: 50             # Increased from 20 (5M // 100,000)
+lgbm_max_depth: -1
+learning_rate: 0.1
+num_iterations: 100
 
 # ---------- Histogram & Binning ----------
-max_bin: 127                     # Number of histogram bins for splitting
+max_bin: 127                     # Keeping at 127 for faster computation
 
-# ---------- Sampling Parameters ----------
-feature_fraction: 0.9            # Column sampling rate (0.7 for >100 features)
-feature_fraction_bynode: 0.9     # Column sampling per tree node (0.7 for >100 features)
-bagging_fraction: 0.9            # Row sampling rate (0.8 for >1M samples)
-bagging_freq: 0                  # Bagging frequency (1 for >1M samples, 0=disabled)
+# ---------- Sampling Parameters (optimized for 5M) ----------
+feature_fraction: 0.9
+feature_fraction_bynode: 0.9
+bagging_fraction: 0.8            # Reduced from 0.9 for >1M samples
+bagging_freq: 1                  # Enabled for >1M samples
 
 # ---------- Early Stopping ----------
-early_stopping_rounds: 10        # Stop if no improvement for N rounds
-first_metric_only: true          # Use only first metric for early stopping
+early_stopping_rounds: 10
+first_metric_only: true
 
 # ---------- Categorical Handling ----------
-cat_smooth: 10                   # Smoothing for categorical splits
-max_cat_to_onehot: 4            # Max cardinality for one-hot encoding
-categorical_feature: "auto"      # Automatic categorical detection
+cat_smooth: 10
+max_cat_to_onehot: 4
+categorical_feature: "auto"
 
 # ---------- Missing Value & Advanced ----------
-use_missing: true                # Native missing value handling
-zero_as_missing: false          # Don't treat zeros as missing
-feature_pre_filter: true        # Remove useless features before training
-extra_trees: false              # Use GBDT not Extra Trees
+use_missing: true
+zero_as_missing: false
+feature_pre_filter: true
+extra_trees: false
 
 # =============================================================================
-# CLI DEFAULTS (Command Line Interface)
-# =============================================================================
-# These duplicate other parameters for CLI argument parsing
-
-cli_mode: "test"                # Default run mode: test/homo/hetero
-cli_spatial_step: 1             # Duplicates spatial_step
-cli_num_threads: 80             # Duplicates num_threads
-cli_modifiers:                  # Duplicates effect_modifiers
-  - "bio01_std"
-  - "bio04_std"
-
-# =============================================================================
-# NOTES ON PARAMETER RELATIONSHIPS
+# PERFORMANCE NOTES FOR 5M SAMPLES
 # =============================================================================
 # 
-# Merged Parameters:
-# - num_threads: Controls both LightGBM threads and CausalForest n_jobs
-# - cv_folds: Controls n_folds (LinearDML) and cv (CausalForestDML)  
-# - random_state/seed: Currently separate but both set to 42
-# - alpha: Controls both confidence intervals (homo) and prediction intervals (hetero)
+# Expected performance with this config:
+# - Runtime: ~30-60 minutes on 80-core machine
+# - Memory: ~15-30 GB peak
+# - Feature importances: Will work correctly (min_impurity_decrease removed)
 #
-# Renamed to Avoid Conflicts:
-# - inference_homo vs inference_hetero (different methods for each estimator)
-# - max_depth vs lgbm_max_depth (CausalForest vs LightGBM tree depth)
+# Further optimizations if needed:
+# 1. Reduce n_estimators to 50 for 2x speedup
+# 2. Reduce max_samples to 0.1 for 2x speedup
+# 3. Use spatial_step > 1 to subsample data
+# 4. Set cache_values: false in code to save memory
 #
-# Dynamic Formulas (based on data size):
-# - min_samples_leaf: max(1000, n_samples // 1000)
-# - min_data_in_leaf: max(20, n_samples // 100_000)
-# - num_leaves: 31 if n_samples < 100_000 else 63
-# - feature_fraction: 0.7 if n_features > 100 else 0.9
-# - bagging_fraction: 0.8 if n_samples > 1_000_000 else 0.9
+# Monitor during run:
+# - If memory issues: reduce max_samples or increase spatial_step
+# - If too slow: reduce n_estimators or cv_folds
+# - If trees too deep: increase min_samples_leaf further
