@@ -13,7 +13,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import json
 import time
 
-from src.core_abstractions import IAnalyzer, AnalysisResult, TensorData
+from src.abstractions import IAnalyzer, AnalysisResult, TensorData
 from src.biodiversity_analysis.preprocessing import SharedPreprocessor
 from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
 from src.biodiversity_analysis.shared.data import ParquetLoader

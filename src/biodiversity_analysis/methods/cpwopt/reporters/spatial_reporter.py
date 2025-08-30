@@ -24,7 +24,7 @@ except ImportError:
     HAS_CARTOPY = False
     warnings.warn("Cartopy not available, map plots will be simplified")
 
-from src.core_abstractions import CPFactors, TensorData
+from src.abstractions import CPFactors, TensorData
 
 logger = logging.getLogger(__name__)
 

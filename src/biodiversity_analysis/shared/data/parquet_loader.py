@@ -10,7 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pyarrow.compute as pc
 
-from src.core_abstractions import BiodiversityData
+from src.abstractions import BiodiversityData
 
 logger = logging.getLogger(__name__)
 

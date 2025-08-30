@@ -11,7 +11,7 @@ from scipy.optimize import minimize, LinearConstraint
 from scipy.linalg import solve, lstsq
 import warnings
 
-from src.core_abstractions import CPFactors
+from src.abstractions import CPFactors
 from src.biodiversity_analysis.shared.tensor_utils import (
     unfold, compute_mttkrp, weighted_norm, compute_gram_matrices
 )

@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 
 from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
-from src.core_abstractions import AnalysisResult
+from src.abstractions import AnalysisResult
 from .core.geo_som_core import GeoSOM, GeoSOMConfig
 from src.biodiversity_analysis.preprocessing import SharedPreprocessor
 from .utils.spatial_utils import SpatialBlockGenerator, GeographicCoherence

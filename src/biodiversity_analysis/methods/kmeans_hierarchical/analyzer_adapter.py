@@ -5,7 +5,7 @@ import xarray as xr
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple, List
 
-from src.core_abstractions import IAnalyzer, AnalysisResult
+from src.abstractions import IAnalyzer, AnalysisResult
 from .hierarchical_analyzer import KMeansHierarchicalAnalyzer
 
 

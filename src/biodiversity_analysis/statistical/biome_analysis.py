@@ -51,7 +51,7 @@ def analyze_by_biome(
     # Convert BiodiversityData to DataFrame if needed
     if not isinstance(df, pd.DataFrame):
         # Import the proper type for strict checking
-        from src.core_abstractions import BiodiversityData
+        from src.abstractions import BiodiversityData
         
         if isinstance(df, BiodiversityData):
             df_dict = {

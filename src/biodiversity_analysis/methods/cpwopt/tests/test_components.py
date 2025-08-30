@@ -8,7 +8,7 @@ from src.biodiversity_analysis.methods.cpwopt.minibatch_processor import MiniBat
 from src.biodiversity_analysis.methods.cpwopt.factor_updater import FactorUpdater
 from src.biodiversity_analysis.methods.cpwopt.sparse_handler import SparseHandler
 from src.biodiversity_analysis.methods.cpwopt.tensor_metrics import TensorMetricsCalculator
-from src.core_abstractions import TensorData, CPFactors
+from src.abstractions import TensorData, CPFactors
 
 
 class TestMiniBatchProcessor(unittest.TestCase):

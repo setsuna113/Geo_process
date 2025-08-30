@@ -7,7 +7,7 @@ ensuring consistent access to method configurations across the system.
 from typing import Dict, Type, List, Optional
 import logging
 
-from src.core_abstractions import IMethodConfig
+from src.abstractions import IMethodConfig
 
 logger = logging.getLogger(__name__)
 

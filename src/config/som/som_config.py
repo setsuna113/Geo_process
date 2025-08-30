@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 import threading
 from dataclasses import dataclass, field
-from src.core_abstractions import IMethodConfig
+from src.abstractions import IMethodConfig
 
 
 @dataclass

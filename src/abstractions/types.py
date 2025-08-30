@@ -1,44 +1,19 @@
 """
-Core abstractions - ONLY things used multiple times.
+Type definitions - only types used multiple times.
 
-Following the principle: Abstract if used multiple times, don't if used once.
 Usage counts:
-- TensorData: 97 uses
-- CPFactors: 65 uses  
-- AnalysisResult: 33 uses
+- TensorData: 97 uses across cpwopt module
+- CPFactors: 65 uses in tensor operations
+- AnalysisResult: 33 uses across all analyzers
 - BiodiversityData: 23 uses
-- IMethodConfig: 7 implementations
-- IAnalyzer: 4 implementations
+- SOMConfig/SOMTrainingResult: 8 uses each
 """
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, Any, Optional, List, Tuple, Union
-import numpy as np
+from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
+import numpy as np
 
-
-# ============== INTERFACES (Multi-Implementation) ==============
-
-class IAnalyzer(ABC):
-    """Base analyzer interface - 4 implementations."""
-    
-    @abstractmethod
-    def analyze(self, data: Any) -> 'AnalysisResult':
-        """Perform analysis on data."""
-        pass
-
-
-class IMethodConfig(ABC):
-    """Configuration interface - 7 implementations."""
-    
-    @abstractmethod
-    def load_config(self, preset: Optional[str] = None) -> Dict[str, Any]:
-        """Load configuration for the method."""
-        pass
-
-
-# ============== DATA TYPES (Multi-Use) ==============
 
 @dataclass
 class TensorData:
@@ -70,6 +45,7 @@ class AnalysisMetadata:
     parameters: Dict[str, Any]
     timestamp: Optional[str] = None
     version: Optional[str] = None
+
 
 @dataclass
 class AnalysisResult:
@@ -126,8 +102,6 @@ class SOMTrainingResult:
     n_iterations: int = 0
     metadata: Optional[Dict[str, Any]] = None
 
-
-# ============== ENUMS (Multi-Use) ==============
 
 class TensorMode(Enum):
     """Tensor dimensions - used in multiple tensor operations."""
