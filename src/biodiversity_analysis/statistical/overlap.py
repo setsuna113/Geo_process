@@ -84,8 +84,7 @@ def analyze_overlap(
     except Exception as e:
         import traceback
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
-        import logging
-        logger = logging.getLogger(__name__)
+        # LINUS: "Don't reimport what's already imported"
         logger.error(f"Overlap analysis failed: {error_msg}")
         return MethodResult(
             success=False,

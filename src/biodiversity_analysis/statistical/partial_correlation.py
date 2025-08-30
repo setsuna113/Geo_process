@@ -42,13 +42,10 @@ def compute_partial_correlation(
     Returns:
         Dict with correlation coefficient and p-value
     """
-    try:
-        import pingouin as pg
-    except ImportError:
-        # Fallback to manual implementation
-        return _manual_partial_correlation(df, x, y, control_vars, method)
+    # LINUS: No fallbacks - either it works or it fails
+    import pingouin as pg
     
-    # Use pingouin's efficient implementation
+    # Use pingouin's implementation - REQUIRED dependency
     if isinstance(control_vars, str):
         control_vars = [control_vars]
     
@@ -67,56 +64,9 @@ def compute_partial_correlation(
     }
 
 
-def _manual_partial_correlation(
-    df: pd.DataFrame,
-    x: str,
-    y: str,
-    control_vars: Union[str, List[str]],
-    method: str = 'spearman'
-) -> Dict[str, float]:
-    """
-    Manual implementation of partial correlation using residuals.
-    
-    The REAL algorithm:
-    1. Regress x on control variables -> get residuals
-    2. Regress y on control variables -> get residuals  
-    3. Correlate the residuals
-    """
-    from sklearn.linear_model import LinearRegression
-    
-    if isinstance(control_vars, str):
-        control_vars = [control_vars]
-    
-    # Remove rows with any NaN
-    cols = [x, y] + control_vars
-    df_clean = df[cols].dropna()
-    
-    # Get control variables as matrix
-    Z = df_clean[control_vars].values
-    X = df_clean[x].values.reshape(-1, 1)
-    Y = df_clean[y].values.reshape(-1, 1)
-    
-    # Regress X on Z
-    reg_x = LinearRegression()
-    reg_x.fit(Z, X)
-    residuals_x = X - reg_x.predict(Z)
-    
-    # Regress Y on Z
-    reg_y = LinearRegression()
-    reg_y.fit(Z, Y)
-    residuals_y = Y - reg_y.predict(Z)
-    
-    # Correlate residuals
-    if method == 'spearman':
-        r, p = stats.spearmanr(residuals_x.flatten(), residuals_y.flatten())
-    else:
-        r, p = stats.pearsonr(residuals_x.flatten(), residuals_y.flatten())
-    
-    return {
-        'r': float(r),
-        'p': float(p),
-        'n': len(df_clean)
-    }
+# REMOVED: _manual_partial_correlation function
+# LINUS: "No fallbacks - use the right tool or fail"
+# pingouin is a REQUIRED dependency
 
 
 def analyze_partial_correlations(
