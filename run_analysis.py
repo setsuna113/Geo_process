@@ -36,10 +36,10 @@ os.environ['SKIP_DB_INIT'] = 'true'
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from src.processors.data_preparation.standalone_analysis_datasets import create_analysis_dataset
-# from src.processors.data_preparation.analysis_checkpoint import create_checkpointer  # TODO: restore if needed
+from src.processors.standalone_analysis_datasets import create_analysis_dataset
+# from src.processors.analysis_checkpoint import create_checkpointer  # TODO: restore if needed
 from src.analysis.simple_progress import EnhancedProgressManager
-from src.pipelines.stages.analyzer_factory import AnalyzerFactory
+from src.pipelines.analyzer_factory import AnalyzerFactory
 from src.analysis.simple_monitor import UnifiedMonitor
 
 
