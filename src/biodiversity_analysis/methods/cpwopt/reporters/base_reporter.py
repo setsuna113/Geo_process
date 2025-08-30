@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Base reporter interface for CP-WOPT visualization and reporting.
 
 This module provides the abstract base class for all CP-WOPT reporters,
@@ -11,7 +12,7 @@ import logging
 import matplotlib.pyplot as plt
 import numpy as np
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BaseReporter(ABC):

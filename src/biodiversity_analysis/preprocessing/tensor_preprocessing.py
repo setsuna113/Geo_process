@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Tensor preprocessing utilities for biodiversity data.
 
 This module provides utilities for converting biodiversity data into tensor format
@@ -11,9 +12,9 @@ from typing import List, Tuple, Optional, Dict, Any, Union
 from scipy import stats
 from sklearn.preprocessing import StandardScaler
 
-from src.abstractions.types.tensor_types import TensorData
+from src.abstractions import TensorData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class TensorPreprocessor:

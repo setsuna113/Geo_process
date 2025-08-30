@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Core CP-WOPT implementation for sparse biodiversity tensors.
 
 This module implements the CANDECOMP/PARAFAC decomposition with weighted
@@ -9,7 +10,7 @@ import logging
 from typing import List, Optional, Dict, Any, Tuple, Callable
 import time
 
-from src.abstractions.types.tensor_types import (
+from src.abstractions import (
     TensorData, CPFactors, TensorMetrics
 )
 from src.biodiversity_analysis.shared.tensor_utils import (
@@ -19,7 +20,7 @@ from src.biodiversity_analysis.shared.tensor_utils import (
 )
 from .constants import *
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CPWOPT:

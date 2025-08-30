@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Simplified GVIF multicollinearity diagnostics and essential plots.
 
 Extracted from dharma_diagnostics.py and diagnostic_plots.py.
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union
 from scipy import stats
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def check_multicollinearity_gvif(gvif_values: Dict[str, float]) -> Dict[str, Any]:

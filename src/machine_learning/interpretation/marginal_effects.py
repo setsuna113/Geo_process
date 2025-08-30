@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Marginal effects and variable importance for GLM models.
 
 Implements interpretation methods from regression_analysis_decisions.md lines 536-576.
@@ -9,7 +10,7 @@ import pandas as pd
 from typing import Dict, Any, Optional, List, Tuple, Union
 import h2o
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MarginalEffects:

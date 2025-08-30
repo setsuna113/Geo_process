@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Registry for method-specific configuration loaders.
 
 This module provides a central registry for all method configuration loaders,
@@ -7,9 +8,9 @@ ensuring consistent access to method configurations across the system.
 from typing import Dict, Type, List, Optional
 import logging
 
-from src.abstractions.interfaces.method_config import IMethodConfig
+from src.abstractions import IMethodConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MethodConfigRegistry:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Visualization module for two-stage hierarchical clustering.
 
 Extends base visualizations with hierarchical-specific plots.
@@ -14,7 +15,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class HierarchicalVisualizer:

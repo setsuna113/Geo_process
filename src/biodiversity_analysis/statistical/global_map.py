@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Global map visualization - Professional cartographic standards.
 
@@ -8,7 +9,6 @@ Cartopy for projections, rasterio for data handling.
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Union
-import logging
 import rasterio
 from rasterio.plot import show as rasterio_show
 import rasterio.enums  # Need for Resampling during read
@@ -18,16 +18,15 @@ from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.pyplot as plt
 
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def analyze_global_maps(
     data: Dict[str, Union[str, rasterio.DatasetReader]],
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Create global map visualizations using professional cartographic tools.
     
@@ -79,7 +78,7 @@ def analyze_global_maps(
     # Save statistics
     save_results(stats, output_dir / 'global_map_stats.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='global_maps',
         output_dir=output_dir,
@@ -430,30 +429,26 @@ def _create_comparison_plot(
         if len(valid) > 0:
             vmin, vmax = np.percentile(valid, [2, 98])
             
-            # Use smart_imshow for large arrays
-            im = smart_imshow(
-                ax,
+            # Use plt.imshow for large arrays
+            im = ax.imshow(
                 masked,
                 cmap='viridis',
                 vmin=vmin,
                 vmax=vmax,
-                aspect='auto',
-                interpolation='none'
+                aspect='auto'
             )
             
-            # Simple title
-            ax.set_title(name.replace('_', ' ').title(), fontsize=12)
-            ax.set_xticks([])
-            ax.set_yticks([])
+            ax.set_title(f'{name.replace("_", " ").title()}', fontsize=12)
+            ax.axis('off')
             
-            # Small colorbar
-            plt.colorbar(im, ax=ax, orientation='vertical', pad=0.02, fraction=0.05)
+            # Add colorbar
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     
     # Hide unused subplots
     for idx in range(n_datasets, len(axes)):
-        axes[idx].set_visible(False)
+        axes[idx].axis('off')
     
-    plt.suptitle('Global Biodiversity Comparison', fontsize=14, fontweight='bold')
+    plt.suptitle('Global Biodiversity Comparison', fontsize=16, y=1.02)
     plt.tight_layout()
     
     # Rasterize for efficient output
@@ -592,69 +587,3 @@ def create_nature_style_map(
     import cartopy.feature as cfeature
     
     fig = plt.figure(figsize=(12, 6))
-    ax = plt.axes(projection=ccrs.Robinson())
-    
-    # Mask invalid
-    masked = np.ma.masked_invalid(arr)
-    valid = masked.compressed()
-    
-    if len(valid) == 0:
-        plt.close()
-        return
-    
-    # Get robust limits
-    vmin, vmax = np.percentile(valid, [5, 95])
-    
-    # Custom colormap for publication
-    if 'fungi' in name:
-        colors = ['#f7fbff', '#deebf7', '#c6dbef', '#9ecae1', 
-                  '#6baed6', '#4292c6', '#2171b5', '#08519c', '#08306b']
-    else:
-        colors = ['#ffffe5', '#fff7bc', '#fee391', '#fec44f',
-                  '#fe9929', '#ec7014', '#cc4c02', '#993404', '#662506']
-    
-    cmap = LinearSegmentedColormap.from_list('custom', colors)
-    
-    # Plot data WITH PROPER EXTENT!
-    # CRITICAL: Extent is the GEOGRAPHIC bounds, not array dimensions!
-    # Our data (from TIF files) covers this geographic range:
-    extent = [-180.0, 180.0, -89.83, 83.67]  # [west, east, south, north]
-    
-    im = ax.imshow(
-        masked,
-        extent=extent,  # Geographic extent (doesn't change with downsampling!)
-        transform=ccrs.PlateCarree(),
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        interpolation='bilinear'
-    )
-    
-    # Add geographic features
-    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3)
-    ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='gray')
-    ax.add_feature(cfeature.BORDERS, linewidth=0.3, color='gray', alpha=0.5)
-    
-    # Clean title - REAL production data names!
-    title_map = {
-        'animal_richness': 'Terrestrial Vertebrate Richness',
-        'plant_richness': 'Vascular Plant Richness',
-        'am_fungi_richness': 'AM Fungi Richness',
-        'ecm_fungi_richness': 'ECM Fungi Richness',
-        'total_fungi_richness': 'Total Fungi Richness'
-    }
-    
-    ax.set_title(title_map.get(name, name), fontsize=14, pad=10)
-    
-    # Add gridlines
-    ax.gridlines(draw_labels=False, linewidth=0.3, alpha=0.3)
-    
-    # Colorbar
-    cbar = plt.colorbar(im, ax=ax, orientation='horizontal', 
-                       pad=0.05, fraction=0.05, shrink=0.8)
-    cbar.set_label('Species richness', fontsize=10)
-    cbar.ax.tick_params(labelsize=9)
-    
-    plt.tight_layout()
-    save_figure(fig, output_dir / f'nature_style_{name}.png', dpi=300)
-    plt.close()

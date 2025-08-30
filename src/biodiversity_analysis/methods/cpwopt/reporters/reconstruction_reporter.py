@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Reporter for tensor reconstruction quality visualization.
 
 This module creates visualizations showing how well the CP decomposition
@@ -12,9 +13,9 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import logging
 
-from src.abstractions.types.tensor_types import TensorMetrics, CPFactors
+from src.abstractions import TensorMetrics, CPFactors
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ReconstructionReporter:

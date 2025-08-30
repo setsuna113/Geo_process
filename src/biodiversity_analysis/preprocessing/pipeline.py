@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Shared preprocessing module for all biodiversity analysis methods.
 
 Simple, unified preprocessing that avoids redundancy and works for SOM, 
@@ -14,7 +15,7 @@ from .zero_inflation import ZeroInflationPreprocessor
 from .spatial_features import SpatialFeatureEngineering
 from .diversity_features import BiodiversityFeatureEngineering
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SharedPreprocessor:

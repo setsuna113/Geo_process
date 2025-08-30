@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Sparse tensor handler using ONLY HiCOO format.
 
 This module has been completely rewritten to use HiCOO (Hierarchical COOrdinate)
@@ -15,13 +16,13 @@ import logging
 from typing import Optional, List, Union
 from dataclasses import dataclass
 
-from src.abstractions.types.tensor_types import TensorData, CPFactors
+from src.abstractions import TensorData, CPFactors
 from .hicoo_handler import (
     HiCOOTensor, HiCOOHandler, 
     convert_to_hicoo, compute_mttkrp_hicoo
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SparseHandler:

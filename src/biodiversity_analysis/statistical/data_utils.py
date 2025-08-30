@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Data utilities for statistical methods.
 
@@ -8,9 +9,8 @@ Simple utilities that do one thing well.
 import json
 from pathlib import Path
 from typing import Any, Dict
-import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def save_results(data: Dict[str, Any], output_path: Path) -> None:

@@ -9,7 +9,7 @@ from src.biodiversity_analysis.shared.tensor_utils import (
     check_convergence, initialize_factors, validate_cp_factors,
     compute_gram_matrices
 )
-from src.abstractions.types.tensor_types import CPFactors
+from src.abstractions import CPFactors
 
 
 class TestTensorOperations(unittest.TestCase):

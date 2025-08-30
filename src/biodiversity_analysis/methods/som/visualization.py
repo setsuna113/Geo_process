@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Visualization tools for biodiversity SOM analysis."""
 
 import numpy as np
@@ -7,7 +8,7 @@ import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SOMVisualizer:

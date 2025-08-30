@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 
 from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
-from src.abstractions.interfaces.analyzer import AnalysisResult
+from src.abstractions import AnalysisResult
 from src.biodiversity_analysis.preprocessing.pipeline import SharedPreprocessor
 
 from .hierarchical_core import (
@@ -361,7 +361,7 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
     def _create_result(self, biodiv_data, labels, metrics, visualizations,
                       config, start_time):
         """Create analysis result."""
-        from src.abstractions.interfaces.analyzer import AnalysisMetadata
+        from src.abstractions import AnalysisMetadata
         
         # Create metadata
         metadata = AnalysisMetadata(

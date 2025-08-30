@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """DML Magnitude visualization for effect size classification and comparison.
 
 Publication-standard visualizations for DML magnitude analysis including:
@@ -16,7 +17,7 @@ from scipy import stats
 from typing import Dict, Any, Optional, List, Tuple, Union
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set publication-quality style
 sns.set_style("whitegrid")

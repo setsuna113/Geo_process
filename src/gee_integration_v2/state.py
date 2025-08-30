@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 状态管理模块
 ===========
@@ -8,13 +9,14 @@
 """
 
 import json
+from src.abstractions import save_json
 import time
 from pathlib import Path
 from typing import Dict, Optional
 from dataclasses import dataclass, field
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

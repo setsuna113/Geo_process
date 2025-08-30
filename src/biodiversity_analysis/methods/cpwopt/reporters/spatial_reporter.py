@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Reporter for spatial pattern visualization in CP-WOPT results.
 
 This module creates maps and spatial visualizations of the tensor decomposition
@@ -24,9 +25,9 @@ except ImportError:
     HAS_CARTOPY = False
     warnings.warn("Cartopy not available, map plots will be simplified")
 
-from src.abstractions.types.tensor_types import CPFactors, TensorData
+from src.abstractions import CPFactors, TensorData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SpatialReporter:

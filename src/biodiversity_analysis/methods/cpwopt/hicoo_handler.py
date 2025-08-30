@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """HiCOO (Hierarchical COOrdinate) sparse tensor format handler.
 
 This module implements HiCOO as the ONLY sparse tensor format for CP-WOPT.
@@ -14,9 +15,9 @@ from dataclasses import dataclass
 from numba import jit  # Removed prange import (unused)
 import math
 
-from src.abstractions.types.tensor_types import TensorData
+from src.abstractions import TensorData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # HiCOO configuration constants
 HICOO_BLOCK_SIZE = 128  # Optimal block size from research

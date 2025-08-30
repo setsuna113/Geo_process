@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 数据处理模块 - 简化版
 ====================
@@ -18,7 +19,7 @@ import ee
 import logging
 from typing import Dict
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DataProcessor:

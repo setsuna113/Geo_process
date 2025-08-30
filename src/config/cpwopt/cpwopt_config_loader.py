@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Configuration loader for CP-WOPT tensor factorization.
 
 This module handles loading and merging of CP-WOPT configurations,
@@ -11,9 +12,9 @@ from typing import Dict, Any, Optional, List
 import logging
 from copy import deepcopy
 
-from src.abstractions.interfaces.method_config import IMethodConfig
+from src.abstractions import IMethodConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CPWOPTConfigLoader(IMethodConfig):

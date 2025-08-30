@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Julia Session Manager for GLM pipeline.
 
 This singleton pattern ensures Julia is initialized only once across
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Union, List
 import numpy as np
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class JuliaManager:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Spatial feature engineering for biodiversity clustering.
 
 This module implements advanced spatial preprocessing techniques including:
@@ -15,7 +16,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import eigsh
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SpatialFeatureEngineering:

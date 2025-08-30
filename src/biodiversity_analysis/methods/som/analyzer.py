@@ -10,17 +10,18 @@ import json
 import os
 from typing import Dict, Any, Optional, List, Tuple, Callable
 import logging
+from src.abstractions import get_logger
 from datetime import datetime
 
 from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
-from src.abstractions.interfaces.analyzer import AnalysisResult
+from src.abstractions import AnalysisResult
 from .core.geo_som_core import GeoSOM, GeoSOMConfig
 from src.biodiversity_analysis.preprocessing import SharedPreprocessor
 from .utils.spatial_utils import SpatialBlockGenerator, GeographicCoherence
 from .calculators.partial_metrics import validate_missing_data_handling
 from .utils.progress_tracker import SOMProgressTracker, create_progress_callback
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
