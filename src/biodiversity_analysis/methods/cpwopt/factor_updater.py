@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Advanced factor update strategies for CP-WOPT.
 
 This module implements various optimization strategies for updating factor matrices,
@@ -11,13 +12,13 @@ from scipy.optimize import minimize, LinearConstraint
 from scipy.linalg import solve, lstsq
 import warnings
 
-from src.abstractions.types.tensor_types import CPFactors
+from src.abstractions import CPFactors
 from src.biodiversity_analysis.shared.tensor_utils import (
     unfold, compute_mttkrp, weighted_norm, compute_gram_matrices
 )
 from .constants import EPSILON, MIN_COMPONENT_NORM, MIN_IMPROVEMENT
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class FactorUpdater:

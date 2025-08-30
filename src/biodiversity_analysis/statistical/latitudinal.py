@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Latitudinal gradient analysis - Linus style.
 
@@ -14,15 +15,14 @@ import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
 
-logger = logging.getLogger(__name__)
-from src.biodiversity_analysis.statistical.result_types import MethodResult
+logger = get_logger(__name__)
 
 
 def analyze_latitudinal(
     data: Dict[str, Any],
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze latitudinal gradients from multiband raster.
     
@@ -37,7 +37,7 @@ def analyze_latitudinal(
             - max_pixels: Maximum pixels before downsampling (default: 10M)
         
     Returns:
-        MethodResult with latitudinal gradient statistics
+        Dict[str, Any] with latitudinal gradient statistics
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -207,7 +207,7 @@ def analyze_latitudinal(
     # Save results
     save_results(results, output_dir / 'latitudinal_gradients.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='latitudinal',
         output_dir=output_dir,

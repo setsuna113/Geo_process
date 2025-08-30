@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Two-stage K-means → Hierarchical clustering core implementation.
 
 Clean implementation with proper abstraction and no redundancy.
@@ -12,7 +13,7 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score
 from sklearn.preprocessing import StandardScaler
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def calculate_variance_preserved(original: np.ndarray, reconstructed: np.ndarray) -> float:

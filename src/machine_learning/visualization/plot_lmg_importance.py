@@ -9,6 +9,7 @@ Generates 4 plots from JSON results:
 """
 
 import json
+from src.abstractions import load_json
 import numpy as np
 import pandas as pd
 import seaborn as sns

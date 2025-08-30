@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Contrast Analysis for testing specific hypotheses using emmeans.
 
@@ -16,7 +17,7 @@ from typing import Dict, Any, List, Optional, Tuple, Union
 
 from ..evaluation.emmeans_core import REMmeansWrapper
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set style for publication-quality plots
 sns.set_style("whitegrid")

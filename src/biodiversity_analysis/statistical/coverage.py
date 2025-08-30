@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Coverage analysis - Linus style.
 
@@ -11,16 +12,15 @@ import logging
 import rasterio
 
 from src.biodiversity_analysis.statistical.data_utils import save_results
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def analyze_coverage(
     data: Dict[str, Any],
     output_dir: Path,
     **kwargs  # Ignore extra config
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze data coverage from multiband raster.
     
@@ -31,7 +31,7 @@ def analyze_coverage(
         output_dir: Output directory
         
     Returns:
-        MethodResult with coverage statistics
+        Dict[str, Any] with coverage statistics
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +69,7 @@ def analyze_coverage(
     # Save results
     save_results(results, output_dir / 'coverage_results.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='coverage',
         output_dir=output_dir,

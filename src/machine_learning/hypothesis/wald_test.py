@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Wald test implementation for GLM models - SIMPLIFIED VERSION.
 
 No abstractions. Just statistics.
@@ -8,7 +9,7 @@ from scipy import stats
 from typing import Dict, Any, Optional, List, Union
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class WaldTest:

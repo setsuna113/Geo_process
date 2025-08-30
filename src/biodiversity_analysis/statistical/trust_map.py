@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Trust map analysis - Pure functions, no classes.
 
@@ -18,17 +19,16 @@ from matplotlib.colors import LinearSegmentedColormap
 import logging
 
 from .data_utils import save_results, save_figure
-from .smart_visualization import smart_imshow
 
-logger = logging.getLogger(__name__)
-from src.biodiversity_analysis.statistical.result_types import MethodResult
+
+logger = get_logger(__name__)
 
 
 def analyze_trust_maps(
     data: Dict[str, Any],
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze uncertainty in biodiversity data from multiband raster.
     
@@ -40,7 +40,7 @@ def analyze_trust_maps(
         **kwargs: Config including visualization options
     
     Returns:
-        MethodResult with trust analysis results
+        Dict[str, Any] with trust analysis results
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -65,6 +65,7 @@ def analyze_trust_maps(
         trust_metrics = _compute_basic_trust_metrics(multiband, band_idx, band_name)
         results[band_name] = trust_metrics
             
+
     
     # Combined analysis if we have multiple bands
     if len(results) > 1:
@@ -77,7 +78,7 @@ def analyze_trust_maps(
     # Save results
     save_results(results, output_dir / 'trust_metrics.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='trust_maps',
         output_dir=output_dir,
@@ -318,7 +319,7 @@ def _analyze_combined_trust_multiband(
 
 def _analyze_combined_trust(
     data: Dict[str, np.ndarray]
-) -> MethodResult:
+) -> Dict[str, Any]:
     """Analyze combined trust across all datasets."""
     combined_trust = []
     
@@ -515,16 +516,16 @@ def _plot_trust_analysis_cartopy(
     # Also create a combined figure for comparison
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
-    # Use smart_imshow for the combined view (quick preview)
-    im1 = smart_imshow(axes[0], data, cmap='viridis', aspect='auto')
+    # Use plt.imshow for the combined view (quick preview)
+    im1 = plt.imshow(axes[0], data, cmap='viridis', aspect='auto')
     axes[0].set_title(f'{name} - Data')
     axes[0].axis('off')
     
-    im2 = smart_imshow(axes[1], cv, cmap='hot', aspect='auto')
+    im2 = plt.imshow(axes[1], cv, cmap='hot', aspect='auto')
     axes[1].set_title('Coefficient of Variation')
     axes[1].axis('off')
     
-    im3 = smart_imshow(axes[2], trust, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
+    im3 = plt.imshow(axes[2], trust, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
     axes[2].set_title('Trust Score')
     axes[2].axis('off')
     

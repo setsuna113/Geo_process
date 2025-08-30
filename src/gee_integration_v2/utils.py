@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 工具函数模块
 ===========
@@ -12,7 +13,7 @@ import logging
 import ee
 from typing import Callable
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def retry_on_failure(max_retries=3, delay=5, backoff=2):

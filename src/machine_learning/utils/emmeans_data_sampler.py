@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Data sampling utilities for emmeans computation.
 
@@ -12,7 +13,7 @@ import h2o
 import pandas as pd
 from typing import Optional, List, Tuple
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Configure polars threading to respect config
 n_threads = int(os.environ.get('H2O_NTHREADS', '150'))

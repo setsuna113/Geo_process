@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Ecological interpretation helpers for CP-WOPT results.
 
 This module provides tools to interpret CP-WOPT components in ecological terms,
@@ -10,7 +11,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

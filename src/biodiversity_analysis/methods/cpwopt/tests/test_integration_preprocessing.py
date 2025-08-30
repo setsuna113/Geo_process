@@ -8,7 +8,7 @@ import tempfile
 
 from src.biodiversity_analysis.preprocessing.tensor_preprocessing import TensorPreprocessor
 from src.biodiversity_analysis.methods.cpwopt.core import CPWOPT
-from src.abstractions.types.tensor_types import TensorData
+from src.abstractions import TensorData
 
 
 class TestPreprocessingIntegration(unittest.TestCase):

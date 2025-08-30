@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Simple slopes analysis for continuous interactions.
 
@@ -13,7 +14,7 @@ import seaborn as sns
 from typing import Dict, Any, Optional, List, Tuple
 from ..evaluation.emmeans_julia import JuliaEMmeans
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SimpleSlopesInterpretation:

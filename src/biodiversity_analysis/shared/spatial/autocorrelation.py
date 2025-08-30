@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Spatial autocorrelation detection and handling.
 """
@@ -6,7 +7,7 @@ import numpy as np
 from typing import Optional, Tuple, Dict
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SpatialAutocorrelation:

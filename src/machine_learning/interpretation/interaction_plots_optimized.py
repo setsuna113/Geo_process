@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Optimized interaction plots for large datasets.
 
@@ -14,7 +15,7 @@ from typing import Dict, Any, Optional, List, Tuple, Union
 import logging
 import h2o
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class OptimizedInteractionPlots:

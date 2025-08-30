@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Biome-like visualization reporter for CP-WOPT results.
 
 This reporter creates geographic maps showing biodiversity patterns as biome-like regions.
@@ -22,7 +23,7 @@ except ImportError:
     HAS_CARTOPY = False
     warnings.warn("Cartopy not available, using simple cylindrical projection")
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BiomeReporter:

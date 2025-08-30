@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Summary reporter for CP-WOPT analysis results.
 
 This module creates a comprehensive summary report combining all aspects
@@ -12,13 +13,12 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import logging
 import json
+from src.abstractions import save_json
 from datetime import datetime
 
-from src.abstractions.types.tensor_types import (
-    CPFactors, TensorMetrics, TensorDecompositionResult
-)
+from src.abstractions import CPFactors, TensorMetrics
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SummaryReporter:
@@ -40,7 +40,7 @@ class SummaryReporter:
         self.generate_html = config.get('generate_html', True)
         
     def generate_summary_report(self, 
-                              decomposition_result: TensorDecompositionResult,
+                              decomposition_result: Dict[str, Any],
                               experiment_metadata: Dict[str, Any],
                               all_reporter_results: Dict[str, Any]) -> Path:
         """Generate comprehensive summary report.
@@ -254,7 +254,7 @@ Convergence: {metadata.get('convergence_threshold', 1e-6)}
         logger.info(f"Created summary dashboard: {dashboard_path}")
         return dashboard_path
     
-    def _generate_text_summary(self, decomposition_result: TensorDecompositionResult,
+    def _generate_text_summary(self, decomposition_result: Dict[str, Any],
                              metadata: Dict[str, Any],
                              all_reporter_results: Dict[str, Any]) -> str:
         """Generate comprehensive text summary.
@@ -281,10 +281,12 @@ Convergence: {metadata.get('convergence_threshold', 1e-6)}
         summary_lines.append("MODEL OVERVIEW")
         summary_lines.append("-" * 40)
         summary_lines.append(f"Method: CP-WOPT (Weighted CP Decomposition)")
-        summary_lines.append(f"Tensor Rank: {decomposition_result.factors.rank}")
+        factors = decomposition_result.get('factors', {})
+        summary_lines.append(f"Tensor Rank: {factors.get('rank', 'Unknown')}")
         summary_lines.append(f"Tensor Shape: {metadata.get('tensor_shape', 'Unknown')}")
-        summary_lines.append(f"Number of Modes: {decomposition_result.factors.n_modes}")
-        summary_lines.append(f"Mode Names: {', '.join(decomposition_result.factors.mode_names)}")
+        summary_lines.append(f"Number of Modes: {factors.get('n_modes', 'Unknown')}")
+        mode_names = factors.get('mode_names', [])
+        summary_lines.append(f"Mode Names: {', '.join(mode_names) if mode_names else 'Unknown'}")
         summary_lines.append("")
         
         # Data Characteristics
@@ -299,12 +301,13 @@ Convergence: {metadata.get('convergence_threshold', 1e-6)}
         # Model Performance
         summary_lines.append("MODEL PERFORMANCE")
         summary_lines.append("-" * 40)
-        metrics = decomposition_result.metrics
-        summary_lines.append(f"Reconstruction Error: {metrics.reconstruction_error:.6f}")
-        summary_lines.append(f"Relative Error: {metrics.relative_error:.6f}")
-        summary_lines.append(f"Fit Score: {metrics.fit:.4f}")
-        summary_lines.append(f"Explained Variance: {metrics.explained_variance:.4f}")
-        summary_lines.append(f"Iterations: {len(metrics.convergence_history)}")
+        metrics = decomposition_result.get('metrics', {})
+        summary_lines.append(f"Reconstruction Error: {metrics.get('reconstruction_error', 0.0):.6f}")
+        summary_lines.append(f"Relative Error: {metrics.get('relative_error', 0.0):.6f}")
+        summary_lines.append(f"Fit Score: {metrics.get('fit', 0.0):.4f}")
+        summary_lines.append(f"Explained Variance: {metrics.get('explained_variance', 0.0):.4f}")
+        convergence_history = metrics.get('convergence_history', [])
+        summary_lines.append(f"Iterations: {len(convergence_history)}")
         summary_lines.append(f"Converged: {metadata.get('converged', 'Unknown')}")
         summary_lines.append(f"Runtime: {metadata.get('runtime_seconds', 0):.1f} seconds")
         summary_lines.append("")
@@ -313,16 +316,22 @@ Convergence: {metadata.get('convergence_threshold', 1e-6)}
         summary_lines.append("COMPONENT ANALYSIS")
         summary_lines.append("-" * 40)
         
-        if metrics.component_weights is not None:
+        component_weights = metrics.get('component_weights')
+        if component_weights is not None:
+            if isinstance(component_weights, np.ndarray):
+                weights_array = component_weights
+            else:
+                weights_array = np.array(component_weights)
+            
             # Top components
-            sorted_idx = np.argsort(metrics.component_weights)[::-1][:5]
+            sorted_idx = np.argsort(weights_array)[::-1][:5]
             summary_lines.append("Top 5 Components by Weight:")
             for i, idx in enumerate(sorted_idx):
-                weight = metrics.component_weights[idx]
+                weight = weights_array[idx]
                 summary_lines.append(f"  {i+1}. Component {idx+1}: {weight:.4f}")
             
             # Variance concentration
-            sorted_weights = np.sort(metrics.component_weights)[::-1]
+            sorted_weights = np.sort(weights_array)[::-1]
             cumvar = np.cumsum(sorted_weights) / np.sum(sorted_weights)
             n_90 = np.argmax(cumvar >= 0.9) + 1
             summary_lines.append(f"\nComponents needed for 90% variance: {n_90}")
@@ -387,7 +396,7 @@ Convergence: {metadata.get('convergence_threshold', 1e-6)}
         
         return "\n".join(summary_lines)
     
-    def _generate_json_summary(self, decomposition_result: TensorDecompositionResult,
+    def _generate_json_summary(self, decomposition_result: Dict[str, Any],
                              metadata: Dict[str, Any],
                              all_reporter_results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate JSON summary for programmatic access.

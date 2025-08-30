@@ -13,7 +13,7 @@ from src.biodiversity_analysis.methods.cpwopt.analyzer_adapter import CPWOPTAnal
 from src.biodiversity_analysis.methods.cpwopt.tests.test_data_generator import (
     SyntheticBiodiversityGenerator, SyntheticDataConfig, create_validation_dataset
 )
-from src.abstractions.types.analysis_types import AnalysisResult
+from src.abstractions import AnalysisResult
 from src.config.cpwopt.cpwopt_config_loader import CPWOPTConfigLoader
 
 

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Biome-based statistical analysis - Linus style.
 
@@ -19,19 +20,18 @@ from src.biodiversity_analysis.statistical.holdridge_classifier import (
     holdridge_to_wwf
 )
 from src.biodiversity_analysis.statistical.data_schema import DataSchema
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 from src.biodiversity_analysis.statistical.optimized_visualization import (
     precompute_boxplot_stats, plot_from_stats
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def analyze_by_biome(
     data: Any,
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze biodiversity data grouped by biome.
     
@@ -59,7 +59,7 @@ def analyze_by_biome(
         df = data
     else:
         # Import the proper type for strict checking
-        from src.abstractions.types.biodiversity_types import BiodiversityData
+        from src.abstractions import BiodiversityData
         
         if isinstance(data, BiodiversityData):
             df_dict = {
@@ -93,7 +93,7 @@ def analyze_by_biome(
     if kwargs.get('plot', True):
         _plot_biome_analysis(df, biodiv_cols, output_dir)
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='biome_analysis',
         output_dir=output_dir,

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 EMmeans wrapper for Julia GLM results using R emmeans package.
 
@@ -11,7 +12,7 @@ import pandas as pd
 from typing import Dict, Any, List, Optional
 from .emmeans_core import REMmeansWrapper
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class JuliaEMmeans:

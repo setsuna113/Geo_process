@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Model Comparison Visualization - ONLY visualization, no calculations.
 
 All metrics are calculated in evaluation/model_comparison.py
@@ -13,7 +14,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set style for publication-quality plots
 sns.set_style("whitegrid")

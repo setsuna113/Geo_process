@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Unified configuration system for machine learning module.
 
 Provides a clean, hierarchical configuration structure that's easy to understand
@@ -10,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union
 from dataclasses import dataclass, field, asdict
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

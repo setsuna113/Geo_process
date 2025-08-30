@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Publication-ready report generation for hypothesis tests.
 
 Extracted from various hypothesis test files.
@@ -8,7 +9,7 @@ import pandas as pd
 from typing import Dict, Any, Optional, List
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def generate_wald_publication_report(

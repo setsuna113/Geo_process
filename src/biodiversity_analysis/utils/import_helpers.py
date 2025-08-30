@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Import Helpers for Biodiversity Analysis
 
@@ -10,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional, Union
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def safe_import(module_path: str, fallback_paths: Optional[list] = None) -> Any:

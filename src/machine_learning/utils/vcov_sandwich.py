@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 JAX-accelerated sandwich estimator for robust variance-covariance matrix.
 
@@ -12,7 +13,7 @@ import h2o
 import logging
 from typing import Tuple
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Configure JAX for maximum performance
 jax.config.update('jax_enable_x64', True)  # Use float64 for precision

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Utility functions for tensor operations in biodiversity analysis.
 
 This module provides helper functions for tensor manipulation, validation,
@@ -10,7 +11,7 @@ import logging
 from scipy.linalg import khatri_rao
 from numpy.linalg import norm
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Import backend if available (for typing)
 try:
@@ -282,7 +283,7 @@ def compute_mttkrp(tensor, factors: List[np.ndarray],
     # Check if tensor is already in HiCOO format
     from src.biodiversity_analysis.methods.cpwopt.hicoo_handler import HiCOOTensor, compute_mttkrp_hicoo
     from src.biodiversity_analysis.methods.cpwopt.sparse_handler import convert_to_hicoo
-    from src.abstractions.types.tensor_types import TensorData
+    from src.abstractions import TensorData
     
     if isinstance(tensor, HiCOOTensor):
         # Already HiCOO - use optimized MTTKRP (6.8x faster!)

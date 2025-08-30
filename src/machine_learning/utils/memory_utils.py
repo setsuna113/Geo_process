@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Memory optimization utilities for ML pipelines.
 
 Provides memory-efficient data handling, monitoring, and processing utilities.
@@ -12,7 +13,7 @@ import os
 from typing import Any, Dict, List, Generator, Optional, Callable
 from functools import wraps
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MemoryMonitor:

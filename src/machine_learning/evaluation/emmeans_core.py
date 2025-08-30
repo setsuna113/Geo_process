@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 R emmeans Wrapper for H2O GLM Models.
 
@@ -15,7 +16,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Optional, Union, Tuple
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # R is REQUIRED - no fallbacks!
 import rpy2.robjects as ro

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Partial Dependence Plot implementation for model interpretation."""
 
 import numpy as np
@@ -8,7 +9,7 @@ from typing import Tuple, Optional, List, Union, Dict, Any
 import logging
 from tqdm import tqdm
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class PartialDependencePlot:

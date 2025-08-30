@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Consolidated CP-WOPT reporters with clean abstractions.
 
 This module consolidates the reporter functionality into logical groups
@@ -11,11 +12,12 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 import logging
 import json
+from src.abstractions import save_json
 from scipy import stats
 
 from .base_reporter import BaseReporter
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class VisualizationReporter(BaseReporter):

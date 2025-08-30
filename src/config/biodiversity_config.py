@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Biodiversity Analysis Configuration System
 
@@ -11,7 +12,7 @@ from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

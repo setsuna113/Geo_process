@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Security utilities for safe data handling and validation.
 
 Provides path validation, file size checks, and input sanitization.
@@ -12,7 +13,7 @@ import numpy as np
 import jsonschema
 from jsonschema import validate, ValidationError as JsonSchemaValidationError
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class PathValidator:

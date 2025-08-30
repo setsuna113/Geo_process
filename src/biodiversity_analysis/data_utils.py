@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Unified data utilities for biodiversity analysis.
 
@@ -14,7 +15,7 @@ import logging
 # Import the new unified RasterLoader
 from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class RasterDataLoader:

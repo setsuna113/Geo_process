@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Score test visualization for hypothesis testing.
 
 Extracted from hypothesis/score_test.py lines 593-870.
@@ -10,7 +11,7 @@ from scipy import stats
 from typing import Dict, Any, Optional, List, Tuple
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def visualize_score_test(test_results: Dict[str, Any],

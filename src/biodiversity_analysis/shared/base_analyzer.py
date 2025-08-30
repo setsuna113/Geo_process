@@ -1,5 +1,4 @@
-"""
-Base analyzer for biodiversity analysis methods.
+"""Base analyzer for biodiversity analysis methods.
 
 This provides a clean base for biodiversity analyzers that:
 - Load data from parquet files
@@ -7,18 +6,32 @@ This provides a clean base for biodiversity analyzers that:
 - Handle spatial biodiversity data properly
 """
 
-import logging
-import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Callable
+import logging
+import time
 
-from src.abstractions.interfaces.analyzer import IAnalyzer, AnalysisResult, AnalysisMetadata
-from src.abstractions.types.biodiversity_types import BiodiversityData
-from src.config import get_biodiversity_config
+from src.abstractions import BiodiversityData
+from src.abstractions import IAnalyzer, AnalysisResult, AnalysisMetadata
+from src.abstractions import get_logger, validate_parameters
 from .data import ParquetLoader
+from src.config import get_biodiversity_config
 
-logger = logging.getLogger(__name__)
+# Optional imports - only used if needed
+try:
+    from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
+except ImportError:
+    RasterLoader = None
+    
+try:
+    from src.config import MethodConfigRegistry
+except ImportError:
+    MethodConfigRegistry = None
+
+
+
+logger = get_logger(__name__)
 
 
 class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
@@ -54,8 +67,10 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
         
         # Load configuration from the proper registry
         try:
-            from src.config import MethodConfigRegistry
-            self.config = MethodConfigRegistry.get_method_config(method_name)
+            if MethodConfigRegistry:
+                self.config = MethodConfigRegistry.get_method_config(method_name)
+            else:
+                raise ImportError("MethodConfigRegistry not available")
         except:
             # Fallback to old config system
             config_manager = get_biodiversity_config()
@@ -73,9 +88,11 @@ class BaseBiodiversityAnalyzer(IAnalyzer, ABC):
         # Optional RasterLoader for spatial analysis
         self.raster_loader = None
         if use_raster:
-            from src.biodiversity_analysis.shared.data.raster_loader import RasterLoader
-            self.raster_loader = RasterLoader()
-            logger.debug(f"Initialized RasterLoader for {method_name}")
+            if RasterLoader:
+                self.raster_loader = RasterLoader()
+                logger.debug(f"Initialized RasterLoader for {method_name}")
+            else:
+                logger.warning("RasterLoader not available - raster operations disabled")
         
         # Optional optimized loaders (deprecated - stat methods now use statistical module)
         self.optimized_loader = None

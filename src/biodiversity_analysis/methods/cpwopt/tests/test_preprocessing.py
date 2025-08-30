@@ -7,7 +7,7 @@ import pandas as pd
 from src.biodiversity_analysis.preprocessing.tensor_preprocessing import (
     TensorPreprocessor, GridConfig
 )
-from src.abstractions.types.tensor_types import TensorData
+from src.abstractions import TensorData
 
 
 class TestTensorPreprocessor(unittest.TestCase):
