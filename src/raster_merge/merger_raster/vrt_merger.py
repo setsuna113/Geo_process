@@ -54,15 +54,15 @@ class VRTMerger:
     
     def _validate_config(self):
         """Validate configuration for VRT merging."""
-        if self.config.compress != "zstd":
-            raise ValueError(
-                f"FarmVibes uses ZSTD compression exclusively, got: {self.config.compress}"
-            )
+        # LINUS: Removed arbitrary ZSTD requirement - any compression should work!
+        # if self.config.compress != "zstd":
+        #     raise ValueError(
+        #         f"FarmVibes uses ZSTD compression exclusively, got: {self.config.compress}"
+        #     )
         
-        if self.config.blocksize != 512:
-            raise ValueError(
-                f"FarmVibes uses 512x512 blocks exclusively, got: {self.config.blocksize}"
-            )
+        # Allow flexible block size too
+        if not hasattr(self.config, 'blocksize'):
+            self.config.blocksize = 512  # Default to 512 if not specified
     
     def check_resolution_mismatch(self, paths: List[Path]) -> Dict[str, Any]:
         """
@@ -358,16 +358,20 @@ class VRTMerger:
             Destination kwargs for merge
         """
         # Base kwargs (FarmVibes pattern)
+        # LINUS: Use configured compression, not hardcoded ZSTD!
         dst_kwds = {
             "driver": "GTiff",
             "tiled": True,
-            "compress": "ZSTD",
-            "zstd_level": self.config.compression_level,  # Configurable (default 9 for best compression)
+            "compress": self.config.compress.upper() if self.config.compress else None,
             "blockxsize": self.config.blocksize,
             "blockysize": self.config.blocksize,
             "NUM_THREADS": "ALL_CPUS",  # Parallel compression
             "BIGTIFF": "IF_SAFER",  # Handle large files automatically
         }
+        
+        # Add compression-specific options
+        if self.config.compress and self.config.compress.lower() == 'zstd':
+            dst_kwds["zstd_level"] = getattr(self.config, 'compression_level', 9)
         
         # Add predictor based on dtype (FarmVibes pattern)
         if 'int' in str(dtype).lower():

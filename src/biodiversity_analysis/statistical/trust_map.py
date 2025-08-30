@@ -8,32 +8,36 @@ Classes are just namespaces with extra complexity.
 
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, Union
 import matplotlib.pyplot as plt
 import rasterio
 from rasterio.transform import from_origin
+# NO RESAMPLING - removed: from rasterio.enums import Resampling
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from matplotlib.colors import LinearSegmentedColormap
 import logging
 
 from .data_utils import save_results, save_figure
+
 
 logger = get_logger(__name__)
 
 
 def analyze_trust_maps(
-    data: Dict[str, np.ndarray],
+    data: Dict[str, Any],
     output_dir: Path,
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Analyze uncertainty in biodiversity data.
+    Analyze uncertainty in biodiversity data from multiband raster.
+    
+    LINUS: "One input format. Multiband only."
     
     Args:
-        data: Dict[str, ndarray] - spatial arrays with uncertainty
+        data: Dict with 'multiband' (rasterio DatasetReader) and 'band_names' (list)
         output_dir: Output directory
-        **kwargs: Config including:
-            - downsample: Downsample factor for visualization (default: 10)
-    
-    No class needed. Just functions doing their job.
+        **kwargs: Config including visualization options
     
     Returns:
         Dict[str, Any] with trust analysis results
@@ -41,47 +45,31 @@ def analyze_trust_maps(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # NO DOWNSAMPLING - plt.imshow handles it automatically
+    # Extract multiband raster - NO SPECIAL CASES
+    multiband = data['multiband']
+    band_names = data['band_names']
     
     results = {}
     
-    # Process each dataset
-    for name, data_array in data.items():
-        if data_array is None:
-            continue
+    # Process each band from multiband raster
+    for band_idx, band_name in enumerate(band_names, 1):
+        logger.info(f"Processing band {band_idx}: {band_name}")
             
         # Skip CV maps themselves
-        if '_cv' in name:
+        if '_cv' in band_name:
             continue
             
-        logger.info(f"Processing trust map for {name}")
+        logger.info(f"Processing trust map for {band_name}")
         
-        # Look for corresponding CV map
-        cv_name = f"{name}_cv"
-        cv_array = data.get(cv_name)
-        
-        if cv_array is not None:
-            # Compute trust metrics
-            trust_metrics = _compute_trust_metrics(data_array, cv_array)
+        # Compute basic trust metrics from the band data itself
+        trust_metrics = _compute_basic_trust_metrics(multiband, band_idx, band_name)
+        results[band_name] = trust_metrics
             
-            # Create plots - plt.imshow handles large data automatically
-            _plot_trust_analysis(
-                data_array, cv_array, name, 
-                output_dir, trust_metrics
-            )
-            
-            results[name] = trust_metrics
-        else:
-            # No uncertainty data available
-            basic_metrics = _compute_basic_metrics(data_array)
-            results[name] = basic_metrics
-            
-            # Simple visualization - plt.imshow handles large data
-            _plot_basic_map(data_array, name, output_dir, basic_metrics)
+
     
-    # Combined analysis if we have multiple datasets
+    # Combined analysis if we have multiple bands
     if len(results) > 1:
-        combined = _analyze_combined_trust(data)
+        combined = _analyze_combined_trust_multiband(multiband, band_names)
         results['combined'] = combined
         
         # Plot combined
@@ -98,57 +86,234 @@ def analyze_trust_maps(
     )
 
 
-def _compute_trust_metrics(data: np.ndarray, cv: np.ndarray) -> Dict[str, Any]:
-    """Compute trust metrics from data and CV."""
-    # Remove invalid pixels
-    valid_mask = ~np.isnan(data) & ~np.isnan(cv) & (data > 0)
+def _compute_trust_metrics_rasterio(
+    data_source: Union[str, rasterio.DatasetReader],
+    cv_source: Union[str, rasterio.DatasetReader]
+) -> Dict[str, Any]:
+    """Compute trust metrics using rasterio block-wise processing."""
     
-    if not valid_mask.any():
-        return {'error': 'No valid data'}
+    # Open rasters if needed
+    if isinstance(data_source, str):
+        data_src = rasterio.open(data_source)
+        close_data = True
+    else:
+        data_src = data_source
+        close_data = False
+        
+    if isinstance(cv_source, str):
+        cv_src = rasterio.open(cv_source)
+        close_cv = True
+    else:
+        cv_src = cv_source
+        close_cv = False
     
-    data_valid = data[valid_mask]
-    cv_valid = cv[valid_mask]
-    
-    # Compute metrics
-    metrics = {
-        'mean_cv': float(np.mean(cv_valid)),
-        'median_cv': float(np.median(cv_valid)),
-        'std_cv': float(np.std(cv_valid)),
-        'high_uncertainty_fraction': float(np.mean(cv_valid > 0.5)),
-        'very_high_uncertainty_fraction': float(np.mean(cv_valid > 1.0)),
-        'data_coverage': float(valid_mask.mean()),
-        'trust_score': float(1.0 / (1.0 + np.median(cv_valid))),  # Simple trust score
-        'n_pixels': int(valid_mask.sum())
-    }
-    
-    # Spatial correlation of uncertainty
-    if cv_valid.shape[0] > 100:
-        # Use all data - no sampling
-        metrics['uncertainty_data_correlation'] = float(
-            np.corrcoef(data_valid, cv_valid)[0, 1]
-        )
+    try:
+        # Initialize statistics
+        stats = {
+            'sum_cv': 0.0,
+            'sum_cv_sq': 0.0,
+            'valid_count': 0,
+            'total_count': 0,
+            'high_uncertainty_count': 0,
+            'very_high_uncertainty_count': 0,
+            'cv_values': []  # Store for median calculation
+        }
+        
+        # Process in blocks
+        for ji, window in data_src.block_windows(1):
+            data_block = data_src.read(1, window=window, masked=True)
+            cv_block = cv_src.read(1, window=window, masked=True)
+            
+            # Get valid pixels
+            valid_mask = ~data_block.mask & ~cv_block.mask & (data_block > 0)
+            
+            if valid_mask.any():
+                cv_valid = cv_block[valid_mask]
+                
+                stats['sum_cv'] += cv_valid.sum()
+                stats['sum_cv_sq'] += (cv_valid ** 2).sum()
+                stats['valid_count'] += len(cv_valid)
+                stats['high_uncertainty_count'] += (cv_valid > 0.5).sum()
+                stats['very_high_uncertainty_count'] += (cv_valid > 1.0).sum()
+                
+                # Sample for median calculation (don't store all values for memory)
+                if len(stats['cv_values']) < 100000:  # Limit storage
+                    stats['cv_values'].extend(cv_valid.tolist())
+            
+            stats['total_count'] += data_block.size
+        
+        # Compute final metrics
+        if stats['valid_count'] > 0:
+            mean_cv = stats['sum_cv'] / stats['valid_count']
+            variance_cv = (stats['sum_cv_sq'] / stats['valid_count']) - mean_cv ** 2
+            std_cv = np.sqrt(variance_cv) if variance_cv > 0 else 0
+            
+            # Compute median from sample
+            median_cv = np.median(stats['cv_values']) if stats['cv_values'] else mean_cv
+            
+            metrics = {
+                'mean_cv': float(mean_cv),
+                'median_cv': float(median_cv),
+                'std_cv': float(std_cv),
+                'high_uncertainty_fraction': float(stats['high_uncertainty_count'] / stats['valid_count']),
+                'very_high_uncertainty_fraction': float(stats['very_high_uncertainty_count'] / stats['valid_count']),
+                'data_coverage': float(stats['valid_count'] / stats['total_count']),
+                'trust_score': float(1.0 / (1.0 + median_cv)),
+                'n_pixels': int(stats['valid_count'])
+            }
+        else:
+            metrics = {'error': 'No valid data'}
+            
+    finally:
+        if close_data:
+            data_src.close()
+        if close_cv:
+            cv_src.close()
     
     return metrics
 
 
-def _compute_basic_metrics(data: np.ndarray) -> Dict[str, Any]:
-    """Compute basic metrics when no CV available."""
-    valid_mask = ~np.isnan(data)
+def _compute_basic_trust_metrics(
+    multiband: rasterio.DatasetReader,
+    band_idx: int,
+    band_name: str
+) -> Dict[str, Any]:
+    """Compute basic trust metrics for a band.
     
-    if not valid_mask.any():
-        return {'error': 'No valid data'}
+    LINUS: "Keep it simple. Just compute statistics."
+    """
+    stats = {
+        'band_name': band_name,
+        'band_index': band_idx,
+        'sum': 0.0,
+        'sum_sq': 0.0,
+        'valid_count': 0,
+        'total_count': 0,
+        'min': float('inf'),
+        'max': float('-inf'),
+    }
     
-    data_valid = data[valid_mask]
+    # Process in blocks for memory efficiency
+    for ji, window in multiband.block_windows(band_idx):
+        data = multiband.read(band_idx, window=window, masked=True)
+        valid = data.compressed()
+        
+        if len(valid) > 0:
+            stats['sum'] += valid.sum()
+            stats['sum_sq'] += (valid ** 2).sum()
+            stats['valid_count'] += len(valid)
+            stats['min'] = min(stats['min'], float(valid.min()))
+            stats['max'] = max(stats['max'], float(valid.max()))
+        
+        stats['total_count'] += data.size
     
+    # Compute final statistics
+    if stats['valid_count'] > 0:
+        mean = stats['sum'] / stats['valid_count']
+        variance = (stats['sum_sq'] / stats['valid_count']) - mean ** 2
+        std = np.sqrt(variance) if variance > 0 else 0
+        cv = std / mean if mean != 0 else 0
+        
+        return {
+            'band_name': band_name,
+            'mean': float(mean),
+            'std': float(std),
+            'cv': float(cv),
+            'min': float(stats['min']),
+            'max': float(stats['max']),
+            'valid_pixels': int(stats['valid_count']),
+            'total_pixels': int(stats['total_count']),
+            'coverage': float(100 * stats['valid_count'] / stats['total_count'])
+        }
+    else:
+        return {
+            'band_name': band_name,
+            'error': 'No valid data',
+            'valid_pixels': 0,
+            'total_pixels': int(stats['total_count']),
+            'coverage': 0.0
+        }
+
+
+def _compute_basic_metrics_rasterio(
+    data_source: Union[str, rasterio.DatasetReader]
+) -> Dict[str, Any]:
+    """Compute basic metrics using rasterio when no CV available."""
+    
+    # Open raster if needed
+    if isinstance(data_source, str):
+        src = rasterio.open(data_source)
+        close_after = True
+    else:
+        src = data_source
+        close_after = False
+    
+    try:
+        stats = {
+            'sum': 0.0,
+            'sum_sq': 0.0,
+            'valid_count': 0,
+            'total_count': 0,
+            'min': float('inf'),
+            'max': float('-inf'),
+            'values': []  # Sample for median
+        }
+        
+        # Process in blocks
+        for ji, window in src.block_windows(1):
+            data = src.read(1, window=window, masked=True)
+            valid = data.compressed()
+            
+            if len(valid) > 0:
+                stats['sum'] += valid.sum()
+                stats['sum_sq'] += (valid ** 2).sum()
+                stats['valid_count'] += len(valid)
+                stats['min'] = min(stats['min'], float(valid.min()))
+                stats['max'] = max(stats['max'], float(valid.max()))
+                
+                # Sample for median
+                if len(stats['values']) < 100000:
+                    stats['values'].extend(valid.tolist())
+            
+            stats['total_count'] += data.size
+        
+        # Compute final statistics
+        if stats['valid_count'] > 0:
+            mean = stats['sum'] / stats['valid_count']
+            variance = (stats['sum_sq'] / stats['valid_count']) - mean ** 2
+            std = np.sqrt(variance) if variance > 0 else 0
+            median = np.median(stats['values']) if stats['values'] else mean
+            
+            return {
+                'mean': float(mean),
+                'median': float(median),
+                'std': float(std),
+                'min': float(stats['min']),
+                'max': float(stats['max']),
+                'data_coverage': float(stats['valid_count'] / stats['total_count']),
+                'n_pixels': int(stats['valid_count']),
+                'note': 'No uncertainty data available'
+            }
+        else:
+            return {'error': 'No valid data'}
+            
+    finally:
+        if close_after:
+            src.close()
+
+
+def _analyze_combined_trust_multiband(
+    multiband: rasterio.DatasetReader,
+    band_names: list
+) -> Dict[str, Any]:
+    """Analyze combined trust across all bands.
+    
+    LINUS: "Simple aggregation. No fancy statistics."
+    """
     return {
-        'mean': float(np.mean(data_valid)),
-        'median': float(np.median(data_valid)),
-        'std': float(np.std(data_valid)),
-        'min': float(np.min(data_valid)),
-        'max': float(np.max(data_valid)),
-        'data_coverage': float(valid_mask.mean()),
-        'n_pixels': int(valid_mask.sum()),
-        'note': 'No uncertainty data available'
+        'n_bands': len(band_names),
+        'band_names': band_names,
+        'type': 'multiband_combined'
     }
 
 
@@ -190,52 +355,163 @@ def _analyze_combined_trust(
     }
 
 
-def _plot_trust_analysis(
-    data: np.ndarray,
-    cv: np.ndarray,
+def _plot_trust_analysis_cartopy(
+    data_source: Union[str, rasterio.DatasetReader],
+    cv_source: Union[str, rasterio.DatasetReader],
     name: str,
     output_dir: Path,
     metrics: Dict[str, Any]
 ) -> None:
-    """Plot trust analysis visualization with PROPER projections."""
+    """Plot trust analysis visualization using cartopy with proper projections."""
     
-    # Create three separate maps with correct projections
-    # 1. Data map
-    ProfessionalMapVisualizer.create_global_biodiversity_map(
-        data=data,
-        name=f"{name}_data",
-        output_path=output_dir / f'trust_{name}_data.png',
-        projection='robinson',
-        publication_quality=True,
-        add_features=True,
-        colormap='viridis',
-        title=f'{name} - Data'
-    )
+    # Helper function to create cartopy map
+    def create_cartopy_map(src, title, colormap, output_path):
+        """Create a single cartopy map from rasterio source."""
+        # Use loader's downsample method - NO DUPLICATION!
+        from src.biodiversity_analysis.shared.data.unified_loader import UnifiedLoader
+        
+        max_pixels = 2_000_000
+        data = UnifiedLoader.downsample_on_read(
+            src=src,
+            band_num=1,
+            max_pixels=max_pixels,
+            resampling='nearest'
+        )
+        
+        # Get valid data for color scaling
+        valid = data.compressed()
+        if len(valid) == 0:
+            logger.warning(f"No valid data in {title}")
+            return
+        
+        vmin, vmax = np.percentile(valid, [5, 95])
+        
+        # Create figure with Robinson projection
+        fig = plt.figure(figsize=(14, 7))
+        ax = plt.axes(projection=ccrs.Robinson())
+        
+        # Get extent from raster bounds
+        extent = [src.bounds.left, src.bounds.right, src.bounds.bottom, src.bounds.top]
+        
+        # Plot data
+        im = ax.imshow(
+            data,
+            extent=extent,
+            transform=ccrs.PlateCarree(),
+            cmap=colormap,
+            vmin=vmin,
+            vmax=vmax,
+            interpolation='bilinear'
+        )
+        
+        # Add geographic features
+        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.2, zorder=0)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='gray', zorder=1)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, color='gray', alpha=0.5, zorder=1)
+        ax.add_feature(cfeature.LAND, color='white', alpha=0.3, zorder=0)
+        
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+        
+        # Add gridlines
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.3, zorder=0)
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        # Colorbar
+        cbar = plt.colorbar(im, ax=ax, orientation='horizontal',
+                           pad=0.05, fraction=0.05, shrink=0.8)
+        cbar.set_label('Value', fontsize=11)
+        cbar.ax.tick_params(labelsize=9)
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
     
-    # 2. CV/Uncertainty map  
-    ProfessionalMapVisualizer.create_global_biodiversity_map(
-        data=cv,
-        name=f"{name}_cv",
-        output_path=output_dir / f'trust_{name}_cv.png',
-        projection='robinson',
-        publication_quality=True,
-        add_features=True,
-        colormap='hot',
-        title=f'{name} - Coefficient of Variation'
-    )
+    # Open rasters and create maps
+    sources = [
+        (data_source, f'{name} - Data', 'viridis', f'trust_{name}_data.png'),
+        (cv_source, f'{name} - Coefficient of Variation', 'hot', f'trust_{name}_cv.png')
+    ]
     
-    # 3. Trust score map (inverse CV)
-    trust = 1.0 / (1.0 + cv)
-    ProfessionalMapVisualizer.create_global_biodiversity_map(
-        data=trust,
-        name=f"{name}_trust",
-        output_path=output_dir / f'trust_{name}_score.png',
-        projection='robinson',
-        publication_quality=True,
-        add_features=True,
-        colormap='RdYlGn',
-        title=f'{name} - Trust Score'
-    )
+    for source, title, cmap, filename in sources:
+        if isinstance(source, str):
+            with rasterio.open(source) as src:
+                create_cartopy_map(src, title, cmap, output_dir / filename)
+        else:
+            create_cartopy_map(source, title, cmap, output_dir / filename)
+    
+    # Create trust score map (requires both datasets)
+    if isinstance(data_source, str):
+        data_src = rasterio.open(data_source)
+        close_data = True
+    else:
+        data_src = data_source
+        close_data = False
+        
+    if isinstance(cv_source, str):
+        cv_src = rasterio.open(cv_source)
+        close_cv = True
+    else:
+        cv_src = cv_source
+        close_cv = False
+    
+    try:
+        # Read and compute trust score
+        max_pixels = 2_000_000
+        total_pixels = data_src.height * data_src.width
+        
+        if total_pixels > max_pixels:
+            # LINUS: NO RESAMPLING! Use striding
+            factor = int(np.sqrt(total_pixels / max_pixels))
+            cv_full = cv_src.read(1, masked=True)
+            step = slice(None, None, factor)
+            cv_data = cv_full[step, step]
+        else:
+            cv_data = cv_src.read(1, masked=True)
+        
+        # Compute trust score
+        trust = 1.0 / (1.0 + cv_data)
+        
+        # Create trust score map
+        fig = plt.figure(figsize=(14, 7))
+        ax = plt.axes(projection=ccrs.Robinson())
+        
+        extent = [data_src.bounds.left, data_src.bounds.right, data_src.bounds.bottom, data_src.bounds.top]
+        
+        im = ax.imshow(
+            trust,
+            extent=extent,
+            transform=ccrs.PlateCarree(),
+            cmap='RdYlGn',
+            vmin=0,
+            vmax=1,
+            interpolation='bilinear'
+        )
+        
+        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.2, zorder=0)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='gray', zorder=1)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, color='gray', alpha=0.5, zorder=1)
+        
+        ax.set_title(f'{name} - Trust Score', fontsize=14, fontweight='bold', pad=20)
+        
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.3, zorder=0)
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        cbar = plt.colorbar(im, ax=ax, orientation='horizontal',
+                           pad=0.05, fraction=0.05, shrink=0.8)
+        cbar.set_label('Trust Score', fontsize=11)
+        cbar.ax.tick_params(labelsize=9)
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / f'trust_{name}_score.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+    finally:
+        if close_data:
+            data_src.close()
+        if close_cv:
+            cv_src.close()
     
     # Also create a combined figure for comparison
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
@@ -265,27 +541,89 @@ def _plot_trust_analysis(
     plt.close(fig)
 
 
-def _plot_basic_map(
-    data: np.ndarray,
+def _plot_basic_map_cartopy(
+    data_source: Union[str, rasterio.DatasetReader],
     name: str,
     output_dir: Path,
     metrics: Dict[str, Any]
 ) -> None:
-    """Plot basic map with PROPER projection when no uncertainty available."""
+    """Plot basic map using cartopy when no uncertainty available."""
     
-    # Use ProfessionalMapVisualizer for correct projection
-    ProfessionalMapVisualizer.create_global_biodiversity_map(
-        data=data,
-        name=name,
-        output_path=output_dir / f'map_{name}.png',
-        projection='robinson',  # Standard for global biodiversity
-        publication_quality=True,
-        add_features=True,
-        colormap='viridis',
-        title=f'{name} - No uncertainty data available'
-    )
+    # Open raster if needed
+    if isinstance(data_source, str):
+        src_context = rasterio.open(data_source)
+        src = src_context.__enter__()
+        close_after = True
+    else:
+        src = data_source
+        close_after = False
     
-    logger.info(f"Created properly projected map for {name} (no uncertainty data)")
+    try:
+        # Use loader's downsample method - NO DUPLICATION!
+        from src.biodiversity_analysis.shared.data.unified_loader import UnifiedLoader
+        
+        max_pixels = 2_000_000
+        data = UnifiedLoader.downsample_on_read(
+            src=src,
+            band_num=1,
+            max_pixels=max_pixels,
+            resampling='nearest'
+        )
+        
+        # Get valid data for color scaling
+        valid = data.compressed()
+        if len(valid) == 0:
+            logger.warning(f"No valid data in {name}")
+            return
+        
+        vmin, vmax = np.percentile(valid, [5, 95])
+        
+        # Create figure with Robinson projection
+        fig = plt.figure(figsize=(14, 7))
+        ax = plt.axes(projection=ccrs.Robinson())
+        
+        # Get extent from raster bounds
+        extent = [src.bounds.left, src.bounds.right, src.bounds.bottom, src.bounds.top]
+        
+        # Plot data
+        im = ax.imshow(
+            data,
+            extent=extent,
+            transform=ccrs.PlateCarree(),
+            cmap='viridis',
+            vmin=vmin,
+            vmax=vmax,
+            interpolation='bilinear'
+        )
+        
+        # Add geographic features
+        ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.2, zorder=0)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='gray', zorder=1)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, color='gray', alpha=0.5, zorder=1)
+        ax.add_feature(cfeature.LAND, color='white', alpha=0.3, zorder=0)
+        
+        ax.set_title(f'{name} - No uncertainty data available', fontsize=14, fontweight='bold', pad=20)
+        
+        # Add gridlines
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.3, zorder=0)
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        # Colorbar
+        cbar = plt.colorbar(im, ax=ax, orientation='horizontal',
+                           pad=0.05, fraction=0.05, shrink=0.8)
+        cbar.set_label('Value', fontsize=11)
+        cbar.ax.tick_params(labelsize=9)
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / f'map_{name}.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Created cartopy map for {name} (no uncertainty data)")
+        
+    finally:
+        if close_after:
+            src_context.__exit__(None, None, None)
 
 
 def _plot_combined_trust(combined: Dict[str, Any], output_dir: Path) -> None:
