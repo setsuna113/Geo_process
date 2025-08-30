@@ -9,7 +9,7 @@ import logging
 from typing import List, Optional, Dict, Any, Tuple, Callable
 import time
 
-from src.abstractions.types.tensor_types import (
+from src.core_abstractions import (
     TensorData, CPFactors, TensorMetrics
 )
 from src.biodiversity_analysis.shared.tensor_utils import (

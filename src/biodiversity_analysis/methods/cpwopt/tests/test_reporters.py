@@ -7,7 +7,7 @@ import os
 from unittest.mock import Mock, patch
 import matplotlib.pyplot as plt
 
-from src.abstractions.types.tensor_types import TensorData, CPFactors, TensorMetrics
+from src.core_abstractions import TensorData, CPFactors, TensorMetrics
 from src.biodiversity_analysis.methods.cpwopt.reporters.factor_reporter import FactorReporter
 from src.biodiversity_analysis.methods.cpwopt.reporters.reconstruction_reporter import ReconstructionReporter
 from src.biodiversity_analysis.methods.cpwopt.reporters.spatial_reporter import SpatialReporter

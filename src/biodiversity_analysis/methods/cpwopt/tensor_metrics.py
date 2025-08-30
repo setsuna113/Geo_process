@@ -10,8 +10,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from scipy.stats import pearsonr
 from numpy.linalg import norm
 
-from src.abstractions.interfaces.tensor_analyzer import ITensorMetricsCalculator
-from src.abstractions.types.tensor_types import CPFactors, TensorMetrics
+from src.core_abstractions import CPFactors, TensorMetrics
 from src.biodiversity_analysis.shared.tensor_utils import (
     cp_reconstruct, unfold, weighted_norm
 )
@@ -20,7 +19,7 @@ from .constants import EPSILON
 logger = logging.getLogger(__name__)
 
 
-class CPWOPTMetricsCalculator(ITensorMetricsCalculator):
+class CPWOPTMetricsCalculator:
     """Calculate metrics for CP-WOPT decomposition quality."""
     
     def reconstruction_error(self, original: np.ndarray, 

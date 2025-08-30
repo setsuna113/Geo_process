@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import logging
 
-from src.abstractions.types.tensor_types import CPFactors
+from src.core_abstractions import CPFactors
 from ..constants import FIGURE_DPI, FIGURE_SIZE, COLORMAP, TOP_N_FEATURES
 
 logger = logging.getLogger(__name__)

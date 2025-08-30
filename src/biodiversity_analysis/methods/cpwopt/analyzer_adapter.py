@@ -13,9 +13,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import json
 import time
 
-from src.abstractions.interfaces.analyzer import IAnalyzer
-from src.abstractions.types import AnalysisResult, ModelMetrics
-from src.abstractions.types.tensor_types import TensorData, TensorDecompositionResult
+from src.core_abstractions import IAnalyzer, AnalysisResult, TensorData
 from src.biodiversity_analysis.preprocessing import SharedPreprocessor
 from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
 from src.biodiversity_analysis.shared.data import ParquetLoader
@@ -514,26 +512,26 @@ class CPWOPTAnalyzer(IAnalyzer):
         # Update model metrics
         self.model.metrics_ = metrics
     
-    def _create_model_metrics(self) -> ModelMetrics:
-        """Create ModelMetrics object from results."""
+    def _create_model_metrics(self) -> Dict[str, Any]:
+        """Create model metrics dict from results."""
         if not self.model.metrics_:
-            return ModelMetrics(
-                fit=0.0,
-                relative_error=1.0,
-                iterations=0,
-                convergence_history=[],
-                final_error=float('inf'),
-                component_weights=[]
-            )
+            return {
+                'fit': 0.0,
+                'relative_error': 1.0,
+                'iterations': 0,
+                'convergence_history': [],
+                'final_error': float('inf'),
+                'component_weights': []
+            }
         
-        return ModelMetrics(
-            fit=self.model.metrics_.fit,
-            relative_error=self.model.metrics_.relative_error,
-            iterations=self.model.n_iterations_,
-            convergence_history=self.model.convergence_history_,
-            final_error=self.model.metrics_.reconstruction_error,
-            component_weights=self.model.metrics_.component_weights
-        )
+        return {
+            'fit': self.model.metrics_.fit,
+            'relative_error': self.model.metrics_.relative_error,
+            'iterations': self.model.n_iterations_,
+            'convergence_history': self.model.convergence_history_,
+            'final_error': self.model.metrics_.reconstruction_error,
+            'component_weights': self.model.metrics_.component_weights.tolist()
+        }
     
     def get_default_parameters(self) -> Dict[str, Any]:
         """Get default parameters for CP-WOPT.

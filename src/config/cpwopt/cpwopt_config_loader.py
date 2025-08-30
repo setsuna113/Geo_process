@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 import logging
 from copy import deepcopy
 
-from src.abstractions.interfaces.method_config import IMethodConfig
+from src.core_abstractions import IMethodConfig
 
 logger = logging.getLogger(__name__)
 

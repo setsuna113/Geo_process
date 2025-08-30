@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 from unittest.mock import Mock, patch
 
-from src.abstractions.types.tensor_types import TensorData, CPFactors
+from src.core_abstractions import TensorData, CPFactors
 from src.biodiversity_analysis.methods.cpwopt.core import CPWOPT
 from src.biodiversity_analysis.methods.cpwopt.constants import (
     DEFAULT_RANK, DEFAULT_MAX_ITERATIONS, DEFAULT_CONVERGENCE_THRESHOLD
