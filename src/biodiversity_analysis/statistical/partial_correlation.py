@@ -10,10 +10,12 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import matplotlib.pyplot as plt
 from scipy import stats
 
 from src.biodiversity_analysis.statistical.result_types import MethodResult
+from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +42,10 @@ def compute_partial_correlation(
     Returns:
         Dict with correlation coefficient and p-value
     """
-    try:
-        import pingouin as pg
-    except ImportError:
-        # Fallback to manual implementation
-        return _manual_partial_correlation(df, x, y, control_vars, method)
+    # LINUS: No fallbacks - either it works or it fails
+    import pingouin as pg
     
-    # Use pingouin's efficient implementation
+    # Use pingouin's implementation - REQUIRED dependency
     if isinstance(control_vars, str):
         control_vars = [control_vars]
     
@@ -65,70 +64,23 @@ def compute_partial_correlation(
     }
 
 
-def _manual_partial_correlation(
-    df: pd.DataFrame,
-    x: str,
-    y: str,
-    control_vars: Union[str, List[str]],
-    method: str = 'spearman'
-) -> Dict[str, float]:
-    """
-    Manual implementation of partial correlation using residuals.
-    
-    The REAL algorithm:
-    1. Regress x on control variables -> get residuals
-    2. Regress y on control variables -> get residuals  
-    3. Correlate the residuals
-    """
-    from sklearn.linear_model import LinearRegression
-    
-    if isinstance(control_vars, str):
-        control_vars = [control_vars]
-    
-    # Remove rows with any NaN
-    cols = [x, y] + control_vars
-    df_clean = df[cols].dropna()
-    
-    # Get control variables as matrix
-    Z = df_clean[control_vars].values
-    X = df_clean[x].values.reshape(-1, 1)
-    Y = df_clean[y].values.reshape(-1, 1)
-    
-    # Regress X on Z
-    reg_x = LinearRegression()
-    reg_x.fit(Z, X)
-    residuals_x = X - reg_x.predict(Z)
-    
-    # Regress Y on Z
-    reg_y = LinearRegression()
-    reg_y.fit(Z, Y)
-    residuals_y = Y - reg_y.predict(Z)
-    
-    # Correlate residuals
-    if method == 'spearman':
-        r, p = stats.spearmanr(residuals_x.flatten(), residuals_y.flatten())
-    else:
-        r, p = stats.pearsonr(residuals_x.flatten(), residuals_y.flatten())
-    
-    return {
-        'r': float(r),
-        'p': float(p),
-        'n': len(df_clean)
-    }
+# REMOVED: _manual_partial_correlation function
+# LINUS: "No fallbacks - use the right tool or fail"
+# pingouin is a REQUIRED dependency
 
 
 def analyze_partial_correlations(
-    df: pd.DataFrame,
+    data: Any,
     output_dir: Path,
     **config  # ALL config comes here - NO SPECIAL ARGS
 ) -> MethodResult:
     """
-    Analyze partial correlations - DataFrame ONLY.
+    Analyze partial correlations between biodiversity variables.
     
     REVEALS the true relationships after removing climate confounding.
     
     Args:
-        df: DataFrame with all variables
+        data: Arrow Table, Dict[str, np.ndarray], or DataFrame
         output_dir: Output directory
         **config: Configuration dict with:
             - target_pairs: List of (var1, var2) pairs
@@ -142,64 +94,58 @@ def analyze_partial_correlations(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # LINUS SAYS: VALIDATE YOUR INPUTS OR DIE!
-    if not isinstance(df, pd.DataFrame):
+    # LINUS: "Direct Arrow → DataFrame conversion. Skip the Dict nonsense."
+    if isinstance(data, pa.Table):
+        df = data.to_pandas()
+        logger.info(f"Converted Arrow Table to DataFrame: {len(df):,} rows")
+    elif isinstance(data, dict):
+        # Legacy path for compatibility
+        df = pd.DataFrame(data)
+        logger.info(f"Converted {len(data)} arrays to DataFrame with {len(df):,} rows")
+    elif isinstance(data, pd.DataFrame):
+        df = data
+    else:
         # Try to convert BiodiversityData
-        if hasattr(df, 'features') and hasattr(df, 'coordinates'):
+        if hasattr(data, 'features') and hasattr(data, 'coordinates'):
             df_dict = {
-                'x': df.coordinates[:, 0],
-                'y': df.coordinates[:, 1]
+                'x': data.coordinates[:, 0],
+                'y': data.coordinates[:, 1]
             }
             # Add features with standardized names
-            for i, name in enumerate(df.feature_names):
-                df_dict[name] = df.features[:, i]
+            for i, name in enumerate(data.feature_names):
+                df_dict[name] = data.features[:, i]
             df = pd.DataFrame(df_dict)
             logger.info(f"Converted BiodiversityData to DataFrame with {len(df)} rows")
         else:
-            raise TypeError(f"partial_correlation expects DataFrame or BiodiversityData, got {type(df).__name__}")
+            raise TypeError(f"partial_correlation expects Arrow Table, Dict[str, array], DataFrame or BiodiversityData, got {type(data).__name__}")
     
-    # Extract config - method handles its own config!
-    # LINUS: Smart target pairs based on available columns
-    default_pairs = []
+    # LINUS: "total_fungi only, 3x3 matrix, control for ALL variables"
+    # Ensure total_fungi exists
+    if 'total_fungi' not in df.columns:
+        logger.info("Creating total_fungi column")
+        df['total_fungi'] = df['am_fungi_richness'] + df['ecm_fungi_richness']
     
-    # Check what biodiversity columns exist - REAL production data names!
-    biodiv_cols = ['animal_richness', 'plant_richness', 
-                   'am_fungi_richness', 'ecm_fungi_richness', 'total_fungi_richness']
-    biodiv_cols = [c for c in biodiv_cols if c in df.columns]
-    
-    # Build pairs based on available columns - REAL production data names!
-    if 'animal_richness' in biodiv_cols and 'plant_richness' in biodiv_cols:
-        default_pairs.append(('animal_richness', 'plant_richness'))
-    
-    # Handle fungi columns (either separated or merged)
-    if 'am_fungi_richness' in biodiv_cols and 'ecm_fungi_richness' in biodiv_cols:
-        # Original/separated version
-        if 'animal_richness' in biodiv_cols:
-            default_pairs.extend([
-                ('animal_richness', 'am_fungi_richness'),
-                ('animal_richness', 'ecm_fungi_richness')
-            ])
-        if 'plant_richness' in biodiv_cols:
-            default_pairs.extend([
-                ('plant_richness', 'am_fungi_richness'),
-                ('plant_richness', 'ecm_fungi_richness')
-            ])
-        default_pairs.append(('am_fungi_richness', 'ecm_fungi_richness'))
-    elif 'total_fungi_richness' in biodiv_cols:
-        # Merged version
-        if 'animal_richness' in biodiv_cols:
-            default_pairs.append(('animal_richness', 'total_fungi_richness'))
-        if 'plant_richness' in biodiv_cols:
-            default_pairs.append(('plant_richness', 'total_fungi_richness'))
+    # Build 3x3 matrix pairs using ONLY total_fungi
+    default_pairs = [
+        ('animal_richness', 'plant_richness'),
+        ('animal_richness', 'total_fungi'),
+        ('plant_richness', 'total_fungi')
+    ]
     
     target_pairs = config.get('target_pairs', default_pairs)
-    # Use available climate variables (dem might not exist)
-    default_control = ['bio01', 'bio04', 'bio12', 'bio15']
-    if 'dem' in df.columns:
-        default_control.append('dem')
-    elif 'elevation' in df.columns:
-        default_control.append('elevation')
-    control_vars = config.get('control_vars', default_control)
+    
+    # Control for ALL non-biodiversity variables in the arrow file
+    # Exclude: coordinates, biodiversity columns, and the total_fungi we just created
+    biodiv_cols = ['animal_richness', 'plant_richness', 'am_fungi_richness', 
+                   'ecm_fungi_richness', 'total_fungi']
+    coord_cols = ['x', 'y']
+    
+    # Get ALL other columns as control variables
+    all_control_vars = [col for col in df.columns 
+                       if col not in biodiv_cols and col not in coord_cols]
+    
+    logger.info(f"Controlling for ALL {len(all_control_vars)} variables: {all_control_vars}")
+    control_vars = config.get('control_vars', all_control_vars)
     method = config.get('method', 'spearman')
     plot = config.get('plot', True)
     
@@ -278,6 +224,9 @@ def analyze_partial_correlations(
     )
 
 
+# LINUS: Removed _compute_partial_correlation_results - no Ray remote execution needed!
+
+
 def _interpret_correlation(r: float) -> str:
     """Interpret correlation strength."""
     abs_r = abs(r)
@@ -349,9 +298,15 @@ def _plot_partial_comparison(results: Dict[str, Any], output_dir: Path):
     ax.scatter(simple_corrs, partial_corrs, s=100, alpha=0.7, color='purple')
     
     # Add diagonal line
-    lims = [min(simple_corrs + partial_corrs) - 0.1,
-            max(simple_corrs + partial_corrs) + 0.1]
-    ax.plot(lims, lims, 'k--', alpha=0.5, label='No change')
+    # LINUS: Check if lists are empty before min/max - no special cases!
+    if simple_corrs and partial_corrs:
+        lims = [min(simple_corrs + partial_corrs) - 0.1,
+                max(simple_corrs + partial_corrs) + 0.1]
+        ax.plot(lims, lims, 'k--', alpha=0.5, label='No change')
+    else:
+        # Default range if no data
+        lims = [-1.1, 1.1]
+        ax.plot(lims, lims, 'k--', alpha=0.5, label='No change')
     
     # Add labels
     for i, pair in enumerate(pairs):

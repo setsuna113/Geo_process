@@ -7,9 +7,16 @@ ONE implementation, handles both in-memory and chunked.
 
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Union
 import rasterio
+from rasterio.windows import Window
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import matplotlib.pyplot as plt
 from scipy import stats
+import logging
+
+logger = logging.getLogger(__name__)
 
 from src.biodiversity_analysis.statistical.data_utils import save_results
 from src.biodiversity_analysis.statistical.result_types import MethodResult
@@ -18,17 +25,17 @@ from src.biodiversity_analysis.statistical.overlap_rgb import create_rgb_overlap
 
 
 def analyze_overlap(
-    data: Dict[str, np.ndarray],
+    data: Dict[str, Any],
     output_dir: Path,
     **kwargs
 ) -> MethodResult:
     """
-    Analyze spatial overlap - in-memory arrays ONLY.
+    Analyze spatial overlap from multiband raster.
     
-    Data loading is orchestrator's job, not ours.
+    LINUS: "Everything is multiband. No special cases."
     
     Args:
-        data: Dict[str, ndarray] - spatial arrays
+        data: Dict with 'multiband' (rasterio DatasetReader) and 'band_names' (list)
         output_dir: Output directory
         **kwargs: Config including:
             - hotspot_percentile: Threshold for hotspots (default: 90)
@@ -43,29 +50,23 @@ def analyze_overlap(
     # Extract config with defaults
     hotspot_percentile = kwargs.get('hotspot_percentile', 90)
     plot = kwargs.get('plot', True)
-    chunk_size = kwargs.get('chunk_size', 1000)  # Default chunk size for file processing
     
     try:
-        if len(data) < 2:
-            raise ValueError("Need at least 2 datasets")
+        # Extract multiband raster - NO SPECIAL CASES
+        multiband = data['multiband']
+        band_names = data['band_names']
         
-        # Determine data type from first item
-        first_value = next(iter(data.values()))
+        if len(band_names) < 2:
+            raise ValueError("Need at least 2 bands for overlap analysis")
         
-        if isinstance(first_value, np.ndarray):
-            # In-memory processing
-            results = _analyze_arrays(data, hotspot_percentile)
-        elif isinstance(first_value, str):
-            # File-based chunked processing
-            results = _analyze_chunked(data, hotspot_percentile, chunk_size)
-        else:
-            raise TypeError(f"Unsupported data type: {type(first_value)}")
+        # Process using multiband raster
+        results = _analyze_multiband(multiband, band_names, hotspot_percentile)
         
-        # Generate RGB overlap map ONLY - no other visualizations needed
+        # Generate RGB overlap map using cartopy
         if plot:
-            # Create the RGB overlap map (aboveground vs belowground)
+            # Create the RGB overlap map with proper projection
             rgb_output = output_dir / 'rgb_biodiversity_overlap.png'
-            create_rgb_overlap_map(data, rgb_output)
+            _create_cartopy_overlap_map(data, rgb_output)
         
         # Save results
         save_results(results, output_dir / 'overlap_results.json')
@@ -83,8 +84,7 @@ def analyze_overlap(
     except Exception as e:
         import traceback
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
-        import logging
-        logger = logging.getLogger(__name__)
+        # LINUS: "Don't reimport what's already imported"
         logger.error(f"Overlap analysis failed: {error_msg}")
         return MethodResult(
             success=False,
@@ -159,70 +159,121 @@ def _analyze_arrays(data: Dict[str, np.ndarray], hotspot_percentile: float) -> D
     }
 
 
-def _analyze_chunked(
-    data_paths: Dict[str, str], 
-    hotspot_percentile: float,
-    chunk_size: int
+def _analyze_multiband(
+    multiband_src: rasterio.DatasetReader,
+    band_names: list,
+    hotspot_percentile: float
 ) -> Dict[str, Any]:
-    """Analyze overlap using chunked file reading."""
+    """Analyze overlap using multiband raster block-wise processing.
     
-    # Open rasters without loading
+    LINUS: "Direct parameters. No dict unpacking bullshit."
+    
+    Args:
+        multiband_src: Multiband raster dataset
+        band_names: List of band names
+        hotspot_percentile: Percentile for hotspot detection
+        
+    Returns:
+        Overlap analysis results
+    """
+    
+    if not hasattr(multiband_src, 'read'):
+        raise TypeError(f"'multiband' must be a rasterio dataset, got {type(multiband_src)}")
+    
+    if multiband_src.count < 2:
+        raise ValueError(f"Need at least 2 bands for overlap analysis, got {multiband_src.count}")
+    
+    logger.info(f"Using multi-band raster with {multiband_src.count} bands: {band_names}")
+    
+    # Create rasters dict from bands - STANDARD FORMAT
     rasters = {}
-    shapes = []
+    close_after = {}
+    for i, name in enumerate(band_names[:multiband_src.count], 1):
+        # Each band is accessed through the multiband dataset
+        rasters[name] = (multiband_src, i)  # Store dataset and band number
+        close_after[name] = False
     
-    for name, path in data_paths.items():
-        if path and isinstance(path, str) and Path(path).exists():
-            src = rasterio.open(path)
-            rasters[name] = src
-            shapes.append(src.shape)
+    height, width = multiband_src.shape
+    shapes = [multiband_src.shape] * len(rasters)
     
-    if not rasters:
-        raise ValueError("No valid raster files found")
-    
-    # Verify same shape
-    if len(set(shapes)) > 1:
-        # Close files before raising
-        for src in rasters.values():
-            src.close()
-        raise ValueError(f"Rasters have different shapes: {shapes}")
-    
+    # All rasters have same shape
     height, width = shapes[0]
+    ref_raster_item = next(iter(rasters.values()))
+    ref_name = next(iter(rasters.keys()))
+    
+    # Handle tuple case (multiband dataset, band_num)
+    if isinstance(ref_raster_item, tuple):
+        ref_raster, _ = ref_raster_item  # Get the actual dataset
+    else:
+        ref_raster = ref_raster_item
+    
     total_pixels = height * width
     
     try:
         # Initialize statistics
-        stats_tracker = _ChunkedStatsTracker(rasters.keys(), total_pixels)
+        stats_tracker = _BlockwiseStatsTracker(rasters.keys(), total_pixels)
         
-        # Process in chunks
-        for row_start in range(0, height, chunk_size):
-            row_end = min(row_start + chunk_size, height)
-            window = ((row_start, row_end), (0, width))
-            
-            # Read chunk from each raster
-            chunks = {}
+        # Process using block windows - NO RESAMPLING!
+        for ji, window in ref_raster.block_windows(1):
+            # Read block from each raster
+            blocks = {}
             masks = {}
             
             for name, src in rasters.items():
-                chunk = src.read(1, window=window)
-                chunks[name] = chunk
-                masks[name] = ~np.isnan(chunk) & (chunk != src.nodata if src.nodata else True)
+                # LINUS: All rasters MUST have same shape - no resampling!
+                if isinstance(src, tuple):
+                    # Multi-band: src is (dataset, band_number)
+                    dataset, band_num = src
+                    block = dataset.read(band_num, window=window, masked=True)
+                else:
+                    # Single raster
+                    block = src.read(1, window=window, masked=True)
+                
+                valid = block.compressed()
+                
+                # Store for statistics
+                blocks[name] = block
+                masks[name] = ~block.mask if hasattr(block, 'mask') else ~np.isnan(block)
             
             # Update statistics
-            stats_tracker.update(chunks, masks)
+            stats_tracker.update(blocks, masks)
         
         # Compute final statistics
         results = stats_tracker.finalize(hotspot_percentile)
         
     finally:
-        # Always close rasters
-        for src in rasters.values():
-            src.close()
+        # LINUS: DON'T CLOSE! The dataset is owned by the caller
+        # The UnifiedLoader manages the lifecycle, not us!
+        pass
     
     return results
 
 
-class _ChunkedStatsTracker:
-    """Track statistics during chunked processing."""
+def _transform_window(ref_window, ref_raster, src_raster):
+    """Transform window from reference raster to source raster coordinates."""
+    from rasterio.windows import Window
+    
+    # Get bounds of the reference window
+    from rasterio.windows import bounds as window_bounds
+    left, bottom, right, top = window_bounds(ref_window, ref_raster.transform)
+    
+    # Transform bounds to source raster pixel coordinates
+    src_col_off, src_row_off = ~src_raster.transform * (left, top)
+    src_col_end, src_row_end = ~src_raster.transform * (right, bottom)
+    
+    # Create window in source coordinates
+    src_window = Window(
+        col_off=max(0, int(src_col_off)),
+        row_off=max(0, int(src_row_off)),
+        width=min(src_raster.width - int(src_col_off), int(src_col_end - src_col_off)),
+        height=min(src_raster.height - int(src_row_off), int(src_row_end - src_row_off))
+    )
+    
+    return src_window
+
+
+class _BlockwiseStatsTracker:
+    """Track statistics during block-wise rasterio processing."""
     
     def __init__(self, names, total_pixels):
         self.names = list(names)
@@ -240,16 +291,20 @@ class _ChunkedStatsTracker:
         self.pairwise_sums2 = {}
         self.pairwise_sums12 = {}
         
-        for i, name1 in enumerate(names):
-            for name2 in names[i+1:]:
+        names_list = list(names) if not isinstance(names, list) else names
+        for i, name1 in enumerate(names_list):
+            for name2 in names_list[i+1:]:
                 key = f"{name1}_vs_{name2}"
                 self.pairwise_valid[key] = 0
                 self.pairwise_sums1[key] = 0.0
                 self.pairwise_sums2[key] = 0.0
                 self.pairwise_sums12[key] = 0.0
         
-        # Hotspot tracking - store all values for percentile calculation
-        self.all_values = {name: [] for name in names}
+        # Hotspot tracking - use reservoir sampling for memory efficiency
+        # Keep only a sample of values for percentile calculation
+        self.sample_size = 10000  # Maximum samples to keep
+        self.samples = {name: [] for name in names}
+        self.sample_counts = {name: 0 for name in names}
     
     def update(self, chunks, masks):
         """Update statistics with new chunk."""
@@ -261,8 +316,20 @@ class _ChunkedStatsTracker:
                 self.valid_counts[name] += valid.sum()
                 self.value_sums[name] += chunks[name][valid].sum()
                 self.value_maxs[name] = max(self.value_maxs[name], chunks[name][valid].max())
-                # Store values for hotspot calculation
-                self.all_values[name].extend(chunks[name][valid].tolist())
+                
+                # Reservoir sampling for hotspot calculation
+                # This keeps memory bounded while maintaining statistical properties
+                valid_values = chunks[name][valid].flatten()
+                for val in valid_values:
+                    self.sample_counts[name] += 1
+                    if len(self.samples[name]) < self.sample_size:
+                        self.samples[name].append(float(val))
+                    else:
+                        # Randomly replace with decreasing probability
+                        import random
+                        j = random.randint(0, self.sample_counts[name] - 1)
+                        if j < self.sample_size:
+                            self.samples[name][j] = float(val)
         
         # All valid overlap
         all_valid = np.ones_like(next(iter(masks.values())), dtype=bool)
@@ -328,17 +395,19 @@ class _ChunkedStatsTracker:
                     # For now, just mark as computed
                     pairwise[key]['correlation_available'] = False
         
-        # Hotspots
+        # Hotspots (using sampled values)
         hotspots = {}
         for name in self.names:
-            if self.all_values[name]:
-                values = np.array(self.all_values[name])
+            if self.samples[name]:
+                values = np.array(self.samples[name])
                 threshold = np.percentile(values, hotspot_percentile)
-                hotspot_count = (values >= threshold).sum()
+                # Estimate hotspot count based on threshold
+                hotspot_fraction = (values >= threshold).sum() / len(values)
+                estimated_hotspot_count = int(hotspot_fraction * self.valid_counts[name])
                 hotspots[name] = {
                     'threshold': float(threshold),
-                    'pixels': int(hotspot_count),
-                    'percent': float(100 * hotspot_count / len(values))
+                    'pixels': estimated_hotspot_count,
+                    'percent': float(100 * hotspot_fraction)
                 }
         
         return {
@@ -385,6 +454,108 @@ def _compute_hotspots(data: Dict[str, np.ndarray], masks: Dict, percentile: floa
 
 # REMOVED: Old visualization function - replaced with RGB overlap map
 # def _generate_plots(...) - see overlap_rgb.py for new implementation
+
+
+def _create_cartopy_overlap_map(
+    data: Dict[str, Union[str, rasterio.DatasetReader]],
+    output_path: Path
+) -> None:
+    """Create overlap visualization using cartopy with proper projections.
+    
+    LINUS: Updated to use standard multiband format.
+    Shows overlap between first two bands of multiband raster.
+    """
+    
+    # STANDARD API: Extract multiband dataset
+    if 'multiband' not in data or 'band_names' not in data:
+        logger.warning("Cannot create overlap map - invalid data format")
+        return
+        
+    multiband_src = data['multiband']
+    band_names = data['band_names']
+    
+    if multiband_src.count < 2:
+        logger.warning("Need at least 2 bands for overlap visualization")
+        return
+    
+    try:
+        # Use loader's downsample method - NO DUPLICATION!
+        from src.biodiversity_analysis.shared.data.unified_loader import UnifiedLoader
+        
+        max_pixels = 2_000_000
+        # Read first two bands with downsampling
+        data1 = UnifiedLoader.downsample_on_read(
+            src=multiband_src,
+            band_num=1,
+            max_pixels=max_pixels,
+            resampling='nearest'
+        )
+        data2 = UnifiedLoader.downsample_on_read(
+            src=multiband_src,
+            band_num=2,
+            max_pixels=max_pixels,
+            resampling='nearest'
+        )
+        
+        # Create figure with cartopy projection
+        fig = plt.figure(figsize=(14, 7))
+        ax = plt.axes(projection=ccrs.Robinson())
+        
+        # Compute overlap: both valid, only 1 valid, only 2 valid
+        valid1 = ~data1.mask if hasattr(data1, 'mask') else ~np.isnan(data1)
+        valid2 = ~data2.mask if hasattr(data2, 'mask') else ~np.isnan(data2)
+        
+        # Create RGB overlay: Red=dataset1, Green=dataset2, Blue=overlap
+        overlap_rgb = np.zeros((data1.shape[0], data1.shape[1], 3))
+        overlap_rgb[:, :, 0] = valid1 & ~valid2  # Red: only dataset 1
+        overlap_rgb[:, :, 1] = ~valid1 & valid2  # Green: only dataset 2  
+        overlap_rgb[:, :, 2] = valid1 & valid2   # Blue: overlap
+        
+        # Get extent from raster bounds
+        extent = [multiband_src.bounds.left, multiband_src.bounds.right, multiband_src.bounds.bottom, multiband_src.bounds.top]
+        
+        # Plot overlap
+        im = ax.imshow(
+            overlap_rgb,
+            extent=extent,
+            transform=ccrs.PlateCarree(),
+            interpolation='nearest'
+        )
+        
+        # Add geographic features
+        ax.add_feature(cfeature.OCEAN, color='lightgray', alpha=0.3, zorder=0)
+        ax.add_feature(cfeature.COASTLINE, linewidth=0.5, color='black', zorder=1)
+        ax.add_feature(cfeature.BORDERS, linewidth=0.3, color='gray', alpha=0.5, zorder=1)
+        
+        # Use first two band names for labels
+        name1 = band_names[0] if band_names else 'Band 1'
+        name2 = band_names[1] if len(band_names) > 1 else 'Band 2'
+        
+        ax.set_title(f'Spatial Overlap: {name1} vs {name2}', fontsize=14, fontweight='bold')
+        
+        # Add gridlines
+        gl = ax.gridlines(draw_labels=True, linewidth=0.3, alpha=0.3, zorder=0)
+        gl.top_labels = False
+        gl.right_labels = False
+        
+        # Add legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='red', label=f'{name1} only'),
+            Patch(facecolor='green', label=f'{name2} only'),
+            Patch(facecolor='blue', label='Overlap')
+        ]
+        ax.legend(handles=legend_elements, loc='lower left')
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        logger.info(f"Created overlap map at {output_path}")
+        
+    finally:
+        # multiband_src will be closed by the caller (UnifiedLoader manages it)
+        pass
 
 
 def _write_report(results: Dict, filepath: Path):
