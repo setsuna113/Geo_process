@@ -12,7 +12,6 @@ from typing import Dict, Any, List, Optional, Union
 from src.biodiversity_analysis.statistical.config_utils import load_config
 from src.biodiversity_analysis.shared.data.unified_loader import get_loader
 from src.biodiversity_analysis.shared.data.data_variants import DataVariants
-from src.biodiversity_analysis.shared.data.sampling_strategy import SamplingStrategy
 from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 # Import methods directly - no adapter bullshit
@@ -116,13 +115,16 @@ def run_analysis(
             # Get method specification
             method_spec = METHOD_REGISTRY[method]
             
-            # Load data based on declared requirements
+            # Add current method to config for loader
+            config_with_method = config.copy() if config else {}
+            config_with_method['current_method'] = method
+            
+            # Load data based on declared requirements - sampling happens IN THE LOADER
             data = loader.load_datasets(
                 datasets=method_spec['requires'],
                 data_type=method_spec['data_type'],
-                config=config
+                config=config_with_method
             )
-            data = SamplingStrategy.apply_sampling(data, config)
             
             # Check if method should handle its own variants
             if auto_variants and _supports_variants(data):
@@ -143,9 +145,12 @@ def run_analysis(
     # Cleanup
     loader.clear_cache()
     
-    # Log sampling info
-    sampling_info = SamplingStrategy.get_sampling_info(config)
-    logger.info(f"Sampling: {sampling_info['description']}")
+    # Log sampling info - SIMPLE
+    spatial_step = config.get('spatial_grid_step', 1)
+    if spatial_step > 1:
+        logger.info(f"Sampling: Every {spatial_step}th row (1/{spatial_step**2} of data)")
+    else:
+        logger.info("Sampling: Using all data")
     
     # Summary
     _log_summary(results)
