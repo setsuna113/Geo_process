@@ -129,7 +129,7 @@ def analyze_correlation(
     
     save_results(results, output_dir / 'correlation_results.json')
     
-    return Dict[str, Any](
+    return dict(
         success=True,
         method='correlation',
         output_dir=output_dir,
@@ -354,7 +354,7 @@ def _generate_method_plots(df: pd.DataFrame, method_result: Dict[str, Any],
             cmap, vmin, vmax = 'YlOrRd', 0, 1
             title = 'Mutual Information'
         
-        im = plt.imshow(ax, biodiv_matrix.values, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
+        im = ax.imshow(biodiv_matrix.values, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
         ax.set_title(f'{title}\n(Biodiversity Features)', fontsize=12, fontweight='bold')
         _add_labels_and_values(ax, biodiv_matrix, im, fmt='.2f')
     
