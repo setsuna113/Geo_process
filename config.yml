@@ -1,287 +1,201 @@
-# Geo Project Configuration
-# Optimized for high-memory cluster with 1TB RAM and 256 cores
-# 
-# FOR LOCAL TESTING: Comment out cluster paths and uncomment local paths
-# FOR CLUSTER: Use cluster paths as-is
-
-# Pipeline control - for production
-pipeline:
-  allow_skip_stages: true  # Set to true if you want to skip already processed stages
-  processing_bounds: 'global'  # Process global data
-
-# =============================================================================
-# PATHS CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
-# =============================================================================
-# PATHS: Using local paths (scratch is full)
-# paths:
-#   # For cluster deployment, uncomment and modify:
-#   data_dir: "/maps/mwd24/richness"     # Cluster shared data storage
-#   logs_dir: "/scratch/yl998/geo_logs"  # Scratch space for logs
-#   outputs_dir: "/scratch/yl998/geo_outputs"  # NOTE: scratch is currently full!
-
-# NOTE: Individual dataset paths are now specified in each dataset configuration below
-# This data_files section is deprecated but kept for backward compatibility
-
-# =============================================================================
-# MEMORY OPTIMIZATION - STREAMING EXPORT
-# =============================================================================
-merge:
-  # Enable streaming mode for memory-efficient export
-  enable_streaming: true  # Enable for large production datasets
-  streaming_chunk_size: 10000  # Larger chunks with available memory
-  
-  # Regular merge options
-  enable_chunked_processing: false
-  chunk_size: 5000
-
-# [REMOVED DUPLICATE - see line 314 for export configuration]
-  
-  # Include metadata file
-  include_metadata: true
-
-# =============================================================================
-# RESAMPLING CONFIGURATION - NEW UNIFIED PIPELINE
-# =============================================================================
-resampling:
-  # Target resolution for all datasets (in degrees for geographic data)
-  target_resolution: 0.166744  # Match actual downsampled resolution
-  target_crs: 'EPSG:4326'
-  
-  # Resampling strategy per data type
-  strategies:
-    richness_data: 'sum'          # Sum for count data (using existing SumAggregationStrategy)
-    continuous_data: 'average'    # Average for continuous SDM predictions (area-weighted)
-    categorical_data: 'majority'  # Majority for categories
-  
-  # Processing options
-  chunk_size: 1000
-  validate_output: true
-  preserve_sum: true  # Important for richness data
-  cache_resampled: true
-  engine: 'numpy'   # Only numpy supports windowed resampling currently
-  
-  # Window processing settings (always enabled)
-  window_size: 2048  # Process in 2048x2048 windows
-  window_overlap: 128  # Overlap for avoiding edge artifacts
-  skip_data_loading_for_passthrough: true  # Don't load data for passthrough
-  
-  # Resolution matching
-  allow_skip_resampling: true  # Skip resampling if resolution matches
-  resolution_tolerance: 0.001  # Tolerance for resolution matching
-  force_passthrough_for_skip: true  # Use passthrough strategy when skipping
-  
-
-# =============================================================================
-# STORAGE CONFIGURATION - Memory-efficient database operations
-# =============================================================================
-storage:
-  chunk_size: 100000       # 100k pixels threshold for chunked storage (lower for fungi datasets)
-  chunk_rows: 20000        # Process 20000 rows at a time (aggressive for 1TB RAM system)
-  aggregate_to_grid: true  # ENABLE for fungi datasets to reduce 233M pixels to ~21M grid cells
-  grid_cell_size: 0.05     # 0.05° grid cells (≈ 5.5km) for finer aggregation
-  batch_insert_size: 50000 # Large batches for 1TB RAM system
-  enable_progress_logging: true
-  memory_cleanup_interval: 5  # More frequent cleanup
-
-# Multiple dataset definitions for unified processing
-# Each dataset now has its own path - no central data_dir needed!
-datasets:
-  target_datasets:
-    # PRODUCTION RASTERS - 4 datasets as requested
-    - name: "plants-richness"
-      path: "/scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif"
-      data_type: "richness_data"
-      band_name: "plants_richness"
-      enabled: true
-      skip_resampling: true  # Already downsampled
-      
-    - name: "terrestrial-richness" 
-      path: "/scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif"
-      data_type: "richness_data"
-      band_name: "terrestrial_richness"
-      enabled: true
-      skip_resampling: true  # Already downsampled
-      
-    - name: "am-fungi-richness"
-      path: "/scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif"
-      data_type: "continuous_data"  # Changed from richness_data - SDM predictions
-      band_name: "am_fungi_richness"
-      enabled: true
-      skip_resampling: true  # Already at target resolution
-      
-    - name: "ecm-fungi-richness"
-      path: "/scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif"
-      data_type: "continuous_data"  # Changed from richness_data - SDM predictions
-      band_name: "ecm_fungi_richness"
-      enabled: true
-      skip_resampling: true  # Already at target resolution
-      
-    # EXAMPLE: Add more datasets when ready:
-    # - name: "marine-richness"
-    #   path: "/maps/mwd24/marine/marine-richness.tif"  # Different directory
-    #   data_type: "richness_data"
-    #   band_name: "marine_richness"
-    #   enabled: true
-      
-    # - name: "freshwater-richness"
-    #   path: "/scratch/yl998/freshwater/freshwater-richness.tif"  # Another location
-    #   data_type: "richness_data" 
-    #   band_name: "freshwater_richness"
-    #   enabled: true
-      
-    # SUPPORTS ANY NUMBER OF DATASETS:
-    # - name: "soil-biodiversity"
-    #   path: "/data/external/soil-biodiversity.tif"
-    #   data_type: "richness_data"
-    #   band_name: "soil_biodiversity" 
-    #   enabled: true
-    #
-    # - name: "climate-zones"
-    #   path: "/maps/climate/climate-zones.tif"
-    #   data_type: "categorical_data"  # Different data type
-    #   band_name: "climate_zones"
-    #   enabled: true
-
-# =============================================================================
-# HIGH-MEMORY PROCESSING CONFIGURATION (1TB RAM)
-# =============================================================================
-processing:
-  # Memory and chunking settings - optimized for available resources
-  memory_limit_gb: 300             # Can use 300GB with 1TB total
-  chunk_size: 5000                 # Larger chunks for efficiency
-  enable_chunking: true
-  checkpoint_interval: 5           # More frequent checkpoints
-  merge_chunk_size: 2000           # Larger chunks for merge
-  lazy_merge_threshold_mb: 1000    # Use lazy merge for large datasets
-  
-  subsampling:
-    enabled: false  # DISABLED for full dataset quality
-    max_samples: 500000000  # Higher than your 224M samples
-    memory_limit_gb: 180    # Conservative memory limit
-    strategy: 'random'
-    min_samples_per_class: 1000
-    spatial_block_size: 200
-  
-  # Optimized for 256-core system with current low usage
-  max_workers: 200      # Utilize 200 of 256 cores
-  batch_size: 5000     # Larger batches for efficiency
-  chunk_size: 10000    # Larger chunks for parallel processing
-
-# =============================================================================
-# RASTER PROCESSING FOR HIGH-MEMORY SYSTEM
-# =============================================================================
-raster_processing:
-  memory_limit_mb: 80000   # 80GB in MB (adjusted for available memory)
-  max_chunk_size_mb: 2000  # 2GB - force chunking for large datasets
-  parallel_workers: 150     # Match processing workers
-  tile_size: 1024         # Reduced for better processing of high-res fungi datasets
-  cache_ttl_days: 30
-  
-  lazy_loading:
-    chunk_size_mb: 2000   # Large chunks for efficiency
-    prefetch_tiles: 5     # Moderate prefetch
-  
-  resampling_methods:
-    default: 'bilinear'
-    categorical: 'nearest'
-    continuous: 'bilinear'
-  
-  compression:
-    method: 'lzw'
-    level: 6
-
-# =============================================================================
-# MEMORY MANAGEMENT FOR SPATIAL ANALYSIS METHODS
-# =============================================================================
-# Memory settings for spatial analysis methods
-# IMPORTANT: Method-specific configs have been moved to separate files:
-# - SOM: src/config/som/som_config_optimized.yml
-# - GWPCA: src/config/gwpca/gwpca_config.yml (when implemented)
-# - MaxP: src/config/maxp/maxp_config.yml (when implemented)
-# Do NOT put method-specific parameters in experiments!
-spatial_analysis_memory:
-  max_pixels_in_memory: 100000000  # Memory limit for processing
-  memory_overhead_factor: 2.0      # Memory overhead factor
-  use_memory_mapping: false        # Keep everything in RAM for speed
-
-# =============================================================================
-# PIPELINE QUALITY THRESHOLDS - Adjusted for biodiversity data
-# =============================================================================
 pipeline:
   quality_thresholds:
-    # Biodiversity data is naturally sparse - species have limited ranges
-    max_nan_ratio: 0.99              # Allow up to 99% NaN for ecological data
-    min_completeness: 0.01           # Only need 1% data coverage
-    max_outlier_ratio: 0.05          # 5% outliers acceptable
-    min_coverage: 0.50               # 50% spatial coverage is fine
-
-# =============================================================================
-# DATABASE CONFIGURATION - ADJUST FOR YOUR ENVIRONMENT
-# =============================================================================
+    max_nan_ratio: 0.99
+    min_completeness: 0.01
+    max_outlier_ratio: 0.05
+    min_coverage: 0.5
+merge:
+  enable_chunked_processing: true
+  chunk_size: 5000
+  enable_validation: true
+  alignment_tolerance: 0.01
+resampling:
+  target_resolution: 0.166744
+  target_crs: EPSG:4326
+  strategies:
+    richness_data: sum
+    continuous_data: average
+    categorical_data: majority
+  chunk_size: 1000
+  validate_output: true
+  preserve_sum: true
+  cache_resampled: true
+  engine: numpy
+  window_size: 2048
+  window_overlap: 128
+  skip_data_loading_for_passthrough: true
+  allow_skip_resampling: true
+  resolution_tolerance: 0.001
+  force_passthrough_for_skip: true
+storage:
+  chunk_size: 100000
+  chunk_rows: 20000
+  aggregate_to_grid: true
+  grid_cell_size: 0.05
+  batch_insert_size: 50000
+  enable_progress_logging: true
+  memory_cleanup_interval: 5
+datasets:
+  target_datasets:
+  - name: plants-richness
+    path: /scratch/yl998/downsampled_rasters/plants-richness_downsampled_0.16667.tif
+    data_type: richness_data
+    band_name: plants_richness
+    enabled: true
+    skip_resampling: true
+  - name: terrestrial-richness
+    path: /scratch/yl998/downsampled_rasters/terrestrial-richness_downsampled_0.16667.tif
+    data_type: richness_data
+    band_name: terrestrial_richness
+    enabled: true
+    skip_resampling: true
+  - name: am-fungi-richness
+    path: /scratch/yl998/downsampled_rasters/am-fungi-richness_downsampled_0.16667.tif
+    data_type: continuous_data
+    band_name: am_fungi_richness
+    enabled: true
+    skip_resampling: true
+  - name: ecm-fungi-richness
+    path: /scratch/yl998/downsampled_rasters/ecm-fungi-richness_downsampled_0.16667.tif
+    data_type: continuous_data
+    band_name: ecm_fungi_richness
+    enabled: true
+    skip_resampling: true
+  plants: /maps/mwd24/richness/daru-plants-richness.tif
+  animals: /maps/mwd24/richness/iucn-terrestrial-richness.tif
+  am_fungi: /scratch/yl998/resampled_rasters/AM_Fungi_Richness_Predicted_resampled_0.016667.tif
+  ecm_fungi: /scratch/yl998/resampled_rasters/EcM_Fungi_Richness_Predicted_resampled_0.016667.tif
+processing:
+  memory_limit_gb: 300
+  chunk_size: 10000
+  enable_chunking: true
+  checkpoint_interval: 5
+  merge_chunk_size: 2000
+  lazy_merge_threshold_mb: 1000
+  subsampling:
+    enabled: false
+    max_samples: 500000000
+    memory_limit_gb: 180
+    strategy: random
+    min_samples_per_class: 1000
+    spatial_block_size: 200
+  max_workers: 200
+  batch_size: 5000
+raster_processing:
+  memory_limit_mb: 80000
+  max_chunk_size_mb: 2000
+  parallel_workers: 150
+  tile_size: 1024
+  cache_ttl_days: 30
+  lazy_loading:
+    chunk_size_mb: 2000
+    prefetch_tiles: 5
+  resampling_methods:
+    default: bilinear
+    categorical: nearest
+    continuous: bilinear
+  compression:
+    method: lzw
+    level: 6
+spatial_analysis_memory:
+  max_pixels_in_memory: 100000000
+  memory_overhead_factor: 2.0
+  use_memory_mapping: false
 database:
-  host: 'localhost'
-  port: 51051  # Cluster database port
-  database: 'geo_cluster_db'       # Cluster database name
-  user: 'yl998'                    # Cluster username
-  password: '123456'        # Cluster password
-  
-  max_connections: 20               # More connections for parallel processing
+  host: localhost
+  port: 51051
+  database: geo_cluster_db
+  user: yl998
+  password: '123456'
+  max_connections: 20
   connection_timeout: 30
   retry_attempts: 3
-
-# Database schema mapping for flexibility
 database_schema_mapping:
   raster_sources:
-    geometry_column: 'spatial_extent'
-    fallback_geometry_columns: ['bounds', 'geometry', 'geom', 'shape']
-    active_column: 'active'
-    status_column: 'processing_status'
-    metadata_column: 'metadata'
+    geometry_column: spatial_extent
+    fallback_geometry_columns:
+    - bounds
+    - geometry
+    - geom
+    - shape
+    active_column: active
+    status_column: processing_status
+    metadata_column: metadata
   grid_cells:
-    geometry_column: 'geometry'
-    fallback_geometry_columns: ['geom', 'shape', 'bounds']
+    geometry_column: geometry
+    fallback_geometry_columns:
+    - geom
+    - shape
+    - bounds
     active_column: null
     metadata_column: null
-
-# =============================================================================
-# GRID SYSTEMS CONFIGURATION
-# =============================================================================
 grids:
   cubic:
-    resolutions: [1000, 5000, 10000, 25000]  # meters - added larger resolutions
-    crs: 'EPSG:3857'
+    resolutions:
+    - 1000
+    - 5000
+    - 10000
+    - 25000
+    crs: EPSG:3857
     default_resolution: 5000
   hexagonal:
-    resolutions: [6, 7, 8, 9]  # H3 levels - added finer resolution
-    crs: 'EPSG:4326'
+    resolutions:
+    - 6
+    - 7
+    - 8
+    - 9
+    crs: EPSG:4326
     default_resolution: 8
-
-# =============================================================================
-# WORKING DIRECTORIES - ADJUST FOR YOUR CLUSTER
-# =============================================================================
 output_paths:
-  working_dir: "/scratch/yl998/geo_working"
-  results_dir: "/scratch/yl998/geo_results"
-  temp_dir: "/scratch/yl998/geo_temp"
-
-# =============================================================================
-# PROCESSING BOUNDS (GEOGRAPHIC REGIONS)
-# =============================================================================
+  working_dir: /scratch/yl998/geo_working
+  results_dir: /scratch/yl998/geo_results
+  temp_dir: /scratch/yl998/geo_temp
 processing_bounds:
-  # TINY TEST REGION FOR DEBUGGING
-  tiny_test: [-1, -1, 1, 1]  # 2x2 degree box for quick testing
-  test_small: [-10, -10, 10, 10]  # 20x20 degree box for quick testing
-  global: [-180, -90, 180, 90]
-  europe: [-25.0, 35.0, 50.0, 75.0]
-  north_america: [-170.0, 15.0, -50.0, 75.0]
-  south_america: [-85.0, -60.0, -30.0, 15.0]
-  africa: [-25.0, -40.0, 55.0, 40.0]
-  asia: [60.0, -15.0, 180.0, 75.0]
-  oceania: [110.0, -50.0, 180.0, -10.0]
-
-# =============================================================================
-# SPECIES AND FEATURE CONFIGURATION
-# =============================================================================
+  tiny_test:
+  - -1
+  - -1
+  - 1
+  - 1
+  test_small:
+  - -10
+  - -10
+  - 10
+  - 10
+  global:
+  - -180
+  - -90
+  - 180
+  - 90
+  europe:
+  - -25.0
+  - 35.0
+  - 50.0
+  - 75.0
+  north_america:
+  - -170.0
+  - 15.0
+  - -50.0
+  - 75.0
+  south_america:
+  - -85.0
+  - -60.0
+  - -30.0
+  - 15.0
+  africa:
+  - -25.0
+  - -40.0
+  - 55.0
+  - 40.0
+  asia:
+  - 60.0
+  - -15.0
+  - 180.0
+  - 75.0
+  oceania:
+  - 110.0
+  - -50.0
+  - 180.0
+  - -10.0
 species_filters:
   min_occurrence_count: 5
   exclude_uncertain_coordinates: true
@@ -290,249 +204,128 @@ species_filters:
   exclude_fossil: false
   max_year: 2024
   exclude_future_dates: true
-
 features:
-  climate_variables: ['bio_1', 'bio_12']  # Temperature, precipitation
-  richness_types: ['present', 'absent', 'fossil']
-
-# =============================================================================
-# MERGE STAGE CONFIGURATION
-# =============================================================================
-merge:
-  enable_chunked_processing: true
-  chunk_size: 5000  # rows per chunk
-  enable_validation: true
-  alignment_tolerance: 0.01  # degrees
-
-# =============================================================================
-# EXPORT STAGE CONFIGURATION
-# =============================================================================
+  climate_variables:
+  - bio_1
+  - bio_12
+  richness_types:
+  - present
+  - absent
+  - fossil
 export:
-  formats: ['parquet']  # Only parquet as requested
+  formats:
+  - parquet
   compress: true
-  chunk_size: 50000  # Larger chunks for efficiency
+  chunk_size: 50000
   include_metadata: true
-  enable_streaming: true  # Streaming for memory efficiency
-
-# =============================================================================
-# MONITORING AND LOGGING CONFIGURATION
-# =============================================================================
+  enable_streaming: true
 monitoring:
   enable_database_logging: true
   log_batch_size: 100
   log_flush_interval: 5
   enable_metrics: true
   metrics_interval: 10
-
-# =============================================================================
-# OUTPUT AND LOGGING CONFIGURATION
-# =============================================================================
 output_formats:
   csv: true
   parquet: true
   geojson: false
-
 logging:
-  level: 'INFO'
+  level: INFO
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-  # file path will use logs_dir from paths section
-
-# =============================================================================
-# DATA PREPARATION AND CLEANING
-# =============================================================================
 data_preparation:
   validation:
     check_crs: true
-    check_bounds: false  # Disabled - fungi datasets have slight bounds overflow
+    check_bounds: false
     check_nodata: true
     check_dtypes: true
-    bounds_tolerance: 0.01  # Allow 0.01 degree tolerance for bounds
-  
+    bounds_tolerance: 0.01
   cleaning:
     remove_duplicates: true
     handle_missing_values: true
     validate_geometries: true
-
 data_cleaning:
   outlier_detection:
-    method: 'iqr'
+    method: iqr
     threshold: 1.5
-  
   coordinate_cleaning:
     precision_threshold: 0.001
     remove_zero_coordinates: true
     validate_country_boundaries: false
-
-# =============================================================================
-# TESTING CONFIGURATION
-# =============================================================================
 testing:
   use_test_database: true
-  test_database_name: 'geo_test_db'
+  test_database_name: geo_test_db
   cleanup_after_tests: true
   small_dataset_size: 1000
   integration_test_timeout: 300
-
-# =============================================================================
-# PIPELINE CONTROL CONFIGURATION
-# =============================================================================
-# Moved to top of file to avoid conflicts
-# pipeline:
-#   # Master switch for stage skipping - USE WITH CAUTION!
-#   allow_skip_stages: true  # Set to true only when you're sure data is fresh
-#   
-#   # Stage-specific skip settings
-#   stages:
-#     data_load:
-#       skip_if_exists: true
-#     resample:
-#       skip_if_exists: true  # Set to true to use existing DB data
-#       
-#   # Data validation for skip decisions
-#   data_validation:
-#     max_age_hours: 24  # Consider data stale after this
-#     check_source_timestamps: true  # Verify source files haven't changed
-#     
-#   # Other pipeline settings
-#   cleanup_checkpoints_on_success: true
-#   checkpoint_interval_stages: 1
-#   lazy_merge_threshold_mb: 500
-
-# =============================================================================
-# SPATIAL ANALYSIS CONFIGURATION
-# =============================================================================
 spatial_analysis:
-  # Default settings for all analysis runs
   defaults:
-    data_source: 'parquet'  # parquet|database|csv
+    data_source: parquet
     save_results: true
     save_intermediate: false
     keep_results_in_memory: false
     chunk_size: 10000
     memory_limit_gb: 8.0
     enable_checkpointing: true
-    checkpoint_interval: 100  # Save checkpoint every N chunks
-    
-  # Named analysis experiments for reproducibility
+    checkpoint_interval: 100
   experiments:
-    # IMPORTANT: Method-specific parameters (grid_size, learning_rate, etc.) are BANNED here!
-    # All SOM parameters MUST be in src/config/som/som_config.yml
-    # All CP-WOPT parameters MUST be in src/config/cpwopt/cpwopt_config.yml
-    # This config should ONLY specify: input data path and method name
-    
-    # Quick SOM test with small sample
     test_som_small:
-      input_parquet: 'outputs/test_biodiversity_sample.parquet'  # Create with sample script
-      method: 'som'
-      # NO method-specific parameters here!
-      
-    # SOM experiment - ALL parameters from src/config/som/som_config.yml
+      input_parquet: outputs/test_biodiversity_sample.parquet
+      method: som
     test_som:
-      input_parquet: '/scratch/yl998/biodiversity_climate_fine_v5.parquet'
-      method: 'som'
-      # All SOM config in src/config/som/som_config_optimized.yml
-      # WARNING: NEVER add method-specific parameters here!
-    
-    # Production SOM with corrected biodiversity data
+      input_parquet: /scratch/yl998/biodiversity_climate_fine_v5.parquet
+      method: som
     production_som:
-      input_parquet: '/scratch/yl998/biodiversity_climate_production_1x_corrected.parquet'
-      method: 'som'
-      # Uses src/config/som/som_config_unified.yml with production settings
-      
-    # GWPCA test
+      input_parquet: /scratch/yl998/biodiversity_climate_production_1x_corrected.parquet
+      method: som
     test_gwpca:
-      input_parquet: 'outputs/test_biodiversity.parquet'
-      method: 'gwpca'
-      # NO method-specific parameters here!
-      
-    # Production GWPCA
+      input_parquet: outputs/test_biodiversity.parquet
+      method: gwpca
     production_gwpca:
-      input_parquet: 'outputs/biodiversity_global.parquet'
-      method: 'gwpca'
-      # NO method-specific parameters here!
-      
-    # CP-WOPT tensor factorization test
+      input_parquet: outputs/biodiversity_global.parquet
+      method: gwpca
     test_cpwopt:
-      input_parquet: 'data/test_cpwopt_biodiversity.parquet'
-      method: 'cpwopt'
-      # All CP-WOPT config in src/config/cpwopt/cpwopt_config.yml
-      
-    # CP-WOPT with sparse data (>70% sparsity)
+      input_parquet: data/test_cpwopt_biodiversity.parquet
+      method: cpwopt
     sparse_cpwopt:
-      input_parquet: 'data/sparse_biodiversity.parquet'
-      method: 'cpwopt'
-      # All CP-WOPT config in src/config/cpwopt/cpwopt_config.yml
-      
-    # Production CP-WOPT analysis
+      input_parquet: data/sparse_biodiversity.parquet
+      method: cpwopt
     production_cpwopt:
-      input_parquet: 'data/merged/biodiversity_climate_1x_production.parquet'
-      method: 'cpwopt'
-      # NO method-specific parameters here!
-      
-    # CP-WOPT with small dataset for quick testing
+      input_parquet: data/merged/biodiversity_climate_1x_production.parquet
+      method: cpwopt
     test_cpwopt_small:
-      input_parquet: 'outputs/test_biodiversity_sample.parquet'
-      method: 'cpwopt'
-      # NO method-specific parameters here!
-    
-    # K-means Hierarchical test
+      input_parquet: outputs/test_biodiversity_sample.parquet
+      method: cpwopt
     test_kmeans_hierarchical:
-      input_parquet: 'data/merged/biodiversity_climate_1x_production.parquet'
-      method: 'kmeans_hierarchical'
-      # All config in src/config/kmeans_hierarchical/kmeans_hierarchical_config.yml
-    
-    # Production K-means Hierarchical for large-scale clustering
+      input_parquet: data/merged/biodiversity_climate_1x_production.parquet
+      method: kmeans_hierarchical
     production_kmeans_hierarchical:
-      input_parquet: 'data/merged/biodiversity_climate_1x_production.parquet'
-      method: 'kmeans_hierarchical'
-      
-    # MaxP regionalization test
+      input_parquet: data/merged/biodiversity_climate_1x_production.parquet
+      method: kmeans_hierarchical
     test_maxp:
-      input_parquet: 'outputs/test_biodiversity.parquet'
-      method: 'maxp_regions'
-      # NO method-specific parameters here!
-    
-    # K-means test with small dataset
+      input_parquet: outputs/test_biodiversity.parquet
+      method: maxp_regions
     test_kmeans:
-      input_parquet: 'outputs/test_biodiversity_sample.parquet'
-      method: 'kmeans'
-      # All k-means config in src/config/kmeans/kmeans_config.yml
-    
-    # K-means with automatic k determination
+      input_parquet: outputs/test_biodiversity_sample.parquet
+      method: kmeans
     test_kmeans_auto_k:
-      input_parquet: 'outputs/test_biodiversity.parquet'
-      method: 'kmeans'
-      # All k-means config in src/config/kmeans/kmeans_config.yml
-    
-    # Production k-means for global biodiversity
+      input_parquet: outputs/test_biodiversity.parquet
+      method: kmeans
     production_kmeans:
-      input_parquet: 'outputs/biodiversity_global.parquet'
-      method: 'kmeans'
-      # All k-means config in src/config/kmeans/kmeans_config.yml
-
-# Method-specific configurations have been moved to separate config files:
-# - SOM: src/config/som/som_config_optimized.yml
-# - GWPCA: src/config/gwpca/gwpca_config.yml (when implemented)
-# - MAXP: src/config/maxp/maxp_config.yml (when implemented)
-
-# K-means configuration moved to src/config/kmeans/kmeans_config.yml
-
-# ML Regression Analysis Configuration
+      input_parquet: outputs/biodiversity_global.parquet
+      method: kmeans
 regression_analysis:
   preprocessing:
     missing_data:
-      strategy: "complete_case"
+      strategy: complete_case
     standardization:
-      method: "gelman"
+      method: gelman
       scale_factor: 2
     spatial_grid_step: 100
-  
   glm:
-    distribution: "negative_binomial"
-    family: "negative_binomial"
-    link: "log"
+    distribution: negative_binomial
+    family: negative_binomial
+    link: log
     max_iterations: 100
-    
   dml:
     n_folds: 5
     n_bootstrap: 100
@@ -540,11 +333,9 @@ regression_analysis:
       ntrees: 100
       max_depth: 6
       learn_rate: 0.1
-      
   compute:
-    h2o_max_memory: "32G"
-    h2o_min_memory: "8G"
-    
+    h2o_max_memory: 32G
+    h2o_min_memory: 8G
   spatial:
     mesf_eigenvectors: 10
     mesf_threshold: 0.25
