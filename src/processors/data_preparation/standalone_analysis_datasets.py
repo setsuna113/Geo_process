@@ -9,12 +9,12 @@ from abc import ABC, abstractmethod
 import tempfile
 import os
 
-from src.base.dataset import BaseDataset, DatasetInfo
-from src.abstractions.types import DataType
+from src.abstractions.interfaces.dataset import IDataset
+from src.abstractions.types import DatasetInfo, DataType
 logger = logging.getLogger(__name__)
 
 
-class StandaloneAnalysisDataset(BaseDataset, ABC):
+class StandaloneAnalysisDataset(IDataset, ABC):
     """Base class for database-free analysis datasets."""
     
     def __init__(self, chunk_size: int = 10000):
@@ -113,6 +113,12 @@ class StandaloneAnalysisDataset(BaseDataset, ABC):
         
         logger.info(f"Identified {len(feature_cols)} feature columns for analysis")
         return feature_cols
+    
+    def estimate_size(self) -> float:
+        """Estimate dataset size in MB."""
+        if self._data is None:
+            self._data = self._load_data()
+        return self._data.memory_usage(deep=True).sum() / 1024 / 1024
     
     def cleanup(self):
         """Clean up resources."""
@@ -219,6 +225,28 @@ class CSVAnalysisDataset(StandaloneAnalysisDataset):
         if not self.csv_path.exists():
             raise FileNotFoundError(f"CSV file not found: {self.csv_path}")
     
+    @property
+    def data_type(self) -> DataType:
+        """Return the data type for this dataset."""
+        return DataType.TABULAR
+    
+    def read_records(self) -> Iterator[Dict[str, Any]]:
+        """Read records from CSV file."""
+        if self._data is None:
+            self._data = self._load_data()
+        
+        for _, row in self._data.iterrows():
+            yield row.to_dict()
+    
+    def read_chunks(self) -> Iterator[List[Dict[str, Any]]]:
+        """Read CSV data in chunks."""
+        if self._data is None:
+            self._data = self._load_data()
+        
+        for i in range(0, len(self._data), self.chunk_size):
+            chunk = self._data.iloc[i:i + self.chunk_size]
+            yield [row.to_dict() for _, row in chunk.iterrows()]
+    
     def _load_data(self) -> pd.DataFrame:
         """Load data from CSV file."""
         logger.info(f"Loading data from CSV: {self.csv_path}")
@@ -258,6 +286,28 @@ class MultiFormatAnalysisDataset(StandaloneAnalysisDataset):
         # Determine dataset type
         self._dataset_type = self._detect_format()
         logger.info(f"Detected input format: {self._dataset_type}")
+    
+    @property
+    def data_type(self) -> DataType:
+        """Return the data type for this dataset."""
+        return DataType.TABULAR
+    
+    def read_records(self) -> Iterator[Dict[str, Any]]:
+        """Read records from input file."""
+        if self._data is None:
+            self._data = self._load_data()
+        
+        for _, row in self._data.iterrows():
+            yield row.to_dict()
+    
+    def read_chunks(self) -> Iterator[List[Dict[str, Any]]]:
+        """Read data in chunks."""
+        if self._data is None:
+            self._data = self._load_data()
+        
+        for i in range(0, len(self._data), self.chunk_size):
+            chunk = self._data.iloc[i:i + self.chunk_size]
+            yield [row.to_dict() for _, row in chunk.iterrows()]
     
     def _detect_format(self) -> str:
         """Detect input file format."""
