@@ -69,7 +69,7 @@ def analyze_coverage(
     # Save results
     save_results(results, output_dir / 'coverage_results.json')
     
-    return Dict[str, Any](
+    return dict(
         success=True,
         method='coverage',
         output_dir=output_dir,

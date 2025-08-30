@@ -31,42 +31,42 @@ METHOD_REGISTRY = {
     'correlation': {
         'function': analyze_correlation,
         'requires': ['merged'],  # Needs merged parquet
-        'data_type': 'dataframe'
+        'data_type': 'tabular'
     },
     'coverage': {
         'function': analyze_coverage,
         'requires': ['multiband'],  # Needs multiband raster
-        'data_type': 'raster'
+        'data_type': 'spatial'
     },
     'overlap': {
         'function': analyze_overlap,
         'requires': ['multiband'],  # Needs multiband raster
-        'data_type': 'raster'
+        'data_type': 'spatial'
     },
     'latitudinal': {
         'function': analyze_latitudinal,
         'requires': ['multiband'],  # Needs multiband raster
-        'data_type': 'raster'
+        'data_type': 'spatial'
     },
     'global_maps': {
         'function': analyze_global_maps,
         'requires': ['multiband'],  # Needs multiband raster
-        'data_type': 'raster'
+        'data_type': 'spatial'
     },
     'trust_maps': {
         'function': analyze_trust_maps,
         'requires': ['multiband_with_cv'],  # Needs rasters with CV
-        'data_type': 'raster'
+        'data_type': 'spatial'
     },
     'biome': {
         'function': analyze_by_biome,
         'requires': ['merged'],  # Needs merged parquet
-        'data_type': 'dataframe'
+        'data_type': 'tabular'
     },
     'partial_correlation': {
         'function': analyze_partial_correlations,
         'requires': ['merged'],  # Needs merged parquet
-        'data_type': 'dataframe'
+        'data_type': 'tabular'
     }
 }
 
@@ -106,7 +106,7 @@ def run_analysis(
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Initialize data loader - it handles ALL data loading
-    loader = get_loader(config)
+    loader = get_loader()
     
     results = {}
     
@@ -138,7 +138,7 @@ def run_analysis(
             
         except Exception as e:
             logger.error(f"Method {method} failed: {e}")
-            results[method] = Dict[str, Any](
+            results[method] = dict(
                 success=False,
                 method=method,
                 error=str(e)

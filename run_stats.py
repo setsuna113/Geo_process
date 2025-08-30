@@ -103,9 +103,8 @@ Examples:
         print("=" * 60)
         
         results_4 = run_analysis(
+            methods=args.methods if args.methods else [],
             config_path=args.config,
-            variant='4_features',
-            methods=args.methods,
             auto_variants=False  # Legacy mode
         )
         
@@ -118,9 +117,8 @@ Examples:
         print("=" * 60)
         
         results_3 = run_analysis(
+            methods=args.methods if args.methods else [],
             config_path=args.config,
-            variant='3_features_merged',
-            methods=args.methods,
             auto_variants=False  # Legacy mode
         )
         
@@ -132,9 +130,8 @@ Examples:
         # Run single variant
         print(f"Running analysis: variant={args.variant}")
         results = run_analysis(
+            methods=args.methods if args.methods else [],
             config_path=args.config,
-            variant=args.variant,
-            methods=args.methods,
             auto_variants=args.auto_variants
         )
         
