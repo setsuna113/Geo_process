@@ -37,18 +37,23 @@ def classify_holdridge(
     precip = np.atleast_1d(precipitation)
     elev = np.atleast_1d(elevation)
     
-    # Broadcast to same shape
-    if pet is not None:
-        pet_array = np.atleast_1d(pet)
-        shape = np.broadcast(temp, precip, pet_array, elev).shape
-        pet_array = np.broadcast_to(pet_array, shape)
-    else:
-        shape = np.broadcast(temp, precip, elev).shape
-        pet_array = None
-    
-    temp = np.broadcast_to(temp, shape)
-    precip = np.broadcast_to(precip, shape)
-    elev = np.broadcast_to(elev, shape)
+    # Validate shapes are compatible and broadcast
+    # LINUS: "Check your inputs, don't assume they're valid"
+    try:
+        if pet is not None:
+            pet_array = np.atleast_1d(pet)
+            # Check broadcasting compatibility
+            shape = np.broadcast_shapes(temp.shape, precip.shape, pet_array.shape, elev.shape)
+            pet_array = np.broadcast_to(pet_array, shape)
+        else:
+            shape = np.broadcast_shapes(temp.shape, precip.shape, elev.shape)
+            pet_array = None
+        
+        temp = np.broadcast_to(temp, shape)
+        precip = np.broadcast_to(precip, shape)
+        elev = np.broadcast_to(elev, shape)
+    except ValueError as e:
+        raise ValueError(f"Input arrays have incompatible shapes for broadcasting: {e}")
     
     # Calculate biotemperature
     # Adjust for elevation: -0.6°C per 100m (lapse rate)
@@ -59,16 +64,17 @@ def classify_holdridge(
     biotemperature = np.clip(biotemperature, 0, 30)
     
     # Calculate PET ratio
+    # LINUS: "Use proper sentinel values - np.inf for division by zero"
     if pet_array is not None:
         # Use actual PET data - THIS IS THE CORRECT WAY
         pet_ratio = np.divide(pet_array, precip, 
-                             out=np.ones_like(pet_array) * 999,
+                             out=np.full_like(pet_array, np.inf),
                              where=(precip > 0))
     else:
         # Fallback: Thornthwaite approximation (less accurate)
         pet_estimate = biotemperature * 58.93
         pet_ratio = np.divide(pet_estimate, precip, 
-                             out=np.ones_like(pet_estimate) * 999,
+                             out=np.full_like(pet_estimate, np.inf),
                              where=(precip > 0))
     
     # Initialize result array
