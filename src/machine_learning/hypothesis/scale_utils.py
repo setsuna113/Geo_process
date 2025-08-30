@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Utilities for handling scale transformations in hypothesis testing.
 
@@ -9,7 +10,7 @@ import numpy as np
 from typing import Dict, Any, Tuple, Optional
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ScaleTransformation:

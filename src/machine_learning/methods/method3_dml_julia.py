@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Method 3: Double Machine Learning (Julia-based).
 
 Clean pipeline that uses Julia DML results and calls analysis modules.
@@ -5,6 +6,7 @@ Following the same pattern as Method1 and Method2.
 """
 
 import json
+from src.abstractions import save_json
 import logging
 from typing import Dict, Any, Optional, Union, List
 from pathlib import Path
@@ -17,7 +19,7 @@ from ..hypothesis.dml_bayesian import BayesianDML
 from ..visualization.dml_magnitude_plots import visualize_dml_magnitude
 from ..visualization.bayesian_dml_plots import visualize_bayesian_dml
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Method3DML:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Rank selection methods for CP-WOPT tensor decomposition.
 
 This module implements various methods for automatic rank determination including:
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 from .core import CPWOPT
 from src.abstractions import TensorData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

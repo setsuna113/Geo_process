@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Metrics for evaluating tensor factorization quality.
 
 This module implements various metrics for assessing CP decomposition quality,
@@ -16,7 +17,7 @@ from src.biodiversity_analysis.shared.tensor_utils import (
 )
 from .constants import EPSILON
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CPWOPTMetricsCalculator:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Score Test (Lagrange Multiplier Test) implementation for GLM models."""
 
 import numpy as np
@@ -8,7 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set style for publication-quality plots
 sns.set_style("whitegrid")

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Zero-inflation and compositional data preprocessing for biodiversity data.
 
 This module handles the extreme sparsity (95% zeros) in biodiversity data through:
@@ -14,7 +15,7 @@ from scipy import stats
 from scipy.special import logit, expit
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ZeroInflationPreprocessor:

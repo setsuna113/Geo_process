@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Forest plot visualizations for Wald test results.
 
 Provides comprehensive visualization for Wald tests including:
@@ -15,7 +16,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.patches import Patch
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set style for publication-quality plots
 sns.set_style("whitegrid")

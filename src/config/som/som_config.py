@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """SOM Configuration Module
 
 This module provides configuration management for the Self-Organizing Map (SOM) analysis.
@@ -185,7 +186,7 @@ class SOMConfig(IMethodConfig):
     def _validate_config(self):
         """Validate configuration values against defined rules."""
         import logging
-        logger = logging.getLogger(__name__)
+        logger = get_logger(__name__)
         
         # Validate chunk size
         chunk_size = self.get_chunk_size()
@@ -563,7 +564,7 @@ class SOMConfig(IMethodConfig):
     def _apply_env_overrides(self):
         """Apply environment variable overrides to the loaded config."""
         import logging
-        logger = logging.getLogger(__name__)
+        logger = get_logger(__name__)
         
         env_overrides = {
             'SOM_MAX_EPOCHS': ('training', 'max_epochs', int),

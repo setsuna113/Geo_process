@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Direct tensor preprocessing for biodiversity data WITHOUT GRIDDING.
 
 The parquet data is ALREADY a sparse tensor - we just need to format it properly!
@@ -11,7 +12,7 @@ from scipy import sparse
 
 from src.abstractions import TensorData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class TensorPreprocessor:

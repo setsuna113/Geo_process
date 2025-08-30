@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Biodiversity-specific feature engineering.
 
 This module creates advanced biodiversity features including:
@@ -15,7 +16,7 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.stats import entropy
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BiodiversityFeatureEngineering:

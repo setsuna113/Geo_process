@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Method 1: H0-H1 Testing with GLM (Julia-based).
 
 Tests:
@@ -18,6 +19,7 @@ from scipy import stats
 from scipy.stats import chi2
 from typing import Dict, Any, Optional, Union, Tuple, List
 import json
+from src.abstractions import save_json
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -26,7 +28,7 @@ from .wald_method import WaldMethod
 from ..evaluation.model_comparison import ModelComparison
 from ..config_loader import MLRegressionConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set professional style
 plt.style.use('seaborn-v0_8-whitegrid')

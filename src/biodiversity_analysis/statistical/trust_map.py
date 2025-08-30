@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Trust map analysis - Pure functions, no classes.
 
@@ -17,7 +18,7 @@ from .data_utils import save_results, save_figure
 from .smart_visualization import smart_imshow
 from .professional_map_visualizer import ProfessionalMapVisualizer
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 

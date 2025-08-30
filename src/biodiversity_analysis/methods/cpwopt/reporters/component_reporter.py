@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Reporter for interpreting CP-WOPT components.
 
 This module creates interpretable summaries of what each component represents,
@@ -17,10 +18,11 @@ try:
 except ImportError:
     HAS_WORDCLOUD = False
 import json
+from src.abstractions import save_json
 
 from src.abstractions import CPFactors, TensorData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ComponentReporter:

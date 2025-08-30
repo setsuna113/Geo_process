@@ -1,26 +1,33 @@
+        from src.abstractions import validate_parameters as validate_params
+from src.abstractions import AnalysisResult
+from src.abstractions import get_logger, validate_parameters
+from src.abstractions import save_json
+                    import yaml
+            import gc
+        from src.config.som import get_som_config
+        import psutil
+from .calculators.partial_metrics import validate_missing_data_handling
+from .core.geo_som_core import GeoSOM, GeoSOMConfig
+from .utils.progress_tracker import SOMProgressTracker, create_progress_callback
+from .utils.spatial_utils import SpatialBlockGenerator, GeographicCoherence
+from datetime import datetime
+from src.biodiversity_analysis.preprocessing import SharedPreprocessor
+from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
+from typing import Dict, Any, Optional, List, Tuple, Callable
+import json
+import logging
+import numpy as np
+import os
+import time
 """GeoSOM + VLRSOM Analyzer for biodiversity data.
 
 This analyzer implements the specifications from final_som_configuration_decisions.md.
 It replaces the old analyzer.py with the new architecture.
 """
 
-import numpy as np
-import time
-import json
-import os
-from typing import Dict, Any, Optional, List, Tuple, Callable
-import logging
-from datetime import datetime
 
-from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
-from src.abstractions import AnalysisResult
-from .core.geo_som_core import GeoSOM, GeoSOMConfig
-from src.biodiversity_analysis.preprocessing import SharedPreprocessor
-from .utils.spatial_utils import SpatialBlockGenerator, GeographicCoherence
-from .calculators.partial_metrics import validate_missing_data_handling
-from .utils.progress_tracker import SOMProgressTracker, create_progress_callback
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
@@ -73,8 +80,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _load_default_config(self) -> Dict[str, Any]:
         """Load configuration from SOM config module."""
-        import os
-        from src.config.som import get_som_config
         
         # Check for config override
         config_path = os.environ.get('SOM_CONFIG_PATH')
@@ -83,7 +88,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
                 if not os.path.exists(config_path):
                     logger.warning(f"Config path does not exist: {config_path}")
                 else:
-                    import yaml
                     with open(config_path, 'r') as f:
                         config = yaml.safe_load(f)
                     if not isinstance(config, dict):
@@ -308,7 +312,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _validate_config_memory_requirements(self, config: Dict[str, Any]) -> None:
         """Validate that configured grid size fits in available memory."""
-        import psutil
         
         # Extract grid size from config
         arch_config = config.get('architecture_config', {})
@@ -340,7 +343,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
     
     def _determine_grid_size(self, n_samples: int, grid_size_param: Any) -> Tuple[int, int]:
         """Determine appropriate grid size based on data with memory validation."""
-        import psutil
         
         # Handle both list and tuple
         if isinstance(grid_size_param, (list, tuple)) and len(grid_size_param) == 2:
@@ -385,7 +387,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         safe_available = available_mb * 0.5
         
         # Allow forcing grid size via environment variable
-        import os
         force_grid_value = os.environ.get('SOM_FORCE_GRID_SIZE', '')
         force_grid = force_grid_value.lower() in ['1', 'true', 'yes']
         logger.info(f"SOM_FORCE_GRID_SIZE env var: '{force_grid_value}', force_grid: {force_grid}")
@@ -417,7 +418,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         default_config = self.config
         
         # Get SOM config instance for compatibility layer
-        from src.config.som import get_som_config
         som_config = get_som_config()
         
         # Use compatibility layer methods to get config in old format
@@ -627,7 +627,6 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
             logger.info(f"Completed CV fold {fold_idx + 1}/{n_folds}, moving to next fold")
             
             # Force garbage collection to free memory
-            import gc
             gc.collect()
         
         # Aggregate results
@@ -850,57 +849,17 @@ class GeoSOMAnalyzer(BaseBiodiversityAnalyzer):
         }
     
     def validate_parameters(self, parameters: Dict[str, Any]) -> Tuple[bool, List[str]]:
-        """Validate analysis parameters."""
-        issues = []
-        
-        # Check required parameters
-        if 'observed_columns' not in parameters:
-            issues.append("Missing required parameter: observed_columns")
-        if 'predicted_columns' not in parameters:
-            issues.append("Missing required parameter: predicted_columns")
-        
-        # Validate grid size
-        if 'grid_size' in parameters:
-            grid_size = parameters['grid_size']
-            if grid_size != 'auto':
-                if not isinstance(grid_size, (list, tuple)) or len(grid_size) != 2:
-                    issues.append("grid_size must be 'auto' or tuple of 2 integers")
-        
-        # Validate spatial weight
-        if 'spatial_weight' in parameters:
-            sw = parameters['spatial_weight']
-            if not isinstance(sw, (int, float)) or sw < 0 or sw > 1:
-                issues.append("spatial_weight must be between 0 and 1")
-        
-        return len(issues) == 0, issues
+
     
-    def save_results(self, result: AnalysisResult, output_path: str) -> None:
-        """Save analysis results to specified path."""
-        self._save_results(result, output_path)
+        """Validate parameters using utility."""
+
     
-    def set_progress_callback(self, callback: Optional[Callable[[str, float], None]]) -> None:
-        """Set progress callback function."""
-        self.progress_callback = callback
+
     
-    def validate_input_data(self, data: Any) -> Tuple[bool, List[str]]:
-        """Validate input data for GeoSOM analysis."""
-        issues = []
-        
-        if not isinstance(data, str):
-            issues.append("Input must be a path to parquet file")
-        elif not data.endswith('.parquet'):
-            issues.append("Only .parquet files are supported")
-        elif not os.path.exists(data):
-            issues.append(f"File not found: {data}")
-        
-        return len(issues) == 0, issues
+        # Define required parameters for this analyzer
+
     
-    # NOTE: Removed misleading save_checkpoint_state() method
-    # SOM checkpointing is handled directly in geo_som_core.py
-    # It saves .npz files with SOM-specific data (weights, learning rate, radius)
-    # This data is not useful for other methods (CP-WOPT needs factors, KMeans needs centroids)
+        required = self.get_required_parameters() if hasattr(self, 'get_required_parameters') else []
+
     
-    # NOTE: Removed misleading load_checkpoint_state() method
-    # SOM checkpoint loading is handled directly in geo_som_core.py
-    # The .npz checkpoint files are loaded when resume_checkpoint is set in config
-    # This happens automatically when resume=True is passed to analyze()
+        return validate_params(parameters, required)

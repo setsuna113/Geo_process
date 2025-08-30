@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Global map visualization - Linus style.
 
@@ -18,7 +19,7 @@ from src.biodiversity_analysis.statistical.data_utils import save_results, save_
 from src.biodiversity_analysis.statistical.smart_visualization import smart_imshow
 from src.biodiversity_analysis.statistical.professional_map_visualizer import ProfessionalMapVisualizer
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 

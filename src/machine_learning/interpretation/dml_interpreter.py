@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """DML Effect Interpretation with Publication-Quality Visualizations.
 
 This module provides standalone interpretation methods for DML causal effects,
@@ -30,7 +31,7 @@ plt.rcParams['figure.dpi'] = 300
 plt.rcParams['savefig.dpi'] = 300
 plt.rcParams['savefig.bbox'] = 'tight'
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DMLEffectInterpreter:

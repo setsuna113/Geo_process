@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Configuration loader for ML regression analysis."""
 
 import yaml
@@ -6,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from .utils.security_utils import ConfigValidator, PathValidator
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MLRegressionConfig:

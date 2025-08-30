@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Proper Bayesian Inference for DML (Bayesian Double Machine Learning).
 
@@ -15,7 +16,7 @@ from scipy import stats
 from typing import Dict, Any, Optional, List, Tuple
 import warnings
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BayesianDML:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Uniform Numba thread control for SOM parallel operations.
 
 This module provides centralized control over Numba's parallel execution threads,
@@ -10,7 +11,7 @@ import numba
 from typing import Optional, Dict, Any
 from contextlib import contextmanager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class NumbaThreadController:

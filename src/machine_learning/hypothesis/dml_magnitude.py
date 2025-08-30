@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Pure Magnitude Classification for DML Effects.
 
@@ -13,7 +14,7 @@ import numpy as np
 from scipy import stats
 from typing import Dict, Any, Optional, List, Tuple
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DMLMagnitude:

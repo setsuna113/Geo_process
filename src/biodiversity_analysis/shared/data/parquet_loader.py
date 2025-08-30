@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Parquet data loader for biodiversity analysis."""
 
 import numpy as np
@@ -12,7 +13,7 @@ import pyarrow.compute as pc
 
 from src.abstractions import BiodiversityData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ParquetLoader:

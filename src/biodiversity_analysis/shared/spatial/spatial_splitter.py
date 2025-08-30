@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Spatial data splitting to prevent autocorrelation leakage.
 
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SpatialSplitStrategy(Enum):

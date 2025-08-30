@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Unified Model Comparison - ONE source of truth for model evaluation.
 
 No duplication. Just metrics and comparison logic.
@@ -9,7 +10,7 @@ import pandas as pd
 from typing import Dict, Any, List, Optional, Union
 from scipy import stats
 import logging
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ModelComparison:

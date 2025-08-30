@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Biome-based statistical analysis - Linus style.
 
@@ -25,7 +26,7 @@ from src.biodiversity_analysis.statistical.optimized_visualization import (
     precompute_boxplot_stats, plot_from_stats
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def analyze_by_biome(

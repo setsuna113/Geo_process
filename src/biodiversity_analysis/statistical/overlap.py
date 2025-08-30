@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Overlap analysis with memory-efficient chunked processing - Linus style.
 
@@ -84,7 +85,7 @@ def analyze_overlap(
         import traceback
         error_msg = f"{str(e)}\n{traceback.format_exc()}"
         import logging
-        logger = logging.getLogger(__name__)
+        logger = get_logger(__name__)
         logger.error(f"Overlap analysis failed: {error_msg}")
         return MethodResult(
             success=False,

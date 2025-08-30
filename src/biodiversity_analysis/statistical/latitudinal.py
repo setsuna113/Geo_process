@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Latitudinal gradient analysis - Linus style.
 
@@ -12,7 +13,7 @@ import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 VRT-based merger following FarmVibes implementation exactly.
 
@@ -25,7 +26,7 @@ except ImportError:
     sys.path.append(str(Path(__file__).parent.parent))
     from config import RasterConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class VRTMerger:

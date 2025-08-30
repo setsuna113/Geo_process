@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Utility functions for tensor operations in biodiversity analysis.
 
 This module provides helper functions for tensor manipulation, validation,
@@ -10,7 +11,7 @@ import logging
 from scipy.linalg import khatri_rao
 from numpy.linalg import norm
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Import backend if available (for typing)
 try:

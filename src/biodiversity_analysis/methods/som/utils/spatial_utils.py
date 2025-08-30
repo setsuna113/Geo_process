@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Spatial utilities for GeoSOM implementation.
 
 Handles geographic distance calculations, spatial weighting, and
@@ -362,7 +363,7 @@ class GeographicCoherence:
             Dictionary of spatial metrics
         """
         import logging
-        logger = logging.getLogger(__name__)
+        logger = get_logger(__name__)
         
         n_total = len(cluster_assignments)
         

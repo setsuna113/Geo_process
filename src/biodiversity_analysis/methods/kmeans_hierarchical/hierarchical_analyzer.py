@@ -1,29 +1,28 @@
-"""Two-stage K-means → Hierarchical analyzer for biodiversity data.
-
-Clean implementation that reuses existing infrastructure without redundancy.
-"""
-
-import numpy as np
-import pandas as pd
-import logging
-from typing import Dict, Any, Optional, List, Tuple
-from pathlib import Path
-from datetime import datetime
-
-from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
+        from src.abstractions import AnalysisMetadata
+        from src.abstractions import validate_parameters as validate_params
 from src.abstractions import AnalysisResult
-from src.biodiversity_analysis.preprocessing.pipeline import SharedPreprocessor
-
+from src.abstractions import get_logger, validate_parameters
+            from dataclasses import dataclass
+from .hierarchical_config import KMeansHierarchicalConfig
 from .hierarchical_core import (
+from .hierarchical_visualization import HierarchicalVisualizer
+from datetime import datetime
+from pathlib import Path
+from src.biodiversity_analysis.preprocessing.pipeline import SharedPreprocessor
+from src.biodiversity_analysis.shared.base_analyzer import BaseBiodiversityAnalyzer
+from typing import Dict, Any, Optional, List, Tuple
+import logging
+import numpy as np
+
+
+
     TwoStageClusterer,
     ElbowMethodKMeans,
     BootstrapStability,
     calculate_clustering_metrics
 )
-from .hierarchical_config import KMeansHierarchicalConfig
-from .hierarchical_visualization import HierarchicalVisualizer
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
@@ -125,7 +124,6 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         if any([config.generate_dendrogram, config.generate_geographic_maps,
                 config.generate_3d_visualization, config.generate_validation_plots]):
             # Create clean data object for visualization (complete cases only)
-            from dataclasses import dataclass
             @dataclass
             class BiodivDataComplete:
                 features: np.ndarray
@@ -361,7 +359,6 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
     def _create_result(self, biodiv_data, labels, metrics, visualizations,
                       config, start_time):
         """Create analysis result."""
-        from src.abstractions import AnalysisMetadata
         
         # Create metadata
         metadata = AnalysisMetadata(
@@ -395,151 +392,17 @@ class KMeansHierarchicalAnalyzer(BaseBiodiversityAnalyzer):
         )
     
     def validate_parameters(self, parameters: Dict[str, Any]) -> Tuple[bool, List[str]]:
-        """Validate analysis parameters."""
-        errors = []
-        
-        # Validate n_pre_clusters
-        if 'n_pre_clusters' in parameters:
-            n = parameters['n_pre_clusters']
-            if not isinstance(n, int) or n < 10:
-                errors.append("n_pre_clusters must be an integer >= 10")
-        
-        # Validate linkage method
-        if 'linkage_method' in parameters:
-            valid = ['ward', 'complete', 'average', 'single']
-            if parameters['linkage_method'] not in valid:
-                errors.append(f"linkage_method must be one of {valid}")
-        
-        # Validate final_k_range
-        if 'final_k_range' in parameters:
-            r = parameters['final_k_range']
-            if not isinstance(r, (tuple, list)) or len(r) != 2:
-                errors.append("final_k_range must be a tuple of (min, max)")
-            elif r[0] >= r[1]:
-                errors.append("final_k_range must have min < max")
-        
-        return len(errors) == 0, errors
+
     
-    def get_default_parameters(self) -> Dict[str, Any]:
-        """Get default parameters for k-means hierarchical clustering."""
-        return {
-            'n_pre_clusters': 750,
-            'use_elbow_method': True,
-            'elbow_threshold': 0.01,
-            'k_range': (1000, 10000),
-            'clustering_approach': 'ecological',  # ecological or geometric
-            'linkage_method': 'average',  # Set by clustering_approach
-            'distance_metric': 'braycurtis',  # Set by clustering_approach
-            'final_k_range': (4, 8),
-            'selection_method': 'bootstrap',
-            'n_bootstrap': 30,
-            'generate_dendrogram': True,
-            'generate_geographic_maps': True,
-            'save_results': True,
-            'output_dir': './outputs/kmeans_hierarchical_results'
-        }
+        """Validate parameters using utility."""
+
     
-    def save_results(self, result: AnalysisResult, output_name: str, 
-                     output_dir: Path = None) -> Path:
-        """Save analysis results to disk.
-        
-        Args:
-            result: Analysis result to save
-            output_name: Base name for output files
-            output_dir: Directory to save results
-            
-        Returns:
-            Path to saved results
-        """
-        if output_dir is None:
-            output_dir = Path("./outputs/kmeans_hierarchical_results")
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Save labels
-        labels_file = output_dir / f"{output_name}_labels.npy"
-        np.save(labels_file, result.labels)
-        
-        # Save metadata as JSON
-        import json
-        
-        # Convert numpy types to Python native types for JSON serialization
-        def convert_numpy(obj):
-            if isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.floating):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_numpy(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_numpy(v) for v in obj]
-            return obj
-        
-        metadata_file = output_dir / f"{output_name}_metadata.json"
-        with open(metadata_file, 'w') as f:
-            json.dump({
-                'analysis_type': result.metadata.analysis_type,
-                'input_shape': result.metadata.input_shape,
-                'parameters': convert_numpy(result.metadata.parameters),
-                'processing_time': result.metadata.processing_time,
-                'timestamp': result.metadata.timestamp
-            }, f, indent=2)
-        
-        # Save visualizations if present
-        if hasattr(result, 'additional_outputs') and result.additional_outputs:
-            viz_dir = output_dir / 'visualizations'
-            viz_dir.mkdir(exist_ok=True)
-            
-            for viz_name, viz_obj in result.additional_outputs.items():
-                if viz_name == 'coordinates':
-                    continue  # Skip coordinate data
-                    
-                try:
-                    # Handle matplotlib figures
-                    if hasattr(viz_obj, 'savefig'):
-                        viz_file = viz_dir / f"{viz_name}.png"
-                        viz_obj.savefig(viz_file, dpi=100, bbox_inches='tight')
-                        logger.info(f"Saved visualization: {viz_name}.png")
-                        
-                    # Handle plotly figures
-                    elif hasattr(viz_obj, 'write_html'):
-                        viz_file = viz_dir / f"{viz_name}.html"
-                        viz_obj.write_html(str(viz_file))
-                        logger.info(f"Saved visualization: {viz_name}.html")
-                        
-                except Exception as e:
-                    logger.warning(f"Could not save visualization {viz_name}: {e}")
-        
-        logger.info(f"Results saved to {output_dir}")
-        return output_dir
+
     
-    def set_progress_callback(self, callback):
-        """Set progress callback function.
-        
-        Args:
-            callback: Function that accepts (message, progress)
-        """
-        self.progress_callback = callback
+        # Define required parameters for this analyzer
+
     
-    def validate_input_data(self, data_path: str) -> Tuple[bool, List[str]]:
-        """Validate input data file.
-        
-        Args:
-            data_path: Path to data file
-            
-        Returns:
-            Tuple of (is_valid, error_messages)
-        """
-        errors = []
-        path = Path(data_path)
-        
-        if not path.exists():
-            errors.append(f"Input file does not exist: {data_path}")
-            return False, errors
-        
-        if not path.suffix.lower() in ['.parquet', '.csv']:
-            errors.append(f"Unsupported format: {path.suffix}. Use .parquet or .csv")
-        
-        return len(errors) == 0, errors
+        required = self.get_required_parameters() if hasattr(self, 'get_required_parameters') else []
+
+    
+        return validate_params(parameters, required)

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 GEE核心操作模块
 ==============
@@ -17,7 +18,7 @@ from google.cloud import storage
 
 from .utils import retry_on_failure
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GEEOperations:

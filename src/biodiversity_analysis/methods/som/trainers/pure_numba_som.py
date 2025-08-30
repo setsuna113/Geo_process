@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Pure Numba implementation of SOM - replaces entire joblib backend.
 
 This module implements the complete SOM training in pure Numba, eliminating:
@@ -32,7 +33,7 @@ from ....shared.metrics.distance_calculator import (
     find_bmu_numba  # Use shared BMU finding
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Thread-Local Reduction Implementation:

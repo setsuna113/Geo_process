@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Coverage analysis - Linus style.
 
@@ -12,7 +13,7 @@ import logging
 from src.biodiversity_analysis.statistical.data_utils import save_results
 from src.biodiversity_analysis.statistical.result_types import MethodResult
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def analyze_coverage(

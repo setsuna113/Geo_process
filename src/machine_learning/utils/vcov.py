@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Main variance-covariance matrix interface.
 
@@ -8,7 +9,7 @@ Default is sandwich - the industry standard.
 import numpy as np
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def extract_vcov(h2o_model, data, x_names, y_name, method='sandwich', **kwargs):

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Statistical Analysis Orchestrator - Linus style refactored.
 
@@ -25,7 +26,7 @@ from src.biodiversity_analysis.statistical.trust_map import analyze_trust_maps
 from src.biodiversity_analysis.statistical.biome_analysis import analyze_by_biome
 from src.biodiversity_analysis.statistical.partial_correlation import analyze_partial_correlations
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Method registry with data requirements - SINGLE source of truth
