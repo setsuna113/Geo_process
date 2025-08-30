@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Reporter for spatial pattern visualization in CP-WOPT results.
 
 This module creates maps and spatial visualizations of the tensor decomposition
@@ -26,7 +27,7 @@ except ImportError:
 
 from src.abstractions import CPFactors, TensorData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SpatialReporter:

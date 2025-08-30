@@ -1,11 +1,12 @@
 # src/config/dataset_utils.py
+from src.abstractions import get_logger
 """Utilities for dataset configuration handling with backward compatibility."""
 
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DatasetPathResolver:

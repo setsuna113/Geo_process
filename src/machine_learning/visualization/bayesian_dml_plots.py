@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Bayesian DML visualization for posterior distributions and credible intervals.
 
 Publication-standard visualizations for Bayesian DML analysis following
@@ -14,7 +15,7 @@ from scipy import stats
 from typing import Dict, Any, Optional, List, Tuple, Union
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set publication-quality style
 sns.set_style("whitegrid")

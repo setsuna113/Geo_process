@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from src.abstractions import get_logger
 """
 Simplified ML Orchestrator - Loads Julia Results from Disk
 
@@ -14,6 +15,8 @@ All preprocessing and model fitting is done in Julia.
 import logging
 import time
 import json
+from src.abstractions import load_json
+from src.abstractions import save_json
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
 import pandas as pd
@@ -35,7 +38,7 @@ from src.machine_learning.methods import (
 # Diagnostics (will work with Julia residuals if available)
 from src.machine_learning.diagnostics import DHARMaDiagnostics
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MLOrchestrator:

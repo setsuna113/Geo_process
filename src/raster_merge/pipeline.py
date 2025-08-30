@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Actual Unix-style pipeline for raster operations.
 
@@ -12,7 +13,7 @@ from contextlib import ExitStack
 from .config import RasterConfig
 from .merger_raster.vrt_merger import VRTMerger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def merge_rasters(input_paths: List[Path], 

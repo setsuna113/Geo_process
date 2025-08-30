@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Large Sample Effect Size Interpretations and Warnings.
 
@@ -14,7 +15,7 @@ import numpy as np
 from typing import Dict, Any, Optional
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LargeSampleEffects:

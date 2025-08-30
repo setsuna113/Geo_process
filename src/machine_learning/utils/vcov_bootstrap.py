@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Bootstrap variance-covariance matrix estimation.
 
@@ -10,7 +11,7 @@ from h2o.grid import H2OGridSearch
 from h2o.estimators.glm import H2OGeneralizedLinearEstimator
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def compute_bootstrap_vcov(h2o_model, data, x_names, y_name, n_bootstrap=100, seed=42):

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Reporter for visualizing CP-WOPT factor matrices.
 
 This module creates visualizations of the learned factor matrices,
@@ -15,7 +16,7 @@ import logging
 from src.abstractions import CPFactors
 from ..constants import FIGURE_DPI, FIGURE_SIZE, COLORMAP, TOP_N_FEATURES
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class FactorReporter:

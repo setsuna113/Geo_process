@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Correct Bayesian Double Machine Learning (BDML) Implementation.
 
@@ -16,7 +17,7 @@ from scipy.stats import invwishart, multivariate_normal
 from typing import Dict, Any, Optional, Tuple
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CorrectBayesianDML:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Likelihood Ratio Test visualization for Julia's lrtest() output.
 
 Publication-standard visualizations for LRT results including:
@@ -16,7 +17,7 @@ from scipy import stats
 from typing import Dict, Any, Optional, List, Tuple, Union
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set publication-quality style
 sns.set_style("whitegrid")

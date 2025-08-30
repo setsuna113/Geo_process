@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 导出和下载模块
 =============
@@ -16,7 +17,7 @@ import pyarrow as pa
 from pathlib import Path
 from typing import Dict, Optional
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ExportManager:

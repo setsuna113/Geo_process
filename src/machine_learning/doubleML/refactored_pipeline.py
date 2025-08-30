@@ -1,3 +1,20 @@
+        from src.abstractions import save_results as save_util
+from src.abstractions import save_json
+        importances = self.estimator.feature_importances_
+from econml.dml import LinearDML, CausalForestDML
+from pathlib import Path
+from sklearn.multioutput import MultiOutputRegressor
+from src.machine_learning.doubleML.optimized_lgbm import OptimizedLGBMRegressor
+from typing import Dict, List, Optional, Tuple, Any, Union
+import json
+import numpy as np
+import pandas as pd
+import pickle
+import psutil
+import pyarrow.feather as feather
+import pyarrow.parquet as pq
+import time
+import yaml
 #!/usr/bin/env python3
 """
 Refactored Causal Effect Pipeline
@@ -5,25 +22,11 @@ Principle: Clear separation between homogeneous (LinearDML) and heterogeneous (C
 Author: Following Linus's KISS principle
 """
 
-import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any, Union
-import time
-import json
-import pickle
-import psutil
-import yaml
-from pathlib import Path
-from sklearn.multioutput import MultiOutputRegressor
-import pyarrow.parquet as pq
-import pyarrow.feather as feather
 
 # Import our optimized LightGBM
 # ALWAYS use absolute import to avoid pickle issues
-from src.machine_learning.doubleML.optimized_lgbm import OptimizedLGBMRegressor
 
 # Import EconML estimators
-from econml.dml import LinearDML, CausalForestDML
 
 
 # ==================== Configuration Loading ====================
@@ -654,7 +657,6 @@ class HeterogeneousEffectEstimator:
         """Extract results from fitted CausalForestDML"""
         
         # Get feature importances
-        importances = self.estimator.feature_importances_
         
         n_modifiers = len(importances)
         if modifier_names is None:
@@ -899,178 +901,12 @@ class CausalEffectPipeline:
         self.last_results = self.estimator.results
         return self.last_results
     
-    def save_results(self, path: str):
-        """Save results and model following original's pattern"""
-        if self.last_results is None:
-            raise ValueError("No results to save! Run estimation first.")
-        
-        output_path = Path(path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save JSON results
-        with open(output_path, 'w') as f:
-            json.dump(self.last_results, f, indent=2)
-        print(f"\nResults saved to: {output_path}")
-        
-        # Save complete estimator (preserves all metadata, caches, etc.)
-        if self.estimator is not None:
-            model_path = output_path.with_suffix('.pkl')
-            
-            # Save full estimator object (not just .estimator)
-            with open(model_path, 'wb') as f:
-                pickle.dump(self.estimator, f, protocol=4)
-            print(f"Model saved to: {model_path}")
-            
-            # For large arrays, could optionally save separately
-            if hasattr(self.estimator, 'last_X') and self.estimator.last_X is not None:
-                arrays_path = output_path.with_suffix('.npz')
-                np.savez_compressed(
-                    arrays_path,
-                    X=self.estimator.last_X if hasattr(self.estimator, 'last_X') else None,
-                    T=self.estimator.last_T if hasattr(self.estimator, 'last_T') else None,
-                    Y=self.estimator.last_Y if hasattr(self.estimator, 'last_Y') else None,
-                    W=self.estimator.last_W if hasattr(self.estimator, 'last_W') else None
-                )
-                print(f"Arrays saved to: {arrays_path}")
-    
-    def load_model(self, path: str):
-        """Load saved estimator with full state"""
-        model_path = Path(path).with_suffix('.pkl')
-        
-        with open(model_path, 'rb') as f:
-            self.estimator = pickle.load(f)
-        
-        # Optionally load arrays if they exist
-        arrays_path = Path(path).with_suffix('.npz')
-        if arrays_path.exists():
-            arrays = np.load(arrays_path)
-            if hasattr(self.estimator, 'last_X'):
-                self.estimator.last_X = arrays['X'] if 'X' in arrays else None
-                self.estimator.last_T = arrays['T'] if 'T' in arrays else None
-                self.estimator.last_Y = arrays['Y'] if 'Y' in arrays else None
-                self.estimator.last_W = arrays['W'] if 'W' in arrays else None
-        
-        print(f"Model loaded from: {model_path}")
-        return self
+    def save_results(self, results: Any, output_path: Union[str, Path]) -> Path:
 
+    
+        """Save results using utility."""
 
-# ==================== Main Pipeline Functions ====================
+    
 
-def run_homogeneous_pipeline(config_path: str) -> Dict:
-    """
-    Run complete homogeneous effects pipeline
     
-    Args:
-        config_path: Path to configuration YAML file (REQUIRED)
-    
-    Returns:
-        Results dictionary
-    """
-    # Load configuration - NO DEFAULTS
-    config = load_config(config_path)
-    
-    # Get data path from config
-    data_path = config['data_path']
-    
-    # Initialize pipeline with config
-    pipeline = CausalEffectPipeline(config=config)
-    pipeline.load_data(data_path, config['spatial_step'])
-    results = pipeline.fit_homogeneous()
-    
-    # Save results using config's output path
-    output_path = Path(config['output_dir']) / f"homo_results_step{config['spatial_step']}"
-    pipeline.save_results(str(output_path))
-    return results
-
-
-def run_heterogeneous_pipeline(config_path: str) -> Dict:
-    """
-    Run complete heterogeneous effects pipeline
-    
-    Args:
-        config_path: Path to configuration YAML file (REQUIRED)
-    
-    Returns:
-        Results dictionary
-    """
-    # Load configuration - NO DEFAULTS
-    config = load_config(config_path)
-    
-    # Get data path from config
-    data_path = config['data_path']
-    
-    # Initialize pipeline with config
-    pipeline = CausalEffectPipeline(config=config)
-    pipeline.load_data(data_path, config['spatial_step'])
-    
-    # Use effect_modifiers from config
-    results = pipeline.fit_heterogeneous(effect_modifiers=config['effect_modifiers'])
-    
-    # Save results using config's output path
-    output_path = Path(config['output_dir']) / f"hetero_results_step{config['spatial_step']}"
-    pipeline.save_results(str(output_path))
-    return results
-
-
-# ==================== Command Line Interface ====================
-
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(
-        description='EconML Pipeline: Causal Effects Estimation',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Homogeneous effects (constant treatment effects)
-  python refactored_pipeline.py --mode homo --config /path/to/config.yml
-  
-  # Heterogeneous effects (treatment effects vary by climate)
-  python refactored_pipeline.py --mode hetero --config /path/to/config.yml
-        """)
-    
-    parser.add_argument('--mode', 
-                       choices=['homo', 'hetero'],
-                       required=True,
-                       help='Analysis mode: homo (homogeneous), hetero (heterogeneous)')
-    
-    parser.add_argument('--config',
-                       type=str,
-                       required=True,
-                       help='Path to configuration YAML file (REQUIRED)')
-    
-    args = parser.parse_args()
-    
-    # Run appropriate pipeline
-    if args.mode == 'homo':
-        
-        # Load config to display parameters
-        config = load_config(args.config)
-        
-        print(f"\nRunning HOMOGENEOUS pipeline")
-        print(f"Config: {args.config}")
-        print(f"Data: {config['data_path']}")
-        print(f"Output: {config['output_dir']}")
-        
-        results = run_homogeneous_pipeline(config_path=args.config)
-        
-        # Extract output path from config
-        output_path = Path(config['output_dir']) / f"homo_results_step{config['spatial_step']}"
-        print(f"\n✅ Pipeline completed! Results saved to {output_path}")
-    
-    elif args.mode == 'hetero':
-        
-        # Load config to display parameters
-        config = load_config(args.config)
-        
-        print(f"\nRunning HETEROGENEOUS pipeline")
-        print(f"Config: {args.config}")
-        print(f"Data: {config['data_path']}")
-        print(f"Effect modifiers: {config['effect_modifiers']}")
-        print(f"Output: {config['output_dir']}")
-        
-        results = run_heterogeneous_pipeline(config_path=args.config)
-        
-        # Extract output path from config
-        output_path = Path(config['output_dir']) / f"hetero_results_step{config['spatial_step']}"
-        print(f"\n✅ Pipeline completed! Results saved to {output_path}")
+        return save_util(results, Path(output_path).parent, Path(output_path).stem)

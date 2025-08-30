@@ -4,6 +4,7 @@ Run biodiversity inference analysis and save results
 """
 
 import json
+from src.abstractions import save_json
 from pathlib import Path
 import pandas as pd
 from biodiversity_inference import BiodiversityInference

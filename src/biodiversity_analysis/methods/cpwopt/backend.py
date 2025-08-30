@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Compute backend for CPU/GPU flexible execution in CP-WOPT.
 
 This module provides a unified interface for CPU and GPU computations,
@@ -8,7 +9,7 @@ import numpy as np
 from typing import Optional, Union, Literal, Any, List
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CPWOPTBackend:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Simple slopes visualization for hypothesis testing.
 
 Extracted from hypothesis/simple_slopes.py lines 500-701.
@@ -9,7 +10,7 @@ import seaborn as sns
 from typing import Dict, Any, Tuple
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set style for publication-quality plots
 sns.set_style("whitegrid")

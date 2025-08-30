@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Partial correlation analysis - Control for confounding variables.
 
@@ -15,7 +16,7 @@ from scipy import stats
 
 from src.biodiversity_analysis.statistical.result_types import MethodResult
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def compute_partial_correlation(

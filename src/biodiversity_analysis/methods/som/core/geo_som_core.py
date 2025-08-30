@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """GeoSOM implementation for biodiversity analysis.
 
 This implementation uses pure Batch SOM with momentum control:
@@ -15,7 +16,6 @@ from dataclasses import dataclass
 import logging
 import time
 import os
-from pathlib import Path
 import json
 from scipy.spatial.distance import cdist
 # Moran's I calculation is in spatial_utils module
@@ -36,10 +36,9 @@ from src.biodiversity_analysis.shared.metrics.som_metrics import (
 from ..trainers.pure_numba_som import PureNumbaSOM
 from ..utils.numba_thread_control import get_thread_controller, setup_numba_threads
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Import constants from central location
-from ..utils.constants import (
     DEFAULT_QE_SAMPLE_SIZE, DEFAULT_PROGRESS_LOG_INTERVAL,
     MEMORY_THRESHOLD_BYTES, DEFAULT_DISTANCE_CALC_BATCH_SIZE
 )

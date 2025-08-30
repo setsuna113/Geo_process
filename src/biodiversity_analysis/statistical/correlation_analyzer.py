@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Correlation analysis for biodiversity data - Linus style.
 
@@ -18,7 +19,7 @@ from src.biodiversity_analysis.statistical.data_utils import save_results, save_
 from src.biodiversity_analysis.statistical.result_types import MethodResult
 from src.biodiversity_analysis.statistical.smart_visualization import smart_imshow
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def analyze_correlation(

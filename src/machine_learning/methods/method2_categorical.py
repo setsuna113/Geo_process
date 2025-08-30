@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Method 2: H2 Hypothesis Testing with Continuous and Categorical Interactions.
 
 Tests H2: Climate-diversity interaction differs in temperate vs non-temperate regions.
@@ -18,6 +19,7 @@ from datetime import datetime
 from scipy import stats
 from typing import Dict, Any, Optional, Union, Tuple, List
 import json
+from src.abstractions import save_json
 import re
 import warnings
 warnings.filterwarnings('ignore')
@@ -31,7 +33,7 @@ from ..interpretation.simple_slopes import analyze_simple_slopes
 from ..interpretation.marginal_means import analyze_marginal_means
 from ..config_loader import MLRegressionConfig
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Set professional style
 plt.style.use('seaborn-v0_8-whitegrid')

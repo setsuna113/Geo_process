@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 主流程编排器
 ===========
@@ -19,7 +20,7 @@ from .processing import DataProcessor
 from .export import ExportManager
 from .state import PipelineState
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass

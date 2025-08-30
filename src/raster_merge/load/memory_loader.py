@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Memory loader - loads raster data into memory when computation requires it.
 
@@ -13,7 +14,7 @@ import xarray as xr
 import rasterio
 from rasterio.windows import Window
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def load_to_array(

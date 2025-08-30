@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Spatial cross-validation strategies for biodiversity data."""
 
 import numpy as np
@@ -9,7 +10,7 @@ import logging
 from ...core.registry import cv_strategy
 from ...abstractions.types.ml_types import SpatialCVStrategy
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @cv_strategy(

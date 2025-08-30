@@ -1,12 +1,10 @@
-"""Adapter to make GeoSOMAnalyzer compatible with IAnalyzer interface."""
-
-import numpy as np
-import xarray as xr
+from src.abstractions import IAnalyzer, AnalysisResult, validate_parameters
+from .analyzer import GeoSOMAnalyzer
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple, List, Callable
+import numpy as np
 
-from src.abstractions import IAnalyzer, AnalysisResult
-from .analyzer import GeoSOMAnalyzer
+
 
 
 class SOMAnalyzer(IAnalyzer):

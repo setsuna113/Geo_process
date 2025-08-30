@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from src.abstractions import get_logger
 """
 Command-line interface for raster merging.
 
@@ -182,7 +183,7 @@ def main():
     """Main entry point."""
     args = parse_args()
     setup_logging(args.log_level)
-    logger = logging.getLogger(__name__)
+    logger = get_logger(__name__)
     
     try:
         # Build configuration

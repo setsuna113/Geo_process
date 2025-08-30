@@ -1,12 +1,10 @@
-"""Adapter to make KMeansHierarchicalAnalyzer compatible with IAnalyzer interface."""
-
-import numpy as np
-import xarray as xr
+from src.abstractions import IAnalyzer, AnalysisResult, validate_parameters
+from .hierarchical_analyzer import KMeansHierarchicalAnalyzer
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple, List
+import numpy as np
 
-from src.abstractions import IAnalyzer, AnalysisResult
-from .hierarchical_analyzer import KMeansHierarchicalAnalyzer
+
 
 
 class KMeansHierarchicalAnalyzerAdapter(IAnalyzer):

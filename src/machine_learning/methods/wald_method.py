@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Simplified Wald Method Wrapper for Method 1.
 
 Orchestrates traditional, SESOI, and TOST tests without duplication.
@@ -11,7 +12,7 @@ from typing import Dict, Any, Optional, List, Tuple
 # Use the Wald test
 from ..hypothesis.wald_test import WaldTest
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class WaldMethod:

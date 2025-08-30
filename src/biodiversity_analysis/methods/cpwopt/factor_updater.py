@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Advanced factor update strategies for CP-WOPT.
 
 This module implements various optimization strategies for updating factor matrices,
@@ -17,7 +18,7 @@ from src.biodiversity_analysis.shared.tensor_utils import (
 )
 from .constants import EPSILON, MIN_COMPONENT_NORM, MIN_IMPROVEMENT
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class FactorUpdater:

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 Path loader - validates and prepares file paths for operations.
 
@@ -10,7 +11,7 @@ from pathlib import Path
 import logging
 import rasterio
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def validate_paths(paths: Union[Path, str, List[Union[Path, str]]]) -> List[Path]:

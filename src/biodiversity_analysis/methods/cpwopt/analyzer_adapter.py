@@ -1,30 +1,38 @@
+        from src.abstractions import validate_input_data as validate_data
+from src.abstractions import IAnalyzer, AnalysisResult, TensorData
+from src.abstractions import get_logger, validate_parameters
+from src.abstractions import save_json
+            importance += np.abs(feature_factors[:, r]) * component_weights[r]
+        from src.config.method_registry import MethodConfigRegistry
+        
+        importance /= importance.sum()
+        importance = np.zeros(feature_factors.shape[0])
+from .core import CPWOPT
+from .factor_updater import create_factor_updater
+from .rank_selection import auto_select_rank
+from .sparse_handler import AdaptiveSparseStrategy
+from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
+from pathlib import Path
+from src.biodiversity_analysis.preprocessing import SharedPreprocessor
+from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
+from src.biodiversity_analysis.shared.data import ParquetLoader
+from src.config.cpwopt import get_cpwopt_config
+from typing import Dict, Any, Optional, List, Tuple
+import json
+import logging
+import numpy as np
+import os
+import pandas as pd
+import time
 """Adapter to integrate CP-WOPT with the IAnalyzer interface.
 
 This module provides the integration layer between CP-WOPT tensor factorization
 and the biodiversity analysis pipeline.
 """
 
-import numpy as np
-import pandas as pd
-import logging
-import os
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
-import json
-import time
 
-from src.abstractions import IAnalyzer, AnalysisResult, TensorData
-from src.biodiversity_analysis.preprocessing import SharedPreprocessor
-from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
-from src.biodiversity_analysis.shared.data import ParquetLoader
-from src.config.cpwopt import get_cpwopt_config
-from .core import CPWOPT
-from .tensor_metrics import CPWOPTMetricsCalculator, print_metrics_summary
-from .sparse_handler import AdaptiveSparseStrategy
-from .factor_updater import create_factor_updater
-from .rank_selection import auto_select_rank
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CPWOPTAnalyzer(IAnalyzer):
@@ -41,7 +49,6 @@ class CPWOPTAnalyzer(IAnalyzer):
         self.pipeline_config = pipeline_config
         
         # Load method-specific configuration through registry
-        from src.config.method_registry import MethodConfigRegistry
         config_loader = MethodConfigRegistry.get_loader('cpwopt')
         self.config = config_loader.load_config(preset=preset)
         
@@ -61,7 +68,6 @@ class CPWOPTAnalyzer(IAnalyzer):
         )
         
         # Use DIRECT tensor preprocessing - no gridding!
-        from src.biodiversity_analysis.preprocessing.tensor_preprocessing_direct import TensorPreprocessor
         self.tensor_builder = TensorPreprocessor(
             missing_value=0.0,  # CP-WOPT uses 0 for missing
             min_observations_per_cell=1  # Each point is unique
@@ -420,12 +426,9 @@ class CPWOPTAnalyzer(IAnalyzer):
             component_weights = np.ones(self.model.rank) / self.model.rank
         
         # Weighted sum of absolute loadings
-        importance = np.zeros(feature_factors.shape[0])
         for r in range(self.model.rank):
-            importance += np.abs(feature_factors[:, r]) * component_weights[r]
         
         # Normalize
-        importance /= importance.sum()
         
         # Create DataFrame
         feature_names = self.tensor_data.feature_names
@@ -568,427 +571,12 @@ class CPWOPTAnalyzer(IAnalyzer):
         if self.model is not None and hasattr(self.model, 'set_progress_callback'):
             self.model.set_progress_callback(callback)
     
-    def validate_input_data(self, data: pd.DataFrame) -> bool:
-        """Validate input data for CP-WOPT analysis.
-        
-        Args:
-            data: Input dataframe
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        # This is a wrapper for _validate_input
-        return self._validate_input(data)
-    
-    def validate_parameters(self, parameters: Dict[str, Any]) -> bool:
-        """Validate analysis parameters.
-        
-        Args:
-            parameters: Dictionary of parameters
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        # Validate rank
-        rank = parameters.get('rank', 20)
-        if not isinstance(rank, int) or rank < 1:
-            logger.error(f"Invalid rank: {rank}. Must be positive integer.")
-            return False
-        
-        # Validate max_iterations
-        max_iter = parameters.get('max_iterations', 1000)
-        if not isinstance(max_iter, int) or max_iter < 1:
-            logger.error(f"Invalid max_iterations: {max_iter}. Must be positive integer.")
-            return False
-        
-        # Validate convergence_threshold
-        conv_thresh = parameters.get('convergence_threshold', 1e-6)
-        if not isinstance(conv_thresh, (int, float)) or conv_thresh <= 0:
-            logger.error(f"Invalid convergence_threshold: {conv_thresh}. Must be positive number.")
-            return False
-        
-        # Validate preprocessing if provided
-        if 'preprocessing' in parameters:
-            prep = parameters['preprocessing']
-            if not isinstance(prep, dict):
-                logger.error("Preprocessing must be a dictionary")
-                return False
-            
-            # Check lat/lon bins if provided
-            for bin_param in ['lat_bins', 'lon_bins']:
-                if bin_param in prep:
-                    bins = prep[bin_param]
-                    if not isinstance(bins, int) or bins < 2:
-                        logger.error(f"Invalid {bin_param}: {bins}. Must be integer >= 2.")
-                        return False
-        
-        return True
-    
-    def _export_factors(self) -> Dict[str, Any]:
-        """Export factor matrices in serializable format."""
-        if not self.model.factors_:
-            return {}
-        
-        factors_dict = self.model.get_component_matrices()
-        
-        # Convert to lists for JSON serialization
-        return {
-            mode_name: factor.tolist()
-            for mode_name, factor in factors_dict.items()
-        }
-    
-    def _interpret_components(self) -> Dict[str, Any]:
-        """Interpret components by finding top features."""
-        if not self.model.factors_:
-            return {}
-        
-        interpretation = {}
-        
-        # Get top features for each component
-        n_top = self.config.get('interpretation', {}).get('top_n_features', 10)
-        
-        for r in range(min(self.model.rank, 10)):  # Limit to first 10 components
-            try:
-                top_features = self.model.get_top_features(r, n_top)
-                
-                # Convert to serializable format
-                interpretation[f'component_{r}'] = {
-                    mode: {
-                        'indices': features['indices'].tolist(),
-                        'loadings': features['loadings'].tolist()
-                    }
-                    for mode, features in top_features.items()
-                }
-                
-                # Add interpretation if we have feature names
-                if self.tensor_data.feature_names:
-                    feature_idx = top_features.get('features', {}).get('indices', [])
-                    if len(feature_idx) > 0:
-                        top_names = [self.tensor_data.feature_names[i] for i in feature_idx]
-                        interpretation[f'component_{r}']['feature_names'] = top_names
-                        
-            except Exception as e:
-                logger.warning(f"Failed to interpret component {r}: {e}")
-        
-        return interpretation
-    
-    def _generate_reports(self, output_dir: Path) -> None:
-        """Generate comprehensive reports using reporter classes.
-        
-        Args:
-            output_dir: Directory to save reports
-        """
-        # Import reporters
-        from .reporters import (
-            FactorReporter, ReconstructionReporter, SpatialReporter,
-            ComponentReporter, SummaryReporter, BiomeReporter
-        )
-        
-        # Create decomposition result
-        decomposition_result = TensorDecompositionResult(
-            factors=self.model.factors_,
-            metrics=self.model.metrics_,
-            metadata={
-                'experiment_name': self.experiment_name,
-                'convergence_history': self.model.convergence_history_,
-                'training_time': self.model.training_time_,
-                'n_iterations': self.model.n_iterations_
-            }
-        )
-        
-        # Get reporter config
-        reporter_config = self.config.get('reporting', {})
-        
-        # Generate factor plots
-        factor_reporter = FactorReporter(output_dir, reporter_config)
-        factor_reporter.report(
-            decomposition_result.factors,
-            self.tensor_data.shape,
-            self.tensor_data.feature_names,
-            self.tensor_data.coordinates
-        )
-        
-        # Generate reconstruction analysis
-        recon_reporter = ReconstructionReporter(output_dir, reporter_config)
-        # Reconstruct tensor for comparison
-        reconstructed = self.model.reconstruct()
-        recon_reporter.report(
-            self.tensor_data.tensor,  # original tensor
-            reconstructed,            # reconstructed tensor
-            self.tensor_data.weights, # weights
-            decomposition_result.metrics  # metrics
-        )
-        
-        # Generate spatial patterns
-        # TODO: Fix spatial reporter dimension mismatch
-        # spatial_reporter = SpatialReporter(output_dir, reporter_config)
-        # 
-        # # Get lat/lon bins from preprocessing config
-        # preproc_config = self.config.get('preprocessing', {})
-        # lat_bins = np.linspace(-90, 90, preproc_config.get('lat_bins', 20) + 1)
-        # lon_bins = np.linspace(-180, 180, preproc_config.get('lon_bins', 20) + 1)
-        # 
-        # spatial_reporter.report(
-        #     decomposition_result.factors,
-        #     self.tensor_data,
-        #     self.tensor_data.coordinates,
-        #     lat_bins,
-        #     lon_bins
-        # )
-        
-        # Generate component analysis
-        comp_reporter = ComponentReporter(output_dir, reporter_config)
-        comp_reporter.report(
-            decomposition_result.factors,
-            self.tensor_data.feature_names,
-            decomposition_result.metrics.component_weights,
-            decomposition_result.metadata
-        )
-        
-        # Generate biome-like visualizations
-        logger.info("Creating biome reporter...")
-        biome_reporter = BiomeReporter(output_dir, reporter_config)
-        logger.info("Running biome report generation...")
-        biome_reporter.report(
-            decomposition_result.factors.factors,  # Pass the actual factor list
-            self.tensor_data.shape,
-            self.tensor_data.feature_names,
-            self.tensor_data.coordinates,
-            decomposition_result.metrics.component_weights
-        )
-        logger.info("Biome report generation completed")
-        
-        # Generate summary report
-        # Note: Summary reporter is currently disabled due to interface mismatch
-        # It expects reporter results, not reporter objects
-        # TODO: Fix this by collecting results from each reporter
-        
-        # summary_reporter = SummaryReporter(output_dir, reporter_config)
-        # experiment_metadata = {
-        #     'experiment_name': self.experiment_name,
-        #     'config': self.config,
-        #     'tensor_shape': self.tensor_data.shape,
-        #     'sparsity': self.tensor_data.sparsity,
-        #     'feature_names': self.tensor_data.feature_names
-        # }
-        # summary_reporter.generate_summary_report(
-        #     decomposition_result,
-        #     experiment_metadata,
-        #     reporter_results
-        # )
-        
-        logger.info(f"Generated all reports in: {output_dir}")
-    
-    def get_params(self, deep: bool = True) -> Dict[str, Any]:
-        """Get parameters for sklearn compatibility.
-        
-        Args:
-            deep: If True, return nested parameters
-            
-        Returns:
-            Parameter dictionary
-        """
-        return self.config if deep else {'config': self.config}
-    
-    def set_params(self, **params) -> 'CPWOPTAnalyzer':
-        """Set parameters for sklearn compatibility.
-        
-        Args:
-            **params: Parameters to set
-            
-        Returns:
-            Self
-        """
-        if 'config' in params:
-            self.config = params['config']
-        else:
-            # Update config with individual parameters
-            for key, value in params.items():
-                # Navigate nested config
-                keys = key.split('__')
-                current = self.config
-                for k in keys[:-1]:
-                    if k not in current:
-                        current[k] = {}
-                    current = current[k]
-                current[keys[-1]] = value
-        
-        return self
-    
-    def _validate_output_path(self, output_path: Path) -> Path:
-        """Validate output path to prevent directory traversal attacks.
-        
-        Args:
-            output_path: Requested output path
-            
-        Returns:
-            Validated absolute path
-            
-        Raises:
-            SecurityError: If path validation fails
-        """
-        from .exceptions import SecurityError
-        
-        # Convert to Path object and resolve to absolute path
-        output_path = Path(output_path).resolve()
-        
-        # SECURITY: Check for symbolic links in the path
-        current = output_path
-        while current != current.parent:
-            if current.exists() and current.is_symlink():
-                raise SecurityError(
-                    f"Symbolic link detected in path: {current}. "
-                    "Symbolic links are not allowed for security reasons."
-                )
-            current = current.parent
-        
-        # Define allowed base directories with stricter whitelist
-        allowed_bases = [
-            Path.cwd() / "outputs",
-            Path("/scratch") / os.environ.get("USER", ""),  # User-specific scratch
-            Path("/tmp") / f"cpwopt_{os.getpid()}",  # Process-specific temp
-        ]
-        
-        # Filter out non-existent bases
-        allowed_bases = [base for base in allowed_bases if base.parent.exists()]
-        
-        # Check if the resolved path is under an allowed directory
-        is_allowed = False
-        for base in allowed_bases:
-            try:
-                # Ensure both paths are resolved to catch symlink traversals
-                base_resolved = base.resolve()
-                output_resolved = output_path.resolve()
-                output_resolved.relative_to(base_resolved)
-                is_allowed = True
-                break
-            except ValueError:
-                continue
-        
-        if not is_allowed:
-            raise SecurityError(
-                f"Output path '{output_path}' is not in an allowed directory. "
-                f"Allowed bases: {[str(b) for b in allowed_bases]}"
-            )
-        
-        # Check for suspicious patterns (expanded list)
-        suspicious_patterns = [
-            "../", "..", "~", "${", "$(", "`",  # Original patterns
-            "%", "\\", "//", "..\\", ".\\",     # Windows-style and URL encoding
-            "\x00", "\n", "\r", "|", ";", "&",  # Null bytes and command separators
-            "file://", "ftp://", "http://"      # Protocol handlers
-        ]
-        path_str = str(output_path)
-        for pattern in suspicious_patterns:
-            if pattern in path_str:
-                raise SecurityError(
-                    f"Suspicious pattern '{pattern}' found in path: {path_str}"
-                )
-        
-        # SECURITY: Validate filename characters (alphanumeric, dash, underscore, dot)
-        import re
-        filename = output_path.name
-        if filename and not re.match(r'^[a-zA-Z0-9._\-]+$', filename):
-            raise SecurityError(
-                f"Invalid characters in filename: {filename}. "
-                "Only alphanumeric, dash, underscore, and dot are allowed."
-            )
-        
-        return output_path
-    
-    def _sanitize_config_for_export(self, config: Any) -> Dict[str, Any]:
-        """Sanitize configuration for safe export.
-        
-        Removes sensitive information and ensures only safe data is exported.
-        
-        Args:
-            config: Configuration to sanitize
-            
-        Returns:
-            Sanitized configuration dictionary
-        """
-        # Handle different config types
-        if hasattr(config, 'settings'):
-            config_dict = config.settings
-        elif hasattr(config, '__dict__') and not isinstance(config, dict):
-            config_dict = config.__dict__
-        else:
-            config_dict = config
-        
-        # Deep copy to avoid modifying original
-        import copy
-        sanitized = copy.deepcopy(config_dict)
-        
-        # Remove sensitive keys
-        sensitive_keys = [
-            'password', 'token', 'key', 'secret', 'credential',
-            'auth', 'private', 'api_key', 'access_key'
-        ]
-        
-        def remove_sensitive(d: Dict[str, Any]) -> None:
-            """Recursively remove sensitive keys."""
-            if not isinstance(d, dict):
-                return
-                
-            keys_to_remove = []
-            for key in d:
-                # Check if key contains sensitive patterns
-                key_lower = str(key).lower()
-                if any(sensitive in key_lower for sensitive in sensitive_keys):
-                    keys_to_remove.append(key)
-                # Recurse into nested dicts
-                elif isinstance(d[key], dict):
-                    remove_sensitive(d[key])
-                # Sanitize lists of dicts
-                elif isinstance(d[key], list):
-                    for item in d[key]:
-                        if isinstance(item, dict):
-                            remove_sensitive(item)
-            
-            # Remove sensitive keys
-            for key in keys_to_remove:
-                d[key] = "[REDACTED]"
-        
-        remove_sensitive(sanitized)
-        
-        # Ensure all values are JSON serializable
-        def make_serializable(obj: Any) -> Any:
-            """Convert non-serializable objects."""
-            if isinstance(obj, (Path, type)):
-                return str(obj)
-            elif isinstance(obj, dict):
-                return {k: make_serializable(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [make_serializable(item) for item in obj]
-            elif hasattr(obj, '__dict__'):
-                return make_serializable(obj.__dict__)
-            else:
-                return obj
-        
-        sanitized = make_serializable(sanitized)
-        
-        return sanitized
+    def validate_input_data(self, data: Any) -> Tuple[bool, List[str]]:
 
+    
+        """Validate input data using utility."""
 
-def create_cpwopt_analyzer(experiment_name: str,
-                          config: Optional[Dict[str, Any]] = None,
-                          preset: Optional[str] = None) -> CPWOPTAnalyzer:
-    """Factory function to create CP-WOPT analyzer.
     
-    Args:
-        experiment_name: Name of the experiment
-        config: Optional configuration overrides
-        preset: Optional preset name
-        
-    Returns:
-        Configured CPWOPTAnalyzer
-    """
-    # Load base configuration
-    from src.config.cpwopt import get_cpwopt_config
-    base_config = get_cpwopt_config(preset=preset)
+
     
-    # Apply overrides
-    if config:
-        base_config.update(config)
-    
-    return CPWOPTAnalyzer(base_config, experiment_name)
+        return validate_data(data, expected_type=self.expected_data_type() if hasattr(self, 'expected_data_type') else None)

@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """
 TIF文件验证模块
 ==============
@@ -13,7 +14,7 @@ import numpy as np
 import rasterio
 import logging
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class TIFValidator:

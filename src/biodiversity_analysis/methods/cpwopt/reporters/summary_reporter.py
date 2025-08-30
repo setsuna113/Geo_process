@@ -1,3 +1,4 @@
+from src.abstractions import get_logger
 """Summary reporter for CP-WOPT analysis results.
 
 This module creates a comprehensive summary report combining all aspects
@@ -12,11 +13,12 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import logging
 import json
+from src.abstractions import save_json
 from datetime import datetime
 
 from src.abstractions import CPFactors, TensorMetrics
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SummaryReporter:
