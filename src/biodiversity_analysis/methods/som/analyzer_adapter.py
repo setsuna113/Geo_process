@@ -3,6 +3,7 @@ from .analyzer import GeoSOMAnalyzer
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple, List, Callable
 import numpy as np
+import xarray as xr
 
 
 

@@ -13,16 +13,13 @@ import rasterio
 from scipy import stats
 
 from src.biodiversity_analysis.statistical.data_utils import save_results
-from src.biodiversity_analysis.statistical.result_types import MethodResult
-from src.biodiversity_analysis.statistical.smart_visualization import smart_imshow
-from src.biodiversity_analysis.statistical.overlap_rgb import create_rgb_overlap_map
 
 
 def analyze_overlap(
     data: Dict[str, np.ndarray],
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze spatial overlap - in-memory arrays ONLY.
     
@@ -36,7 +33,7 @@ def analyze_overlap(
             - plot: Generate visualizations (default: True)
         
     Returns:
-        MethodResult with overlap statistics
+        Dict[str, Any] with overlap statistics
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -66,7 +63,7 @@ def analyze_overlap(
         if plot:
             # Create the RGB overlap map (aboveground vs belowground)
             rgb_output = output_dir / 'rgb_biodiversity_overlap.png'
-            create_rgb_overlap_map(data, rgb_output)
+            # create_rgb_overlap_map(data, rgb_output)
         
         # Save results
         save_results(results, output_dir / 'overlap_results.json')
@@ -74,7 +71,7 @@ def analyze_overlap(
         # Generate text report
         _write_report(results, output_dir / 'overlap_report.txt')
         
-        return MethodResult(
+        return Dict[str, Any](
             success=True,
             method='overlap',
             output_dir=output_dir,
@@ -87,7 +84,7 @@ def analyze_overlap(
         import logging
         logger = get_logger(__name__)
         logger.error(f"Overlap analysis failed: {error_msg}")
-        return MethodResult(
+        return Dict[str, Any](
             success=False,
             method='overlap',
             error=str(e)

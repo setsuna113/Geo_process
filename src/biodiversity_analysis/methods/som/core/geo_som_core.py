@@ -39,6 +39,7 @@ from ..utils.numba_thread_control import get_thread_controller, setup_numba_thre
 logger = get_logger(__name__)
 
 # Import constants from central location
+from ..utils.constants import (
     DEFAULT_QE_SAMPLE_SIZE, DEFAULT_PROGRESS_LOG_INTERVAL,
     MEMORY_THRESHOLD_BYTES, DEFAULT_DISTANCE_CALC_BATCH_SIZE
 )
