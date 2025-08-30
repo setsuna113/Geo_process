@@ -1,8 +1,8 @@
 from src.abstractions import get_logger
 """
-Statistical Analysis Orchestrator - Linus style refactored.
+Statistical orchestrator - Direct method execution.
 
-"Simplicity is the ultimate sophistication."
+"Abstractions are for people who can't program" - Linus Torvalds
 NO adapter layers, NO special cases, DIRECT calls.
 """
 
@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 
 from src.biodiversity_analysis.statistical.config_utils import load_config
-from src.biodiversity_analysis.shared.data.parquet_loader import ParquetLoader as get_loader
+from src.biodiversity_analysis.shared.data.unified_loader import get_loader
+from src.biodiversity_analysis.shared.data.data_variants import DataVariants
 
 # Import methods directly - no adapter bullshit
 from src.biodiversity_analysis.statistical.correlation_analyzer import analyze_correlation
@@ -25,86 +26,88 @@ from src.biodiversity_analysis.statistical.partial_correlation import analyze_pa
 
 logger = get_logger(__name__)
 
-
-# Method registry with data requirements - SINGLE source of truth
+# Method registry - ONE PLACE to define what methods need
 METHOD_REGISTRY = {
     'correlation': {
-        'func': analyze_correlation,
-        'data_type': 'tabular',
-        'requires': ['biodiversity', 'climate']
+        'function': analyze_correlation,
+        'requires': ['merged'],  # Needs merged parquet
+        'data_type': 'dataframe'
     },
     'coverage': {
-        'func': analyze_coverage,
-        'data_type': 'spatial',
-        'requires': ['biodiversity']
+        'function': analyze_coverage,
+        'requires': ['multiband'],  # Needs multiband raster
+        'data_type': 'raster'
     },
     'overlap': {
-        'func': analyze_overlap,
-        'data_type': 'spatial',
-        'requires': ['biodiversity']
+        'function': analyze_overlap,
+        'requires': ['multiband'],  # Needs multiband raster
+        'data_type': 'raster'
     },
     'latitudinal': {
-        'func': analyze_latitudinal,
-        'data_type': 'spatial',
-        'requires': ['biodiversity', 'coordinates']
+        'function': analyze_latitudinal,
+        'requires': ['multiband'],  # Needs multiband raster
+        'data_type': 'raster'
     },
     'global_maps': {
-        'func': analyze_global_maps,
-        'data_type': 'spatial',
-        'requires': ['biodiversity']
+        'function': analyze_global_maps,
+        'requires': ['multiband'],  # Needs multiband raster
+        'data_type': 'raster'
     },
     'trust_maps': {
-        'func': analyze_trust_maps,
-        'data_type': 'spatial',
-        'requires': ['biodiversity', 'uncertainty']
+        'function': analyze_trust_maps,
+        'requires': ['multiband_with_cv'],  # Needs rasters with CV
+        'data_type': 'raster'
     },
-    'biome_analysis': {
-        'func': analyze_by_biome,
-        'data_type': 'tabular',
-        'requires': ['biodiversity', 'climate', 'elevation']
+    'biome': {
+        'function': analyze_by_biome,
+        'requires': ['merged'],  # Needs merged parquet
+        'data_type': 'dataframe'
     },
     'partial_correlation': {
-        'func': analyze_partial_correlations,
-        'data_type': 'tabular',
-        'requires': ['biodiversity', 'climate']
+        'function': analyze_partial_correlations,
+        'requires': ['merged'],  # Needs merged parquet
+        'data_type': 'dataframe'
     }
 }
 
 
 def run_analysis(
-    config_path: str = 'src/config/stat/stat_methods.yml',
-    variant: str = 'default',
-    methods: Optional[List[str]] = None,
-    auto_variants: bool = True
+    methods: List[str],
+    config_path: Optional[Path] = None,
+    output_dir: Optional[Path] = None,
+    config: Optional[Dict[str, Any]] = None,
+    auto_variants: bool = False
 ) -> Dict[str, Any]:
     """
-    Run statistical analysis pipeline - SIMPLIFIED.
+    Run statistical analysis methods.
     
-    No adapter layers, no bullshit. Load data, call method, return result.
+    LINUS: "Talk is cheap. Show me the code."
     
     Args:
-        config_path: Config file path
-        variant: Data variant (ignored if auto_variants=True)
-        methods: Methods to run (None = all enabled)
-        auto_variants: Automatically run both fungi variants
+        methods: List of method names to run
+        config_path: Path to config file (optional)
+        output_dir: Output directory  
+        config: Direct config dict (overrides file)
+        auto_variants: Generate data variants automatically
         
     Returns:
-        Results from each method
+        Results from all methods
     """
-    # Load configuration
-    config = load_config(config_path)
-    config['variant'] = variant
+    # Load config - prefer direct dict over file
+    if config is None and config_path is not None:
+        config = load_config(config_path)
+    elif config is None:
+        config = {}
     
     # Setup output directory
-    output_dir = _get_output_dir(config, variant)
+    if output_dir is None:
+        output_dir = Path(config.get('output_dir', 'outputs/statistical'))
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Get methods to run
-    methods = _get_methods(config, methods)
+    # Initialize data loader - it handles ALL data loading
+    loader = get_loader(config)
     
-    # Load data manager
-    loader = get_loader()
-    
-    # Execute pipeline - DIRECT calls
     results = {}
     
     for method in methods:
@@ -114,13 +117,16 @@ def run_analysis(
             # Get method specification
             method_spec = METHOD_REGISTRY[method]
             
-            # Load data based on declared requirements
+            # Add current method to config for loader
+            config_with_method = config.copy() if config else {}
+            config_with_method['current_method'] = method
+            
+            # Load data based on declared requirements - sampling happens IN THE LOADER
             data = loader.load_datasets(
                 datasets=method_spec['requires'],
                 data_type=method_spec['data_type'],
-                config=config
+                config=config_with_method
             )
-            data = SamplingStrategy.apply_sampling(data, config)
             
             # Check if method should handle its own variants
             if auto_variants and _supports_variants(data):
@@ -131,7 +137,7 @@ def run_analysis(
             results[method] = result
             
         except Exception as e:
-            logger.error(f"Failed {method}: {e}", exc_info=True)
+            logger.error(f"Method {method} failed: {e}")
             results[method] = Dict[str, Any](
                 success=False,
                 method=method,
@@ -141,9 +147,12 @@ def run_analysis(
     # Cleanup
     loader.clear_cache()
     
-    # Log sampling info
-    sampling_info = SamplingStrategy.get_sampling_info(config)
-    logger.info(f"Sampling: {sampling_info['description']}")
+    # Log sampling info - SIMPLE
+    spatial_step = config.get('spatial_grid_step', 1)
+    if spatial_step > 1:
+        logger.info(f"Sampling: Every {spatial_step}th row (1/{spatial_step**2} of data)")
+    else:
+        logger.info("Sampling: Using all data")
     
     # Summary
     _log_summary(results)
@@ -155,148 +164,74 @@ def _run_single(
     method: str,
     data: Any,
     output_dir: Path,
-    config: Dict[str, Any],
-    add_method_dir: bool = True
+    config: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """Run a single method - DIRECT call, no adapter.
-    
-    Args:
-        add_method_dir: If True, append method name to output_dir.
-                       Set False when calling from _run_with_variants.
-    """
+    """Run a single method."""
     method_spec = METHOD_REGISTRY[method]
-    method_func = method_spec['func']
+    method_func = method_spec['function']
+    method_output = output_dir / method
+    method_output.mkdir(parents=True, exist_ok=True)
     
-    # Only add method name if requested (avoid double nesting)
-    if add_method_dir:
-        method_output = output_dir / method
-    else:
-        method_output = output_dir
-        
-    method_config = config['methods'].get(method, {})
-    
-    # ALL methods return Dict[str, Any] - NO EXCEPTIONS!
-    result = method_func(data, method_output, **method_config)
-    
-    # Enforce type - crash if wrong
-    if not isinstance(result, Dict[str, Any]):
-        raise TypeError(f"{method} must return Dict[str, Any], got {type(result)}")
-    
-    return result
+    # Direct call - no adapters
+    return method_func(data, method_output, **config)
 
 
 def _run_with_variants(
     method: str,
     data: Any,
-    output_dir: Path,
+    output_dir: Path,  
     config: Dict[str, Any]
-) -> Dict[str, Dict[str, Any]]:
-    """Run method with auto-generated fungi variants."""
+) -> Dict[str, Any]:
+    """Run method with data variants."""
+    if not isinstance(data, DataVariants):
+        # Not a variants object, run normally
+        return _run_single(method, data, output_dir, config)
     
-    # Generate variants
-    variants = DataVariants.generate_fungi_variants(data)
-    variant_results = {}
+    results = {}
+    method_spec = METHOD_REGISTRY[method]
+    method_func = method_spec['function']
     
-    for variant_name, variant_data in variants.items():
-        logger.info(f"  Running {method} with {variant_name} fungi...")
+    for variant_name, variant_data in data.items():
+        logger.info(f"Running {method} on variant: {variant_name}")
+        variant_output = output_dir / method / variant_name
+        variant_output.mkdir(parents=True, exist_ok=True)
         
-        # Create variant-specific output dir
-        variant_suffix = DataVariants.get_variant_suffix(variant_name)
-        variant_output = output_dir / f"{method}{variant_suffix}"
-        logger.debug(f"[ORCHESTRATOR] variant_output = {variant_output}")
-        
-        # Run method - don't add method name again (add_method_dir=False)
-        result = _run_single(method, variant_data, variant_output, config, add_method_dir=False)
-        variant_results[variant_name] = result
+        try:
+            results[variant_name] = method_func(
+                variant_data, variant_output, **config
+            )
+        except Exception as e:
+            logger.error(f"Variant {variant_name} failed: {e}")
+            results[variant_name] = {'error': str(e)}
     
-    return variant_results
+    return {
+        'success': True,
+        'method': method,
+        'variants': results
+    }
 
 
 def _supports_variants(data: Any) -> bool:
-    """Check if data supports fungi variants.
-    
-    Data structure determines capability, not type checking.
-    """
-    # Try to get fungi columns - method agnostic
-    try:
-        if hasattr(data, 'columns'):
-            # DataFrame-like
-            columns = data.columns
-        elif hasattr(data, 'keys'):
-            # Dict-like
-            columns = data.keys()
-        else:
-            return False
-        
-        # Check for both fungi types
-        has_am = any('am_fungi' in str(col) for col in columns)
-        has_ecm = any('ecm_fungi' in str(col) for col in columns)
-        return has_am and has_ecm
-        
-    except Exception:
-        return False
-
-
-def _get_output_dir(config: Dict[str, Any], variant: str) -> Path:
-    """Get output directory for this run."""
-    base = Path(config['settings']['output_dir'])
-    
-    if variant != 'default':
-        output_dir = base / f'statistical_analysis_{variant}'
-    else:
-        output_dir = base / 'statistical_analysis'
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
-
-
-def _get_methods(config: Dict[str, Any], 
-                methods: Optional[List[str]]) -> List[str]:
-    """Determine which methods to run."""
-    if methods is None:
-        # Get enabled methods from config
-        methods = [
-            name for name, cfg in config['methods'].items()
-            if cfg.get('enabled', False)
-        ]
-    
-    # Validate
-    invalid = set(methods) - set(METHOD_REGISTRY.keys())
-    if invalid:
-        raise ValueError(f"Unknown methods: {invalid}")
-    
-    # Single log point - no duplicate logging in methods
-    logger.info(f"Will run {len(methods)} methods: {methods}")
-    return methods
+    """Check if data supports variant processing."""
+    return isinstance(data, DataVariants)
 
 
 def _log_summary(results: Dict[str, Any]) -> None:
-    """Log execution summary."""
-    successful = 0
-    total = 0
+    """Log analysis summary."""
+    logger.info("\n" + "="*60)
+    logger.info("ANALYSIS SUMMARY")
+    logger.info("="*60)
     
     for method, result in results.items():
         if isinstance(result, dict):
-            # Variant results - Dict[str, Dict[str, Any]]
-            for variant_name, variant_result in result.items():
-                if not isinstance(variant_result, Dict[str, Any]):
-                    raise TypeError(f"Invalid result type from {method}/{variant_name}")
-                total += 1
-                if variant_result.success:
-                    successful += 1
-                    logger.info(f"  ✓ {method} ({variant_name})")
-                else:
-                    logger.error(f"  ✗ {method} ({variant_name}): {variant_result.error}")
-        elif isinstance(result, Dict[str, Any]):
-            # Single result
-            total += 1
-            if result.success:
-                successful += 1
-                logger.info(f"  ✓ {method}")
+            if result.get('success', False):
+                logger.info(f"✓ {method}: SUCCESS")
+                if 'variants' in result:
+                    for variant in result['variants']:
+                        logger.info(f"  - {variant}: Completed")
             else:
-                logger.error(f"  ✗ {method}: {result.error}")
+                logger.info(f"✗ {method}: FAILED - {result.get('error', 'Unknown error')}")
         else:
-            # CRASH - no legacy support
-            raise TypeError(f"{method} returned invalid type: {type(result)}")
+            logger.info(f"? {method}: Unknown result type")
     
-    logger.info(f"Completed: {successful}/{total} successful")
+    logger.info("="*60)

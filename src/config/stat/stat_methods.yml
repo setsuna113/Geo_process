@@ -41,12 +41,13 @@ methods:
 # Dataset paths - Updated to new locations
 datasets:
   plants: "/maps/mwd24/richness/daru-plants-richness.tif"
-  animals: "/maps/mwd24/richness/iucn-animal-richness.tif"
+  animals: "/maps/mwd24/richness/iucn-terrestrial-richness.tif"  # FIXED: correct filename
   am_fungi: "/maps/spun/AM_fungi/AM_Fungi_Richness_Predicted.tif"
   ecm_fungi: "/maps/spun/EcM_fungi/EcM_Fungi_Richness_Predicted.tif"
   
-  # Climate data with elevation for biome analysis
-  climate_parquet: "biodiversity_climate_production_1x_corrected.parquet"
+  # Tabular data - NOW USING ARROW FILES
+  arrow_file: "/scratch/yl998/biodiv_1x_renamed.arrow"
+  # climate_parquet: "biodiversity_climate_production_1x_corrected.parquet"  # DEPRECATED - using arrow_file
 
 # Global settings
 settings:
@@ -55,4 +56,4 @@ settings:
   log_file: "biodiversity_analysis.log"
 
 # Data processing configuration
-spatial_grid_step: 1  # Use all data points (no downsampling)
+spatial_grid_step: 100  # Sample every 100th point (51M → 518K rows)
