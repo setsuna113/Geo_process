@@ -2,6 +2,12 @@
 
 This guide shows you exactly how to run Method 1 and Method 2 analysis from scratch.
 
+## Important Security Notes
+- All paths use environment variables to avoid hardcoding
+- Variables are properly quoted to handle spaces and special characters
+- Julia installation provides both user-local and system-wide options
+- Always verify data paths before running commands
+
 ## Prerequisites Installation
 
 ### Step 1: Install Julia
@@ -9,11 +15,18 @@ Copy and run these commands:
 
 ```bash
 cd ~
+# Option 1: User-local installation (no sudo required)
 wget https://julialang-s3.julialang.org/bin/linux/x64/1.9/julia-1.9.4-linux-x86_64.tar.gz
 tar -xzf julia-1.9.4-linux-x86_64.tar.gz
-sudo mv julia-1.9.4 /opt/
-sudo ln -sf /opt/julia-1.9.4/bin/julia /usr/local/bin/julia
+mkdir -p ~/bin
+ln -sf ~/julia-1.9.4/bin/julia ~/bin/julia
+export PATH="$HOME/bin:$PATH"
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
 julia --version
+
+# Option 2: System-wide installation (requires sudo)
+# sudo mv julia-1.9.4 /opt/
+# sudo ln -sf /opt/julia-1.9.4/bin/julia /usr/local/bin/julia
 ```
 
 ### Step 2: Install Julia Packages
@@ -68,7 +81,7 @@ Copy and run:
 
 ```bash
 cd src/machine_learning/spatial
-python compute_mesf.py $DATA_PATH 1000
+python compute_mesf.py "$DATA_PATH" 1000
 ```
 
 Note: This will compute MESF for sampled data (every 1000th point). The results are cached.
@@ -78,14 +91,14 @@ Copy and run:
 
 ```bash
 cd src/machine_learning/pipelines
-julia julia_hybrid_pipeline.jl method1 $DATA_PATH 1000
+julia julia_hybrid_pipeline.jl method1 "$DATA_PATH" 1000
 ```
 
 ### Step 4: Check Results
 Copy and run:
 
 ```bash
-ls -la /scratch/$USER/julia/method1*
+ls -la "/scratch/$USER/julia/method1"*
 ```
 
 ## Running Method 2 Analysis
@@ -98,14 +111,14 @@ Copy and run:
 
 ```bash
 cd src/machine_learning/pipelines
-julia julia_hybrid_pipeline.jl method2 $DATA_PATH 1000
+julia julia_hybrid_pipeline.jl method2 "$DATA_PATH" 1000
 ```
 
 ### Step 3: Check Results
 Copy and run:
 
 ```bash
-ls -la /scratch/$USER/julia/method2*
+ls -la "/scratch/$USER/julia/method2"*
 ```
 
 ## View Results
@@ -182,13 +195,10 @@ To run on the complete dataset (warning: very slow, needs 64GB+ RAM):
 
 ```bash
 # First compute MESF for full data (this will take hours)
-cd /home/yl998/Geo_process
-python3 -c "
-# [Same Python code as Step 2 but remove the line: df_sample = df.iloc[::1000].copy()]
-# [And use: df_sample = df]
-"
+cd src/machine_learning/spatial
+python compute_mesf.py "$DATA_PATH" 1
 
 # Then run Julia with no sampling
-cd /home/yl998/Geo_process/src/machine_learning/pipelines
-julia julia_hybrid_pipeline.jl method1 /scratch/yl998/biodiversity_climate_production_1x_corrected.arrow 1
+cd src/machine_learning/pipelines
+julia julia_hybrid_pipeline.jl method1 "$DATA_PATH" 1
 ```
