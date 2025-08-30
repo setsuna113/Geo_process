@@ -13,6 +13,89 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def precompute_boxplot_stats(data_groups: list, labels: list) -> Dict[str, Dict]:
+    """Precompute boxplot statistics for large datasets.
+    
+    Instead of letting matplotlib calculate stats on millions of points,
+    we pre-calculate the percentiles. Much faster.
+    
+    Args:
+        data_groups: List of arrays, one per group
+        labels: Group labels
+        
+    Returns:
+        Dictionary of statistics per group
+    """
+    stats = {}
+    
+    for data, label in zip(data_groups, labels):
+        if len(data) == 0:
+            stats[label] = None
+            continue
+            
+        # Calculate percentiles
+        q1, median, q3 = np.percentile(data, [25, 50, 75])
+        iqr = q3 - q1
+        
+        # Whiskers (1.5 * IQR rule)
+        whisker_low = q1 - 1.5 * iqr
+        whisker_high = q3 + 1.5 * iqr
+        
+        # Actual whisker values (within data range)
+        actual_low = np.min(data[data >= whisker_low]) if np.any(data >= whisker_low) else np.min(data)
+        actual_high = np.max(data[data <= whisker_high]) if np.any(data <= whisker_high) else np.max(data)
+        
+        # Outliers
+        outliers = data[(data < whisker_low) | (data > whisker_high)]
+        # Subsample outliers if too many (>1000)
+        if len(outliers) > 1000:
+            outliers = np.random.choice(outliers, 1000, replace=False)
+        
+        stats[label] = {
+            'med': median,  # matplotlib expects 'med' not 'median'
+            'q1': q1,
+            'q3': q3,
+            'whislo': actual_low,
+            'whishi': actual_high,
+            'fliers': outliers.tolist() if len(outliers) > 0 else []
+        }
+    
+    return stats
+
+
+def plot_from_stats(ax, stats: Dict[str, Dict], **kwargs) -> None:
+    """Plot boxplot from pre-computed statistics.
+    
+    Args:
+        ax: Matplotlib axis
+        stats: Pre-computed statistics from precompute_boxplot_stats
+        **kwargs: Additional arguments for boxplot
+    """
+    # Convert stats to format matplotlib expects
+    positions = []
+    plot_stats = []
+    labels = []
+    
+    for i, (label, stat) in enumerate(stats.items()):
+        if stat is None:
+            continue
+        positions.append(i)
+        labels.append(label)
+        plot_stats.append(stat)
+    
+    if not plot_stats:
+        return
+    
+    # Create boxplot from stats
+    bp = ax.bxp(plot_stats, positions=positions, **kwargs)
+    
+    # Set labels
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels)
+    
+    return bp
+
+
 def create_biome_heatmap(
     data: Dict[str, Any],
     output_path: str,
@@ -132,3 +215,22 @@ def create_biome_summary_plot(
     plt.close(fig)
     
     logger.info(f"Saved biome summary to {output_path}")
+
+
+def rasterize_for_pdf(fig, dpi: int = 150) -> None:
+    """Rasterize figure for PDF output.
+    
+    When saving lots of data points, vector format is huge.
+    This rasterizes the data while keeping text as vectors.
+    
+    Args:
+        fig: Matplotlib figure
+        dpi: Resolution for rasterization
+    """
+    # Rasterize all axes to avoid huge vector files
+    for ax in fig.get_axes():
+        ax.set_rasterized(True)
+    
+    # Keep text as vector
+    for text in fig.findobj(plt.Text):
+        text.set_rasterized(False)

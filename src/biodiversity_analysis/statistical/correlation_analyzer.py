@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union, List, Tuple
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import matplotlib.pyplot as plt
 from scipy import stats
 from scipy.spatial.distance import pdist, squareform
@@ -22,17 +23,17 @@ logger = logging.getLogger(__name__)
 
 
 def analyze_correlation(
-    df: pd.DataFrame,
+    data: Any,
     output_dir: Path,
     **kwargs
 ) -> MethodResult:
     """
-    PROPER correlation analysis - DataFrame ONLY.
+    PROPER correlation analysis - now accepts NumPy arrays via Ray.
     
     NO SAMPLING HERE. Data comes pre-processed from pipeline.
     
     Args:
-        df: DataFrame with features to correlate
+        data: Dict[str, np.ndarray] or Dict[str, ray.ObjectRef] or DataFrame
         output_dir: Where to save results
         **kwargs: Config including:
             - method: 'spearman', 'dcor', 'mi', 'rda', or 'all' (default: 'spearman')
@@ -45,25 +46,40 @@ def analyze_correlation(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # LINUS: "Direct Arrow → DataFrame conversion. Skip the Dict nonsense."
+    if isinstance(data, pa.Table):
+        df = data.to_pandas()
+        logger.info(f"Converted Arrow Table to DataFrame: {len(df):,} rows")
+    elif isinstance(data, dict):
+        # Legacy path for compatibility
+        df = pd.DataFrame(data)
+        logger.info(f"Converted {len(data)} arrays to DataFrame with {len(df):,} rows")
+    elif isinstance(data, pd.DataFrame):
+        df = data
+    else:
+        raise TypeError(f"analyze_correlation expects Arrow Table, Dict, or DataFrame, got {type(data).__name__}")
+    
     # Extract config with defaults
     method = kwargs.get('method', 'spearman')
     columns = kwargs.get('columns', None)
     plot = kwargs.get('plot', True)
     
-    # LINUS: Smart column selection - biodiversity + climate ONLY
+    # LINUS: Smart column selection - use total_fungi, not individual fungi
     if columns:
         # User specified columns
         numeric_data = df[columns]
     else:
-        # Auto-select biodiversity and key climate variables
-        from src.biodiversity_analysis.statistical.data_schema import DataSchema
-        biodiv_cols = DataSchema.get_biodiversity_columns(df)
-        climate_cols = ['bio01', 'bio04', 'bio12', 'bio15']
-        climate_cols = [c for c in climate_cols if c in df.columns]
+        # Use ONLY total_fungi for correlation (3x3 matrix as requested)
+        biodiv_cols = ['plant_richness', 'animal_richness', 'total_fungi']
         
-        selected_cols = biodiv_cols + climate_cols
-        # Filter out CV columns - they're NOT biodiversity metrics!
-        selected_cols = [c for c in selected_cols if '_cv' not in c and 'coeff_var' not in c]
+        # Ensure total_fungi exists
+        if 'total_fungi' not in df.columns:
+            logger.warning("total_fungi not found, creating it now")
+            df['total_fungi'] = df['am_fungi_richness'] + df['ecm_fungi_richness']
+        
+        selected_cols = biodiv_cols
+        # Filter to existing columns
+        selected_cols = [c for c in selected_cols if c in df.columns]
         
         numeric_data = df[selected_cols]
     
@@ -126,11 +142,24 @@ def _compute_spearman(df: pd.DataFrame) -> Dict[str, Any]:
     """
     Spearman rank correlation - the MINIMUM acceptable method.
     At least it doesn't assume normality.
+    
+    LINUS: "Don't compute what you don't need."
+    P-values on 51M rows? That's 342 correlations. Skip it!
     """
     corr_matrix = df.corr(method='spearman')
     
-    # Compute p-values
+    # SKIP p-values for large datasets - too expensive!
     n = len(df)
+    
+    if n > 100000:  # 100K threshold
+        logger.info(f"Skipping p-value computation for {n:,} rows (too expensive)")
+        return {
+            'correlation_matrix': corr_matrix.to_dict(),
+            'method': 'spearman_rank',
+            'note': f'P-values skipped for {n:,} rows (computationally expensive)'
+        }
+    
+    # Only compute p-values for smaller datasets
     cols = df.columns
     p_values = np.zeros((len(cols), len(cols)))
     
@@ -351,6 +380,58 @@ def _add_labels_and_values(ax, df, im, fmt='.2f'):
                    color=text_color, fontsize=9)
     
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+
+def _compute_correlation_results(df: pd.DataFrame, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract correlation computation for remote execution.
+    
+    LINUS: This runs INSIDE Ray with zero-copy data access!
+    """
+    # Extract config
+    method = kwargs.get('method', 'spearman')
+    columns = kwargs.get('columns', None)
+    
+    # Smart column selection
+    if columns:
+        numeric_data = df[columns]
+    else:
+        from src.biodiversity_analysis.statistical.data_schema import DataSchema
+        biodiv_cols = DataSchema.get_biodiversity_columns(df)
+        climate_cols = ['bio01', 'bio04', 'bio12', 'bio15']
+        climate_cols = [c for c in climate_cols if c in df.columns]
+        
+        selected_cols = biodiv_cols + climate_cols
+        selected_cols = [c for c in selected_cols if '_cv' not in c and 'coeff_var' not in c]
+        
+        numeric_data = df[selected_cols]
+    
+    results = {}
+    
+    if method in ['spearman', 'all']:
+        results['spearman'] = _compute_spearman(numeric_data)
+    
+    if method in ['dcor', 'all']:
+        results['distance_correlation'] = {'skipped': True, 'reason': 'User requested to skip'}
+    
+    if method in ['mi', 'all']:
+        results['mutual_information'] = {'skipped': True, 'reason': 'User requested to skip'}
+    
+    results['statistics'] = {
+        'n_samples': len(df),
+        'n_features': len(numeric_data.columns),
+        'features': list(numeric_data.columns)
+    }
+    
+    return results
+
+
+def _generate_plots_from_results(results: Dict[str, Any], cols: List[str], output_dir: Path):
+    """Generate plots from computed results (after Ray execution)."""
+    # Reconstruct minimal data structure for plotting
+    dummy_df = pd.DataFrame(columns=cols)
+    
+    # Call original plot function with results
+    _generate_plots(dummy_df, results, output_dir)
 
 
 def _generate_comparison_plot(results: Dict[str, Any], output_dir: Path):

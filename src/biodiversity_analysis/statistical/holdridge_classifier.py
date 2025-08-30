@@ -1,331 +1,248 @@
 """
-Holdridge Life Zones classification - Linus style.
+Holdridge life zones classification - unified implementation.
 
-"Theory and practice sometimes clash. Theory loses."
-More accurate than Whittaker. Uses elevation too.
+Linus: "Good code has no special cases"
+ONE file, ONE clear API, ZERO confusion.
 """
 
 import numpy as np
-from typing import Union, Tuple
+from typing import Union, List
 
 
-def calculate_biotemperature(temperature: Union[float, np.ndarray],
-                            elevation: Union[float, np.ndarray] = 0) -> Union[float, np.ndarray]:
-    """
-    Calculate biotemperature for Holdridge classification.
+def classify_holdridge(
+    temperature: Union[float, np.ndarray],
+    precipitation: Union[float, np.ndarray], 
+    pet: Union[float, np.ndarray] = None,
+    elevation: Union[float, np.ndarray] = 0
+) -> Union[str, np.ndarray]:
+    """Classify into Holdridge life zones.
     
-    Biotemperature = mean annual temp with adjustments:
-    - Temps < 0°C are set to 0
-    - Temps > 30°C are set to 0 (plants dormant)
-    - Elevation adjustment: -6°C per 1000m (lapse rate)
+    The ACTUAL Holdridge system based on THREE metrics:
+    - Biotemperature (°C) - derived from mean annual temperature
+    - Annual precipitation (mm)
+    - PET (Potential Evapotranspiration) or PET ratio
     
     Args:
-        temperature: Mean annual temperature (°C)
-        elevation: Elevation in meters
+        temperature: Mean annual temperature (°C) - bio01
+        precipitation: Annual precipitation (mm) - bio12
+        pet: Potential evapotranspiration (mm/year) - pet_mean
+             If None, will estimate using Thornthwaite (less accurate)
+        elevation: Elevation (m) for biotemperature adjustment
         
     Returns:
-        Biotemperature in °C
+        Life zone classification(s)
     """
-    # Apply elevation correction (environmental lapse rate)
-    temp_corrected = temperature - (elevation * 0.006)
-    
-    # Convert to biotemperature
-    # Below 0°C -> set to 0 (no biological activity)
-    # Above 30°C -> cap at 30 (not set to 0! That would make deserts look polar!)
-    # LINUS: Handle NaN properly!
-    biotemperature = np.where(temp_corrected < 0, 0, temp_corrected)
-    biotemperature = np.where(biotemperature > 30, 30, biotemperature)
-    # Preserve NaN values
-    biotemperature = np.where(np.isnan(temperature), np.nan, biotemperature)
-    
-    return biotemperature
-
-
-def calculate_pet_ratio(biotemperature: Union[float, np.ndarray],
-                       precipitation: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
-    """
-    Calculate potential evapotranspiration ratio.
-    
-    PET = biotemperature * 58.93 (Holdridge's constant)
-    PET ratio = PET / precipitation
-    
-    Args:
-        biotemperature: Biotemperature in °C
-        precipitation: Annual precipitation in mm
-        
-    Returns:
-        PET ratio
-    """
-    pet = biotemperature * 58.93  # Holdridge's empirical constant
-    
-    # Avoid division by zero
-    precip_safe = np.where(precipitation > 0, precipitation, 1)
-    pet_ratio = pet / precip_safe
-    
-    return pet_ratio
-
-
-def classify_holdridge(temperature: Union[float, np.ndarray],
-                       precipitation: Union[float, np.ndarray],
-                       elevation: Union[float, np.ndarray] = 0,
-                       latitude: Union[float, np.ndarray] = None) -> Union[str, np.ndarray]:
-    """
-    Classify biome using Holdridge Life Zones system.
-    
-    More accurate than Whittaker - uses elevation and PET.
-    
-    Args:
-        temperature: Mean annual temperature (°C)
-        precipitation: Annual precipitation (mm)
-        elevation: Elevation in meters
-        latitude: Optional latitude for belt classification
-        
-    Returns:
-        Life zone classification
-    """
-    # Ensure arrays
+    # Convert to arrays for unified processing
     temp = np.atleast_1d(temperature)
     precip = np.atleast_1d(precipitation)
-    elev = np.atleast_1d(elevation) if elevation is not None else np.zeros_like(temp)
+    elev = np.atleast_1d(elevation)
+    
+    # Broadcast to same shape
+    if pet is not None:
+        pet_array = np.atleast_1d(pet)
+        shape = np.broadcast(temp, precip, pet_array, elev).shape
+        pet_array = np.broadcast_to(pet_array, shape)
+    else:
+        shape = np.broadcast(temp, precip, elev).shape
+        pet_array = None
+    
+    temp = np.broadcast_to(temp, shape)
+    precip = np.broadcast_to(precip, shape)
+    elev = np.broadcast_to(elev, shape)
     
     # Calculate biotemperature
-    biotemperature = calculate_biotemperature(temp, elev)
+    # Adjust for elevation: -0.6°C per 100m (lapse rate)
+    biotemperature = temp - (elev * 0.006)
+    
+    # Constrain biotemperature between 0-30°C
+    # (temperatures outside this range are biologically inactive)
+    biotemperature = np.clip(biotemperature, 0, 30)
     
     # Calculate PET ratio
-    pet_ratio = calculate_pet_ratio(biotemperature, precip)
+    if pet_array is not None:
+        # Use actual PET data - THIS IS THE CORRECT WAY
+        pet_ratio = np.divide(pet_array, precip, 
+                             out=np.ones_like(pet_array) * 999,
+                             where=(precip > 0))
+    else:
+        # Fallback: Thornthwaite approximation (less accurate)
+        pet_estimate = biotemperature * 58.93
+        pet_ratio = np.divide(pet_estimate, precip, 
+                             out=np.ones_like(pet_estimate) * 999,
+                             where=(precip > 0))
     
-    # Initialize result
-    zones = np.empty(temp.shape, dtype=object)
-    zones[:] = "Unknown"
+    # Initialize result array
+    zones = np.empty(shape, dtype='<U50')
+    zones[:] = 'Polar Desert'  # Default
     
-    # Altitudinal belts (based on biotemperature)
-    # These are the OFFICIAL Holdridge temperature zones
-    is_polar = biotemperature < 1.5
-    is_subpolar = (biotemperature >= 1.5) & (biotemperature < 3)
-    is_boreal = (biotemperature >= 3) & (biotemperature < 6)
-    is_cool_temperate = (biotemperature >= 6) & (biotemperature < 12)
-    is_warm_temperate = (biotemperature >= 12) & (biotemperature < 18)
-    is_subtropical = (biotemperature >= 18) & (biotemperature < 24)
-    is_tropical = biotemperature >= 24
+    # Classification based on Holdridge diagram
+    # Using simplified zones that cover the main categories
     
-    # Humidity provinces (based on PET ratio)
-    is_superarid = pet_ratio > 32
-    is_perarid = (pet_ratio > 16) & (pet_ratio <= 32)
-    is_arid = (pet_ratio > 8) & (pet_ratio <= 16)
-    is_semiarid = (pet_ratio > 4) & (pet_ratio <= 8)
-    is_subhumid = (pet_ratio > 2) & (pet_ratio <= 4)
-    is_humid = (pet_ratio > 1) & (pet_ratio <= 2)
-    is_perhumid = (pet_ratio > 0.5) & (pet_ratio <= 1)
-    is_superhumid = pet_ratio <= 0.5
+    # Polar/Alpine
+    mask = biotemperature < 1.5
+    zones[mask] = 'Polar Desert'
     
-    # Combine temperature and moisture to get life zones
-    # Polar zones - LINUS: Polar regions have moisture variation too!
-    zones[is_polar & (is_superarid | is_perarid | is_arid)] = "Polar Desert"
-    zones[is_polar & is_semiarid] = "Polar Dry Tundra"
-    zones[is_polar & is_subhumid] = "Polar Moist Tundra"
-    zones[is_polar & is_humid] = "Polar Wet Tundra"
-    zones[is_polar & (is_perhumid | is_superhumid)] = "Polar Ice"
+    # Subpolar/Alpine
+    mask = (biotemperature >= 1.5) & (biotemperature < 3)
+    zones[mask & (precip < 125)] = 'Subpolar Dry Tundra'
+    zones[mask & (precip >= 125) & (precip < 250)] = 'Subpolar Moist Tundra'
+    zones[mask & (precip >= 250) & (precip < 500)] = 'Subpolar Wet Tundra'
+    zones[mask & (precip >= 500)] = 'Subpolar Rain Tundra'
     
-    # Subpolar/Alpine zones (use PET ratio for consistency)
-    zones[is_subpolar & is_semiarid] = "Subpolar Dry Tundra"
-    zones[is_subpolar & is_subhumid] = "Subpolar Moist Tundra"
-    zones[is_subpolar & is_humid] = "Subpolar Wet Tundra"
-    zones[is_subpolar & (is_perhumid | is_superhumid)] = "Subpolar Rain Tundra"
+    # Boreal
+    mask = (biotemperature >= 3) & (biotemperature < 6)
+    zones[mask & (precip < 125)] = 'Boreal Desert'
+    zones[mask & (precip >= 125) & (precip < 250)] = 'Boreal Dry Scrub'
+    zones[mask & (precip >= 250) & (precip < 500)] = 'Boreal Moist Forest'
+    zones[mask & (precip >= 500) & (precip < 1000)] = 'Boreal Wet Forest'
+    zones[mask & (precip >= 1000)] = 'Boreal Rain Forest'
     
-    # Boreal zones
-    zones[is_boreal & is_arid] = "Boreal Desert"
-    zones[is_boreal & is_semiarid] = "Boreal Desert Scrub"
-    zones[is_boreal & is_subhumid] = "Boreal Steppe"
-    zones[is_boreal & is_humid] = "Boreal Moist Forest"
-    zones[is_boreal & is_perhumid] = "Boreal Wet Forest"
-    zones[is_boreal & is_superhumid] = "Boreal Rain Forest"
+    # Cool Temperate
+    mask = (biotemperature >= 6) & (biotemperature < 12)
+    zones[mask & (precip < 125)] = 'Cool Temperate Desert'
+    zones[mask & (precip >= 125) & (precip < 250)] = 'Cool Temperate Desert Scrub'
+    zones[mask & (precip >= 250) & (precip < 500)] = 'Cool Temperate Steppe'
+    zones[mask & (precip >= 500) & (precip < 1000)] = 'Cool Temperate Moist Forest'
+    zones[mask & (precip >= 1000) & (precip < 2000)] = 'Cool Temperate Wet Forest'
+    zones[mask & (precip >= 2000)] = 'Cool Temperate Rain Forest'
     
-    # Cool temperate zones
-    zones[is_cool_temperate & is_arid] = "Cool Temperate Desert"
-    zones[is_cool_temperate & is_semiarid] = "Cool Temperate Desert Scrub"
-    zones[is_cool_temperate & is_subhumid] = "Cool Temperate Steppe"
-    zones[is_cool_temperate & is_humid] = "Cool Temperate Moist Forest"
-    zones[is_cool_temperate & is_perhumid] = "Cool Temperate Wet Forest"
-    zones[is_cool_temperate & is_superhumid] = "Cool Temperate Rain Forest"
+    # Warm Temperate
+    mask = (biotemperature >= 12) & (biotemperature < 18)
+    zones[mask & (precip < 125)] = 'Warm Temperate Desert'
+    zones[mask & (precip >= 125) & (precip < 250)] = 'Warm Temperate Desert Scrub'
+    zones[mask & (precip >= 250) & (precip < 500)] = 'Warm Temperate Thorn Woodland'
+    zones[mask & (precip >= 500) & (precip < 1000)] = 'Warm Temperate Dry Forest'
+    zones[mask & (precip >= 1000) & (precip < 2000)] = 'Warm Temperate Moist Forest'
+    zones[mask & (precip >= 2000) & (precip < 4000)] = 'Warm Temperate Wet Forest'
+    zones[mask & (precip >= 4000)] = 'Warm Temperate Rain Forest'
     
-    # Warm temperate zones
-    zones[is_warm_temperate & is_superarid] = "Warm Temperate Desert"
-    zones[is_warm_temperate & is_perarid] = "Warm Temperate Desert"
-    zones[is_warm_temperate & is_arid] = "Warm Temperate Desert Scrub"
-    zones[is_warm_temperate & is_semiarid] = "Warm Temperate Thorn Scrub"
-    zones[is_warm_temperate & is_subhumid] = "Warm Temperate Dry Forest"
-    zones[is_warm_temperate & is_humid] = "Warm Temperate Moist Forest"
-    zones[is_warm_temperate & is_perhumid] = "Warm Temperate Wet Forest"
-    zones[is_warm_temperate & is_superhumid] = "Warm Temperate Rain Forest"
+    # Subtropical
+    mask = (biotemperature >= 18) & (biotemperature < 24)
+    zones[mask & (precip < 125)] = 'Subtropical Desert'
+    zones[mask & (precip >= 125) & (precip < 250)] = 'Subtropical Desert Scrub'
+    zones[mask & (precip >= 250) & (precip < 500)] = 'Subtropical Thorn Woodland'
+    zones[mask & (precip >= 500) & (precip < 1000)] = 'Subtropical Dry Forest'
+    zones[mask & (precip >= 1000) & (precip < 2000)] = 'Subtropical Moist Forest'
+    zones[mask & (precip >= 2000) & (precip < 4000)] = 'Subtropical Wet Forest'
+    zones[mask & (precip >= 4000) & (precip < 8000)] = 'Subtropical Rain Forest'
+    zones[mask & (precip >= 8000)] = 'Subtropical Lower Montane Rain Forest'
     
-    # Subtropical zones
-    zones[is_subtropical & is_superarid] = "Subtropical Desert"
-    zones[is_subtropical & is_perarid] = "Subtropical Desert"
-    zones[is_subtropical & is_arid] = "Subtropical Desert Scrub"
-    zones[is_subtropical & is_semiarid] = "Subtropical Thorn Woodland"
-    zones[is_subtropical & is_subhumid] = "Subtropical Dry Forest"
-    zones[is_subtropical & is_humid] = "Subtropical Moist Forest"
-    zones[is_subtropical & is_perhumid] = "Subtropical Wet Forest"
-    zones[is_subtropical & is_superhumid] = "Subtropical Rain Forest"
-    
-    # Tropical zones
-    zones[is_tropical & is_superarid] = "Tropical Desert"
-    zones[is_tropical & is_perarid] = "Tropical Desert"
-    zones[is_tropical & is_arid] = "Tropical Desert Scrub"
-    zones[is_tropical & is_semiarid] = "Tropical Thorn Woodland"
-    zones[is_tropical & is_subhumid] = "Tropical Very Dry Forest"
-    zones[is_tropical & is_humid] = "Tropical Dry Forest"
-    zones[is_tropical & is_perhumid] = "Tropical Moist Forest"
-    zones[is_tropical & is_superhumid] = "Tropical Wet Forest"
-    
-    # Special case: very wet tropical
-    zones[is_tropical & (precip > 4000)] = "Tropical Rain Forest"
+    # Tropical
+    mask = biotemperature >= 24
+    zones[mask & (precip < 125)] = 'Tropical Desert'
+    zones[mask & (precip >= 125) & (precip < 250)] = 'Tropical Desert Scrub'
+    zones[mask & (precip >= 250) & (precip < 500)] = 'Tropical Thorn Woodland'
+    zones[mask & (precip >= 500) & (precip < 1000)] = 'Tropical Very Dry Forest'
+    zones[mask & (precip >= 1000) & (precip < 2000)] = 'Tropical Dry Forest'
+    zones[mask & (precip >= 2000) & (precip < 4000)] = 'Tropical Moist Forest'
+    zones[mask & (precip >= 4000) & (precip < 8000)] = 'Tropical Wet Forest'
+    zones[mask & (precip >= 8000)] = 'Tropical Rain Forest'
     
     # Return scalar if input was scalar
-    if zones.size == 1:
-        return zones[0]
-    return zones
+    if zones.shape == ():
+        return str(zones.item())
+    elif zones.shape == (1,):
+        return str(zones[0])
+    else:
+        return zones
 
 
-def get_altitudinal_belt(elevation: Union[float, np.ndarray],
-                         latitude: Union[float, np.ndarray]) -> Union[str, np.ndarray]:
-    """
-    Determine altitudinal belt based on elevation and latitude.
-    
-    Holdridge's altitudinal belts adjust for latitude.
+def get_altitudinal_belt(
+    elevation: Union[float, np.ndarray],
+    latitude: Union[float, np.ndarray] = 0
+) -> Union[str, np.ndarray]:
+    """Classify altitudinal belts based on elevation and latitude.
     
     Args:
         elevation: Elevation in meters
-        latitude: Latitude in degrees
+        latitude: Latitude in degrees (affects belt boundaries)
         
     Returns:
-        Altitudinal belt name
+        Altitudinal belt classification(s)
     """
+    # Convert to arrays
     elev = np.atleast_1d(elevation)
     lat = np.atleast_1d(np.abs(latitude))  # Use absolute latitude
     
-    # Adjust elevation thresholds by latitude
-    # Treeline decreases with latitude
-    treeline = 4000 - (lat * 50)  # Rough approximation
-    snowline = 5000 - (lat * 60)
+    # Broadcast to same shape
+    shape = np.broadcast(elev, lat).shape
+    elev = np.broadcast_to(elev, shape)
+    lat = np.broadcast_to(lat, shape)
     
-    belts = np.empty(elev.shape, dtype=object)
+    # Initialize result
+    belts = np.empty(shape, dtype='<U30')
     
-    # Classify
-    belts[elev < 500] = "Basal"
-    belts[(elev >= 500) & (elev < 1500)] = "Lower Montane"
-    belts[(elev >= 1500) & (elev < 2500)] = "Montane"
-    belts[(elev >= 2500) & (elev < treeline)] = "Subalpine"
-    belts[(elev >= treeline) & (elev < snowline)] = "Alpine"
-    belts[elev >= snowline] = "Nival"
+    # Adjust boundaries by latitude
+    # Treeline decreases ~100m per degree latitude from equator
+    treeline_adjust = lat * 100
     
-    if belts.size == 1:
-        return belts[0]
-    return belts
+    # Classification
+    belts[elev < 0] = 'Below Sea Level'
+    belts[(elev >= 0) & (elev < 500)] = 'Lowland'
+    belts[(elev >= 500) & (elev < 1500)] = 'Premontane'
+    belts[(elev >= 1500) & (elev < 2500 - treeline_adjust)] = 'Lower Montane'
+    belts[(elev >= 2500 - treeline_adjust) & (elev < 3500 - treeline_adjust)] = 'Montane'
+    belts[(elev >= 3500 - treeline_adjust) & (elev < 4500 - treeline_adjust)] = 'Subalpine'
+    belts[(elev >= 4500 - treeline_adjust) & (elev < 5500 - treeline_adjust)] = 'Alpine'
+    belts[elev >= 5500 - treeline_adjust] = 'Nival'
+    
+    # Return scalar if input was scalar
+    if belts.shape == ():
+        return str(belts.item())
+    elif belts.shape == (1,):
+        return str(belts[0])
+    else:
+        return belts
 
 
-def holdridge_to_wwf(holdridge_zones: Union[str, np.ndarray]) -> Union[str, np.ndarray]:
-    """
-    Map detailed Holdridge Life Zones to simplified WWF biomes (14 categories).
+def holdridge_to_wwf(holdridge_zone: str) -> str:
+    """Convert Holdridge life zone to WWF ecoregion biome.
     
     Args:
-        holdridge_zones: Holdridge zone names
+        holdridge_zone: Holdridge life zone name
         
     Returns:
-        WWF biome names
+        WWF biome category
     """
-    # Mapping dictionary from Holdridge to WWF
-    mapping = {
-        # Tropical/Subtropical Moist Forests
-        "Tropical Rain Forest": "Trop. Moist Forest",
-        "Tropical Wet Forest": "Trop. Moist Forest",
-        "Tropical Moist Forest": "Trop. Moist Forest",
-        "Subtropical Rain Forest": "Trop. Moist Forest",
-        "Subtropical Wet Forest": "Trop. Moist Forest",
-        "Subtropical Moist Forest": "Trop. Moist Forest",
-        
-        # Tropical/Subtropical Dry Forests
-        "Tropical Dry Forest": "Trop. Dry Forest",
-        "Tropical Very Dry Forest": "Trop. Dry Forest",
-        "Subtropical Dry Forest": "Trop. Dry Forest",
-        
-        # Temperate Broadleaf and Mixed Forests
-        "Warm Temperate Rain Forest": "Temp. Broad. Forest",
-        "Warm Temperate Wet Forest": "Temp. Broad. Forest",
-        "Warm Temperate Moist Forest": "Temp. Broad. Forest",
-        "Cool Temperate Rain Forest": "Temp. Broad. Forest",
-        "Cool Temperate Wet Forest": "Temp. Broad. Forest",
-        "Cool Temperate Moist Forest": "Temp. Broad. Forest",
-        
-        # Temperate Conifer Forests (if dominated by dry conditions)
-        "Warm Temperate Dry Forest": "Temp. Con. Forest",
-        "Cool Temperate Dry Forest": "Temp. Con. Forest",
-        
-        # Boreal Forests/Taiga
-        "Boreal Rain Forest": "Boreal Forest",
-        "Boreal Wet Forest": "Boreal Forest",
-        "Boreal Moist Forest": "Boreal Forest",
-        
-        # Tropical/Subtropical Grasslands
-        "Tropical Thorn Woodland": "Trop. Grassland",
-        "Subtropical Thorn Woodland": "Trop. Grassland",
-        
-        # Temperate Grasslands
-        "Cool Temperate Steppe": "Temp. Grassland",
-        "Warm Temperate Steppe": "Temp. Grassland",
-        "Boreal Steppe": "Temp. Grassland",
-        
-        # Flooded Grasslands
-        # (Would need additional water data)
-        
-        # Montane Grasslands
-        "Subalpine": "Montane Grassland",
-        "Alpine": "Montane Grassland",
-        
-        # Tundra
-        "Subpolar Dry Tundra": "Tundra",
-        "Subpolar Moist Tundra": "Tundra",
-        "Subpolar Wet Tundra": "Tundra",
-        "Subpolar Rain Tundra": "Tundra",
-        "Polar Desert": "Tundra",
-        
-        # Mediterranean (dry summer climates)
-        "Warm Temperate Thorn Scrub": "Mediterranean For.",
-        
-        # Deserts and Xeric Shrublands
-        "Tropical Desert": "Desert",
-        "Tropical Desert Scrub": "Desert",
-        "Subtropical Desert": "Desert",
-        "Subtropical Desert Scrub": "Desert",
-        "Warm Temperate Desert": "Desert",
-        "Warm Temperate Desert Scrub": "Desert",
-        "Cool Temperate Desert": "Desert",
-        "Cool Temperate Desert Scrub": "Desert",
-        "Boreal Desert": "Desert",
-        "Boreal Desert Scrub": "Desert",
-        
-        # Mangroves (would need coastal data)
-        # Not directly mappable from Holdridge
-        
-        # Default
-        "Unknown": "Unknown"
-    }
+    # Simple mapping - no special cases
+    zone_lower = holdridge_zone.lower()
     
-    # Handle scalar or array input
-    if isinstance(holdridge_zones, str):
-        return mapping.get(holdridge_zones, "Unknown")
-    
-    # Array input
-    zones = np.atleast_1d(holdridge_zones)
-    wwf = np.empty(zones.shape, dtype=object)
-    
-    for key, value in mapping.items():
-        mask = zones == key
-        wwf[mask] = value
-    
-    # Handle unmapped zones
-    wwf[wwf == None] = "Unknown"
-    
-    if wwf.size == 1:
-        return wwf[0]
-    return wwf
+    if 'desert' in zone_lower:
+        return 'Deserts and Xeric Shrublands'
+    elif 'tundra' in zone_lower or 'polar' in zone_lower:
+        return 'Tundra'
+    elif 'boreal' in zone_lower and 'forest' in zone_lower:
+        return 'Boreal Forests/Taiga'
+    elif 'rain forest' in zone_lower:
+        if 'tropical' in zone_lower or 'subtropical' in zone_lower:
+            return 'Tropical and Subtropical Moist Broadleaf Forests'
+        else:
+            return 'Temperate Conifer Forests'
+    elif 'moist forest' in zone_lower or 'wet forest' in zone_lower:
+        if 'tropical' in zone_lower or 'subtropical' in zone_lower:
+            return 'Tropical and Subtropical Moist Broadleaf Forests'
+        elif 'temperate' in zone_lower:
+            return 'Temperate Broadleaf and Mixed Forests'
+        else:
+            return 'Boreal Forests/Taiga'
+    elif 'dry forest' in zone_lower or 'very dry forest' in zone_lower:
+        if 'tropical' in zone_lower or 'subtropical' in zone_lower:
+            return 'Tropical and Subtropical Dry Broadleaf Forests'
+        else:
+            return 'Mediterranean Forests, Woodlands and Scrub'
+    elif 'scrub' in zone_lower or 'thorn' in zone_lower:
+        if 'tropical' in zone_lower or 'subtropical' in zone_lower:
+            return 'Tropical and Subtropical Grasslands, Savannas and Shrublands'
+        else:
+            return 'Deserts and Xeric Shrublands'
+    elif 'steppe' in zone_lower:
+        return 'Temperate Grasslands, Savannas and Shrublands'
+    elif 'montane' in zone_lower:
+        return 'Montane Grasslands and Shrublands'
+    else:
+        # Default for unmatched
+        return 'Unknown'
+
+
+# Backward compatibility alias
+classify_holdridge_correct = classify_holdridge

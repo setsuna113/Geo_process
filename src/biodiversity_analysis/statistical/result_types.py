@@ -21,7 +21,9 @@ class MethodResult:
         data: Optional[Dict[str, Any]] = None,
         error: Optional[str] = None,
         method: Optional[str] = None,
-        warnings: Optional[list] = None
+        warnings: Optional[list] = None,
+        output_dir: Optional[Any] = None,
+        metrics: Optional[Dict[str, Any]] = None
     ):
         """Create a result. No magic."""
         self.success = success
@@ -29,6 +31,8 @@ class MethodResult:
         self.error = error
         self.method = method
         self.warnings = warnings or []
+        self.output_dir = output_dir
+        self.metrics = metrics or {}
     
     def __bool__(self):
         """Result is truthy if successful."""

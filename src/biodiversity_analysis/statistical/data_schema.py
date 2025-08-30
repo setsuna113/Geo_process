@@ -88,6 +88,74 @@ class DataSchema:
         return True
     
     @staticmethod
+    def validate(df, method_name: str):
+        """Validate and complete DataFrame for analysis.
+        
+        Simple validation - ensure required columns exist.
+        Add missing columns with defaults.
+        
+        Args:
+            df: DataFrame to validate
+            method_name: Method calling validation
+            
+        Returns:
+            Validated DataFrame
+        """
+        import pandas as pd
+        
+        # Ensure it's a DataFrame
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError(f"{method_name} requires DataFrame")
+        
+        # Required columns for any analysis
+        required = ['x', 'y']
+        for col in required:
+            if col not in df.columns:
+                raise ValueError(f"Missing required column: {col}")
+        
+        # Climate columns for biome analysis
+        if method_name == 'biome_analysis':
+            if 'bio01' not in df.columns:
+                raise ValueError("biome_analysis requires bio01 (temperature)")
+            if 'bio12' not in df.columns:
+                raise ValueError("biome_analysis requires bio12 (precipitation)")
+        
+        # Add elevation if missing
+        if 'elevation' not in df.columns:
+            logger.info("No elevation data, using sea level (0m)")
+            df['elevation'] = 0
+        
+        return df
+    
+    @staticmethod
+    def get_biodiversity_columns(df) -> List[str]:
+        """Get biodiversity columns from DataFrame.
+        
+        Args:
+            df: DataFrame
+            
+        Returns:
+            List of biodiversity column names
+        """
+        # Known biodiversity columns
+        biodiv_names = {
+            'plants', 'animals', 
+            'am_fungi', 'ecm_fungi', 'fungi', 'merged_fungi',
+            'plant_richness', 'animal_richness', 'fungal_richness'
+        }
+        
+        # Find which ones exist in the DataFrame
+        biodiv_cols = []
+        for col in df.columns:
+            if col.lower() in biodiv_names or 'richness' in col.lower():
+                biodiv_cols.append(col)
+        
+        if not biodiv_cols:
+            logger.warning("No biodiversity columns found")
+        
+        return biodiv_cols
+    
+    @staticmethod
     def get_data_summary(data: Dict[str, np.ndarray]) -> Dict[str, Any]:
         """Get summary statistics for data.
         
