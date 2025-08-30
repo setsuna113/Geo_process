@@ -4,7 +4,7 @@ import os
 import yaml
 from typing import Dict, Any, Optional
 from pathlib import Path
-from src.core_abstractions import IMethodConfig
+from src.abstractions import IMethodConfig
 
 
 class KMeansHierarchicalConfigLoader(IMethodConfig):

@@ -5,7 +5,7 @@ import xarray as xr
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple, List, Callable
 
-from src.core_abstractions import IAnalyzer, AnalysisResult
+from src.abstractions import IAnalyzer, AnalysisResult
 from .analyzer import GeoSOMAnalyzer
 
 

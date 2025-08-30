@@ -18,7 +18,7 @@ except ImportError:
     HAS_WORDCLOUD = False
 import json
 
-from src.core_abstractions import CPFactors, TensorData
+from src.abstractions import CPFactors, TensorData
 
 logger = logging.getLogger(__name__)
 

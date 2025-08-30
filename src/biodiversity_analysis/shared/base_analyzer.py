@@ -13,8 +13,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List, Callable
 
-from src.core_abstractions import IAnalyzer, AnalysisResult, AnalysisMetadata
-from src.core_abstractions import BiodiversityData
+from src.abstractions import IAnalyzer, AnalysisResult, AnalysisMetadata
+from src.abstractions import BiodiversityData
 from src.config import get_biodiversity_config
 from .data import ParquetLoader
 

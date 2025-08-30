@@ -20,7 +20,7 @@ import json
 from scipy.spatial.distance import cdist
 # Moran's I calculation is in spatial_utils module
 
-from src.core_abstractions import SOMConfig, SOMTrainingResult
+from src.abstractions import SOMConfig, SOMTrainingResult
 from ..utils.constants import (
     INVALID_DISTANCE, INVALID_INDEX, INVALID_COORDINATE,
     MIN_VALID_FEATURES, INSUFFICIENT_FEATURES_MSG, DEFAULT_GEO_DISTANCE_NORM

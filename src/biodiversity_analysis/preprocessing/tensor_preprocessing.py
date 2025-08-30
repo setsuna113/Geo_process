@@ -11,7 +11,7 @@ from typing import List, Tuple, Optional, Dict, Any, Union
 from scipy import stats
 from sklearn.preprocessing import StandardScaler
 
-from src.core_abstractions import TensorData
+from src.abstractions import TensorData
 
 logger = logging.getLogger(__name__)
 

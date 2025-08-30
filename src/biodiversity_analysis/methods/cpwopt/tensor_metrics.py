@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from scipy.stats import pearsonr
 from numpy.linalg import norm
 
-from src.core_abstractions import CPFactors, TensorMetrics
+from src.abstractions import CPFactors, TensorMetrics
 from src.biodiversity_analysis.shared.tensor_utils import (
     cp_reconstruct, unfold, weighted_norm
 )

@@ -5,7 +5,7 @@ import pandas as pd
 from typing import Tuple, List, Dict, Optional
 from dataclasses import dataclass
 
-from src.core_abstractions import TensorData
+from src.abstractions import TensorData
 
 
 @dataclass
@@ -317,7 +317,7 @@ def create_validation_dataset() -> Tuple[TensorData, CPFactors]:
     Returns:
         Tuple of (tensor_data, true_factors)
     """
-    from src.core_abstractions import CPFactors
+    from src.abstractions import CPFactors
     
     # Create simple, interpretable structure
     lat_bins = 15

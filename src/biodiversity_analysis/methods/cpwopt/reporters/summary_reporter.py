@@ -14,7 +14,7 @@ import logging
 import json
 from datetime import datetime
 
-from src.core_abstractions import CPFactors, TensorMetrics
+from src.abstractions import CPFactors, TensorMetrics
 
 logger = logging.getLogger(__name__)
 

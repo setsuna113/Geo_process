@@ -9,7 +9,7 @@ import logging
 from typing import Optional, Tuple, List, Union, Dict, Any
 from scipy import sparse
 
-from src.core_abstractions import TensorData
+from src.abstractions import TensorData
 
 logger = logging.getLogger(__name__)
 

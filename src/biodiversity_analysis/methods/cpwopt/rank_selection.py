@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 from dataclasses import dataclass
 
 from .core import CPWOPT
-from src.core_abstractions import TensorData
+from src.abstractions import TensorData
 
 logger = logging.getLogger(__name__)
 
