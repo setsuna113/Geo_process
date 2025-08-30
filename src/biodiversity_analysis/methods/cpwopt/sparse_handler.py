@@ -15,7 +15,7 @@ import logging
 from typing import Optional, List, Union
 from dataclasses import dataclass
 
-from src.abstractions.types.tensor_types import TensorData, CPFactors
+from src.core_abstractions import TensorData, CPFactors
 from .hicoo_handler import (
     HiCOOTensor, HiCOOHandler, 
     convert_to_hicoo, compute_mttkrp_hicoo

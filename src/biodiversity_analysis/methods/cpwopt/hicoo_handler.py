@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from numba import jit  # Removed prange import (unused)
 import math
 
-from src.abstractions.types.tensor_types import TensorData
+from src.core_abstractions import TensorData
 
 logger = logging.getLogger(__name__)
 
