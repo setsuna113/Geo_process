@@ -14,14 +14,13 @@ import logging
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
 
 logger = get_logger(__name__)
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 
 def analyze_latitudinal(
     data: Dict[str, np.ndarray],
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze latitudinal gradients in biodiversity.
     
@@ -35,7 +34,7 @@ def analyze_latitudinal(
             - plot: Generate visualizations (default: True)
         
     Returns:
-        MethodResult with latitudinal gradient statistics
+        Dict[str, Any] with latitudinal gradient statistics
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -148,7 +147,7 @@ def analyze_latitudinal(
     # Save results
     save_results(results, output_dir / 'latitudinal_gradients.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='latitudinal',
         output_dir=output_dir,

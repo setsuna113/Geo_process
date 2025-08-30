@@ -14,7 +14,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 logger = get_logger(__name__)
 
@@ -122,7 +121,7 @@ def analyze_partial_correlations(
     df: pd.DataFrame,
     output_dir: Path,
     **config  # ALL config comes here - NO SPECIAL ARGS
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze partial correlations - DataFrame ONLY.
     
@@ -138,7 +137,7 @@ def analyze_partial_correlations(
             - plot: Generate visualizations
         
     Returns:
-        MethodResult comparing simple vs partial correlations
+        Dict[str, Any] comparing simple vs partial correlations
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -271,7 +270,7 @@ def analyze_partial_correlations(
     # Generate summary
     _generate_summary(results, output_dir)
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='partial_correlation',
         output_dir=output_dir,

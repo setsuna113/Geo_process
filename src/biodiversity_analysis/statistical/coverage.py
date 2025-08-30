@@ -11,7 +11,6 @@ from typing import Dict, Any, Union
 import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 logger = get_logger(__name__)
 
@@ -20,7 +19,7 @@ def analyze_coverage(
     data: Dict[str, np.ndarray],
     output_dir: Path,
     **kwargs  # Ignore extra config
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze data coverage - SIMPLE version.
     
@@ -31,7 +30,7 @@ def analyze_coverage(
         output_dir: Output directory
         
     Returns:
-        MethodResult with coverage statistics
+        Dict[str, Any] with coverage statistics
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +83,7 @@ def analyze_coverage(
     # Save results
     save_results(results, output_dir / 'coverage_results.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='coverage',
         output_dir=output_dir,

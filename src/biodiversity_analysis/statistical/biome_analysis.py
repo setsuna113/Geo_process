@@ -21,7 +21,6 @@ from src.biodiversity_analysis.statistical.holdridge_proper import (
     holdridge_to_wwf
 )
 from src.biodiversity_analysis.statistical.data_schema import DataSchema
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 from src.biodiversity_analysis.statistical.optimized_visualization import (
     precompute_boxplot_stats, plot_from_stats
 )
@@ -33,7 +32,7 @@ def analyze_by_biome(
     df: Any,
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze biodiversity data grouped by biome.
     
@@ -177,7 +176,7 @@ def analyze_by_biome(
     if kwargs.get('plot', True):
         _plot_biome_analysis(df, biodiv_cols, output_dir)
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='biome_analysis',
         output_dir=output_dir,

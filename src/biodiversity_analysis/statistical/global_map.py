@@ -16,18 +16,15 @@ from matplotlib.patches import Rectangle
 import logging
 
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
-from src.biodiversity_analysis.statistical.smart_visualization import smart_imshow
-from src.biodiversity_analysis.statistical.professional_map_visualizer import ProfessionalMapVisualizer
 
 logger = get_logger(__name__)
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 
 def analyze_global_maps(
     data: Dict[str, np.ndarray],
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Create global map visualizations.
     
@@ -46,7 +43,7 @@ def analyze_global_maps(
     logger.info(f"[DEBUG] Created/verified directory: {output_dir}")
     
     if not data:
-        return MethodResult(
+        return Dict[str, Any](
             success=False,
             method='global_maps',
             error='No data provided'
@@ -84,7 +81,7 @@ def analyze_global_maps(
     # Save statistics
     save_results(stats, output_dir / 'global_map_stats.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='global_maps',
         output_dir=output_dir,
@@ -164,7 +161,7 @@ def _create_comparison_plot(
             
         ax = axes[idx]
         
-        # Data will be handled by smart_imshow
+        # Data will be handled by plt.imshow
         arr_viz = arr
         
         # Mask and plot
@@ -174,8 +171,8 @@ def _create_comparison_plot(
         if len(valid) > 0:
             vmin, vmax = np.percentile(valid, [2, 98])
             
-            # Use smart_imshow for large arrays
-            im = smart_imshow(
+            # Use plt.imshow for large arrays
+            im = plt.imshow(
                 ax,
                 masked,
                 cmap='viridis',

@@ -11,10 +11,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
 
 from src.biodiversity_analysis.statistical.config_utils import load_config
-from src.biodiversity_analysis.shared.data.unified_loader import get_loader
-from src.biodiversity_analysis.shared.data.data_variants import DataVariants
-from src.biodiversity_analysis.shared.data.sampling_strategy import SamplingStrategy
-from src.biodiversity_analysis.statistical.result_types import MethodResult
+from src.biodiversity_analysis.shared.data.parquet_loader import ParquetLoader as get_loader
 
 # Import methods directly - no adapter bullshit
 from src.biodiversity_analysis.statistical.correlation_analyzer import analyze_correlation
@@ -135,7 +132,7 @@ def run_analysis(
             
         except Exception as e:
             logger.error(f"Failed {method}: {e}", exc_info=True)
-            results[method] = MethodResult(
+            results[method] = Dict[str, Any](
                 success=False,
                 method=method,
                 error=str(e)
@@ -160,7 +157,7 @@ def _run_single(
     output_dir: Path,
     config: Dict[str, Any],
     add_method_dir: bool = True
-) -> MethodResult:
+) -> Dict[str, Any]:
     """Run a single method - DIRECT call, no adapter.
     
     Args:
@@ -178,12 +175,12 @@ def _run_single(
         
     method_config = config['methods'].get(method, {})
     
-    # ALL methods return MethodResult - NO EXCEPTIONS!
+    # ALL methods return Dict[str, Any] - NO EXCEPTIONS!
     result = method_func(data, method_output, **method_config)
     
     # Enforce type - crash if wrong
-    if not isinstance(result, MethodResult):
-        raise TypeError(f"{method} must return MethodResult, got {type(result)}")
+    if not isinstance(result, Dict[str, Any]):
+        raise TypeError(f"{method} must return Dict[str, Any], got {type(result)}")
     
     return result
 
@@ -193,7 +190,7 @@ def _run_with_variants(
     data: Any,
     output_dir: Path,
     config: Dict[str, Any]
-) -> Dict[str, MethodResult]:
+) -> Dict[str, Dict[str, Any]]:
     """Run method with auto-generated fungi variants."""
     
     # Generate variants
@@ -280,9 +277,9 @@ def _log_summary(results: Dict[str, Any]) -> None:
     
     for method, result in results.items():
         if isinstance(result, dict):
-            # Variant results - Dict[str, MethodResult]
+            # Variant results - Dict[str, Dict[str, Any]]
             for variant_name, variant_result in result.items():
-                if not isinstance(variant_result, MethodResult):
+                if not isinstance(variant_result, Dict[str, Any]):
                     raise TypeError(f"Invalid result type from {method}/{variant_name}")
                 total += 1
                 if variant_result.success:
@@ -290,7 +287,7 @@ def _log_summary(results: Dict[str, Any]) -> None:
                     logger.info(f"  ✓ {method} ({variant_name})")
                 else:
                     logger.error(f"  ✗ {method} ({variant_name}): {variant_result.error}")
-        elif isinstance(result, MethodResult):
+        elif isinstance(result, Dict[str, Any]):
             # Single result
             total += 1
             if result.success:

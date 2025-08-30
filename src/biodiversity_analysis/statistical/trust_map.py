@@ -15,18 +15,15 @@ from rasterio.transform import from_origin
 import logging
 
 from .data_utils import save_results, save_figure
-from .smart_visualization import smart_imshow
-from .professional_map_visualizer import ProfessionalMapVisualizer
 
 logger = get_logger(__name__)
-from src.biodiversity_analysis.statistical.result_types import MethodResult
 
 
 def analyze_trust_maps(
     data: Dict[str, np.ndarray],
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     Analyze uncertainty in biodiversity data.
     
@@ -39,12 +36,12 @@ def analyze_trust_maps(
     No class needed. Just functions doing their job.
     
     Returns:
-        MethodResult with trust analysis results
+        Dict[str, Any] with trust analysis results
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # NO DOWNSAMPLING - smart_imshow handles it automatically
+    # NO DOWNSAMPLING - plt.imshow handles it automatically
     
     results = {}
     
@@ -67,7 +64,7 @@ def analyze_trust_maps(
             # Compute trust metrics
             trust_metrics = _compute_trust_metrics(data_array, cv_array)
             
-            # Create plots - smart_imshow handles large data automatically
+            # Create plots - plt.imshow handles large data automatically
             _plot_trust_analysis(
                 data_array, cv_array, name, 
                 output_dir, trust_metrics
@@ -79,7 +76,7 @@ def analyze_trust_maps(
             basic_metrics = _compute_basic_metrics(data_array)
             results[name] = basic_metrics
             
-            # Simple visualization - smart_imshow handles large data
+            # Simple visualization - plt.imshow handles large data
             _plot_basic_map(data_array, name, output_dir, basic_metrics)
     
     # Combined analysis if we have multiple datasets
@@ -93,7 +90,7 @@ def analyze_trust_maps(
     # Save results
     save_results(results, output_dir / 'trust_metrics.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='trust_maps',
         output_dir=output_dir,
@@ -101,7 +98,7 @@ def analyze_trust_maps(
     )
 
 
-def _compute_trust_metrics(data: np.ndarray, cv: np.ndarray) -> MethodResult:
+def _compute_trust_metrics(data: np.ndarray, cv: np.ndarray) -> Dict[str, Any]:
     """Compute trust metrics from data and CV."""
     # Remove invalid pixels
     valid_mask = ~np.isnan(data) & ~np.isnan(cv) & (data > 0)
@@ -134,7 +131,7 @@ def _compute_trust_metrics(data: np.ndarray, cv: np.ndarray) -> MethodResult:
     return metrics
 
 
-def _compute_basic_metrics(data: np.ndarray) -> MethodResult:
+def _compute_basic_metrics(data: np.ndarray) -> Dict[str, Any]:
     """Compute basic metrics when no CV available."""
     valid_mask = ~np.isnan(data)
     
@@ -157,7 +154,7 @@ def _compute_basic_metrics(data: np.ndarray) -> MethodResult:
 
 def _analyze_combined_trust(
     data: Dict[str, np.ndarray]
-) -> MethodResult:
+) -> Dict[str, Any]:
     """Analyze combined trust across all datasets."""
     combined_trust = []
     
@@ -243,16 +240,16 @@ def _plot_trust_analysis(
     # Also create a combined figure for comparison
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     
-    # Use smart_imshow for the combined view (quick preview)
-    im1 = smart_imshow(axes[0], data, cmap='viridis', aspect='auto')
+    # Use plt.imshow for the combined view (quick preview)
+    im1 = plt.imshow(axes[0], data, cmap='viridis', aspect='auto')
     axes[0].set_title(f'{name} - Data')
     axes[0].axis('off')
     
-    im2 = smart_imshow(axes[1], cv, cmap='hot', aspect='auto')
+    im2 = plt.imshow(axes[1], cv, cmap='hot', aspect='auto')
     axes[1].set_title('Coefficient of Variation')
     axes[1].axis('off')
     
-    im3 = smart_imshow(axes[2], trust, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
+    im3 = plt.imshow(axes[2], trust, cmap='RdYlGn', aspect='auto', vmin=0, vmax=1)
     axes[2].set_title('Trust Score')
     axes[2].axis('off')
     

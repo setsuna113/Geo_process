@@ -16,8 +16,6 @@ from scipy import stats
 from scipy.spatial.distance import pdist, squareform
 
 from src.biodiversity_analysis.statistical.data_utils import save_results, save_figure
-from src.biodiversity_analysis.statistical.result_types import MethodResult
-from src.biodiversity_analysis.statistical.smart_visualization import smart_imshow
 
 logger = get_logger(__name__)
 
@@ -26,7 +24,7 @@ def analyze_correlation(
     df: pd.DataFrame,
     output_dir: Path,
     **kwargs
-) -> MethodResult:
+) -> Dict[str, Any]:
     """
     PROPER correlation analysis - DataFrame ONLY.
     
@@ -41,7 +39,7 @@ def analyze_correlation(
             - plot: Generate visualizations (default: True)
         
     Returns:
-        MethodResult with correlation results
+        Dict[str, Any] with correlation results
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -115,7 +113,7 @@ def analyze_correlation(
     
     save_results(results, output_dir / 'correlation_results.json')
     
-    return MethodResult(
+    return Dict[str, Any](
         success=True,
         method='correlation',
         output_dir=output_dir,
@@ -327,7 +325,7 @@ def _generate_method_plots(df: pd.DataFrame, method_result: Dict[str, Any],
             cmap, vmin, vmax = 'YlOrRd', 0, 1
             title = 'Mutual Information'
         
-        im = smart_imshow(ax, biodiv_matrix.values, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
+        im = plt.imshow(ax, biodiv_matrix.values, cmap=cmap, vmin=vmin, vmax=vmax, aspect='auto')
         ax.set_title(f'{title}\n(Biodiversity Features)', fontsize=12, fontweight='bold')
         _add_labels_and_values(ax, biodiv_matrix, im, fmt='.2f')
     
