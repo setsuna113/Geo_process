@@ -414,8 +414,11 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         Arrow.write(temp_path, state.data)
         println("Data saved: $(nrow(state.data)) rows, $(ncol(state.data)) columns")
         
-        # Determine max orderings (default 1000 for sampling, or "all" for complete)
-        max_orderings = lmg_samples >= 1000000 ? 1000000 : 1000  # If huge sample, allow more orderings
+        # Get max orderings from config (required)
+        if !haskey(state.config, "lmg_max_orderings")
+            error("Missing required LMG config parameter: lmg_max_orderings")
+        end
+        max_orderings = state.config["lmg_max_orderings"]
         
         # Call unified LMG script with preprocessed data
         println("Calling LMG analysis script...")
@@ -558,72 +561,38 @@ if length(ARGS) > 0
     
     # Check for LMG importance analysis mode
     if method == "lmg"
-        # LMG mode: lmg <model> <data_path> [spatial_step] [n_samples]
-        if length(ARGS) < 3
-            println("Usage: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
-            println("Models: method1, method2")
-            exit(1)
+        # LMG mode: all parameters from config
+        println("Running LMG importance analysis from config...")
+        
+        # Load config
+        config_path = "src/config/ml/ml_config.yml"
+        config = YAML.load_file(config_path)
+        
+        # Extract LMG parameters - NO DEFAULTS, must exist in config
+        required_params = ["lmg_model", "lmg_data_path", "lmg_response", 
+                          "lmg_spatial_step", "lmg_n_samples"]
+        
+        for param in required_params
+            if !haskey(config, param)
+                error("Missing required LMG config parameter: $param in $config_path")
+            end
         end
         
-        model = ARGS[2]
-        data_path = ARGS[3]
-        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
-        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
+        model = config["lmg_model"]
+        data_path = config["lmg_data_path"]
+        response = config["lmg_response"]
+        spatial_step = config["lmg_spatial_step"]
+        n_samples = config["lmg_n_samples"]
         
-        println("Running LMG importance analysis...")
         println("  Model: $model")
         println("  Data: $data_path")
+        println("  Response: $response")
         println("  Spatial step: $spatial_step")
         println("  Sample size: $n_samples")
         
         run_pipeline(model, data_path, spatial_step, 
-                    compute_lmg=true, lmg_samples=n_samples)
+                    compute_lmg=true, lmg_samples=n_samples, lmg_response=response)
     
-    # Check for LMG with plant response
-    elseif method == "lmg_plant"
-        # LMG mode with plant as response
-        if length(ARGS) < 3
-            println("Usage: julia $PROGRAM_FILE lmg_plant <model> <data_path> [spatial_step] [n_samples]")
-            println("Models: method1, method2")
-            exit(1)
-        end
-        
-        model = ARGS[2]
-        data_path = ARGS[3]
-        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
-        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
-        
-        println("Running LMG importance analysis with PLANT response...")
-        println("  Model: $model")
-        println("  Data: $data_path")
-        println("  Spatial step: $spatial_step")
-        println("  Sample size: $n_samples")
-        
-        run_pipeline(model, data_path, spatial_step, 
-                    compute_lmg=true, lmg_samples=n_samples, lmg_response="plant")
-    
-    # Check for LMG with animal response
-    elseif method == "lmg_animal"
-        # LMG mode with animal as response
-        if length(ARGS) < 3
-            println("Usage: julia $PROGRAM_FILE lmg_animal <model> <data_path> [spatial_step] [n_samples]")
-            println("Models: method1, method2")
-            exit(1)
-        end
-        
-        model = ARGS[2]
-        data_path = ARGS[3]
-        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
-        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
-        
-        println("Running LMG importance analysis with ANIMAL response...")
-        println("  Model: $model")
-        println("  Data: $data_path")
-        println("  Spatial step: $spatial_step")
-        println("  Sample size: $n_samples")
-        
-        run_pipeline(model, data_path, spatial_step, 
-                    compute_lmg=true, lmg_samples=n_samples, lmg_response="animal")
     
     # Check for dharma mode
     elseif method == "dharma"
@@ -683,7 +652,7 @@ if length(ARGS) > 0
         println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
         println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
         println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
-        println("  LMG: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
+        println("  LMG: julia $PROGRAM_FILE lmg  (all parameters from config)")
         println("Methods: method1, method2, method3/dml")
     end
 else
@@ -691,5 +660,5 @@ else
     println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
     println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
     println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
-    println("  LMG: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
+    println("  LMG: julia $PROGRAM_FILE lmg  (all parameters from config)")
 end
