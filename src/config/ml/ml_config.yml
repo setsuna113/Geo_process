@@ -78,3 +78,14 @@ negbin:
     figures_dir: "results/figures"
     reports_dir: "results/reports"
     julia_results_dir: "/scratch/yl998/julia"
+
+# LMG Importance Analysis Configuration
+lmg_model: "method1"  # Model to use for preprocessing: method1 or method2
+lmg_data_path: "/maps-priv/jacob/gaia_data/integrated_richness_v3.arrow"  # Data source
+lmg_response: "fungi"  # Response variable: fungi, animal, or plant
+lmg_spatial_step: 1000  # Spatial subsampling step
+lmg_n_samples: 100000  # Number of samples for analysis
+lmg_n_workers: 100  # Number of parallel workers
+lmg_fixed_theta: 18.83  # Fixed theta for negative binomial
+lmg_max_orderings: 1000  # Maximum number of orderings to sample
+lmg_output_dir: "/scratch/yl998/lmg_results"  # Output directory

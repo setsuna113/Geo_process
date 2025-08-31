@@ -19,7 +19,19 @@ response_type = ARGS[3]  # "fungi", "animal", or "plant"
 # Production run: always use ALL orderings (9! = 362,880)
 
 # Add workers FIRST (before any module loading)
-n_workers = 100
+# Parse max orderings if provided (optional 4th argument)
+max_orderings = length(ARGS) > 3 ? parse(Int, ARGS[4]) : nothing
+
+# Load config to get n_workers
+using YAML
+config_path = "src/config/ml/ml_config.yml"
+config = YAML.load_file(config_path)
+
+if !haskey(config, "lmg_n_workers")
+    error("Missing required LMG config parameter: lmg_n_workers")
+end
+n_workers = config["lmg_n_workers"]
+
 if nworkers() < n_workers
     addprocs(n_workers - nworkers())
     println("Added workers. Total: $(nworkers())")
@@ -33,8 +45,10 @@ end
     using StatsModels: @formula
     using Combinatorics
     
-    # FIXED THETA based on distribution analysis
-    const FIXED_THETA = 18.83
+    # Load config on workers to get fixed theta
+    using YAML
+    config = YAML.load_file("src/config/ml/ml_config.yml")
+    const FIXED_THETA = haskey(config, "lmg_fixed_theta") ? config["lmg_fixed_theta"] : error("Missing lmg_fixed_theta in config")
     
     # Define the parallel fitting function on all workers
     # Uses fixed theta instead of estimating it
@@ -174,27 +188,41 @@ else
 end
 
 # Fit null model with FIXED theta
-println("\nFitting null model for $response_col with FIXED theta = 18.83...")
+fixed_theta = config["lmg_fixed_theta"]
+println("\nFitting null model for $response_col with FIXED theta = $fixed_theta...")
 using Distributions: NegativeBinomial
 # Build formula dynamically based on response
 null_formula = eval(Meta.parse("@formula($response_col ~ 1)"))
-null_dist = NegativeBinomial(18.83, 0.5)
+null_dist = NegativeBinomial(fixed_theta, 0.5)
 null_model = glm(null_formula, data_sample, null_dist, LogLink())
 null_dev = deviance(null_model)
 println("Null deviance: $(round(null_dev, digits=2))")
-println("Using FIXED theta: 18.83 (median from theta distribution analysis)")
+println("Using FIXED theta: $fixed_theta")
 
 # Generate orderings - sample 1/100 for faster execution
 group_names = collect(keys(groups))
 n_groups = length(group_names)
 n_total_orderings = factorial(n_groups)
 
-# Sample 1/100 of all orderings (approximately 3629 orderings)
+# Sample orderings based on max_orderings parameter or config
 Random.seed!(42)
 all_perms = collect(permutations(group_names))
-n_sample = max(100, div(n_total_orderings, 100))  # Sample 1/100, minimum 100
-sampled_indices = sample(1:n_total_orderings, n_sample, replace=false)
-all_orderings = all_perms[sampled_indices]
+
+# Use max_orderings from command line if provided, otherwise from config
+if isnothing(max_orderings)
+    if !haskey(config, "lmg_max_orderings")
+        error("Missing required LMG config parameter: lmg_max_orderings")
+    end
+    max_orderings = config["lmg_max_orderings"]
+end
+
+n_sample = min(max_orderings, n_total_orderings)
+if n_sample < n_total_orderings
+    sampled_indices = sample(1:n_total_orderings, n_sample, replace=false)
+    all_orderings = all_perms[sampled_indices]
+else
+    all_orderings = all_perms
+end
 
 println("\nSampling $(length(all_orderings)) orderings from $n_total_orderings total ($(n_groups)! = $n_total_orderings)")
 
@@ -283,14 +311,17 @@ end
 lmg_importance = vec(mean(importance_matrix, dims=1))
 total_r2 = sum(lmg_importance)
 
-println("\nUsing FIXED theta = 18.83 for all models")
+println("\nUsing FIXED theta = $fixed_theta for all models")
 println("Response variable: $response_col")
 if response_type != "fungi"
     println("Fungi is now a PREDICTOR")
 end
 
-# Save results
-output_dir = "/scratch/yl998/lmg_results"
+# Save results - get output dir from config
+if !haskey(config, "lmg_output_dir")
+    error("Missing required LMG config parameter: lmg_output_dir")
+end
+output_dir = config["lmg_output_dir"]
 mkpath(output_dir)
 timestamp = Dates.format(now(), "yyyymmdd_HHMMSS")
 output_file = joinpath(output_dir, "lmg_importance_$(response_type)_$(timestamp).json")
@@ -301,7 +332,7 @@ results = Dict(
     "importance" => Dict(group_names[i] => lmg_importance[i] for i in 1:n_groups),
     "importance_pct" => Dict(group_names[i] => 100 * lmg_importance[i] for i in 1:n_groups),
     "total_r2" => total_r2,
-    "fixed_theta" => 18.83,
+    "fixed_theta" => fixed_theta,
     "metadata" => Dict(
         "n_samples" => nrow(data_sample),
         "n_orderings" => length(all_orderings),
