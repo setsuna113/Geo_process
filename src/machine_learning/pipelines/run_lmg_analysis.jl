@@ -1,37 +1,41 @@
 #!/usr/bin/env julia
 """
 Unified LMG (Lindeman-Merenda-Gold) Relative Importance Analysis
-Supports multiple response variables: fungi, vertebrates, plants
-Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> <response_type> [max_orderings]
+Reads all parameters from config file
+Usage: julia run_lmg_analysis.jl <data_arrow_path>
 """
 
 using Distributed
 using Random
+using YAML
 
-# Parse arguments
-if length(ARGS) < 3
-    error("Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> <response_type> [max_orderings]")
+# Parse arguments - only data path needed
+if length(ARGS) < 1
+    error("Usage: julia run_lmg_analysis.jl <data_arrow_path>")
 end
 
 data_path = ARGS[1]
-n_samples = parse(Int, ARGS[2])
-response_type = ARGS[3]  # "fungi", "animal", or "plant"
-# Production run: always use ALL orderings (9! = 362,880)
 
-# Add workers FIRST (before any module loading)
-# Parse max orderings if provided (optional 4th argument)
-max_orderings = length(ARGS) > 3 ? parse(Int, ARGS[4]) : nothing
-
-# Load config to get n_workers
-using YAML
+# Load ALL parameters from config
 config_path = "src/config/ml/ml_config.yml"
 config = YAML.load_file(config_path)
 
-if !haskey(config, "lmg_n_workers")
-    error("Missing required LMG config parameter: lmg_n_workers")
-end
-n_workers = config["lmg_n_workers"]
+# Extract required LMG parameters
+required_params = ["lmg_response", "lmg_n_samples", "lmg_n_workers", 
+                  "lmg_fixed_theta", "lmg_max_orderings", "lmg_output_dir"]
 
+for param in required_params
+    if !haskey(config, param)
+        error("Missing required LMG config parameter: $param in $config_path")
+    end
+end
+
+response_type = config["lmg_response"]  # "fungi", "animal", or "plant"
+n_samples = config["lmg_n_samples"]
+n_workers = config["lmg_n_workers"]
+max_orderings = config["lmg_max_orderings"]
+
+# Add workers FIRST (before any other module loading)
 if nworkers() < n_workers
     addprocs(n_workers - nworkers())
     println("Added workers. Total: $(nworkers())")
@@ -204,18 +208,11 @@ group_names = collect(keys(groups))
 n_groups = length(group_names)
 n_total_orderings = factorial(n_groups)
 
-# Sample orderings based on max_orderings parameter or config
+# Sample orderings based on max_orderings from config
 Random.seed!(42)
 all_perms = collect(permutations(group_names))
 
-# Use max_orderings from command line if provided, otherwise from config
-if isnothing(max_orderings)
-    if !haskey(config, "lmg_max_orderings")
-        error("Missing required LMG config parameter: lmg_max_orderings")
-    end
-    max_orderings = config["lmg_max_orderings"]
-end
-
+# max_orderings already loaded from config at the top
 n_sample = min(max_orderings, n_total_orderings)
 if n_sample < n_total_orderings
     sampled_indices = sample(1:n_total_orderings, n_sample, replace=false)
