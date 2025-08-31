@@ -1,20 +1,21 @@
 #!/usr/bin/env julia
 """
-Standalone LMG (Lindeman-Merenda-Gold) Relative Importance Analysis
-Called by pipeline with preprocessed data
-Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> [max_orderings]
+Unified LMG (Lindeman-Merenda-Gold) Relative Importance Analysis
+Supports multiple response variables: fungi, vertebrates, plants
+Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> <response_type> [max_orderings]
 """
 
 using Distributed
 using Random
 
 # Parse arguments
-if length(ARGS) < 2
-    error("Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> [max_orderings]")
+if length(ARGS) < 3
+    error("Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> <response_type> [max_orderings]")
 end
 
 data_path = ARGS[1]
 n_samples = parse(Int, ARGS[2])
+response_type = ARGS[3]  # "fungi", "animal", or "plant"
 # Production run: always use ALL orderings (9! = 362,880)
 
 # Add workers FIRST (before any module loading)
@@ -67,8 +68,40 @@ using GLM: LogLink, glm
 using Distributions: NegativeBinomial
 
 println("\n" * "="^60)
-println("LMG IMPORTANCE ANALYSIS")
+println("LMG IMPORTANCE ANALYSIS - $(uppercase(response_type)) RESPONSE")
 println("="^60)
+
+# Configure response variable and predictors based on type
+const RESPONSE_CONFIG = Dict(
+    "fungi" => (
+        response_col = :fungi_richness,
+        biodiv_predictors = Dict(
+            "plant_biodiv" => ["plants_richness_log_std"],
+            "animal_biodiv" => ["vertebrates_richness_log_std"]
+        )
+    ),
+    "animal" => (
+        response_col = :vertebrates_richness,
+        biodiv_predictors = Dict(
+            "fungi_biodiv" => ["fungi_richness"],
+            "plant_biodiv" => ["plants_richness_log_std"]
+        )
+    ),
+    "plant" => (
+        response_col = :plants_richness,
+        biodiv_predictors = Dict(
+            "fungi_biodiv" => ["fungi_richness"],
+            "animal_biodiv" => ["vertebrates_richness_log_std"]
+        )
+    )
+)
+
+if !haskey(RESPONSE_CONFIG, response_type)
+    error("Invalid response type: $response_type. Must be 'fungi', 'animal', or 'plant'")
+end
+
+cfg = RESPONSE_CONFIG[response_type]
+response_col = cfg.response_col
 
 # Load preprocessed data from pipeline
 println("Loading preprocessed data from: $data_path")
@@ -76,10 +109,14 @@ arrow_table = Arrow.Table(data_path)
 df = DataFrame(arrow_table)
 println("Loaded $(nrow(df)) rows with $(ncol(df)) columns")
 
-# Identify response variable
-response_col = :fungi_richness
+# Verify response variable exists
 if !(response_col in propertynames(df))
     error("Response variable $response_col not found in data!")
+end
+
+# Convert response to Float64 if needed (for animal/plant responses)
+if response_type in ["animal", "plant"]
+    df[!, response_col] = Float64.(df[!, response_col])
 end
 
 # Group predictors based on naming patterns
@@ -112,9 +149,10 @@ groups["seasonal_temp"] = filter(c -> occursin("bio04_std", c), cols)
 # PET
 groups["pet"] = filter(c -> occursin("pet_mm_month_std", c), cols)
 
-# Biodiversity (log standardized versions)
-groups["plant_biodiv"] = filter(c -> occursin("plants_richness_log_std", c), cols)
-groups["animal_biodiv"] = filter(c -> occursin("vertebrates_richness_log_std", c), cols)
+# Biodiversity predictors - configured based on response type
+for (group_name, predictor_vars) in cfg.biodiv_predictors
+    groups[group_name] = filter(c -> c in predictor_vars, cols)
+end
 
 # Remove empty groups
 filter!(p -> !isempty(p.second), groups)
@@ -136,9 +174,10 @@ else
 end
 
 # Fit null model with FIXED theta
-println("\nFitting null model with FIXED theta = 18.83...")
+println("\nFitting null model for $response_col with FIXED theta = 18.83...")
 using Distributions: NegativeBinomial
-null_formula = @formula(fungi_richness ~ 1)
+# Build formula dynamically based on response
+null_formula = eval(Meta.parse("@formula($response_col ~ 1)"))
 null_dist = NegativeBinomial(18.83, 0.5)
 null_model = glm(null_formula, data_sample, null_dist, LogLink())
 null_dev = deviance(null_model)
@@ -245,16 +284,20 @@ lmg_importance = vec(mean(importance_matrix, dims=1))
 total_r2 = sum(lmg_importance)
 
 println("\nUsing FIXED theta = 18.83 for all models")
-println("(Based on median of theta distribution from variable-theta analysis)")
+println("Response variable: $response_col")
+if response_type != "fungi"
+    println("Fungi is now a PREDICTOR")
+end
 
 # Save results
 output_dir = "/scratch/yl998/lmg_results"
 mkpath(output_dir)
 timestamp = Dates.format(now(), "yyyymmdd_HHMMSS")
-output_file = joinpath(output_dir, "lmg_importance_fixed_theta_$(timestamp).json")
+output_file = joinpath(output_dir, "lmg_importance_$(response_type)_$(timestamp).json")
 
 # Prepare results
 results = Dict(
+    "response" => String(response_col),
     "importance" => Dict(group_names[i] => lmg_importance[i] for i in 1:n_groups),
     "importance_pct" => Dict(group_names[i] => 100 * lmg_importance[i] for i in 1:n_groups),
     "total_r2" => total_r2,
@@ -281,7 +324,7 @@ end
 
 # Print results
 println("\n" * "="^60)
-println("LMG IMPORTANCE RESULTS")
+println("LMG IMPORTANCE RESULTS - $(uppercase(response_type)) RESPONSE")
 println("="^60)
 println("Total R²: $(round(total_r2, digits=4)) ($(round(100*total_r2, digits=2))%)")
 println("\nRelative Importance (sorted):")
