@@ -417,22 +417,16 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         # Determine max orderings (default 1000 for sampling, or "all" for complete)
         max_orderings = lmg_samples >= 1000000 ? 1000000 : 1000  # If huge sample, allow more orderings
         
-        # Call standalone LMG script with preprocessed data
+        # Call unified LMG script with preprocessed data
         println("Calling LMG analysis script...")
         
-        # Choose the appropriate LMG script based on response variable
-        lmg_script = if lmg_response == "plant"
-            joinpath(@__DIR__, "run_lmg_plant_analysis.jl")
-        elseif lmg_response == "animal"
-            joinpath(@__DIR__, "run_lmg_animal_analysis.jl")
-        else  # default to fungi
-            joinpath(@__DIR__, "run_lmg_analysis.jl")
-        end
+        # Use unified script for all response types
+        lmg_script = joinpath(@__DIR__, "run_lmg_analysis.jl")
         
-        println("Using LMG script for $(lmg_response) response: $lmg_script")
+        println("Using unified LMG script for $(lmg_response) response")
         
         try
-            run(`julia $lmg_script $temp_path $lmg_samples $max_orderings`)
+            run(`julia $lmg_script $temp_path $lmg_samples $lmg_response $max_orderings`)
             println("LMG analysis completed successfully!")
         catch e
             println("ERROR in LMG analysis: $e")
