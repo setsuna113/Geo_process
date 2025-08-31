@@ -135,6 +135,18 @@ function extract_diagnostics(model, model_name::String)
         # Skip if tests fail
     end
     
+    # SHAP parameters - always include for Python/R analysis
+    diagnostics["shap_params"] = Dict(
+        "coefficients" => coef(actual_model),
+        "coef_names" => coefnames(actual_model),
+        "intercept_idx" => 1,  # Julia uses 1-based indexing
+        "feature_names" => coefnames(actual_model)[2:end],  # Exclude intercept
+        "theta" => θ,  # Negative binomial dispersion
+        "link" => "log",  # Always log for NegativeBinomial
+        "family" => "negative_binomial",
+        "n_features" => length(coef(actual_model)) - 1
+    )
+    
     return diagnostics
 end
 
@@ -273,6 +285,21 @@ function save_glm_results(results::Dict, state)
     # Save JLD2 for Julia users
     jld2_file = joinpath(state.output_dir, "julia_results_$(timestamp).jld2")
     @save jld2_file output
+    
+    # Save background data for SHAP (sample of feature data)
+    # Exclude response variable and MESF columns
+    feature_cols = setdiff(names(state.data), vcat(["fungi_richness"], state.mesf_columns))
+    if length(feature_cols) > 0
+        n_sample = min(1000, nrow(state.data))
+        Random.seed!(42)
+        sample_idx = sample(1:nrow(state.data), n_sample, replace=false)
+        X_background = state.data[sample_idx, feature_cols]
+        
+        # Save as Arrow for fast cross-language reading
+        background_file = joinpath(state.output_dir, "shap_background.arrow")
+        Arrow.write(background_file, X_background)
+        println("SHAP background data saved: $background_file ($(n_sample) samples)")
+    end
     
     # Update symlink
     latest = joinpath(state.output_dir, "julia_results_latest.json")
