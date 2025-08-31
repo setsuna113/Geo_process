@@ -17,54 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-class JuliaGLMPredictor:
-    """Wrapper to create a predict function from Julia GLM parameters."""
-    
-    def __init__(self, model_params: Dict[str, Any]):
-        """
-        Initialize predictor from Julia model parameters.
-        
-        Args:
-            model_params: Dictionary containing coefficients, coef_names, etc.
-        """
-        self.coefficients = np.array(model_params['coefficients'])
-        self.coef_names = model_params['coef_names']
-        self.intercept = self.coefficients[0]  # First coef is intercept
-        self.beta = self.coefficients[1:]  # Rest are feature coefficients
-        self.theta = model_params.get('theta', 1.0)
-        self.link = model_params.get('link', 'log')
-        self.family = model_params.get('family', 'negative_binomial')
-        
-        # Feature names (excluding intercept)
-        self.feature_names = [name for name in self.coef_names if name != '(Intercept)']
-        
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """
-        Predict using Julia GLM parameters.
-        
-        Args:
-            X: Feature matrix (n_samples, n_features)
-            
-        Returns:
-            Predicted values after applying inverse link function
-        """
-        # Linear predictor
-        linear_pred = self.intercept + X @ self.beta
-        
-        # Apply inverse link function
-        if self.link == 'log':
-            return np.exp(linear_pred)
-        elif self.link == 'identity':
-            return linear_pred
-        else:
-            raise ValueError(f"Unsupported link function: {self.link}")
-    
-    def predict_linear(self, X: np.ndarray) -> np.ndarray:
-        """
-        Get linear predictor (before inverse link).
-        This is what LinearExplainer needs for log-link models.
-        """
-        return self.intercept + X @ self.beta
+# No class needed - just pass coefficients directly to SHAP
 
 
 def load_julia_results(results_path: Path) -> Dict[str, Any]:
@@ -108,68 +61,47 @@ def load_background_data(output_dir: Path) -> pd.DataFrame:
 
 def compute_shap_values(model_params: Dict[str, Any], 
                        X: pd.DataFrame,
-                       background: Optional[pd.DataFrame] = None,
-                       use_linear_explainer: bool = True) -> Dict[str, Any]:
+                       background: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """
-    Compute SHAP values using LinearExplainer (exact for GLM).
+    Compute SHAP values for GLM using LinearExplainer.
     
     Args:
-        model_params: Julia model parameters
-        X: Feature data for SHAP computation
+        model_params: Julia model parameters with coefficients and feature names
+        X: Feature data for SHAP computation  
         background: Background data for SHAP (if None, uses X)
-        use_linear_explainer: If True, use LinearExplainer (exact), else KernelExplainer
         
     Returns:
         Dictionary containing SHAP values and metadata
     """
-    predictor = JuliaGLMPredictor(model_params)
+    # Extract what we actually need - no wrapper class nonsense
+    coefficients = np.array(model_params['coefficients'])
+    coef_names = model_params['coef_names']
     
-    # Ensure feature order matches model
-    feature_names = predictor.feature_names
+    # Split intercept and feature coefficients
+    intercept = coefficients[0]
+    beta = coefficients[1:]
+    feature_names = [name for name in coef_names if name != '(Intercept)']
     
-    # Validate feature names match exactly - fail loudly if not
-    missing_features = set(feature_names) - set(X.columns)
-    if missing_features:
-        raise ValueError(f"Missing features in data: {missing_features}")
+    # Validate features - fail loudly on mismatch
+    missing = set(feature_names) - set(X.columns)
+    if missing:
+        raise ValueError(f"Missing features in data: {missing}")
     
-    extra_features = set(X.columns) - set(feature_names)
-    if extra_features:
-        logger.warning(f"Extra features in data (will be ignored): {extra_features}")
-    
+    # Order features to match model
     X_ordered = X[feature_names].values
+    background_ordered = (background[feature_names].values if background is not None 
+                         else X_ordered)
     
-    if background is None:
-        background = X
-    background_ordered = background[feature_names].values
+    logger.info(f"Computing SHAP for {len(X)} samples, {len(feature_names)} features")
     
-    logger.info(f"Computing SHAP values for {len(X)} samples with {len(feature_names)} features")
+    # LinearExplainer is exact for GLM - that's all we need
+    explainer = shap.LinearExplainer(
+        (beta, intercept),
+        background_ordered,
+        feature_names=feature_names
+    )
     
-    if use_linear_explainer:
-        # LinearExplainer is exact for linear models
-        # For GLM with log link, we explain the linear predictor
-        logger.info("Using LinearExplainer (exact computation)")
-        
-        # Create explainer with coefficients and intercept
-        explainer = shap.LinearExplainer(
-            (predictor.beta, predictor.intercept),
-            background_ordered,
-            feature_names=feature_names
-        )
-        
-        # Compute SHAP values
-        shap_values = explainer.shap_values(X_ordered)
-        
-    else:
-        # KernelExplainer for comparison (approximate, slower)
-        logger.info("Using KernelExplainer (approximate computation)")
-        
-        explainer = shap.KernelExplainer(
-            predictor.predict,
-            background_ordered,
-            feature_names=feature_names
-        )
-        
-        shap_values = explainer.shap_values(X_ordered)
+    shap_values = explainer.shap_values(X_ordered)
     
     return {
         'shap_values': shap_values,
@@ -373,8 +305,7 @@ def process_julia_glm_models(julia_output_dir: Path,
         shap_results = compute_shap_values(
             shap_params, 
             X, 
-            background[available_features] if background is not None else None,
-            use_linear_explainer=True  # Use exact LinearExplainer
+            background[available_features] if background is not None else None
         )
         
         # Save results
