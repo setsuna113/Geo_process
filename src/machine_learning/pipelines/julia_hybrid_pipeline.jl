@@ -352,7 +352,7 @@ end
 
 function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
                      mode::String="normal", bootstrap_iterations::Int=100, dump_for_dharma::Bool=false,
-                     compute_lmg::Bool=false, lmg_samples::Int=100000, lmg_parallel::Int=30, lmg_response::String="fungi")
+                     compute_lmg::Bool=false)
     # Load config
     config_path = "src/config/ml/ml_config.yml"
     config = YAML.load_file(config_path)
@@ -414,22 +414,16 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         Arrow.write(temp_path, state.data)
         println("Data saved: $(nrow(state.data)) rows, $(ncol(state.data)) columns")
         
-        # Get max orderings from config (required)
-        if !haskey(state.config, "lmg_max_orderings")
-            error("Missing required LMG config parameter: lmg_max_orderings")
-        end
-        max_orderings = state.config["lmg_max_orderings"]
-        
-        # Call unified LMG script with preprocessed data
+        # Call unified LMG script - it will read all params from config
         println("Calling LMG analysis script...")
         
-        # Use unified script for all response types
         lmg_script = joinpath(@__DIR__, "run_lmg_analysis.jl")
         
-        println("Using unified LMG script for $(lmg_response) response")
+        println("LMG script will read all parameters from config")
         
         try
-            run(`julia $lmg_script $temp_path $lmg_samples $lmg_response $max_orderings`)
+            # Only pass the preprocessed data path
+            run(`julia $lmg_script $temp_path`)
             println("LMG analysis completed successfully!")
         catch e
             println("ERROR in LMG analysis: $e")
@@ -442,7 +436,7 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         rm(temp_path)
         println("Temporary data file cleaned up.")
         
-        return Dict("status" => "lmg_complete", "samples" => lmg_samples)
+        return Dict("status" => "lmg_complete")
     end
     
     # BOOTSTRAP MODE
@@ -561,37 +555,30 @@ if length(ARGS) > 0
     
     # Check for LMG importance analysis mode
     if method == "lmg"
-        # LMG mode: all parameters from config
+        # LMG mode: just verify config exists and run
         println("Running LMG importance analysis from config...")
         
-        # Load config
+        # Load config to get model and data path for preprocessing
         config_path = "src/config/ml/ml_config.yml"
         config = YAML.load_file(config_path)
         
-        # Extract LMG parameters - NO DEFAULTS, must exist in config
-        required_params = ["lmg_model", "lmg_data_path", "lmg_response", 
-                          "lmg_spatial_step", "lmg_n_samples"]
-        
-        for param in required_params
-            if !haskey(config, param)
-                error("Missing required LMG config parameter: $param in $config_path")
-            end
+        # Only need model and data path for preprocessing
+        # Everything else will be read by LMG script
+        if !haskey(config, "lmg_model") || !haskey(config, "lmg_data_path") || !haskey(config, "lmg_spatial_step")
+            error("Missing required LMG config parameters: lmg_model, lmg_data_path, or lmg_spatial_step")
         end
         
         model = config["lmg_model"]
         data_path = config["lmg_data_path"]
-        response = config["lmg_response"]
         spatial_step = config["lmg_spatial_step"]
-        n_samples = config["lmg_n_samples"]
         
-        println("  Model: $model")
-        println("  Data: $data_path")
-        println("  Response: $response")
+        println("  Preprocessing with model: $model")
+        println("  Data source: $data_path")
         println("  Spatial step: $spatial_step")
-        println("  Sample size: $n_samples")
+        println("  (All other parameters from config)")
         
-        run_pipeline(model, data_path, spatial_step, 
-                    compute_lmg=true, lmg_samples=n_samples, lmg_response=response)
+        # Pass compute_lmg=true, script will read all params from config
+        run_pipeline(model, data_path, spatial_step, compute_lmg=true)
     
     
     # Check for dharma mode
