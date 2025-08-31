@@ -126,6 +126,16 @@ def compute_shap_values(model_params: Dict[str, Any],
     
     # Ensure feature order matches model
     feature_names = predictor.feature_names
+    
+    # Validate feature names match exactly - fail loudly if not
+    missing_features = set(feature_names) - set(X.columns)
+    if missing_features:
+        raise ValueError(f"Missing features in data: {missing_features}")
+    
+    extra_features = set(X.columns) - set(feature_names)
+    if extra_features:
+        logger.warning(f"Extra features in data (will be ignored): {extra_features}")
+    
     X_ordered = X[feature_names].values
     
     if background is None:
