@@ -321,6 +321,7 @@ def process_julia_glm_models(julia_output_dir: Path,
 def main():
     """Main entry point for command-line usage."""
     import argparse
+    import subprocess
     
     parser = argparse.ArgumentParser(description='Compute SHAP values for Julia GLM models')
     parser.add_argument('julia_output_dir', type=str,
@@ -329,14 +330,30 @@ def main():
                        help='Directory to save SHAP results (default: results/shap)')
     parser.add_argument('--models', nargs='+', default=None,
                        help='Specific models to process (default: all)')
+    parser.add_argument('--run_shapviz', action='store_true',
+                       help='Also run R shapviz visualizations')
     
     args = parser.parse_args()
     
+    # Process SHAP
     process_julia_glm_models(
         Path(args.julia_output_dir),
         Path(args.output_dir),
         args.models
     )
+    
+    # Optionally run R shapviz
+    if args.run_shapviz:
+        try:
+            subprocess.run([
+                'Rscript', 
+                'src/machine_learning/visualization/shapviz_plots.R',
+                str(args.output_dir),
+                str(Path(args.output_dir).parent / 'shapviz')
+            ], check=True)
+            logger.info("Shapviz visualizations complete")
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.warning("Shapviz failed (R or shapviz package not available)")
 
 
 if __name__ == '__main__':
