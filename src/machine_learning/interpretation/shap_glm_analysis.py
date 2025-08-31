@@ -67,21 +67,43 @@ class JuliaGLMPredictor:
         return self.intercept + X @ self.beta
 
 
-def load_julia_model(model_path: Path) -> Dict[str, Any]:
-    """Load Julia model parameters from JSON file."""
-    with open(model_path, 'r') as f:
+def load_julia_results(results_path: Path) -> Dict[str, Any]:
+    """Load Julia GLM results from standard JSON output."""
+    # Try to find the latest results file
+    if results_path.is_file():
+        json_file = results_path
+    else:
+        # Look for julia_results_latest.json in the directory
+        json_file = results_path / "julia_results_latest.json"
+        if not json_file.exists():
+            # Try to find any julia_results_*.json file
+            json_files = list(results_path.glob("julia_results_*.json"))
+            if json_files:
+                json_file = sorted(json_files)[-1]  # Get the most recent
+            else:
+                raise FileNotFoundError(f"No Julia results found in {results_path}")
+    
+    with open(json_file, 'r') as f:
         return json.load(f)
 
 
-def load_background_data(shap_dir: Path, model_name: str) -> pd.DataFrame:
-    """Load background data for SHAP from CSV."""
-    background_file = shap_dir / f"{model_name}_background.csv"
-    if background_file.exists():
-        logger.info(f"Loading background data from {background_file}")
-        return pd.read_csv(background_file)
-    else:
-        logger.warning(f"No background data found at {background_file}")
-        return None
+def load_background_data(output_dir: Path) -> pd.DataFrame:
+    """Load background data for SHAP from Arrow file."""
+    # Look for Arrow file first (faster)
+    arrow_file = output_dir / "shap_background.arrow"
+    if arrow_file.exists():
+        logger.info(f"Loading background data from {arrow_file}")
+        import pyarrow.feather as feather
+        return feather.read_feather(arrow_file)
+    
+    # Fallback to CSV if exists
+    csv_file = output_dir / "shap_background.csv"
+    if csv_file.exists():
+        logger.info(f"Loading background data from {csv_file}")
+        return pd.read_csv(csv_file)
+    
+    logger.warning(f"No background data found in {output_dir}")
+    return None
 
 
 def compute_shap_values(model_params: Dict[str, Any], 
@@ -277,31 +299,39 @@ def process_julia_glm_models(julia_output_dir: Path,
                             shap_output_dir: Path,
                             models_to_process: Optional[list] = None) -> None:
     """
-    Process all Julia GLM models for SHAP analysis.
+    Process Julia GLM models for SHAP analysis from standard output.
     
     Args:
-        julia_output_dir: Directory containing Julia model exports
+        julia_output_dir: Directory containing Julia results JSON
         shap_output_dir: Directory to save SHAP results
         models_to_process: List of model names to process (if None, process all)
     """
     julia_output_dir = Path(julia_output_dir)
-    shap_dir = julia_output_dir / 'shap_data'
     
-    if not shap_dir.exists():
-        logger.error(f"SHAP data directory not found: {shap_dir}")
+    # Load Julia results
+    try:
+        julia_results = load_julia_results(julia_output_dir)
+    except FileNotFoundError as e:
+        logger.error(str(e))
         return
     
-    # Find all model JSON files
-    model_files = list(shap_dir.glob('*_model.json'))
+    # Load background data
+    background = load_background_data(julia_output_dir)
     
-    if not model_files:
-        logger.error(f"No model files found in {shap_dir}")
+    # Get models from results
+    if "models" not in julia_results:
+        logger.error("No models found in Julia results")
         return
     
-    logger.info(f"Found {len(model_files)} model(s) to process")
+    models = julia_results["models"]
+    logger.info(f"Found {len(models)} model(s) in Julia results")
     
-    for model_file in model_files:
-        model_name = model_file.stem.replace('_model', '')
+    # Process each model
+    for model_name, model_data in models.items():
+        # Skip non-model entries (like LRT tests)
+        if not isinstance(model_data, dict) or "shap_params" not in model_data:
+            logger.info(f"Skipping {model_name} (no SHAP parameters)")
+            continue
         
         if models_to_process and model_name not in models_to_process:
             logger.info(f"Skipping {model_name} (not in processing list)")
@@ -309,29 +339,31 @@ def process_julia_glm_models(julia_output_dir: Path,
         
         logger.info(f"\nProcessing model: {model_name}")
         
-        # Load model parameters
-        model_params = load_julia_model(model_file)
+        # Get SHAP parameters from model diagnostics
+        shap_params = model_data["shap_params"]
         
-        # Load background data
-        background = load_background_data(shap_dir, model_name)
-        
-        # Load feature data (try full data first, then background)
-        feature_file = shap_dir / f"{model_name}_features.csv"
-        if feature_file.exists():
-            X = pd.read_csv(feature_file)
-            logger.info(f"Loaded {len(X)} samples from feature file")
-        elif background is not None:
+        # Use background data for X if we don't have separate feature data
+        if background is not None:
             X = background
             logger.info(f"Using background data ({len(X)} samples) for SHAP")
         else:
-            logger.error(f"No feature data found for {model_name}")
+            logger.error(f"No feature data available for {model_name}")
             continue
+        
+        # Ensure feature names match
+        feature_names = shap_params.get("feature_names", [])
+        if feature_names:
+            # Filter X to only include features used in the model
+            available_features = [f for f in feature_names if f in X.columns]
+            if len(available_features) != len(feature_names):
+                logger.warning(f"Some features missing: {set(feature_names) - set(available_features)}")
+            X = X[available_features]
         
         # Compute SHAP values
         shap_results = compute_shap_values(
-            model_params, 
+            shap_params, 
             X, 
-            background,
+            background[available_features] if background is not None else None,
             use_linear_explainer=True  # Use exact LinearExplainer
         )
         
