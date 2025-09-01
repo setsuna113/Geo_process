@@ -287,8 +287,10 @@ function save_glm_results(results::Dict, state)
     @save jld2_file output
     
     # Save background data for SHAP (sample of feature data)
-    # Exclude response variable and MESF columns
-    feature_cols = setdiff(names(state.data), vcat(["fungi_richness"], state.mesf_columns))
+    # Exclude response variables and MESF columns
+    response_vars = ["fungi_richness", "fungi_richness_int", "plants_richness", "plants_richness_int", 
+                    "vertebrates_richness", "vertebrates_richness_int"]
+    feature_cols = setdiff(names(state.data), vcat(response_vars, state.mesf_columns))
     if length(feature_cols) > 0
         n_sample = min(1000, nrow(state.data))
         Random.seed!(42)

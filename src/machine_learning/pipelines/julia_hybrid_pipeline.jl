@@ -324,7 +324,8 @@ function fit_method3_dml(state::PipelineState)
         include(joinpath(@__DIR__, "multivariable_dml_final.jl"))
     end
     
-    # Verify raw counts
+    # DML uses raw counts (not _int versions)
+    # These are created in preprocessing for DML
     required = ["fungi_richness", "plants_richness", "vertebrates_richness"]
     for col in required
         if !(Symbol(col) in propertynames(state.data))
