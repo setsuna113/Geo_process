@@ -5,77 +5,32 @@ import yaml
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
-from .utils.security_utils import ConfigValidator, PathValidator
+# No validation needed
 
 logger = get_logger(__name__)
 
 
 class MLRegressionConfig:
-    """Load and validate ML regression configuration.
+    """Load ML regression configuration."""
     
-    Configuration validation is MANDATORY by default for security.
-    Only disable for testing purposes.
-    """
-    
-    # Class-level flag to enforce validation globally
-    ENFORCE_VALIDATION = True
-    
-    def __init__(self, config_path: Optional[Path] = None, validate: bool = True):
-        """Initialize configuration loader with mandatory validation by default.
+    def __init__(self, config_path: Optional[Path] = None):
+        """Initialize configuration loader.
         
         Args:
             config_path: Path to ml_config.yml. If None, uses default location.
-            validate: Whether to validate configuration against schema.
-                     Default is True for security. Set to False only for testing.
         """
         if config_path is None:
-            # Try multiple default locations
-            possible_paths = [
-                Path(__file__).parent.parent.parent / 'config' / 'ml' / 'ml_config.yml',
-                Path('config/ml/ml_config.yml'),
-                Path('/home/yl998/dev/geo/config/ml/ml_config.yml')
-            ]
-            for path in possible_paths:
-                if path.exists():
-                    config_path = path
-                    break
-            else:
-                raise FileNotFoundError(
-                    "Could not find ml_config.yml in default locations. "
-                    "Please specify config_path explicitly."
-                )
+            # Config lives in ONE place: src/config/ml/ml_config.yml
+            config_path = Path(__file__).parent.parent / 'config' / 'ml' / 'ml_config.yml'
+            if not config_path.exists():
+                raise FileNotFoundError(f"Config not found at {config_path}")
         
         self.config_path = Path(config_path)
         logger.info(f"Loading ML configuration from {self.config_path}")
         
-        # Always use ConfigValidator for loading
-        validator = ConfigValidator()
-        
-        # Override validate parameter if global enforcement is enabled
-        if self.ENFORCE_VALIDATION and not validate:
-            logger.warning("Global validation enforcement is ON. Overriding validate=False.")
-            validate = True
-        
-        if validate:
-            # Strict validation mode (default)
-            try:
-                self.config = validator.validate_yaml_file(self.config_path)
-                logger.info("Configuration loaded and validated successfully")
-            except Exception as e:
-                logger.error(f"Configuration validation failed: {e}")
-                # No fallback in strict mode - fail fast for security
-                raise ValueError(
-                    f"Configuration validation failed: {e}\n"
-                    "Please fix the configuration file or check the schema."
-                )
-        else:
-            # Relaxed mode for testing only - still sanitize
-            logger.warning("Loading configuration in relaxed mode (testing only)")
-            with open(self.config_path, 'r') as f:
-                self.config = yaml.safe_load(f)
-            # Always sanitize even in relaxed mode
-            self.config = validator.sanitize_config(self.config)
-            logger.warning("Configuration loaded without full validation - use only for testing")
+        # Just load the damn YAML
+        with open(self.config_path, 'r') as f:
+            self.config = yaml.safe_load(f)
         
         # Extract regression analysis config
         self.regression_config = self.config.get('regression_analysis', {})
@@ -106,15 +61,20 @@ class MLRegressionConfig:
     def _log_configuration(self):
         """Log important configuration settings."""
         preprocessing = self.regression_config.get('preprocessing', {})
-        logger.info(preprocessing.get('missing_data', {}).get('log_message', 'Using default missing data strategy'))
-        logger.info(preprocessing.get('standardization', {}).get('log_message', 'Using default standardization'))
-        logger.info(preprocessing.get('response_variable', {}).get('log_message', 'Using default response transformation'))
-        logger.info(preprocessing.get('biotic_predictors', {}).get('log_message', 'Using default biotic transformation'))
+        logger.info(preprocessing.get('missing_data', {}).get(
+            'log_message', 'Using default missing data strategy'))
+        logger.info(preprocessing.get('standardization', {}).get(
+            'log_message', 'Using default standardization'))
+        logger.info(preprocessing.get('response_variable', {}).get(
+            'log_message', 'Using default response transformation'))
+        logger.info(preprocessing.get('biotic_predictors', {}).get(
+            'log_message', 'Using default biotic transformation'))
         
         models = self.regression_config.get('models', {})
         glm_config = models.get('glm', {})
         if 'distribution' in glm_config:
-            logger.info(glm_config['distribution'].get('log_message', 'Using default GLM distribution'))
+            logger.info(glm_config['distribution'].get(
+                'log_message', 'Using default GLM distribution'))
         lightgbm_config = models.get('lightgbm', {})
         if 'log_message' in lightgbm_config:
             logger.info(lightgbm_config['log_message'])
@@ -128,10 +88,6 @@ class MLRegressionConfig:
     def get_preprocessing_config(self) -> Dict[str, Any]:
         """Get preprocessing configuration."""
         return self.regression_config.get('preprocessing', {})
-    
-    def get_glm_config(self) -> Dict[str, Any]:
-        """Get GLM model configuration."""
-        return self.regression_config.get('models', {}).get('glm', {})
     
     def get_lightgbm_config(self) -> Dict[str, Any]:
         """Get LightGBM configuration for DML."""

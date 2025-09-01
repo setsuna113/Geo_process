@@ -309,23 +309,31 @@ function save_bootstrap_results(results::Dict, output_dir::String, method::Strin
     npz_data = Dict{String, Any}()
     sample_sizes = results["sample_sizes"]
     
+    # Get biotic names and response from first sample result
+    first_sr = results["sample_results"][sample_sizes[1]]
+    
     # Metadata
     npz_data["sample_sizes"] = sample_sizes
     npz_data["optimal_n"] = results["optimal_n"]
     npz_data["N_total"] = results["N"]
     npz_data["n_iterations"] = results["n_iterations"]
+    npz_data["biotic1_name"] = first_sr["biotic1_name"]
+    npz_data["biotic2_name"] = first_sr["biotic2_name"]
+    npz_data["response_var"] = first_sr["response_var"]
     
-    # Results for each sample size
+    # Results for each sample size - ONE TRUE FORMAT
     for n in sample_sizes
         sr = results["sample_results"][n]
-        npz_data["n$(n)_plants_effects"] = sr["plants_effects"]
-        npz_data["n$(n)_vertebrates_effects"] = sr["vertebrates_effects"]
+        npz_data["n$(n)_biotic1_effects"] = sr["biotic1_effects"]
+        npz_data["n$(n)_biotic2_effects"] = sr["biotic2_effects"]
         npz_data["n$(n)_p_values"] = sr["p_values"]
         npz_data["n$(n)_r2_improvements"] = sr["r2_improvements"]
         npz_data["n$(n)_power"] = sr["power"]
         npz_data["n$(n)_eco_power"] = sr["ecological_power"]
-        npz_data["n$(n)_plants_mean"] = sr["plants_effect"]["mean"]
-        npz_data["n$(n)_plants_std"] = sr["plants_effect"]["std"]
+        npz_data["n$(n)_biotic1_mean"] = sr["biotic1_effect"]["mean"]
+        npz_data["n$(n)_biotic1_std"] = sr["biotic1_effect"]["std"]
+        npz_data["n$(n)_biotic2_mean"] = sr["biotic2_effect"]["mean"]
+        npz_data["n$(n)_biotic2_std"] = sr["biotic2_effect"]["std"]
     end
     
     npzwrite(npz_path, npz_data)
