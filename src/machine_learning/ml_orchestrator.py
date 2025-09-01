@@ -36,7 +36,8 @@ from src.machine_learning.methods import (
 # Note: Hypothesis testing is now handled by Method classes directly
 
 # Diagnostics (will work with Julia residuals if available)
-from src.machine_learning.diagnostics import DHARMaDiagnostics
+# DHARMa diagnostics are run via R scripts, not Python wrapper
+# from src.machine_learning.diagnostics import DHARMaDiagnostics
 
 logger = get_logger(__name__)
 
@@ -459,42 +460,68 @@ class MLOrchestrator:
         return synthesis
     
     def run_complete_analysis(self,
-                             julia_results_file: Optional[str] = None) -> Dict[str, Any]:
-        """Run complete analysis pipeline on Julia results.
+                             julia_results_file: Optional[str] = None,
+                             methods: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Run analysis pipeline on Julia results.
         
         Args:
             julia_results_file: Path to Julia results (None for latest)
+            methods: List of methods to run ['method1', 'method2', 'method3'] or None for all
             
         Returns:
-            Complete analysis results
+            Analysis results for requested methods
         """
+        # Determine which methods to run
+        if methods is None:
+            methods = ['method1', 'method2', 'method3']
+        elif not isinstance(methods, list):
+            methods = [methods]
+        
         logger.info("="*70)
-        logger.info("SIMPLIFIED ML ANALYSIS PIPELINE")
-        logger.info("="*70)
-        logger.info("All preprocessing and model fitting done in Julia")
-        logger.info("Python handles hypothesis testing and reporting only")
+        logger.info(f"RUNNING METHODS: {', '.join(methods).upper()}")
         logger.info("="*70)
         
         # Load Julia results
         self.load_julia_results(julia_results_file)
         
-        # Run hypothesis tests
+        # Filter models based on requested methods
+        if methods != ['method1', 'method2', 'method3']:
+            original_models = self.models.copy()
+            self.models = {}
+            
+            for method in methods:
+                if method == 'method1':
+                    for key in ['method1_full', 'method1_null', 'method1_lr_test']:
+                        if key in original_models:
+                            self.models[key] = original_models[key]
+                elif method == 'method2':
+                    for key in ['method2_continuous', 'method2_categorical', 
+                               'lrt_method1_vs_method2a', 'lrt_method1_vs_method2b']:
+                        if key in original_models:
+                            self.models[key] = original_models[key]
+                elif method == 'method3':
+                    if 'method3_dml' in original_models:
+                        self.models['method3_dml'] = original_models['method3_dml']
+        
+        # Run hypothesis tests (only for available methods)
         self.run_hypothesis_tests()
         
-        # Synthesize results
-        self.synthesize_results()
+        # Synthesize results only if running all methods
+        if len(methods) == 3:
+            self.synthesize_results()
         
-        # Generate visualizations - THIS WAS MISSING!
+        # Generate visualizations
         logger.info("\n" + "="*70)
         logger.info("GENERATING VISUALIZATIONS")
         logger.info("="*70)
         self.visualize_results(Path("results"))
         
-        # Generate summary report
-        self._generate_summary_report()
+        # Generate summary report only if running all methods
+        if len(methods) == 3:
+            self._generate_summary_report()
         
         logger.info("\n" + "="*70)
-        logger.info("✅ ANALYSIS COMPLETED SUCCESSFULLY")
+        logger.info("✅ ANALYSIS COMPLETED")
         logger.info("="*70)
         
         return self.results

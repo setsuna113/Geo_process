@@ -212,7 +212,7 @@ def _plot_delta_ic(ax, models, threshold=None):
     
     # Filter out NaN values and ensure we have data
     valid_data = [(name, daic, dbic) for name, daic, dbic in zip(model_names, delta_aics, delta_bics)
-                  if not (np.isnan(daic) or daic is None)]
+                  if not np.isnan(daic)]
     
     if not valid_data:
         ax.text(0.5, 0.5, 'No delta IC values available', 
@@ -417,7 +417,7 @@ def _plot_r_squared_values(ax, models, improvement=None):
     nagelkerke_r2s = [m.get('nagelkerke_r2', np.nan) for m in models.values()]
     
     # Check if we have any R² values
-    if all(np.isnan(mcfadden_r2s)) and all(np.isnan(deviance_r2s)):
+    if all(np.isnan(v) for v in mcfadden_r2s) and all(np.isnan(v) for v in deviance_r2s):
         ax.text(0.5, 0.5, 'No R² values available\n(requires loglik and deviance data)', 
                ha='center', va='center', transform=ax.transAxes)
         ax.set_title('Pseudo R² Comparison')

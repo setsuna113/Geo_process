@@ -1,7 +1,6 @@
 """Diagnostic tools for machine learning models."""
 
-from .dharma_diagnostics import DHARMaDiagnostics
+# DHARMa diagnostics are implemented in R scripts
+# Python wrapper not yet implemented
 
-__all__ = [
-    "DHARMaDiagnostics"
-]
+__all__ = []
