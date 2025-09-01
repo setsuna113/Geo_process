@@ -7,6 +7,7 @@ library(MASS)       # For glm.nb, glm.zig
 library(DHARMa)     # For residual diagnostics  
 library(jsonlite)   # For reading metadata
 library(pscl)       # For zero-inflation models
+library(yaml)       # For reading config
 
 # ============================================================================
 # Configuration  
@@ -55,11 +56,29 @@ build_formula <- function(meta, model_type = "base") {
   mesf <- meta$mesf_columns
   base <- c(climate, elevation, mesf)
   
-  # Biotic features
-  biotic <- c("plants_richness_log", "vertebrates_richness_log")
+  # Read config to determine response variable
+  config <- yaml::read_yaml("../../../src/config/ml/ml_config.yml")
+  response_type <- config$method1$response
+  if (is.null(response_type)) {
+    response_type <- "fungi"  # Default if not specified
+  }
+  
+  # Set response variable and biotic predictors based on config
+  if (response_type == "fungi") {
+    response_var <- "fungi_richness_int"
+    biotic <- c("plants_richness_std", "vertebrates_richness_std")
+  } else if (response_type == "plants") {
+    response_var <- "plants_richness_int"
+    biotic <- c("fungi_richness_std", "vertebrates_richness_std")
+  } else if (response_type == "vertebrates") {
+    response_var <- "vertebrates_richness_int"
+    biotic <- c("fungi_richness_std", "plants_richness_std")
+  } else {
+    stop(paste("Unknown response type:", response_type))
+  }
   
   # Use method1_full as our test formula (best AIC from previous run)
-  formula_str <- paste("fungi_richness ~", paste(c(base, biotic), collapse = " + "))
+  formula_str <- paste(response_var, "~", paste(c(base, biotic), collapse = " + "))
   
   return(formula_str)
 }
