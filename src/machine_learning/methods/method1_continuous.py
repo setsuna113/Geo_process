@@ -345,15 +345,7 @@ class Method1H0H1GLM:
             if path:
                 generated_files.append(path)
         
-        # Deviance-df comparison plot
-        if self.model_null and self.model_full:
-            models = {'null': self.model_null, 'full': self.model_full}
-            path = diag.plot_deviance_df(
-                models=models,
-                save_path=output_dir / "model_comparison_deviance.png"
-            )
-            if path:
-                generated_files.append(output_dir / "model_comparison_deviance.png")
+        # Coefficient comparison plot removed - deprecated function
         
         logger.info(f"Generated {len(generated_files)} visualizations in {output_dir}")
         return generated_files
@@ -419,16 +411,16 @@ class Method1H0H1GLM:
                 comparison_results = {
                     'models': {
                         'null': {
-                            'aic': self.model_null.get('aic', 0),
-                            'bic': self.model_null.get('bic', 0),
-                            'loglik': self.model_null.get('loglik', 0),
-                            'df': self.model_null.get('df', self.model_null.get('df_residual', 0))
+                            'aic': self.model_null.get('aic'),
+                            'bic': self.model_null.get('bic'),
+                            'loglik': self.model_null.get('loglik'),
+                            'df': self.model_null.get('df')
                         },
                         'full': {
-                            'aic': self.model_full.get('aic', 0),
-                            'bic': self.model_full.get('bic', 0),
-                            'loglik': self.model_full.get('loglik', 0),
-                            'df': self.model_full.get('df', self.model_full.get('df_residual', 0))
+                            'aic': self.model_full.get('aic'),
+                            'bic': self.model_full.get('bic'),
+                            'loglik': self.model_full.get('loglik'),
+                            'df': self.model_full.get('df')
                         }
                 },
                 'best_model': {
