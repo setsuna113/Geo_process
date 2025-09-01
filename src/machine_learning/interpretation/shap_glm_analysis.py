@@ -41,13 +41,20 @@ def load_julia_results(results_path: Path) -> Dict[str, Any]:
 
 
 def load_background_data(output_dir: Path) -> pd.DataFrame:
-    """Load background data for SHAP from Arrow file."""
-    # Look for Arrow file first (faster)
-    arrow_file = output_dir / "shap_background.arrow"
+    """Load background data for SHAP from unified analysis data."""
+    # Look for unified analysis data first (new format)
+    arrow_file = output_dir / "analysis_data.arrow"
     if arrow_file.exists():
         logger.info(f"Loading background data from {arrow_file}")
         import pyarrow.feather as feather
         return feather.read_feather(arrow_file)
+    
+    # Fallback to old SHAP-specific file for backward compatibility
+    old_arrow = output_dir / "shap_background.arrow"
+    if old_arrow.exists():
+        logger.info(f"Loading background data from {old_arrow} (legacy)")
+        import pyarrow.feather as feather
+        return feather.read_feather(old_arrow)
     
     # Fallback to CSV if exists
     csv_file = output_dir / "shap_background.csv"
@@ -116,7 +123,7 @@ def save_shap_results(shap_results: Dict[str, Any],
                       output_dir: Path,
                       model_name: str) -> None:
     """
-    Save SHAP results for visualization in Python and R.
+    Save SHAP results as a single Arrow file with metadata.
     
     Args:
         shap_results: Dictionary from compute_shap_values
@@ -126,41 +133,44 @@ def save_shap_results(shap_results: Dict[str, Any],
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save SHAP values as CSV for R shapviz
-    shap_df = pd.DataFrame(
-        shap_results['shap_values'],
-        columns=shap_results['feature_names']
-    )
-    shap_csv = output_dir / f"{model_name}_shap_values.csv"
-    shap_df.to_csv(shap_csv, index=False)
-    logger.info(f"Saved SHAP values to {shap_csv}")
+    import pyarrow as pa
+    import pyarrow.feather as feather
     
-    # Save feature data
-    feature_df = pd.DataFrame(
-        shap_results['X'],
-        columns=shap_results['feature_names']
-    )
-    feature_csv = output_dir / f"{model_name}_features.csv"
-    feature_df.to_csv(feature_csv, index=False)
-    logger.info(f"Saved feature data to {feature_csv}")
+    # Combine features and SHAP values in one DataFrame
+    combined_df = pd.DataFrame()
     
-    # Save metadata for R
+    # Add feature columns
+    feature_names = shap_results['feature_names']
+    for i, fname in enumerate(feature_names):
+        combined_df[fname] = shap_results['X'][:, i]
+    
+    # Add SHAP value columns with prefix
+    for i, fname in enumerate(feature_names):
+        combined_df[f'shap_{fname}'] = shap_results['shap_values'][:, i]
+    
+    # Create Arrow table with metadata
+    table = pa.Table.from_pandas(combined_df)
+    
+    # Add metadata to the Arrow schema
     metadata = {
         'model_name': model_name,
-        'baseline': float(shap_results['expected_value']) if np.isscalar(shap_results['expected_value']) else float(shap_results['expected_value'][0]),
-        'n_samples': len(shap_results['shap_values']),
-        'n_features': len(shap_results['feature_names']),
-        'feature_names': shap_results['feature_names'],
+        'baseline': str(float(shap_results['expected_value']) if np.isscalar(shap_results['expected_value']) else float(shap_results['expected_value'][0])),
+        'n_samples': str(len(shap_results['shap_values'])),
+        'n_features': str(len(feature_names)),
+        'feature_names': json.dumps(feature_names),
         'model_family': shap_results['model_params'].get('family', 'unknown'),
         'model_link': shap_results['model_params'].get('link', 'unknown')
     }
     
-    metadata_json = output_dir / f"{model_name}_shap_metadata.json"
-    with open(metadata_json, 'w') as f:
-        json.dump(metadata, f, indent=4)
-    logger.info(f"Saved metadata to {metadata_json}")
+    # Add metadata to table
+    table = table.replace_schema_metadata(metadata)
     
-    # Save as numpy arrays for fast Python loading
+    # Save single Arrow file
+    arrow_file = output_dir / f"{model_name}_shap_results.arrow"
+    feather.write_feather(table, arrow_file)
+    logger.info(f"Saved all SHAP results to single Arrow file: {arrow_file}")
+    
+    # Still save NPZ for backward compatibility with Python users
     np_file = output_dir / f"{model_name}_shap.npz"
     np.savez_compressed(
         np_file,

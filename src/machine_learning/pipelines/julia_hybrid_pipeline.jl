@@ -20,7 +20,7 @@ using GLM: LogLink, lrtest, predict, response, modelmatrix,
 # Import post-processing module - separation of concerns
 include("post_process.jl")
 using .Main: extract_diagnostics_and_save, process_dml_results,
-             save_glm_results, save_bootstrap_results, dump_for_r_dharma, save_dml_results
+             save_glm_results, save_bootstrap_results, dump_analysis_data, save_dml_results
 
 # Configure BLAS threads for optimal performance
 # Set to 1 to avoid competition with Julia's own parallelism
@@ -394,12 +394,9 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         "/scratch/yl998/julia"  # Use scratch for large outputs
     )
     
-    # DHARMA preprocessing dump (minimal, clean)
-    if dump_for_dharma
-        dump_for_r_dharma(state, method)
-        println("Data dumped for DHARMa diagnostics. Exiting.")
-        return Dict("status" => "dharma_cache_saved")
-    end
+    # Always dump analysis data - function handles early exit for DHARMa mode
+    dump_result = dump_analysis_data(state, method, dharma_only=dump_for_dharma)
+    !isnothing(dump_result) && return dump_result  # Exit if DHARMa mode
     
     # LMG IMPORTANCE ANALYSIS MODE
     if compute_lmg

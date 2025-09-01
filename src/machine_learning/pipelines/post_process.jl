@@ -286,20 +286,7 @@ function save_glm_results(results::Dict, state)
     jld2_file = joinpath(state.output_dir, "julia_results_$(timestamp).jld2")
     @save jld2_file output
     
-    # Save background data for SHAP (sample of feature data)
-    # Exclude response variable and MESF columns
-    feature_cols = setdiff(names(state.data), vcat(["fungi_richness"], state.mesf_columns))
-    if length(feature_cols) > 0
-        n_sample = min(1000, nrow(state.data))
-        Random.seed!(42)
-        sample_idx = sample(1:nrow(state.data), n_sample, replace=false)
-        X_background = state.data[sample_idx, feature_cols]
-        
-        # Save as Arrow for fast cross-language reading
-        background_file = joinpath(state.output_dir, "shap_background.arrow")
-        Arrow.write(background_file, X_background)
-        println("SHAP background data saved: $background_file ($(n_sample) samples)")
-    end
+    # Note: Analysis data (for SHAP/DHARMa) is dumped earlier in pipeline after preprocessing
     
     # Update symlink
     latest = joinpath(state.output_dir, "julia_results_latest.json")
@@ -346,47 +333,62 @@ function save_bootstrap_results(results::Dict, output_dir::String, method::Strin
 end
 
 """
-Save DHARMa data. Arrow for R, metadata in JSON.
-Matches original dump_for_r_dharma signature.
+Unified data dump for analysis (SHAP, DHARMa, etc).
+Always dumps the same preprocessed data sample - consumers use what they need.
+Returns early termination signal if dharma_only=true.
 """
-function dump_for_r_dharma(state, method::String; sample_frac::Float64=0.1)
-    cache_dir = "/scratch/yl998/.cache/dharma"
-    mkpath(cache_dir)
-    
-    # Sample data for efficiency
-    n_rows = nrow(state.data)
-    n_sample = max(10000, Int(floor(n_rows * sample_frac)))
-    n_sample = min(n_sample, 100000)
+function dump_analysis_data(state, method::String; dharma_only::Bool=false)
+    # Use consistent sampling regardless of purpose
+    n_sample = min(10000, nrow(state.data))  # Up to 10k rows
     Random.seed!(42)
-    sample_idx = sort(sample(1:n_rows, n_sample, replace=false))
+    sample_idx = sort(sample(1:nrow(state.data), n_sample, replace=false))
     df_sample = state.data[sample_idx, :]
     
-    # Save Arrow for R
-    arrow_file = joinpath(cache_dir, "dharma_data.arrow")
+    # Determine output location
+    if dharma_only
+        output_dir = "/scratch/yl998/.cache/dharma"
+        filename_base = "dharma_data"
+    else
+        output_dir = state.output_dir
+        filename_base = "analysis_data"
+    end
+    
+    mkpath(output_dir)
+    
+    # Save Arrow file with ALL columns (consumers filter as needed)
+    arrow_file = joinpath(output_dir, "$(filename_base).arrow")
     Arrow.write(arrow_file, df_sample)
     
     # Save metadata
     metadata = Dict(
         "data_file" => arrow_file,
         "n_sampled" => n_sample,
-        "n_total" => n_rows,
-        "sample_frac" => n_sample / n_rows,
-        "mesf_columns" => state.mesf_columns,  # Get from state
-        "timestamp" => Dates.format(now(), "yyyy-mm-dd_HH-MM-SS")
+        "n_total" => nrow(state.data),
+        "sample_frac" => n_sample / nrow(state.data),
+        "mesf_columns" => state.mesf_columns,
+        "standardized_columns" => [String(col) for col in names(state.data) if occursin("_std", String(col))],
+        "timestamp" => Dates.format(now(), "yyyy-mm-dd_HH-MM-SS"),
+        "method" => method
     )
     
-    json_file = joinpath(cache_dir, "dharma_meta.json")
+    json_file = joinpath(output_dir, "$(filename_base)_meta.json")
     open(json_file, "w") do f
         JSON.print(f, metadata, 2)
     end
     
-    println("DHARMa cache saved:")
-    println("  Data: $arrow_file ($(round(filesize(arrow_file)/1e6, digits=1)) MB)")
-    println("  Meta: $json_file")
-    println("  Sampled: $n_sample / $n_rows rows ($(round(100*n_sample/n_rows, digits=1))%)")
+    println("Analysis data saved: $arrow_file ($(round(filesize(arrow_file)/1e6, digits=1)) MB, $n_sample samples)")
     
-    return arrow_file, json_file
+    # Early termination for DHARMa-only mode
+    if dharma_only
+        println("Data dumped for DHARMa diagnostics. Exiting.")
+        return Dict("status" => "dharma_cache_saved", "file" => arrow_file)
+    end
+    
+    return nothing  # Continue with normal pipeline
 end
+
+# Keep alias for backward compatibility if needed
+const dump_for_r_dharma = (state, method; kwargs...) -> dump_analysis_data(state, method; dharma_only=true)
 
 """
 Save DML results. BDML stats in NPZ, rest in JSON.
@@ -466,4 +468,4 @@ end
 # For backward compatibility, export the wrapper as extract_diagnostics
 export extract_diagnostics_and_save
 export process_dml_results
-export save_glm_results, save_bootstrap_results, dump_for_r_dharma, save_dml_results
+export save_glm_results, save_bootstrap_results, dump_analysis_data, save_dml_results
