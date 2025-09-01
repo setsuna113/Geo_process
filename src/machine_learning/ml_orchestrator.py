@@ -68,6 +68,10 @@ class MLOrchestrator:
         self.method2 = Method2H2Testing(self.config)
         self.method3 = Method3DML(self.config)
         
+        # Get response type from config for Method1
+        self.method1_response = self.config.get('method1', {}).get('response', 'fungi')
+        logger.info(f"Method1 configured for response: {self.method1_response}")
+        
         # Storage for loaded results
         self.julia_results = None
         self.models = {}
@@ -165,11 +169,13 @@ class MLOrchestrator:
         
         # Method 1: H0-H1 Testing
         if 'method1_full' in self.models and 'method1_null' in self.models:
-            logger.info("\nMethod 1: H0-H1 Testing (Biodiversity Begets Biodiversity)")
+            # Create hypothesis text based on response type
+            response_text = f"{self.method1_response.capitalize()} Response"
+            logger.info(f"\nMethod 1: H0-H1 Testing ({response_text})")
             
-            # Pass Julia results to Method1 using the new architecture
+            # Pass Julia results and response type to Method1
             lr_test = self.models.get('method1_lr_test')
-            self.method1.set_julia_results(self.models, lr_test)
+            self.method1.set_julia_results(self.models, lr_test, response_type=self.method1_response)
             
             # Run hypothesis tests with proper SESOI and TOST
             method1_results = self.method1.run_hypothesis_tests()

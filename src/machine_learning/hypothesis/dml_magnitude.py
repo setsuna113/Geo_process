@@ -329,19 +329,35 @@ class DMLMagnitude:
         
         # Special biodiversity evaluation if applicable
         biodiversity_eval = None
-        if 'plants_richness' in coef_names and 'vertebrates_richness' in coef_names:
-            plants_idx = coef_names.index('plants_richness')
-            vertebrates_idx = coef_names.index('vertebrates_richness')
+        # Detect biodiversity predictors dynamically (looking for _std suffix)
+        biodiv_predictors = [name for name in coef_names if name.endswith('_richness_std')]
+        
+        if len(biodiv_predictors) >= 2:
+            # Use first two biodiversity predictors found
+            pred1, pred2 = biodiv_predictors[:2]
+            pred1_idx = coef_names.index(pred1)
+            pred2_idx = coef_names.index(pred2)
             
+            # Look for interaction term
             interaction_idx = None
-            if 'plants_x_vertebrates' in coef_names:
-                interaction_idx = coef_names.index('plants_x_vertebrates')
+            pred1_base = pred1.replace('_richness_std', '')
+            pred2_base = pred2.replace('_richness_std', '')
+            possible_interactions = [
+                f'{pred1_base}_x_{pred2_base}',
+                f'{pred2_base}_x_{pred1_base}',
+                f'{pred1}_x_{pred2}',
+                f'{pred2}_x_{pred1}'
+            ]
+            for interaction_name in possible_interactions:
+                if interaction_name in coef_names:
+                    interaction_idx = coef_names.index(interaction_name)
+                    break
             
             biodiversity_eval = DMLMagnitude.evaluate_biodiversity_magnitudes(
-                theta_plants=coefficients[plants_idx],
-                se_plants=std_errors[plants_idx],
-                theta_vertebrates=coefficients[vertebrates_idx],
-                se_vertebrates=std_errors[vertebrates_idx],
+                theta_plants=coefficients[pred1_idx],
+                se_plants=std_errors[pred1_idx],
+                theta_vertebrates=coefficients[pred2_idx],
+                se_vertebrates=std_errors[pred2_idx],
                 theta_interaction=coefficients[interaction_idx] if interaction_idx is not None else None,
                 se_interaction=std_errors[interaction_idx] if interaction_idx is not None else None
             )
