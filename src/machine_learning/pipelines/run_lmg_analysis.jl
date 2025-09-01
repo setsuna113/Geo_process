@@ -94,22 +94,22 @@ const RESPONSE_CONFIG = Dict(
     "fungi" => (
         response_col = :fungi_richness,
         biodiv_predictors = Dict(
-            "plant_biodiv" => ["plants_richness_log_std"],
-            "animal_biodiv" => ["vertebrates_richness_log_std"]
+            "plant_biodiv" => ["plants_richness_std"],
+            "animal_biodiv" => ["vertebrates_richness_std"]
         )
     ),
     "animal" => (
         response_col = :vertebrates_richness,
         biodiv_predictors = Dict(
-            "fungi_biodiv" => ["fungi_richness"],
-            "plant_biodiv" => ["plants_richness_log_std"]
+            "fungi_biodiv" => ["fungi_richness_std"],
+            "plant_biodiv" => ["plants_richness_std"]
         )
     ),
     "plant" => (
         response_col = :plants_richness,
         biodiv_predictors = Dict(
-            "fungi_biodiv" => ["fungi_richness"],
-            "animal_biodiv" => ["vertebrates_richness_log_std"]
+            "fungi_biodiv" => ["fungi_richness_std"],
+            "animal_biodiv" => ["vertebrates_richness_std"]
         )
     )
 )

@@ -194,17 +194,6 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
         df.plants_richness_std = (df.plants_richness .- mean(df.plants_richness)) ./ (2 .* std(df.plants_richness))
         df.vertebrates_richness_std = (df.vertebrates_richness .- mean(df.vertebrates_richness)) ./ (2 .* std(df.vertebrates_richness))
         
-        # Keep log versions for backward compatibility (Method2 uses them)
-        plants_log = log.(df.plants_richness .+ 1)
-        vertebrates_log = log.(df.vertebrates_richness .+ 1)
-        df.plants_richness_log_std = (plants_log .- mean(plants_log)) ./ (2 .* std(plants_log))
-        df.vertebrates_richness_log_std = (vertebrates_log .- mean(vertebrates_log)) ./ (2 .* std(vertebrates_log))
-        df.plants_richness_log = plants_log
-        df.vertebrates_richness_log = vertebrates_log
-        
-        # Keep original fungi_richness for backward compatibility
-        df.fungi_richness = df.fungi_richness_int
-        
         println("Created integer and standardized versions of biodiversity variables")
     end
     
@@ -284,12 +273,12 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     median_bio4 = median(df.bio04_std)
     df.temperate = Int.(df.bio04_std .> median_bio4)
     
-    # FIXED: Use log-transformed plants to match continuous model
-    median_plants = median(df.plants_richness_log_std)
-    df.plant_high = Int.(df.plants_richness_log_std .> median_plants)
+    # Use standardized plants for categorical split
+    median_plants = median(df.plants_richness_std)
+    df.plant_high = Int.(df.plants_richness_std .> median_plants)
     
     df.temperate_x_plant_high = df.temperate .* df.plant_high
-    df.bio04_std_x_plants_log_std = df.bio04_std .* df.plants_richness_log_std
+    df.bio04_std_x_plants_std = df.bio04_std .* df.plants_richness_std
     
     # Features - now includes all environmental variables
     climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
@@ -297,21 +286,21 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
                "aspect_cos_std", "aspect_sin_std"]
     water = ["pet_mm_month_std"]
-    biodiv = ["plants_richness_log_std", "vertebrates_richness_log_std"]
+    biodiv = ["plants_richness_std", "vertebrates_richness_std"]
     
     # Combine all features
     base = vcat(climate, soil, terrain, water, biodiv, state.mesf_columns)
     
     # Continuous interaction - use ridge when we have 200+ MESF components
-    cont_features = vcat(base, ["bio04_std_x_plants_log_std"])
+    cont_features = vcat(base, ["bio04_std_x_plants_std"])
     formula_cont = Term(:fungi_richness_int) ~ sum(Term.(Symbol.(cont_features)))
     model_cont = negbin(formula_cont, df, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics_and_save(model_cont, "method2_continuous", state)))
     
     # Categorical interaction - replace continuous bio04 and plants with categorical versions
-    # Remove bio04_std and plants_richness_log from base, add categorical versions
+    # Remove bio04_std and plants_richness_std from base, add categorical versions
     climate_cat = ["bio01_std", "bio12_std", "bio15_std"]  # Removed bio04_std
-    biodiv_cat = ["vertebrates_richness_log_std"]  # Removed plants_richness_log
+    biodiv_cat = ["vertebrates_richness_std"]  # Removed plants_richness_std
     
     base_cat = vcat(climate_cat, soil, terrain, water, biodiv_cat, state.mesf_columns)
     
