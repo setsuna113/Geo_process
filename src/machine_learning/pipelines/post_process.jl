@@ -287,6 +287,7 @@ function save_glm_results(results::Dict, state)
     @save jld2_file output
     
     # Note: Analysis data (for SHAP/DHARMa) is dumped earlier in pipeline after preprocessing
+    # via dump_analysis_data() which handles both SHAP background and DHARMa data in one place
     
     # Update symlink
     latest = joinpath(state.output_dir, "julia_results_latest.json")
@@ -358,6 +359,20 @@ function dump_analysis_data(state, method::String; dharma_only::Bool=false)
     # Save Arrow file with ALL columns (consumers filter as needed)
     arrow_file = joinpath(output_dir, "$(filename_base).arrow")
     Arrow.write(arrow_file, df_sample)
+    
+    # Also save SHAP-specific background file for compatibility
+    # Exclude response variables and MESF columns as per remote's intent
+    if !dharma_only
+        response_vars = ["fungi_richness", "fungi_richness_int", "plants_richness", "plants_richness_int", 
+                        "vertebrates_richness", "vertebrates_richness_int"]
+        feature_cols = setdiff(names(df_sample), vcat(response_vars, state.mesf_columns))
+        if length(feature_cols) > 0
+            X_background = df_sample[:, feature_cols]
+            shap_file = joinpath(output_dir, "shap_background.arrow")
+            Arrow.write(shap_file, X_background)
+            println("SHAP background data saved: $shap_file ($(n_sample) samples, $(length(feature_cols)) features)")
+        end
+    end
     
     # Save metadata
     metadata = Dict(
