@@ -214,7 +214,8 @@ def generate_wald_publication_report(
 def generate_contrast_publication_report(
     contrast_results: Dict[str, Any],
     emmeans_results: Optional[Dict[str, Any]] = None,
-    hypothesis_name: str = "H2 (Temperate Mismatch)"
+    hypothesis_name: str = "H2 (Temperate Mismatch)",
+    response_type: str = "fungi"
 ) -> Dict[str, Any]:
     """Generate publication-ready report for contrast analysis.
     
@@ -270,14 +271,14 @@ def generate_contrast_publication_report(
         if h2_supported:
             main_text += (
                 f"This result supports H2, indicating that high-plant temperate regions "
-                f"have {abs(estimate):.2f} fewer fungi species than high-plant non-temperate "
+                f"have {abs(estimate):.2f} fewer {response_type} species than high-plant non-temperate "
                 f"regions (95% CI [{estimate - 1.96*se:.2f}, {estimate + 1.96*se:.2f}]). "
                 f"This confirms the biodiversity decoupling pattern in temperate zones."
             )
         elif p_value < 0.05 and estimate > 0:
             main_text += (
                 f"This result contradicts H2, showing that high-plant temperate regions "
-                f"have {estimate:.2f} more fungi species than expected."
+                f"have {estimate:.2f} more {response_type} species than expected."
             )
         else:
             main_text += (
@@ -430,7 +431,8 @@ def generate_lrt_publication_report(
 
 def generate_simple_slopes_publication_report(
     simple_slopes_results: Dict[str, Any],
-    hypothesis_name: str = "H2 (Temperate Mismatch)"
+    hypothesis_name: str = "H2 (Temperate Mismatch)",
+    response_type: str = "fungi"
 ) -> Dict[str, Any]:
     """Generate publication-ready report for simple slopes analysis.
     
@@ -473,7 +475,7 @@ def generate_simple_slopes_publication_report(
     if h2_supported:
         main_text += (
             f"This supports H2, showing that high-plant temperate regions have "
-            f"{abs(high_plant_result.get('estimate', 0)):.2f} fewer fungi species than "
+            f"{abs(high_plant_result.get('estimate', 0)):.2f} fewer {response_type} species than "
             f"high-plant non-temperate regions. "
         )
     else:
