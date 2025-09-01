@@ -2,15 +2,45 @@
 # shapviz visualization for SHAP values from Julia GLM models
 # Creates beautiful visualizations using ggplot2-based shapviz package
 
+.libPaths("~/R")
 library(shapviz)
 library(ggplot2)
 library(jsonlite)
 library(readr)
 library(dplyr)
 library(patchwork)  # For combining plots
+library(viridis)    # For professional color scales
 
-# Set theme
-theme_set(theme_minimal())
+# Set custom theme with white background and clean styling
+theme_shap <- function(base_size = 12) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      # Clean white background
+      plot.background = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      panel.grid.major = element_line(color = "grey92", linewidth = 0.3),
+      panel.grid.minor = element_blank(),
+      
+      # Text styling with proper sizes
+      plot.title = element_text(size = base_size * 1.3, face = "bold", 
+                               color = "grey20", margin = margin(b = 10)),
+      plot.subtitle = element_text(size = base_size * 0.9, 
+                                   color = "grey40", margin = margin(b = 10)),
+      axis.title = element_text(size = base_size * 0.95, color = "grey30"),
+      axis.text = element_text(size = base_size * 0.85, color = "grey40"),
+      
+      # Legend styling
+      legend.background = element_rect(fill = "white", color = NA),
+      legend.key = element_rect(fill = "white", color = NA),
+      legend.title = element_text(size = base_size * 0.9, face = "bold"),
+      
+      # Margins
+      plot.margin = margin(15, 15, 15, 15)
+    )
+}
+
+# Set as default theme
+theme_set(theme_shap())
 
 #' Load SHAP data from Python output
 #'
@@ -88,45 +118,76 @@ create_shapviz_plots <- function(sv, output_dir, model_name, save_plots = TRUE) 
   message("Creating feature importance plots...")
   
   p_importance_bar <- sv_importance(sv, kind = "bar", show_numbers = TRUE) +
+    scale_fill_gradient(low = "lightblue", high = "darkblue") +
     labs(title = paste("Feature Importance -", model_name),
-         subtitle = "Mean absolute SHAP values") +
-    theme(plot.title = element_text(size = 14, face = "bold"),
-          plot.subtitle = element_text(size = 11))
+         subtitle = "Mean absolute SHAP values across all predictions",
+         caption = "Higher values indicate stronger feature influence on model predictions") +
+    theme_shap() +
+    theme(axis.text.y = element_text(face = "bold", size = 10))
   
-  p_importance_bee <- sv_importance(sv, kind = "beeswarm", max_display = 15) +
-    labs(title = paste("SHAP Summary -", model_name),
-         subtitle = "Distribution of SHAP values") +
-    theme(plot.title = element_text(size = 14, face = "bold"),
-          plot.subtitle = element_text(size = 11))
+  p_importance_bee <- sv_importance(sv, kind = "beeswarm", max_display = 20) +
+    scale_color_viridis_c(option = "plasma", name = "Feature\nValue") +
+    labs(title = paste("SHAP Summary Plot -", model_name),
+         subtitle = "Distribution of SHAP values colored by feature values",
+         caption = "Each point represents one observation; color shows feature value",
+         x = "SHAP value (impact on model output)",
+         y = "Feature") +
+    theme_shap() +
+    theme(axis.text.y = element_text(face = "bold", size = 10)) +
+    geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.4, color = "grey40")
   
   if (save_plots) {
     ggsave(file.path(output_dir, paste0(model_name, "_importance_bar.png")),
-           p_importance_bar, width = 10, height = 8, dpi = 150)
+           p_importance_bar, width = 10, height = 8, dpi = 300, bg = "white")
     ggsave(file.path(output_dir, paste0(model_name, "_importance_beeswarm.png")),
-           p_importance_bee, width = 12, height = 8, dpi = 150)
+           p_importance_bee, width = 12, height = 8, dpi = 300, bg = "white")
   }
   
   # 2. Dependence plots for top features
   message("Creating dependence plots...")
   
   # Get top 6 features by importance
-  importance <- sv_importance(sv, kind = "no_plot")
-  top_features <- head(rownames(importance), 6)
+  # Note: sv_importance with kind="no" may return unnamed vector
+  importance <- sv_importance(sv, kind = "no")
+  
+  # Ensure we have names
+  if (is.null(names(importance)) && length(importance) > 0) {
+    # If unnamed, use column names from SHAP values
+    names(importance) <- colnames(sv$S)
+  }
+  
+  # Sort by importance and get top features
+  importance_sorted <- sort(importance, decreasing = TRUE)
+  top_features <- head(names(importance_sorted), 6)
   
   dep_plots <- list()
   for (i in seq_along(top_features)) {
     feat <- top_features[i]
     dep_plots[[i]] <- sv_dependence(sv, v = feat, color_var = "auto") +
-      labs(title = paste("SHAP Dependence:", feat)) +
-      theme(plot.title = element_text(size = 11))
+      scale_color_viridis_c(option = "viridis", name = "Interaction\nFeature") +
+      labs(title = feat,
+           x = paste(feat, "(standardized)"),
+           y = "SHAP value",
+           caption = NULL) +
+      theme_shap(base_size = 10) +
+      geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.3, color = "grey40") +
+      theme(plot.title = element_text(size = 11, face = "bold"))
   }
   
   # Combine dependence plots in a grid
-  p_dependence_grid <- wrap_plots(dep_plots, ncol = 3, nrow = 2)
+  p_dependence_grid <- wrap_plots(dep_plots, ncol = 3, nrow = 2) +
+    plot_annotation(
+      title = paste("SHAP Dependence Plots -", model_name),
+      subtitle = "How feature values affect model predictions",
+      theme = theme(
+        plot.title = element_text(size = 14, face = "bold", color = "grey20"),
+        plot.subtitle = element_text(size = 11, color = "grey40")
+      )
+    )
   
   if (save_plots) {
     ggsave(file.path(output_dir, paste0(model_name, "_dependence_grid.png")),
-           p_dependence_grid, width = 15, height = 10, dpi = 150)
+           p_dependence_grid, width = 15, height = 10, dpi = 300, bg = "white")
   }
   
   # 3. 2D dependence plots (unique shapviz feature!)
@@ -147,12 +208,12 @@ create_shapviz_plots <- function(sv, output_dir, model_name, save_plots = TRUE) 
       
       if (save_plots) {
         ggsave(file.path(output_dir, paste0(model_name, "_dependence2D.png")),
-               p_2d_combined, width = 14, height = 6, dpi = 150)
+               p_2d_combined, width = 14, height = 6, dpi = 300, bg = "white")
       }
     } else {
       if (save_plots) {
         ggsave(file.path(output_dir, paste0(model_name, "_dependence2D.png")),
-               p_2d_1, width = 7, height = 6, dpi = 150)
+               p_2d_1, width = 7, height = 6, dpi = 300, bg = "white")
       }
     }
   }
@@ -177,7 +238,7 @@ create_shapviz_plots <- function(sv, output_dir, model_name, save_plots = TRUE) 
   
   if (save_plots) {
     ggsave(file.path(output_dir, paste0(model_name, "_waterfall.png")),
-           p_waterfall_grid, width = 10, height = 12, dpi = 150)
+           p_waterfall_grid, width = 10, height = 12, dpi = 300, bg = "white")
   }
   
   # 5. Force plot (if available)
@@ -189,7 +250,7 @@ create_shapviz_plots <- function(sv, output_dir, model_name, save_plots = TRUE) 
     
     if (save_plots) {
       ggsave(file.path(output_dir, paste0(model_name, "_force.png")),
-             p_force, width = 12, height = 4, dpi = 150)
+             p_force, width = 12, height = 4, dpi = 300, bg = "white")
     }
   }, error = function(e) {
     message("  Note: Force plot not available or failed")
@@ -202,7 +263,7 @@ create_shapviz_plots <- function(sv, output_dir, model_name, save_plots = TRUE) 
   
   if (save_plots) {
     ggsave(file.path(output_dir, paste0(model_name, "_summary_combined.png")),
-           p_combined, width = 16, height = 14, dpi = 150)
+           p_combined, width = 16, height = 14, dpi = 300, bg = "white")
   }
   
   message(sprintf("All plots saved to: %s", output_dir))
@@ -291,7 +352,7 @@ create_comparative_plots <- function(results, output_dir = "results/shapviz/comp
   importance_data <- list()
   for (model_name in names(results)) {
     sv <- results[[model_name]]$shapviz_object
-    imp <- sv_importance(sv, kind = "no_plot")
+    imp <- sv_importance(sv, kind = "no")
     imp_df <- data.frame(
       feature = rownames(imp),
       importance = imp$value,

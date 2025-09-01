@@ -1,7 +1,9 @@
-        from src.abstractions import save_results as save_util
-from src.abstractions import save_json
-        importances = self.estimator.feature_importances_
-from econml.dml import LinearDML, CausalForestDML
+from src.abstractions.ml_io import save_pipeline_results, load_pipeline_results
+# UPDATED: Use LinearDML with residual extraction capability
+from src.machine_learning.doubleML.linear_dml_with_residuals import LinearDMLWithResiduals as LinearDML
+from econml.dml import CausalForestDML
+# Note: Line 3 appears to be misplaced code, commenting it out
+# importances = self.estimator.feature_importances_
 from pathlib import Path
 from sklearn.multioutput import MultiOutputRegressor
 from src.machine_learning.doubleML.optimized_lgbm import OptimizedLGBMRegressor
@@ -61,8 +63,9 @@ def load_config(config_path: str = None) -> Dict:
     
     # Validate required parameters exist
     required_params = [
+        'output_dir',  # REQUIRED - no fallback
         'num_threads', 'cv_folds', 'random_state', 'alpha',
-        'mesf_cache_dir', 'output_dir', 'spatial_step',
+        'mesf_cache_dir', 'spatial_step',
         'outcome', 'treatments', 'effect_modifiers',
         'mc_iters', 'inference_homo', 'inference_hetero',
         'n_estimators', 'max_depth', 'min_samples_leaf',
@@ -236,12 +239,14 @@ class DataPreprocessor:
                 print("Added interaction term: plants_x_vertebrates")
         else:
             # GLM methods need log transforms
+            # Keep taxa as raw float values - no transformations for LightGBM
+            # LightGBM handles raw values better than log-transformed values
             if 'fungi_richness' in data:
-                data['fungi_richness'] = np.round(data['fungi_richness']).astype(np.int32)
+                data['fungi_richness'] = data['fungi_richness'].astype(np.float32)
             if 'plants_richness' in data:
-                data['plants_richness_log'] = np.log(data['plants_richness'] + 1)
+                data['plants_richness'] = data['plants_richness'].astype(np.float32)
             if 'vertebrates_richness' in data:
-                data['vertebrates_richness_log'] = np.log(data['vertebrates_richness'] + 1)
+                data['vertebrates_richness'] = data['vertebrates_richness'].astype(np.float32)
         
         n_final = len(data[list(data.keys())[0]])
         print(f"Final shape: ({n_final}, {len(data)} features)")
@@ -749,42 +754,104 @@ class CausalEffectPipeline:
     
     def fit_homogeneous(self) -> Dict:
         """
-        Fit homogeneous effects model using preprocessed data
-        Uses standard variable definitions from the paper
+        Fit homogeneous effects model using 3 SEPARATE single-treatment models.
+        
+        This fits:
+        1. fungi ~ plants (controlling for W)
+        2. plants ~ vertebrates (controlling for W)
+        3. vertebrates ~ fungi (controlling for W)
+        
+        Returns residuals for all three taxa for RDA analysis.
         """
         if self.data is None:
             raise ValueError("No data loaded. Call load_data() first.")
         
-        # Use variable definitions from config
-        outcome = self.config['outcome']
-        treatments = self.config['treatments']
+        print("="*70)
+        print("HOMOGENEOUS EFFECTS: 3 SINGLE-TREATMENT MODELS")
+        print("="*70)
         
-        # Define confounders from config - collect all confounder groups
+        # Define the three taxa
+        taxa = ['fungi_richness', 'plants_richness', 'vertebrates_richness']
+        
+        # Define confounders from config
         climate = self.config.get('climate_confounders', [])
         topo = self.config.get('topographic_confounders', [])
         soil = self.config.get('soil_confounders', [])
         water = self.config.get('water_balance_confounders', [])
-        
-        # Also include MESF spatial features if available
         mesf_cols = [col for col in self.data.keys() if col.startswith('mesf_')]
         
-        # Combine all confounders
         confounders = climate + topo + soil + water + mesf_cols
-        
-        # Filter to available columns
         confounders = [c for c in confounders if c in self.data]
         
-        # Extract arrays
-        Y = self.data[outcome]
-        T = np.column_stack([self.data[t] for t in treatments])
-        W = np.column_stack([self.data[c] for c in confounders])
+        W = np.column_stack([self.data[c] for c in confounders]) if confounders else None
         
-        # Fit homogeneous model with config
-        self.estimator = HomogeneousEffectEstimator(config=self.config)
-        self.estimator.fit(Y, T, W, treatment_names=treatments)
+        # Store results from all 3 models
+        all_residuals = {}
+        all_coefficients = {}
+        all_models = {}
         
-        self.last_results = self.estimator.results
+        # Define the 3 pairwise relationships
+        pairs = [
+            ('fungi_richness', 'plants_richness'),
+            ('plants_richness', 'vertebrates_richness'),
+            ('vertebrates_richness', 'fungi_richness')
+        ]
+        
+        for outcome, treatment in pairs:
+            print(f"\nModel: {outcome} ~ {treatment}")
+            print("-"*40)
+            
+            Y = self.data[outcome]
+            T = self.data[treatment].reshape(-1, 1)  # Single treatment!
+            
+            # Fit LinearDML with single treatment
+            estimator = HomogeneousEffectEstimator(config=self.config)
+            estimator.fit(Y, T, W, treatment_names=[treatment])
+            
+            # Extract residuals using our extended LinearDML
+            Y_res, T_res = estimator.estimator.get_residuals()
+            
+            # Store everything
+            all_residuals[outcome] = Y_res
+            all_coefficients[f"{outcome}~{treatment}"] = estimator.estimator.intercept_[0]
+            all_models[f"{outcome}~{treatment}"] = estimator
+            
+            print(f"  Coefficient: {estimator.estimator.intercept_[0]:.4f}")
+            print(f"  Residuals shape: {Y_res.shape}")
+        
+        # Combine residuals into matrix for RDA
+        residual_matrix = np.column_stack([
+            all_residuals['fungi_richness'],
+            all_residuals['plants_richness'],
+            all_residuals['vertebrates_richness']
+        ])
+        
+        print("\n" + "="*70)
+        print("RESIDUAL MATRIX FOR RDA")
+        print("="*70)
+        print(f"Shape: {residual_matrix.shape}")
+        print(f"Taxa columns: {taxa}")
+        
+        # Store results with proper structure for saving
+        self.last_results = {
+            'residual_matrix': residual_matrix,
+            'coefficients': all_coefficients,
+            'models': all_models,  # Keep DML models for inference/predictions
+            'taxa': taxa  # Need this for save function
+        }
+        
+        # Save results using unified save function
+        output_dir = self.config['output_dir']  # Required - no fallback
+        saved_paths = save_pipeline_results(
+            mode='homogeneous',
+            results=self.last_results,
+            output_dir=output_dir,
+            config=self.config
+        )
+        print(f"\nResults saved to: {output_dir}/homogeneous/")
+        
         return self.last_results
+    
     
     def fit_heterogeneous(self, 
                          effect_modifiers: Optional[List[str]] = None) -> Dict:
@@ -830,7 +897,20 @@ class CausalEffectPipeline:
                           treatment_names=treatments,
                           modifier_names=effect_modifiers)
         
-        self.last_results = self.estimator.results
+        # Combine results with model for saving
+        self.last_results = self.estimator.results.copy()
+        self.last_results['models'] = {'causal_forest': self.estimator}
+        
+        # Save results using unified save function
+        output_dir = self.config['output_dir']  # Required - no fallback
+        saved_paths = save_pipeline_results(
+            mode='heterogeneous',
+            results=self.last_results,
+            output_dir=output_dir,
+            config=self.config
+        )
+        print(f"\nResults saved to: {output_dir}/heterogeneous/")
+        
         return self.last_results
         
     def estimate_homogeneous_effects(self,
@@ -901,12 +981,3 @@ class CausalEffectPipeline:
         self.last_results = self.estimator.results
         return self.last_results
     
-    def save_results(self, results: Any, output_path: Union[str, Path]) -> Path:
-
-    
-        """Save results using utility."""
-
-    
-
-    
-        return save_util(results, Path(output_path).parent, Path(output_path).stem)

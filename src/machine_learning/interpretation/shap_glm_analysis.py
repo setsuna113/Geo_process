@@ -182,71 +182,6 @@ def save_shap_results(shap_results: Dict[str, Any],
     logger.info(f"Saved numpy arrays to {np_file}")
 
 
-def create_basic_visualizations(shap_results: Dict[str, Any],
-                               output_dir: Path,
-                               model_name: str) -> None:
-    """
-    Create basic SHAP visualizations using matplotlib.
-    
-    Args:
-        shap_results: Dictionary from compute_shap_values
-        output_dir: Directory to save plots
-        model_name: Name of the model
-    """
-    import matplotlib.pyplot as plt
-    
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    shap_values = shap_results['shap_values']
-    feature_names = shap_results['feature_names']
-    X = shap_results['X']
-    
-    # 1. Feature importance (mean absolute SHAP)
-    mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
-    importance_order = np.argsort(mean_abs_shap)[::-1]
-    
-    plt.figure(figsize=(10, 6))
-    plt.barh(range(len(feature_names)), 
-             mean_abs_shap[importance_order],
-             color='steelblue')
-    plt.yticks(range(len(feature_names)), 
-               [feature_names[i] for i in importance_order])
-    plt.xlabel('Mean |SHAP value|')
-    plt.title(f'Feature Importance - {model_name}')
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{model_name}_importance.png", dpi=150)
-    plt.close()
-    logger.info(f"Saved importance plot to {output_dir / f'{model_name}_importance.png'}")
-    
-    # 2. Summary plot (if we have many samples)
-    if len(shap_values) > 100:
-        # Create a simple beeswarm-like plot
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        for feat_idx in importance_order[:10]:  # Top 10 features
-            y_pos = len(importance_order[:10]) - list(importance_order[:10]).index(feat_idx) - 1
-            
-            # Scatter with jitter
-            y_jitter = np.random.normal(0, 0.1, len(shap_values))
-            ax.scatter(shap_values[:, feat_idx], 
-                      y_pos + y_jitter,
-                      c=X[:, feat_idx],
-                      cmap='coolwarm',
-                      alpha=0.5,
-                      s=5)
-        
-        ax.set_yticks(range(len(importance_order[:10])))
-        ax.set_yticklabels([feature_names[i] for i in importance_order[:10][::-1]])
-        ax.set_xlabel('SHAP value')
-        ax.set_title(f'SHAP Summary - {model_name}')
-        ax.axvline(x=0, color='black', linestyle='--', alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(output_dir / f"{model_name}_summary.png", dpi=150)
-        plt.close()
-        logger.info(f"Saved summary plot to {output_dir / f'{model_name}_summary.png'}")
-
-
 def process_julia_glm_models(julia_output_dir: Path,
                             shap_output_dir: Path,
                             models_to_process: Optional[list] = None) -> None:
@@ -321,9 +256,6 @@ def process_julia_glm_models(julia_output_dir: Path,
         # Save results
         model_output_dir = Path(shap_output_dir) / model_name
         save_shap_results(shap_results, model_output_dir, model_name)
-        
-        # Create basic visualizations
-        create_basic_visualizations(shap_results, model_output_dir, model_name)
         
         logger.info(f"Completed SHAP analysis for {model_name}")
 
