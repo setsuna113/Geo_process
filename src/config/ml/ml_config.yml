@@ -9,7 +9,7 @@ regression_analysis:
 
 # Method 1 specific configuration
 method1:
-  response: "fungi"  # Options: fungi, plants, vertebrates
+  response: "fungi"
 
 # Ridge regression configuration for GLM models
 ridge:
@@ -26,7 +26,7 @@ negbin:
   # Using median of observed thetas (22.10, 25.55, 27.89, 25.16) = 25.35
   # This ensures all models have the same null log-likelihood baseline
   # making pseudo R² values directly comparable
-  fixed_theta: 25.35
+  # fixed_theta: 25.35  # COMMENTED OUT - estimate theta for each model
   # Set to null or remove to estimate theta for each model
     
   models:
@@ -86,7 +86,7 @@ negbin:
 # LMG Importance Analysis Configuration
 lmg_model: "method1"  # Model to use for preprocessing: method1 or method2
 lmg_data_path: "/maps-priv/jacob/gaia_data/integrated_richness_v3.arrow"  # Data source
-lmg_response: "fungi"  # Response variable: fungi, animal, or plant
+lmg_response: "fungi"
 lmg_spatial_step: 1000  # Spatial subsampling step
 lmg_n_samples: 100000  # Number of samples for analysis
 lmg_n_workers: 100  # Number of parallel workers

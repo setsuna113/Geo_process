@@ -74,15 +74,11 @@ MULTILAYER NETWORK FRAMEWORK
   # - Plants depend on soil nutrients (affected by fungi)
   # - Animals depend on plant resources
 
-  Option 2: Composite Variable Approach
 
-  # Create "habitat complexity" as mediator
-  model2 <- psem(
-    lm(habitat_complexity ~ temp + precip + soil),
-    lm(fungi_richness ~ habitat_complexity + soil_pH),
-    lm(plant_richness ~ habitat_complexity + fungi_richness),
-    lm(animal_richness ~ habitat_complexity + plant_richness)
-  )
+  # - Shannon (needs abundance)
+  # - Simpson (needs abundance)
+  # - FRic/FEve/FDiv (needs traits)
+  # - Rao's Q (needs traits or phylogeny)
 
   Option 3: What You Actually Should Do First
 
@@ -144,3 +140,79 @@ Variance Partitioning explicitly makes no causal claims (Schulz 2025) - just des
 
   # Step 2: Measure coupling
   coupling_strength <- cor(cbind(plant_resid, animal_resid, fungi_resid))
+
+  But Here's The Critical Problem - Direct Quote:
+
+  From Biometrics (2021):
+  "The naive estimator is generally overly biased, in the sense that its bias does not tend to zero sufficiently fast to allow consistency at rate n^(-1/2)... This is 
+  problematic, in particular, because it renders the construction of valid confidence intervals difficult, if not impossible"
+
+  Why DML's Orthogonalization Exists - The Real Answer:
+
+  From the same paper:
+  "The naive ANOVA-based estimator is generally not asymptotically linear when flexible (eg, machine learning based) estimators of the involved regression are used. It will 
+  usually be overly biased, resulting in a rate of convergence slower than n^(-1/2)"
+
+  THIS is why DML orthogonalizes! Not to make it "causal" but to fix the bias problem when using ML.
+
+  The Specific Issues With ML Variance Partitioning:
+
+  1. Bias Toward Correlated Variables (BMC Bioinformatics):
+  "Variable importance measures show a bias towards correlated predictor variables"
+  2. Use of "Impossible Data" (Annual Reviews):
+  "The most popular methods... make use of synthetic inputs that combine predictor variables from multiple observations. These inputs can be unlikely, physically impossible, 
+  or even logically impossible"
+  3. Model-Dependent Results (PMC 2021):
+  "important variables for one well-performing model... may be unimportant for another model"
+
+  1. Direct Ecological Applications:
+
+  From bioRxiv (2019) on spotted seatrout recruitment:
+  "XGBoost, a machine learning method for regression and classification, was employed because it inherently models variable interactions and seamlessly deals with 
+  multi-collinearity, both of which are common features of ecological datasets"
+
+  The paper states:
+  "The use of gradient boosting in the fisheries and marine ecology literature has increased... 142 articles (2008-2012)... 316 results (2013-2018)"
+
+  2. Conditional Permutation Importance - Real R Package:
+
+  CRAN Package permimp (actively maintained):
+  "The permimp package... Conditional Permutation Importance for random forests... The CPI is available for random forests grown by the randomForest package"
+
+  From BMC Bioinformatics (2020):
+  "When features are strongly correlated (common in ecological data), standard permutation importance can be misleading as it exchanges features with values never observed in
+   reality"
+
+  3. Model Class Reliance - Published Method:
+
+  From JMLR (2020) and PMC (2021):
+  "MCR is the range of variable importance values across all well-performing models... Important variables for one well-performing model may be unimportant for another"
+
+  NHS England actually uses this:
+  "MCR can be used to establish the value of using a variable in a model being created for healthcare predictions" (same principles apply to ecology)
+
+  4. Actual Ecological Usage:
+
+  From meta-analysis in Oecologia:
+  "The average amount of variance explained by the main factor... mean amount of variance (r²) explained being 2.51–5.42%" across ecological studies
+
+  From biodiversity research (PMC 2021):
+  "Analysis of trait variance partitioning across 52 tree species revealed for most traits a dominant influence of phylogeny"
+
+  The Reality Check:
+
+  What People Actually Do:
+
+  1. They DO use ML for variance decomposition - XGBoost and Random Forest are common in ecology papers
+  2. They DO report R² and variance explained - Even with ML methods
+  3. They DON'T usually use sophisticated corrections - Most papers just report raw importance scores
+  4. They're AWARE of the problems - Recent papers acknowledge:
+  "Conditional importance measures the loss increase due to information unique to that feature, not encoded in other features"
+
+  Real Tools Available:
+
+  R Packages:
+  - permimp - Conditional permutation importance
+  - party - Conditional inference forests with corrected importance
+  - gradientForest - Has conditional importance options
+  - partR2 - Variance partitioning (works with any model)
