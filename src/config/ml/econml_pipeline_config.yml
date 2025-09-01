@@ -104,8 +104,7 @@ feature_fraction_bynode: 0.9
 bagging_fraction: 0.8            # Reduced from 0.9 for >1M samples
 bagging_freq: 1                  # Enabled for >1M samples
 
-# ---------- Early Stopping ----------
-early_stopping_rounds: 10
+# ---------- Other Training ----------
 first_metric_only: true
 
 # ---------- Categorical Handling ----------
