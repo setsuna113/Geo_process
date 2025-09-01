@@ -156,8 +156,8 @@ function bootstrap_sample_size(state, n::Int, method::String,
         end
     end
     
-    # Calculate statistics
-    result = Dict(
+    # Calculate statistics - ONE TRUE FORMAT
+    return Dict(
         "biotic1_name" => biotic1_name,
         "biotic2_name" => biotic2_name,
         "response_var" => String(response_var),
@@ -180,26 +180,6 @@ function bootstrap_sample_size(state, n::Int, method::String,
         "p_values" => p_values,
         "r2_improvements" => r2_improvements
     )
-    
-    # Add backward compatibility aliases for visualization
-    # These map to biotic1/biotic2 based on common usage
-    if biotic1_name == "plants_richness_log"
-        result["plants_effect"] = result["biotic1_effect"]
-        result["plants_effects"] = result["biotic1_effects"]
-    elseif biotic2_name == "plants_richness_log"
-        result["plants_effect"] = result["biotic2_effect"]
-        result["plants_effects"] = result["biotic2_effects"]
-    end
-    
-    if biotic1_name == "vertebrates_richness_log"
-        result["vertebrates_effect"] = result["biotic1_effect"]
-        result["vertebrates_effects"] = result["biotic1_effects"]
-    elseif biotic2_name == "vertebrates_richness_log"
-        result["vertebrates_effect"] = result["biotic2_effect"]
-        result["vertebrates_effects"] = result["biotic2_effects"]
-    end
-    
-    return result
 end
 
 """
