@@ -1,0 +1,20 @@
+{
+  "data_path": "/scratch/yl998/econml_results_5m/homogeneous/residuals.arrow",
+  "output_base": "./results",
+  
+  "sample_size": 10000,
+  "permanova_sample": 10000,
+  "mantel_sample": 5000,
+  "correlogram_sample": 2000,
+  "nmds_sample": 5000,
+  "viz_sample": 10000,
+  
+  "min_samples_per_biome": 1000,
+  "distance_classes": 10,
+  "permutations": 999,
+  
+  "run_distribution": true,
+  "run_variance_partitioning": true,
+  "run_biome": true,
+  "run_spatial": true
+}
