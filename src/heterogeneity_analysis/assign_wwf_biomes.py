@@ -94,9 +94,18 @@ def assign_wwf_biomes(data_path, wwf_shapefile, output_path, sample_size=500000)
     gdf_with_biomes = gpd.sjoin(gdf, wwf_subset, 
                                  how='left', predicate='intersects')
     
+    # Handle duplicates (points on boundaries) by taking first match
+    if len(gdf_with_biomes) > len(gdf):
+        print(f"Note: {len(gdf_with_biomes) - len(gdf)} points fell on biome boundaries")
+        print("Taking first biome assignment for boundary points...")
+        gdf_with_biomes = gdf_with_biomes.groupby(gdf_with_biomes.index).first()
+    
+    # Ensure indices align
+    gdf_with_biomes = gdf_with_biomes.reindex(df.index)
+    
     # Add biome information back to dataframe
-    df['biome_code'] = gdf_with_biomes['BIOME_NUM']
-    df['biome_name'] = gdf_with_biomes['BIOME_NAME']
+    df['biome_code'] = gdf_with_biomes['BIOME_NUM'].values
+    df['biome_name'] = gdf_with_biomes['BIOME_NAME'].values
     
     # Check for missing assignments
     n_missing = df['biome_code'].isna().sum()
