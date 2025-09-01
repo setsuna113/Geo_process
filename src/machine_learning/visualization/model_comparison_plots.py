@@ -148,10 +148,10 @@ def _plot_ic_values(ax, models):
     for patch in patches:
         height = patch.get_height()
         if not np.isnan(height) and height != 0:
-            # Find the matching label
+            # Find the matching label using numpy's isclose for robust float comparison
             label = None
             for h, l in height_to_label.items():
-                if abs(height - h) < 1e-6:  # Use small tolerance for float comparison
+                if np.isclose(height, h, rtol=1e-9, atol=1e-12):
                     label = l
                     break
             

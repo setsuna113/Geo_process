@@ -61,15 +61,20 @@ class MLRegressionConfig:
     def _log_configuration(self):
         """Log important configuration settings."""
         preprocessing = self.regression_config.get('preprocessing', {})
-        logger.info(preprocessing.get('missing_data', {}).get('log_message', 'Using default missing data strategy'))
-        logger.info(preprocessing.get('standardization', {}).get('log_message', 'Using default standardization'))
-        logger.info(preprocessing.get('response_variable', {}).get('log_message', 'Using default response transformation'))
-        logger.info(preprocessing.get('biotic_predictors', {}).get('log_message', 'Using default biotic transformation'))
+        logger.info(preprocessing.get('missing_data', {}).get(
+            'log_message', 'Using default missing data strategy'))
+        logger.info(preprocessing.get('standardization', {}).get(
+            'log_message', 'Using default standardization'))
+        logger.info(preprocessing.get('response_variable', {}).get(
+            'log_message', 'Using default response transformation'))
+        logger.info(preprocessing.get('biotic_predictors', {}).get(
+            'log_message', 'Using default biotic transformation'))
         
         models = self.regression_config.get('models', {})
         glm_config = models.get('glm', {})
         if 'distribution' in glm_config:
-            logger.info(glm_config['distribution'].get('log_message', 'Using default GLM distribution'))
+            logger.info(glm_config['distribution'].get(
+                'log_message', 'Using default GLM distribution'))
         lightgbm_config = models.get('lightgbm', {})
         if 'log_message' in lightgbm_config:
             logger.info(lightgbm_config['log_message'])
@@ -83,10 +88,6 @@ class MLRegressionConfig:
     def get_preprocessing_config(self) -> Dict[str, Any]:
         """Get preprocessing configuration."""
         return self.regression_config.get('preprocessing', {})
-    
-    def get_glm_config(self) -> Dict[str, Any]:
-        """Get GLM model configuration."""
-        return self.regression_config.get('models', {}).get('glm', {})
     
     def get_lightgbm_config(self) -> Dict[str, Any]:
         """Get LightGBM configuration for DML."""
