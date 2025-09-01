@@ -7,6 +7,7 @@
 library(MASS)       # For glm.nb
 library(DHARMa)     # For residual diagnostics
 library(jsonlite)   # For reading metadata
+library(yaml)       # For reading config
 
 # ============================================================================
 # Configuration
@@ -71,15 +72,34 @@ build_formulas <- function(meta) {
   mesf <- meta$mesf_columns
   base <- c(climate, elevation, mesf)
   
-  # Biotic features
-  biotic <- c("plants_richness_log", "vertebrates_richness_log")
+  # Read config to determine response variable
+  config <- yaml::read_yaml("../../../src/config/ml/ml_config.yml")
+  response_type <- config$method1$response
+  if (is.null(response_type)) {
+    response_type <- "fungi"  # Default if not specified
+  }
+  
+  # Set response variable and biotic predictors based on config
+  if (response_type == "fungi") {
+    response_var <- "fungi_richness_int"
+    biotic <- c("plants_richness_std", "vertebrates_richness_std")
+  } else if (response_type == "plants") {
+    response_var <- "plants_richness_int"
+    biotic <- c("fungi_richness_std", "vertebrates_richness_std")
+  } else if (response_type == "vertebrates") {
+    response_var <- "vertebrates_richness_int"
+    biotic <- c("fungi_richness_std", "plants_richness_std")
+  } else {
+    stop(paste("Unknown response type:", response_type))
+  }
   
   # Build formula strings - use R's interaction syntax
   formulas <- list(
-    method1_null = paste("fungi_richness ~", paste(base, collapse = " + ")),
-    method1_full = paste("fungi_richness ~", paste(c(base, biotic), collapse = " + ")),
-    method2_continuous = paste("fungi_richness ~", paste(c(base, biotic), collapse = " + "), "+ bio04_std:plants_richness_log"),
-    method2_categorical = paste("fungi_richness ~", paste(c(base, biotic), collapse = " + "), "+ I((bio04_std > 0) * (plants_richness_log > median(plants_richness_log)))")
+    method1_null = paste(response_var, "~", paste(base, collapse = " + ")),
+    method1_full = paste(response_var, "~", paste(c(base, biotic), collapse = " + ")),
+    # Method2 always uses fungi as response with standardized predictors
+    method2_continuous = paste("fungi_richness_int ~", paste(c(base, "plants_richness_std", "vertebrates_richness_std"), collapse = " + "), "+ bio04_std:plants_richness_std"),
+    method2_categorical = paste("fungi_richness_int ~", paste(c(base, "vertebrates_richness_std"), collapse = " + "), "+ I((bio04_std > 0) * (plants_richness_std > median(plants_richness_std)))")
   )
   
   return(formulas)
@@ -204,10 +224,10 @@ save_dharma_plots <- function(results, output_dir) {
       save_all_residual_plots(result, output_dir)
     } else if (result$model_name == "method2_continuous") {
       # Create plots for key continuous interaction variables
-      save_key_variable_plots(result, output_dir, c("bio04_std", "plants_richness_log"))
+      save_key_variable_plots(result, output_dir, c("bio04_std", "plants_richness_std"))
     } else if (result$model_name == "method2_categorical") {
       # Create plots for key categorical model variables
-      save_key_variable_plots(result, output_dir, c("bio04_std", "plants_richness_log"))
+      save_key_variable_plots(result, output_dir, c("bio04_std", "plants_richness_std"))
     }
   }
 }
