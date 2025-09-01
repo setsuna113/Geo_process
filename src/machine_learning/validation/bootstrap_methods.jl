@@ -54,6 +54,9 @@ function run_bootstrap_analysis(state, method::String, fit_method1::Function, fi
         
         println("  ✓ Power: $(round(sample_result["power"], digits=3))")
         println("    Eco-power: $(round(sample_result["ecological_power"], digits=3))")
+        if haskey(sample_result, "response_var")
+            println("    Response: $(sample_result["response_var"])")
+        end
     end
     
     # Find optimal sample size
@@ -74,9 +77,24 @@ function bootstrap_sample_size(state, n::Int, method::String,
                               n_iterations::Int)
     N = nrow(state.data)
     
-    # Pre-allocate results arrays
-    plants_effects = Vector{Float64}(undef, n_iterations)
-    vertebrates_effects = Vector{Float64}(undef, n_iterations)
+    # Get response variable from config (for Method1)
+    response_var = Symbol(get(get(state.config, "method1", Dict()), "response", "fungi_richness_log"))
+    
+    # Determine which biotic predictors to track based on response
+    if response_var == :fungi_richness_log
+        biotic1_name = "plants_richness_log"
+        biotic2_name = "vertebrates_richness_log"
+    elseif response_var == :plants_richness_log
+        biotic1_name = "fungi_richness_log"
+        biotic2_name = "vertebrates_richness_log"
+    else  # vertebrates_richness_log
+        biotic1_name = "fungi_richness_log"
+        biotic2_name = "plants_richness_log"
+    end
+    
+    # Pre-allocate results arrays (renamed for clarity)
+    biotic1_effects = Vector{Float64}(undef, n_iterations)
+    biotic2_effects = Vector{Float64}(undef, n_iterations)
     p_values = Vector{Float64}(undef, n_iterations)
     r2_improvements = Vector{Float64}(undef, n_iterations)
     
@@ -103,10 +121,10 @@ function bootstrap_sample_size(state, n::Int, method::String,
             full_model = models[2].model  # method1_full
             coef_vals = coef(full_model)
             coef_names = coefnames(full_model)
-            plants_idx = findfirst(x -> x == "plants_richness_log", coef_names)
-            vertebrates_idx = findfirst(x -> x == "vertebrates_richness_log", coef_names)
-            plants_effects[i] = coef_vals[plants_idx]
-            vertebrates_effects[i] = coef_vals[vertebrates_idx]
+            biotic1_idx = findfirst(x -> x == biotic1_name, coef_names)
+            biotic2_idx = findfirst(x -> x == biotic2_name, coef_names)
+            biotic1_effects[i] = coef_vals[biotic1_idx]
+            biotic2_effects[i] = coef_vals[biotic2_idx]
             p_values[i] = lrt_result["p_value"]
             
             # R² improvement
@@ -120,10 +138,10 @@ function bootstrap_sample_size(state, n::Int, method::String,
             cont_model = models[1].model  # method2_continuous
             coef_vals = coef(cont_model)
             coef_names = coefnames(cont_model)
-            plants_idx = findfirst(x -> x == "plants_richness_log", coef_names)
-            vertebrates_idx = findfirst(x -> x == "vertebrates_richness_log", coef_names)
-            plants_effects[i] = coef_vals[plants_idx]
-            vertebrates_effects[i] = coef_vals[vertebrates_idx]
+            biotic1_idx = findfirst(x -> x == biotic1_name, coef_names)
+            biotic2_idx = findfirst(x -> x == biotic2_name, coef_names)
+            biotic1_effects[i] = coef_vals[biotic1_idx]
+            biotic2_effects[i] = coef_vals[biotic2_idx]
             
             # Compare to method1_full for p-value
             method1_models, _ = fit_method1(boot_state)
@@ -138,24 +156,27 @@ function bootstrap_sample_size(state, n::Int, method::String,
         end
     end
     
-    # Calculate statistics
+    # Calculate statistics - ONE TRUE FORMAT
     return Dict(
-        "plants_effect" => Dict(
-            "mean" => mean(plants_effects),
-            "std" => std(plants_effects),
-            "var" => var(plants_effects)
+        "biotic1_name" => biotic1_name,
+        "biotic2_name" => biotic2_name,
+        "response_var" => String(response_var),
+        "biotic1_effect" => Dict(
+            "mean" => mean(biotic1_effects),
+            "std" => std(biotic1_effects),
+            "var" => var(biotic1_effects)
         ),
-        "vertebrates_effect" => Dict(
-            "mean" => mean(vertebrates_effects),
-            "std" => std(vertebrates_effects),
-            "var" => var(vertebrates_effects)
+        "biotic2_effect" => Dict(
+            "mean" => mean(biotic2_effects),
+            "std" => std(biotic2_effects),
+            "var" => var(biotic2_effects)
         ),
         "power" => mean(p_values .< 0.05),
         "ecological_power" => mean((p_values .< 0.05) .& (r2_improvements .> 0.05)),
         "r2_improvement_mean" => mean(r2_improvements),
         # Raw data for visualization
-        "plants_effects" => plants_effects,
-        "vertebrates_effects" => vertebrates_effects,
+        "biotic1_effects" => biotic1_effects,
+        "biotic2_effects" => biotic2_effects,
         "p_values" => p_values,
         "r2_improvements" => r2_improvements
     )
@@ -167,11 +188,16 @@ Find optimal sample size based on variance stabilization and power.
 function find_optimal_sample_size(results::Dict)
     sample_sizes = results["sample_sizes"]
     
+    # Use the first biotic predictor for variance stabilization
+    # (it exists regardless of which response variable is used)
+    first_sample_result = results["sample_results"][sample_sizes[1]]
+    biotic1_key = haskey(first_sample_result, "biotic1_effect") ? "biotic1_effect" : "plants_effect"
+    
     # Variance stabilization
-    plants_vars = [results["sample_results"][n]["plants_effect"]["var"] for n in sample_sizes]
+    biotic1_vars = [results["sample_results"][n][biotic1_key]["var"] for n in sample_sizes]
     stable_n = sample_sizes[end]
-    for i in 2:length(plants_vars)
-        relative_change = abs(plants_vars[i] - plants_vars[i-1]) / plants_vars[i-1]
+    for i in 2:length(biotic1_vars)
+        relative_change = abs(biotic1_vars[i] - biotic1_vars[i-1]) / biotic1_vars[i-1]
         if relative_change < 0.1
             stable_n = sample_sizes[i]
             break

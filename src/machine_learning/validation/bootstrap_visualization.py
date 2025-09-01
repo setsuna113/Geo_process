@@ -50,26 +50,36 @@ class BootstrapVisualizer:
             'sample_results': {}
         }
         
-        # Extract results for each sample size
+        # Extract metadata
+        biotic1_name = str(raw.get('biotic1_name', 'biotic1'))
+        biotic2_name = str(raw.get('biotic2_name', 'biotic2'))
+        response_var = str(raw.get('response_var', 'unknown'))
+        
+        # Store metadata in results
+        results['biotic1_name'] = biotic1_name
+        results['biotic2_name'] = biotic2_name
+        results['response_var'] = response_var
+        
+        # Extract results for each sample size - ONE TRUE FORMAT
         sample_sizes = raw['sample_sizes']
         for n in sample_sizes:
-            # Calculate statistics from raw data if not stored
-            plants_effects = raw[f'n{n}_plants_effects']
-            vertebrates_effects = raw[f'n{n}_vertebrates_effects']
+            # Load biotic1/biotic2 effects
+            biotic1_effects = raw[f'n{n}_biotic1_effects']
+            biotic2_effects = raw[f'n{n}_biotic2_effects']
             
             results['sample_results'][str(n)] = {
-                'plants_effect': {
-                    'mean': float(raw.get(f'n{n}_plants_mean', np.mean(plants_effects))),
-                    'std': float(raw.get(f'n{n}_plants_std', np.std(plants_effects))),
-                    'var': np.var(plants_effects),
-                    'ci_95': [np.percentile(plants_effects, 2.5), np.percentile(plants_effects, 97.5)],
-                    'raw_values': plants_effects
+                'biotic1_effect': {
+                    'mean': float(raw.get(f'n{n}_biotic1_mean', np.mean(biotic1_effects))),
+                    'std': float(raw.get(f'n{n}_biotic1_std', np.std(biotic1_effects))),
+                    'var': np.var(biotic1_effects),
+                    'ci_95': [np.percentile(biotic1_effects, 2.5), np.percentile(biotic1_effects, 97.5)],
+                    'raw_values': biotic1_effects
                 },
-                'vertebrates_effect': {
-                    'mean': np.mean(vertebrates_effects),
-                    'std': np.std(vertebrates_effects),
-                    'var': np.var(vertebrates_effects),
-                    'raw_values': vertebrates_effects
+                'biotic2_effect': {
+                    'mean': float(raw.get(f'n{n}_biotic2_mean', np.mean(biotic2_effects))),
+                    'std': float(raw.get(f'n{n}_biotic2_std', np.std(biotic2_effects))),
+                    'var': np.var(biotic2_effects),
+                    'raw_values': biotic2_effects
                 },
                 'power': float(raw[f'n{n}_power']),
                 'ecological_power': float(raw[f'n{n}_eco_power']),
@@ -109,24 +119,26 @@ class BootstrapVisualizer:
         # Extract data
         sample_sizes = raw['sample_sizes']
         optimal_n = raw['optimal_n']
+        biotic1_name = results.get('biotic1_name', 'biotic1')
+        biotic2_name = results.get('biotic2_name', 'biotic2')
         
-        # Prepare data for plotting
-        plants_means = []
-        plants_vars = []
-        plants_cis = []
-        vertebrates_means = []
-        vertebrates_vars = []
+        # Prepare data for plotting - ONE TRUE FORMAT
+        biotic1_means = []
+        biotic1_vars = []
+        biotic1_cis = []
+        biotic2_means = []
+        biotic2_vars = []
         powers = []
         eco_powers = []
         r2_means = []
         
         for n in sample_sizes:
             sr = results['sample_results'][str(n)]
-            plants_means.append(sr['plants_effect']['mean'])
-            plants_vars.append(sr['plants_effect']['var'])
-            plants_cis.append(sr['plants_effect']['ci_95'])
-            vertebrates_means.append(sr['vertebrates_effect']['mean'])
-            vertebrates_vars.append(sr['vertebrates_effect']['var'])
+            biotic1_means.append(sr['biotic1_effect']['mean'])
+            biotic1_vars.append(sr['biotic1_effect']['var'])
+            biotic1_cis.append(sr['biotic1_effect']['ci_95'])
+            biotic2_means.append(sr['biotic2_effect']['mean'])
+            biotic2_vars.append(sr['biotic2_effect']['var'])
             powers.append(sr['power'])
             eco_powers.append(sr['ecological_power'])
             r2_means.append(sr['r2_improvement']['mean'])
@@ -137,9 +149,12 @@ class BootstrapVisualizer:
         
         # Panel 1: Variance Stabilization
         ax1 = axes[0, 0]
-        ax1.semilogx(sample_sizes, plants_vars, 'o-', linewidth=2, markersize=8, label='Plants effect')
-        ax1.semilogx(sample_sizes, vertebrates_vars, 's-', linewidth=2, markersize=8, label='Vertebrates effect')
-        ax1.axhline(y=plants_vars[-1] * 1.1, color='red', linestyle='--', alpha=0.5, label='10% threshold')
+        # Extract just the name part (remove _richness_log suffix for display)
+        b1_display = biotic1_name.replace('_richness_log', '').replace('_', ' ').title()
+        b2_display = biotic2_name.replace('_richness_log', '').replace('_', ' ').title()
+        ax1.semilogx(sample_sizes, biotic1_vars, 'o-', linewidth=2, markersize=8, label=f'{b1_display} effect')
+        ax1.semilogx(sample_sizes, biotic2_vars, 's-', linewidth=2, markersize=8, label=f'{b2_display} effect')
+        ax1.axhline(y=biotic1_vars[-1] * 1.1, color='red', linestyle='--', alpha=0.5, label='10% threshold')
         ax1.axvline(x=optimal_n, color='black', linestyle=':', linewidth=2, label=f'Optimal n={optimal_n:,}')
         ax1.set_xlabel('Bootstrap Sample Size (log scale)', fontsize=12)
         ax1.set_ylabel('Variance of Effect Size', fontsize=12)
@@ -149,13 +164,13 @@ class BootstrapVisualizer:
         
         # Panel 2: Effect Size Stability with CI
         ax2 = axes[0, 1]
-        plants_cis = np.array(plants_cis)
-        plants_lower = plants_cis[:, 0]
-        plants_upper = plants_cis[:, 1]
+        biotic1_cis = np.array(biotic1_cis)
+        biotic1_lower = biotic1_cis[:, 0]
+        biotic1_upper = biotic1_cis[:, 1]
         
-        ax2.semilogx(sample_sizes, plants_means, 'o-', linewidth=2, markersize=8, label='Plants effect')
-        ax2.fill_between(sample_sizes, plants_lower, plants_upper, alpha=0.3)
-        ax2.semilogx(sample_sizes, vertebrates_means, 's-', linewidth=2, markersize=8, label='Vertebrates effect')
+        ax2.semilogx(sample_sizes, biotic1_means, 'o-', linewidth=2, markersize=8, label=f'{b1_display} effect')
+        ax2.fill_between(sample_sizes, biotic1_lower, biotic1_upper, alpha=0.3)
+        ax2.semilogx(sample_sizes, biotic2_means, 's-', linewidth=2, markersize=8, label=f'{b2_display} effect')
         ax2.axvline(x=optimal_n, color='black', linestyle=':', linewidth=2, label=f'Optimal n={optimal_n:,}')
         ax2.axhline(y=0, color='gray', linestyle='-', alpha=0.5)
         ax2.set_xlabel('Bootstrap Sample Size (log scale)', fontsize=12)
@@ -187,7 +202,7 @@ class BootstrapVisualizer:
         labels = []
         
         for n in display_sizes:
-            effects = raw[f'n{n}_plants_effects']
+            effects = raw[f'n{n}_biotic1_effects']
             violin_data.append(effects)
             labels.append(f'n={n:,}')
         
@@ -343,42 +358,52 @@ class BootstrapVisualizer:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         fig.suptitle('Effect Size Comparison at Optimal Sample Sizes', fontsize=14, fontweight='bold')
         
-        plants_data = []
-        vertebrates_data = []
+        # ONE TRUE FORMAT - use biotic1/biotic2
+        biotic1_data = []
+        biotic2_data = []
         labels = []
         
         for model in model_names:
             if model not in self.results:
                 self.load_results(model)
             
-            optimal_n = self.results[model]['optimal_n']
+            results = self.results[model]
+            optimal_n = results['optimal_n']
             raw = self.raw_data[model]
             
-            plants_data.append(raw[f'n{optimal_n}_plants_effects'])
-            vertebrates_data.append(raw[f'n{optimal_n}_vertebrates_effects'])
+            # Get biotic names for display
+            biotic1_name = results.get('biotic1_name', 'biotic1')
+            biotic2_name = results.get('biotic2_name', 'biotic2')
+            
+            biotic1_data.append(raw[f'n{optimal_n}_biotic1_effects'])
+            biotic2_data.append(raw[f'n{optimal_n}_biotic2_effects'])
             labels.append(f"{model}\n(n={optimal_n:,})")
         
-        # Plants effect comparison
+        # Extract display names (use first model's names)
+        b1_display = biotic1_name.replace('_richness_log', '').replace('_', ' ').title()
+        b2_display = biotic2_name.replace('_richness_log', '').replace('_', ' ').title()
+        
+        # First predictor effect comparison
         ax1 = axes[0]
-        bp1 = ax1.boxplot(plants_data, labels=labels, patch_artist=True)
+        bp1 = ax1.boxplot(biotic1_data, labels=labels, patch_artist=True)
         for patch, color in zip(bp1['boxes'], sns.color_palette()):
             patch.set_facecolor(color)
             patch.set_alpha(0.7)
         
         ax1.set_ylabel('Effect Size', fontsize=12)
-        ax1.set_title('Plants Richness Effect', fontsize=13)
+        ax1.set_title(f'{b1_display} Richness Effect', fontsize=13)
         ax1.axhline(y=0, color='gray', linestyle='-', alpha=0.5)
         ax1.grid(True, alpha=0.3, axis='y')
         
-        # Vertebrates effect comparison
+        # Second biodiversity predictor effect comparison - FIXED BUG!
         ax2 = axes[1]
-        bp2 = ax2.boxplot(vertebrates_data, labels=labels, patch_artist=True)
+        bp2 = ax2.boxplot(biotic2_data, labels=labels, patch_artist=True)
         for patch, color in zip(bp2['boxes'], sns.color_palette()):
             patch.set_facecolor(color)
             patch.set_alpha(0.7)
         
         ax2.set_ylabel('Effect Size', fontsize=12)
-        ax2.set_title('Vertebrates Richness Effect', fontsize=13)
+        ax2.set_title(f'{b2_display} Richness Effect', fontsize=13)
         ax2.axhline(y=0, color='gray', linestyle='-', alpha=0.5)
         ax2.grid(True, alpha=0.3, axis='y')
         

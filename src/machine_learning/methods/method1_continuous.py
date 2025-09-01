@@ -2,11 +2,12 @@ from src.abstractions import get_logger
 """Method 1: H0-H1 Testing with GLM (Julia-based).
 
 Tests:
-- H0: Fungi richness is independent of plant/vertebrate richness
+- H0: Response richness is independent of other biodiversity predictors
 - H1: Biodiversity begets biodiversity (positive correlation exists)
 
 Compares Model 1 (climate only) vs Model 2 (climate + biodiversity).
 Accepts results from Julia GLM via orchestrator.
+Response variable is configurable (fungi, plants, or vertebrates).
 """
 
 import logging
@@ -62,6 +63,7 @@ class Method1H0H1GLM:
         self.model_full = None  # Model 2: Climate + biodiversity
         self.lr_test_result = None  # LRT result from Julia
         self.data_metadata = None  # Metadata about the data
+        self.response_type = 'fungi'  # Default response type
         
         # Storage for hypothesis test results
         self.hypothesis_results = {}
@@ -72,7 +74,8 @@ class Method1H0H1GLM:
         
         logger.info("Method 1 H0-H1 GLM initialized with wrapped components")
     
-    def set_julia_results(self, models: Dict[str, Any], lr_test: Dict[str, Any]) -> None:
+    def set_julia_results(self, models: Dict[str, Any], lr_test: Dict[str, Any], 
+                         response_type: str = 'fungi') -> None:
         """Set the Julia model results for analysis.
         
         Called by orchestrator to pass Julia results to this method.
@@ -80,6 +83,7 @@ class Method1H0H1GLM:
         Args:
             models: Dictionary containing 'method1_null' and 'method1_full' model results
             lr_test: MANDATORY LRT result from Julia (THIS IS THE PRIMARY TEST!)
+            response_type: Type of response variable ('fungi', 'plants', or 'vertebrates')
         """
         if not lr_test:
             raise ValueError("LRT result is MANDATORY. This is THE test for nested models!")
@@ -87,6 +91,7 @@ class Method1H0H1GLM:
         self.model_null = models.get('method1_null')
         self.model_full = models.get('method1_full')
         self.lr_test_result = lr_test
+        self.response_type = response_type
         
         # Extract metadata
         if self.model_full:
@@ -100,7 +105,9 @@ class Method1H0H1GLM:
         full_aic = self.model_full.get('aic', 'N/A') if self.model_full else 'N/A'
         
         if isinstance(null_aic, (int, float)) and isinstance(full_aic, (int, float)):
-            logger.info(f"Julia results set: null model AIC={null_aic:.2f}, full model AIC={full_aic:.2f}")
+            logger.info(
+                f"Julia results set: null model AIC={null_aic:.2f}, "
+                f"full model AIC={full_aic:.2f}")
         else:
             logger.info(f"Julia results set: null model AIC={null_aic}, full model AIC={full_aic}")
     
@@ -130,7 +137,9 @@ class Method1H0H1GLM:
             null_dev = self.model_null.get('deviance', 0) 
             full_dev = self.model_full.get('deviance', 0)
             lrt_result['lr_statistic'] = null_dev - full_dev
-            logger.warning(f"Fixed LR statistic: {lrt_result['lr_statistic']:.2f} (was incorrectly full deviance)")
+            logger.warning(
+                f"Fixed LR statistic: {lrt_result['lr_statistic']:.2f} "
+                f"(was incorrectly full deviance)")
         
         results['likelihood_ratio_test'] = lrt_result
         logger.info(f"LRT (PRIMARY TEST): χ²={lrt_result.get('lr_statistic', 0):.2f}, "
@@ -237,9 +246,14 @@ class Method1H0H1GLM:
         evidence_count = sum([lrt_supports_h1, wald_supports_h1, aic_supports_h1])
         supports_h1 = evidence_count >= 2  # At least 2 out of 3 support H1
         
+        # Create hypothesis text based on response type
+        response_name = self.response_type.capitalize()
+        h1_text = f'H1: Biodiversity affects {response_name} richness'
+        h0_text = f'H0: No biodiversity effect on {response_name}'
+        
         conclusion = {
             'supports_h1': supports_h1,
-            'hypothesis': 'H1: Biodiversity begets biodiversity' if supports_h1 else 'H0: No biodiversity effect',
+            'hypothesis': h1_text if supports_h1 else h0_text,
             'evidence': {
                 'lrt': lrt_supports_h1,
                 'wald_sesoi': wald_supports_h1,
@@ -335,15 +349,7 @@ class Method1H0H1GLM:
             if path:
                 generated_files.append(path)
         
-        # Deviance-df comparison plot
-        if self.model_null and self.model_full:
-            models = {'null': self.model_null, 'full': self.model_full}
-            path = diag.plot_deviance_df(
-                models=models,
-                save_path=output_dir / "model_comparison_deviance.png"
-            )
-            if path:
-                generated_files.append(output_dir / "model_comparison_deviance.png")
+        # Coefficient comparison plot removed - deprecated function
         
         logger.info(f"Generated {len(generated_files)} visualizations in {output_dir}")
         return generated_files
@@ -409,21 +415,23 @@ class Method1H0H1GLM:
                 comparison_results = {
                     'models': {
                         'null': {
-                            'aic': self.model_null.get('aic', 0),
-                            'bic': self.model_null.get('bic', 0),
-                            'loglik': self.model_null.get('loglik', 0),
-                            'df': self.model_null.get('df', self.model_null.get('df_residual', 0))
+                            'aic': self.model_null.get('aic'),
+                            'bic': self.model_null.get('bic'),
+                            'loglik': self.model_null.get('loglik'),
+                            'df': self.model_null.get('df')
                         },
                         'full': {
-                            'aic': self.model_full.get('aic', 0),
-                            'bic': self.model_full.get('bic', 0),
-                            'loglik': self.model_full.get('loglik', 0),
-                            'df': self.model_full.get('df', self.model_full.get('df_residual', 0))
+                            'aic': self.model_full.get('aic'),
+                            'bic': self.model_full.get('bic'),
+                            'loglik': self.model_full.get('loglik'),
+                            'df': self.model_full.get('df')
                         }
                 },
                 'best_model': {
-                    'aic': 'full' if self.model_full.get('aic', 0) < self.model_null.get('aic', 0) else 'null',
-                    'bic': 'full' if self.model_full.get('bic', 0) < self.model_null.get('bic', 0) else 'null'
+                    'aic': ('full' if self.model_full.get('aic', 0) < 
+                            self.model_null.get('aic', 0) else 'null'),
+                    'bic': ('full' if self.model_full.get('bic', 0) < 
+                            self.model_null.get('bic', 0) else 'null')
                 }
             }
             
@@ -570,7 +578,8 @@ class Method1H0H1GLM:
                 
                 # Save comparison details for supplementary
                 if 'comparison_details' in lrt_report:
-                    supplementary_tables.append(("lrt_comparison", lrt_report['comparison_details']))
+                    supplementary_tables.append(
+                        ("lrt_comparison", lrt_report['comparison_details']))
                 
                 if 'latex_table' in lrt_report:
                     latex_tables.append(("LRT", lrt_report['latex_table']))
