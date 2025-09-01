@@ -22,46 +22,35 @@ library(sp)
 #' @param distance_classes Number of distance classes for correlogram
 #' @return List containing spatial diagnostic results
 spatial_diagnostics <- function(
-  data_path = "/scratch/yl998/econml_results_5m/homogeneous/residuals.arrow",
+  data,
+  data_sample = NULL,
   output_dir = "./results/spatial_diagnostics",
-  sample_size = 5000,
   distance_classes = 10
 ) {
   
   # Create output directory
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   
-  # Load residuals
-  cat("Loading residuals from:", data_path, "\n")
-  data <- read_feather(data_path)
-  
   n_samples <- nrow(data)
-  cat("Total samples:", format(n_samples, big.mark=","), "\n\n")
+  cat("Analyzing", format(n_samples, big.mark=","), "samples\n")
   
   # Check if we have coordinates
   if (!all(c("longitude", "latitude") %in% names(data))) {
     stop("Longitude and latitude columns are required for spatial analysis")
   }
   
-  # ============ Sample Data for Analysis ============
-  
-  if (n_samples > sample_size) {
-    cat(sprintf("Sampling %d sites for spatial analysis...\n", sample_size))
-    set.seed(42)
-    sample_idx <- sample(1:n_samples, sample_size)
-    data_sample <- data[sample_idx, ]
-  } else {
+  # Use provided sample or full data
+  if (is.null(data_sample)) {
     data_sample <- data
-    sample_size <- n_samples
   }
+  cat("Using", format(nrow(data_sample), big.mark=","), "samples for analysis\n\n")
   
-  cat(sprintf("Analyzing %d sites\n\n", nrow(data_sample)))
   
   # ============ Create Distance Matrices ============
   
-  cat("=" * 60, "\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("CREATING DISTANCE MATRICES\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   # Spatial distance matrix
   coords <- cbind(data_sample$longitude, data_sample$latitude)
@@ -80,9 +69,9 @@ spatial_diagnostics <- function(
   
   # ============ Mantel Test ============
   
-  cat("=" * 60, "\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("MANTEL TEST FOR SPATIAL AUTOCORRELATION\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   mantel_result <- mantel(
     residual_dist, 
@@ -108,10 +97,10 @@ spatial_diagnostics <- function(
   
   # ============ Individual Taxa Mantel Tests ============
   
-  cat("\n" * 2)
-  cat("=" * 60, "\n")
+  cat("\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("MANTEL TESTS BY TAXON\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   taxa <- c("fungi_richness", "plants_richness", "vertebrates_richness")
   taxa_labels <- c("Fungi", "Plants", "Vertebrates")
@@ -142,10 +131,10 @@ spatial_diagnostics <- function(
   
   # ============ Mantel Correlogram ============
   
-  cat("\n" * 2)
-  cat("=" * 60, "\n")
+  cat("\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("MANTEL CORRELOGRAM\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   cat("Computing correlogram (this may take several minutes)...\n")
   
@@ -178,10 +167,10 @@ spatial_diagnostics <- function(
   
   # ============ Test Against Environmental Variables ============
   
-  cat("\n" * 2)
-  cat("=" * 60, "\n")
+  cat("\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("TESTING RESIDUAL INDEPENDENCE FROM ENVIRONMENT\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   # Check if we have environmental variables in the data
   env_vars <- c("temperature", "precipitation", "elevation", "soil_pH")
@@ -245,10 +234,10 @@ spatial_diagnostics <- function(
   
   # ============ Spatial Visualization ============
   
-  cat("\n" * 2)
-  cat("=" * 60, "\n")
+  cat("\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("SPATIAL VISUALIZATION\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   # Create spatial plots
   pdf(file.path(output_dir, "spatial_residuals.pdf"), width = 15, height = 5)
@@ -288,15 +277,15 @@ spatial_diagnostics <- function(
   
   # ============ Summary Report ============
   
-  cat("\n" * 2)
-  cat("=" * 60, "\n")
+  cat("\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("SPATIAL DIAGNOSTICS SUMMARY\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   summary_text <- c(
     "SPATIAL DIAGNOSTICS SUMMARY",
-    "=" * 60,
-    sprintf("Samples analyzed: %d", sample_size),
+    paste(rep("=", 60), collapse=""),
+    sprintf("Samples analyzed: %d", n_samples),
     "",
     "MANTEL TEST RESULTS:",
     sprintf("  Overall: r = %.4f, p = %.4f %s",
@@ -339,7 +328,7 @@ spatial_diagnostics <- function(
     mantel_by_taxon = mantel_by_taxon,
     correlogram = correlogram,
     env_correlations = env_correlations,
-    n_samples = sample_size
+    n_samples = n_samples
   )
   
   saveRDS(results, file.path(output_dir, "spatial_diagnostics_results.rds"))
@@ -350,20 +339,5 @@ spatial_diagnostics <- function(
 }
 
 # Run if executed directly
-if (!interactive()) {
-  args <- commandArgs(trailingOnly = TRUE)
-  
-  if (length(args) > 0) {
-    data_path <- args[1]
-  } else {
-    data_path <- "/scratch/yl998/econml_results_5m/homogeneous/residuals.arrow"
-  }
-  
-  if (length(args) > 1) {
-    output_dir <- args[2]
-  } else {
-    output_dir <- "./results/spatial_diagnostics"
-  }
-  
-  results <- spatial_diagnostics(data_path, output_dir)
-}
+# This file should be sourced from main_analysis.R
+# Do not run if sourced

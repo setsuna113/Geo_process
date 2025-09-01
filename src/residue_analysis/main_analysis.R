@@ -1,8 +1,9 @@
 #!/usr/bin/env Rscript
 # ============================================================================
-# Main Analysis Runner for DML Residuals
+# Main Analysis Runner for Residual Analysis
 # ============================================================================
-# Orchestrates all residual analyses with centralized configuration
+# Orchestrates residual analyses after environmental correction (e.g., DML)
+# For raw data heterogeneity analysis, use src/heterogeneity_analysis/
 #
 # Author: Biodiversity-Environment Analysis Pipeline
 # Date: 2024
@@ -21,121 +22,90 @@ parse_args <- function() {
     
     # Sampling parameters
     sample_size = 10000,
-    permanova_sample = 10000,
     mantel_sample = 5000,
     correlogram_sample = 2000,
-    nmds_sample = 5000,
     viz_sample = 10000,
     
     # Analysis parameters
-    min_samples_per_biome = 1000,
     distance_classes = 10,
     permutations = 999,
     
-    # Analysis flags
+    # Analysis flags for residual data
     run_distribution = TRUE,
-    run_variance_partitioning = TRUE,
-    run_biome = TRUE,
-    run_spatial = TRUE
+    run_residual_analysis = TRUE,  # Correlation and RDA on residuals
+    run_spatial = TRUE  # Test for remaining spatial autocorrelation
   )
   
   # Override with command line arguments if provided
   if (length(args) > 0) {
+    # First arg should be config file
     if (file.exists(args[1])) {
-      # First arg is config file
       user_config <- fromJSON(args[1])
       config <- modifyList(config, user_config)
-    } else {
-      # First arg is data path
-      config$data_path <- args[1]
     }
-  }
-  
-  if (length(args) > 1) {
-    config$output_base <- args[2]
   }
   
   return(config)
 }
 
 #' Run distribution analysis
-run_distribution_analysis <- function(config) {
-  cat("\n" * 2)
-  cat("=" * 70, "\n")
+run_distribution_analysis <- function(config, data, data_samples) {
+  cat("\n\n")
+  cat(paste(rep("=", 70), collapse=""), "\n")
   cat("RUNNING DISTRIBUTION ANALYSIS\n")
-  cat("=" * 70, "\n\n")
+  cat(paste(rep("=", 70), collapse=""), "\n\n")
   
   source("src/residue_analysis/distribution_analysis.R")
   
   output_dir <- file.path(config$output_base, "distribution")
   
   results <- analyze_residual_distributions(
-    data_path = config$data_path,
-    output_dir = output_dir,
-    sample_size = config$sample_size
+    data = data,
+    data_viz = data_samples$viz,
+    output_dir = output_dir
   )
   
   cat("✓ Distribution analysis complete\n")
   return(results)
 }
 
-#' Run variance partitioning
-run_variance_partitioning <- function(config) {
-  cat("\n" * 2)
-  cat("=" * 70, "\n")
-  cat("RUNNING VARIANCE PARTITIONING\n")
-  cat("=" * 70, "\n\n")
+#' Run residual biodiversity relationship analysis
+run_residual_analysis <- function(config, data, data_samples) {
+  cat("\n\n")
+  cat(paste(rep("=", 70), collapse=""), "\n")
+  cat("RUNNING RESIDUAL BIODIVERSITY RELATIONSHIP ANALYSIS\n")
+  cat(paste(rep("=", 70), collapse=""), "\n\n")
   
-  source("src/residue_analysis/variance_partitioning.R")
+  source("src/residue_analysis/residual_biodiversity_analysis.R")
   
-  output_dir <- file.path(config$output_base, "variance_partitioning")
+  output_dir <- file.path(config$output_base, "residual_analysis")
   
   results <- variance_partitioning_analysis(
-    data_path = config$data_path,
+    data = data,
+    data_rda = data_samples$rda,
     output_dir = output_dir
   )
   
-  cat("✓ Variance partitioning complete\n")
+  cat("✓ Residual biodiversity analysis complete\n")
   return(results)
 }
 
-#' Run biome analysis
-run_biome_analysis <- function(config) {
-  cat("\n" * 2)
-  cat("=" * 70, "\n")
-  cat("RUNNING BIOME ANALYSIS\n")
-  cat("=" * 70, "\n\n")
-  
-  source("src/residue_analysis/biome_analysis.R")
-  
-  output_dir <- file.path(config$output_base, "biome_analysis")
-  
-  results <- biome_analysis(
-    data_path = config$data_path,
-    output_dir = output_dir,
-    sample_size = config$permanova_sample,
-    min_samples_per_biome = config$min_samples_per_biome
-  )
-  
-  cat("✓ Biome analysis complete\n")
-  return(results)
-}
 
 #' Run spatial diagnostics
-run_spatial_diagnostics <- function(config) {
-  cat("\n" * 2)
-  cat("=" * 70, "\n")
+run_spatial_diagnostics <- function(config, data, data_samples) {
+  cat("\n\n")
+  cat(paste(rep("=", 70), collapse=""), "\n")
   cat("RUNNING SPATIAL DIAGNOSTICS\n")
-  cat("=" * 70, "\n\n")
+  cat(paste(rep("=", 70), collapse=""), "\n\n")
   
   source("src/residue_analysis/spatial_diagnostics.R")
   
   output_dir <- file.path(config$output_base, "spatial_diagnostics")
   
   results <- spatial_diagnostics(
-    data_path = config$data_path,
+    data = data,
+    data_sample = data_samples$spatial,
     output_dir = output_dir,
-    sample_size = config$mantel_sample,
     distance_classes = config$distance_classes
   )
   
@@ -150,7 +120,7 @@ main <- function() {
   
   cat("\n")
   cat("╔═══════════════════════════════════════════════════════════════════╗\n")
-  cat("║         DML RESIDUAL ANALYSIS PIPELINE                           ║\n")
+  cat("║         RESIDUAL BIODIVERSITY ANALYSIS PIPELINE                  ║\n")
   cat("╚═══════════════════════════════════════════════════════════════════╝\n")
   cat("\n")
   
@@ -160,7 +130,6 @@ main <- function() {
   cat("  Output base:", config$output_base, "\n")
   cat("  Sample sizes:\n")
   cat("    - General:", config$sample_size, "\n")
-  cat("    - PERMANOVA:", config$permanova_sample, "\n")
   cat("    - Mantel:", config$mantel_sample, "\n")
   cat("    - NMDS:", config$nmds_sample, "\n")
   cat("\n")
@@ -178,6 +147,43 @@ main <- function() {
   write(toJSON(config, pretty = TRUE), config_file)
   cat("Configuration saved to:", config_file, "\n")
   
+  # Load data ONCE
+  cat("\nLoading data from:", config$data_path, "\n")
+  library(arrow)
+  data <- read_feather(config$data_path)
+  n_samples <- nrow(data)
+  cat("Total samples:", format(n_samples, big.mark=","), "\n\n")
+  
+  # Create samples for different analyses
+  cat("Creating analysis samples...\n")
+  set.seed(42)  # Reproducibility
+  data_samples <- list()
+  
+  # Sample for visualization
+  if (n_samples > config$viz_sample) {
+    data_samples$viz <- data[sample(n_samples, config$viz_sample), ]
+  } else {
+    data_samples$viz <- data
+  }
+  
+  # Sample for RDA (computationally intensive)
+  if (n_samples > config$sample_size) {
+    data_samples$rda <- data[sample(n_samples, config$sample_size), ]
+  } else {
+    data_samples$rda <- data
+  }
+  
+  # Sample for spatial analysis
+  if (n_samples > config$mantel_sample) {
+    data_samples$spatial <- data[sample(n_samples, config$mantel_sample), ]
+  } else {
+    data_samples$spatial <- data
+  }
+  
+  cat("  Visualization sample:", format(nrow(data_samples$viz), big.mark=","), "\n")
+  cat("  RDA sample:", format(nrow(data_samples$rda), big.mark=","), "\n")
+  cat("  Spatial sample:", format(nrow(data_samples$spatial), big.mark=","), "\n\n")
+  
   # Initialize results list
   all_results <- list()
   
@@ -188,19 +194,15 @@ main <- function() {
   tryCatch({
     
     if (config$run_distribution) {
-      all_results$distribution <- run_distribution_analysis(config)
+      all_results$distribution <- run_distribution_analysis(config, data, data_samples)
     }
     
-    if (config$run_variance_partitioning) {
-      all_results$variance_partitioning <- run_variance_partitioning(config)
-    }
-    
-    if (config$run_biome) {
-      all_results$biome <- run_biome_analysis(config)
+    if (config$run_residual_analysis) {
+      all_results$residual_analysis <- run_residual_analysis(config, data, data_samples)
     }
     
     if (config$run_spatial) {
-      all_results$spatial <- run_spatial_diagnostics(config)
+      all_results$spatial <- run_spatial_diagnostics(config, data, data_samples)
     }
     
   }, error = function(e) {
@@ -214,16 +216,16 @@ main <- function() {
   runtime <- difftime(end_time, start_time, units = "mins")
   
   # Generate summary report
-  cat("\n" * 2)
-  cat("=" * 70, "\n")
+  cat("\n\n")
+  cat(paste(rep("=", 70), collapse=""), "\n")
   cat("GENERATING SUMMARY REPORT\n")
-  cat("=" * 70, "\n\n")
+  cat(paste(rep("=", 70), collapse=""), "\n\n")
   
   summary_file <- file.path(config$output_base, "analysis_summary.txt")
   sink(summary_file)
   
   cat("DML RESIDUAL ANALYSIS SUMMARY\n")
-  cat("=" * 70, "\n")
+  cat(paste(rep("=", 70), collapse=""), "\n")
   cat("Generated:", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "\n")
   cat("Runtime:", round(runtime, 2), "minutes\n")
   cat("Data:", config$data_path, "\n")
@@ -238,29 +240,35 @@ main <- function() {
     cat("\n")
   }
   
-  # Variance partitioning summary
-  if (!is.null(all_results$variance_partitioning)) {
-    cat("VARIANCE PARTITIONING:\n")
-    vp <- all_results$variance_partitioning
-    cat("  Fungi explained by others:", 
-        sprintf("%.1f%%", vp$vp_fungi$part$fract$Adj.R.squared[3] * 100), "\n")
-    cat("  Plants explained by others:",
-        sprintf("%.1f%%", vp$vp_plants$part$fract$Adj.R.squared[3] * 100), "\n")
-    cat("  Vertebrates explained by others:",
-        sprintf("%.1f%%", vp$vp_vertebrates$part$fract$Adj.R.squared[3] * 100), "\n")
+  # Residual analysis summary
+  if (!is.null(all_results$residual_analysis)) {
+    cat("RESIDUAL BIODIVERSITY RELATIONSHIPS:\n")
+    vp <- all_results$residual_analysis
+    
+    # Report correlations
+    cat("  Partial Correlations (after removing environment):\n")
+    if (!is.null(vp$cor_summary)) {
+      for(i in 1:nrow(vp$cor_summary)) {
+        cat(sprintf("    %s: r=%.3f %s\n", 
+                   vp$cor_summary$Pair[i],
+                   vp$cor_summary$Correlation[i],
+                   ifelse(vp$cor_summary$Significant[i], "(p<0.05)", "")))
+      }
+    }
+    
+    # Report RDA results
+    cat("  RDA Models:\n")
+    if (!is.null(vp$rda_summary)) {
+      for(i in 1:nrow(vp$rda_summary)) {
+        cat(sprintf("    %s: R²=%.3f %s\n",
+                   vp$rda_summary$Response[i],
+                   vp$rda_summary$Adj_R2[i],
+                   ifelse(vp$rda_summary$Significant[i], "(p<0.05)", "")))
+      }
+    }
     cat("\n")
   }
   
-  # Biome summary
-  if (!is.null(all_results$biome)) {
-    cat("BIOME ANALYSIS:\n")
-    cat("  Biomes analyzed:", nrow(all_results$biome$biome_summary), "\n")
-    cat("  PERMANOVA R²:", 
-        sprintf("%.3f", all_results$biome$adonis_result$R2[1]), "\n")
-    cat("  PERMANOVA p-value:",
-        sprintf("%.4f", all_results$biome$adonis_result$`Pr(>F)`[1]), "\n")
-    cat("\n")
-  }
   
   # Spatial summary
   if (!is.null(all_results$spatial)) {
