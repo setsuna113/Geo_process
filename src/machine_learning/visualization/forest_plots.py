@@ -78,14 +78,23 @@ class ForestDataProcessor:
         """Clean predictor names for display."""
         cleaned = []
         for name in names:
-            clean = (name.replace('_log', ' (log)')
-                        .replace('_std', ' (std)')
-                        .replace('_', ' ')
-                        .replace('bio', 'Bio')
-                        .replace('plants', 'Plants')
-                        .replace('vertebrates', 'Vertebrates')
-                        .replace('richness', 'Richness')
-                        .title())
+            # Replace underscores with spaces and handle suffixes
+            clean = name.replace('_log', ' (log)').replace('_std', ' (std)').replace('_int', ' (int)')
+            
+            # Split by underscore for word processing
+            words = clean.split('_')
+            
+            # Title case each word and handle special cases
+            titled_words = []
+            for word in words:
+                if word.lower() == 'bio':
+                    titled_words.append('Bio')
+                elif word.lower() == 'richness':
+                    titled_words.append('Richness')
+                else:
+                    titled_words.append(word.title())
+            
+            clean = ' '.join(titled_words)
             cleaned.append(clean)
         return cleaned
     

@@ -343,8 +343,38 @@ class BootstrapVisualizer:
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
         fig.suptitle('Effect Size Comparison at Optimal Sample Sizes', fontsize=14, fontweight='bold')
         
-        plants_data = []
-        vertebrates_data = []
+        # Detect which biodiversity predictors are available
+        first_model = model_names[0]
+        if first_model not in self.results:
+            self.load_results(first_model)
+        
+        # Check for available effect columns
+        optimal_n = self.results[first_model]['optimal_n']
+        raw = self.raw_data[first_model]
+        effect_cols = [col for col in raw.keys() if col.startswith(f'n{optimal_n}_') and col.endswith('_effects')]
+        
+        # Extract predictor names
+        predictors = []
+        for col in effect_cols:
+            pred_name = col.replace(f'n{optimal_n}_', '').replace('_effects', '')
+            if pred_name not in predictors:
+                predictors.append(pred_name)
+        
+        # Default to plants and vertebrates if available, otherwise use first two
+        if 'plants' in predictors and 'vertebrates' in predictors:
+            pred1, pred2 = 'plants', 'vertebrates'
+        elif 'fungi' in predictors and 'vertebrates' in predictors:
+            pred1, pred2 = 'fungi', 'vertebrates'
+        elif 'fungi' in predictors and 'plants' in predictors:
+            pred1, pred2 = 'fungi', 'plants'
+        elif len(predictors) >= 2:
+            pred1, pred2 = predictors[0], predictors[1]
+        else:
+            print(f"Warning: Not enough predictors found. Available: {predictors}")
+            return
+        
+        pred1_data = []
+        pred2_data = []
         labels = []
         
         for model in model_names:
@@ -354,23 +384,23 @@ class BootstrapVisualizer:
             optimal_n = self.results[model]['optimal_n']
             raw = self.raw_data[model]
             
-            plants_data.append(raw[f'n{optimal_n}_plants_effects'])
-            vertebrates_data.append(raw[f'n{optimal_n}_vertebrates_effects'])
+            pred1_data.append(raw[f'n{optimal_n}_{pred1}_effects'])
+            pred2_data.append(raw[f'n{optimal_n}_{pred2}_effects'])
             labels.append(f"{model}\n(n={optimal_n:,})")
         
-        # Plants effect comparison
+        # First predictor effect comparison
         ax1 = axes[0]
-        bp1 = ax1.boxplot(plants_data, labels=labels, patch_artist=True)
+        bp1 = ax1.boxplot(pred1_data, labels=labels, patch_artist=True)
         for patch, color in zip(bp1['boxes'], sns.color_palette()):
             patch.set_facecolor(color)
             patch.set_alpha(0.7)
         
         ax1.set_ylabel('Effect Size', fontsize=12)
-        ax1.set_title('Plants Richness Effect', fontsize=13)
+        ax1.set_title(f'{pred1.capitalize()} Richness Effect', fontsize=13)
         ax1.axhline(y=0, color='gray', linestyle='-', alpha=0.5)
         ax1.grid(True, alpha=0.3, axis='y')
         
-        # Vertebrates effect comparison
+        # Second biodiversity predictor effect comparison
         ax2 = axes[1]
         bp2 = ax2.boxplot(vertebrates_data, labels=labels, patch_artist=True)
         for patch, color in zip(bp2['boxes'], sns.color_palette()):
@@ -378,7 +408,7 @@ class BootstrapVisualizer:
             patch.set_alpha(0.7)
         
         ax2.set_ylabel('Effect Size', fontsize=12)
-        ax2.set_title('Vertebrates Richness Effect', fontsize=13)
+        ax2.set_title(f'{pred2.capitalize()} Richness Effect', fontsize=13)
         ax2.axhline(y=0, color='gray', linestyle='-', alpha=0.5)
         ax2.grid(True, alpha=0.3, axis='y')
         

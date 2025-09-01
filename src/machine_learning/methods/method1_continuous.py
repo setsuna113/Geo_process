@@ -2,11 +2,12 @@ from src.abstractions import get_logger
 """Method 1: H0-H1 Testing with GLM (Julia-based).
 
 Tests:
-- H0: Fungi richness is independent of plant/vertebrate richness
+- H0: Response richness is independent of other biodiversity predictors
 - H1: Biodiversity begets biodiversity (positive correlation exists)
 
 Compares Model 1 (climate only) vs Model 2 (climate + biodiversity).
 Accepts results from Julia GLM via orchestrator.
+Response variable is configurable (fungi, plants, or vertebrates).
 """
 
 import logging
@@ -62,6 +63,7 @@ class Method1H0H1GLM:
         self.model_full = None  # Model 2: Climate + biodiversity
         self.lr_test_result = None  # LRT result from Julia
         self.data_metadata = None  # Metadata about the data
+        self.response_type = 'fungi'  # Default response type
         
         # Storage for hypothesis test results
         self.hypothesis_results = {}
@@ -72,7 +74,8 @@ class Method1H0H1GLM:
         
         logger.info("Method 1 H0-H1 GLM initialized with wrapped components")
     
-    def set_julia_results(self, models: Dict[str, Any], lr_test: Dict[str, Any]) -> None:
+    def set_julia_results(self, models: Dict[str, Any], lr_test: Dict[str, Any], 
+                         response_type: str = 'fungi') -> None:
         """Set the Julia model results for analysis.
         
         Called by orchestrator to pass Julia results to this method.
@@ -80,6 +83,7 @@ class Method1H0H1GLM:
         Args:
             models: Dictionary containing 'method1_null' and 'method1_full' model results
             lr_test: MANDATORY LRT result from Julia (THIS IS THE PRIMARY TEST!)
+            response_type: Type of response variable ('fungi', 'plants', or 'vertebrates')
         """
         if not lr_test:
             raise ValueError("LRT result is MANDATORY. This is THE test for nested models!")
@@ -87,6 +91,7 @@ class Method1H0H1GLM:
         self.model_null = models.get('method1_null')
         self.model_full = models.get('method1_full')
         self.lr_test_result = lr_test
+        self.response_type = response_type
         
         # Extract metadata
         if self.model_full:
@@ -237,9 +242,14 @@ class Method1H0H1GLM:
         evidence_count = sum([lrt_supports_h1, wald_supports_h1, aic_supports_h1])
         supports_h1 = evidence_count >= 2  # At least 2 out of 3 support H1
         
+        # Create hypothesis text based on response type
+        response_name = self.response_type.capitalize()
+        h1_text = f'H1: Biodiversity affects {response_name} richness'
+        h0_text = f'H0: No biodiversity effect on {response_name}'
+        
         conclusion = {
             'supports_h1': supports_h1,
-            'hypothesis': 'H1: Biodiversity begets biodiversity' if supports_h1 else 'H0: No biodiversity effect',
+            'hypothesis': h1_text if supports_h1 else h0_text,
             'evidence': {
                 'lrt': lrt_supports_h1,
                 'wald_sesoi': wald_supports_h1,
