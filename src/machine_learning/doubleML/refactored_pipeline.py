@@ -832,12 +832,30 @@ class CausalEffectPipeline:
         print(f"Shape: {residual_matrix.shape}")
         print(f"Taxa columns: {taxa}")
         
+        # Extract coordinates and environmental variables for R analysis
+        additional_cols = {}
+        
+        # Get coordinates (check for different naming conventions)
+        if 'longitude' in self.data.columns and 'latitude' in self.data.columns:
+            additional_cols['longitude'] = self.data['longitude'].values
+            additional_cols['latitude'] = self.data['latitude'].values
+        elif 'x' in self.data.columns and 'y' in self.data.columns:
+            additional_cols['longitude'] = self.data['x'].values
+            additional_cols['latitude'] = self.data['y'].values
+        
+        # Get environmental variables if present
+        env_vars = ['temperature', 'precipitation', 'elevation', 'soil_pH']
+        for var in env_vars:
+            if var in self.data.columns:
+                additional_cols[var] = self.data[var].values
+        
         # Store results with proper structure for saving
         self.last_results = {
             'residual_matrix': residual_matrix,
             'coefficients': all_coefficients,
             'models': all_models,  # Keep DML models for inference/predictions
-            'taxa': taxa  # Need this for save function
+            'taxa': taxa,  # Need this for save function
+            'additional_data': additional_cols  # Coordinates and env vars for R
         }
         
         # Save results using unified save function

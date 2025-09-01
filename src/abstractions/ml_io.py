@@ -99,7 +99,8 @@ def save_residual_matrix(
     residual_matrix: np.ndarray, 
     taxa_names: list,
     output_dir: Path, 
-    prefix: str = "residuals"
+    prefix: str = "residuals",
+    additional_data: Dict[str, np.ndarray] = None
 ) -> Path:
     """
     Save residual matrix as Arrow format for efficient Python/R interop.
@@ -109,6 +110,7 @@ def save_residual_matrix(
         taxa_names: List of column names
         output_dir: Directory to save in
         prefix: Filename prefix
+        additional_data: Dict of additional columns to include (e.g., coordinates)
         
     Returns:
         Path to saved Arrow file
@@ -131,10 +133,17 @@ def save_residual_matrix(
     # Add site_id for reference
     df.insert(0, 'site_id', range(len(df)))
     
+    # Add additional columns if provided
+    if additional_data:
+        for col_name, col_data in additional_data.items():
+            df[col_name] = col_data
+            logger.info(f"Added column '{col_name}' to residuals (shape: {col_data.shape})")
+    
     # Save as Arrow/Feather format (IPC format)
     filepath = output_dir / f"{prefix}.arrow"
     feather.write_feather(df, filepath, compression='uncompressed')  # No compression for memory mapping
     logger.info(f"Saved residuals to {filepath} (Arrow format)")
+    logger.info(f"Columns saved: {list(df.columns)}")
     
     return filepath
 
@@ -212,8 +221,12 @@ def save_pipeline_results(
         if taxa_names is None:
             taxa_names = ['fungi_richness', 'plants_richness', 'vertebrates_richness']
         
+        # Extract additional data if available
+        additional_data = results.get('additional_data', None)
+        
         saved_paths['residuals'] = save_residual_matrix(
-            residual_matrix, taxa_names, output_dir
+            residual_matrix, taxa_names, output_dir, 
+            additional_data=additional_data
         )
     
     # Log summary
