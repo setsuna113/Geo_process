@@ -1,24 +1,41 @@
 #!/usr/bin/env julia
 """
-Standalone LMG (Lindeman-Merenda-Gold) Relative Importance Analysis
-Called by pipeline with preprocessed data
-Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> [max_orderings]
+Unified LMG (Lindeman-Merenda-Gold) Relative Importance Analysis
+Reads all parameters from config file
+Usage: julia run_lmg_analysis.jl <data_arrow_path>
 """
 
 using Distributed
 using Random
+using YAML
 
-# Parse arguments
-if length(ARGS) < 2
-    error("Usage: julia run_lmg_analysis.jl <data_arrow_path> <n_samples> [max_orderings]")
+# Parse arguments - only data path needed
+if length(ARGS) < 1
+    error("Usage: julia run_lmg_analysis.jl <data_arrow_path>")
 end
 
 data_path = ARGS[1]
-n_samples = parse(Int, ARGS[2])
-# Production run: always use ALL orderings (9! = 362,880)
 
-# Add workers FIRST (before any module loading)
-n_workers = 100
+# Load ALL parameters from config
+config_path = "src/config/ml/ml_config.yml"
+config = YAML.load_file(config_path)
+
+# Extract required LMG parameters
+required_params = ["lmg_response", "lmg_n_samples", "lmg_n_workers", 
+                  "lmg_fixed_theta", "lmg_max_orderings", "lmg_output_dir"]
+
+for param in required_params
+    if !haskey(config, param)
+        error("Missing required LMG config parameter: $param in $config_path")
+    end
+end
+
+response_type = config["lmg_response"]  # "fungi", "animal", or "plant"
+n_samples = config["lmg_n_samples"]
+n_workers = config["lmg_n_workers"]
+max_orderings = config["lmg_max_orderings"]
+
+# Add workers FIRST (before any other module loading)
 if nworkers() < n_workers
     addprocs(n_workers - nworkers())
     println("Added workers. Total: $(nworkers())")
@@ -32,8 +49,10 @@ end
     using StatsModels: @formula
     using Combinatorics
     
-    # FIXED THETA based on distribution analysis
-    const FIXED_THETA = 18.83
+    # Load config on workers to get fixed theta
+    using YAML
+    config = YAML.load_file("src/config/ml/ml_config.yml")
+    const FIXED_THETA = haskey(config, "lmg_fixed_theta") ? config["lmg_fixed_theta"] : error("Missing lmg_fixed_theta in config")
     
     # Define the parallel fitting function on all workers
     # Uses fixed theta instead of estimating it
@@ -67,8 +86,40 @@ using GLM: LogLink, glm
 using Distributions: NegativeBinomial
 
 println("\n" * "="^60)
-println("LMG IMPORTANCE ANALYSIS")
+println("LMG IMPORTANCE ANALYSIS - $(uppercase(response_type)) RESPONSE")
 println("="^60)
+
+# Configure response variable and predictors based on type
+const RESPONSE_CONFIG = Dict(
+    "fungi" => (
+        response_col = :fungi_richness,
+        biodiv_predictors = Dict(
+            "plant_biodiv" => ["plants_richness_std"],
+            "animal_biodiv" => ["vertebrates_richness_std"]
+        )
+    ),
+    "animal" => (
+        response_col = :vertebrates_richness,
+        biodiv_predictors = Dict(
+            "fungi_biodiv" => ["fungi_richness_std"],
+            "plant_biodiv" => ["plants_richness_std"]
+        )
+    ),
+    "plant" => (
+        response_col = :plants_richness,
+        biodiv_predictors = Dict(
+            "fungi_biodiv" => ["fungi_richness_std"],
+            "animal_biodiv" => ["vertebrates_richness_std"]
+        )
+    )
+)
+
+if !haskey(RESPONSE_CONFIG, response_type)
+    error("Invalid response type: $response_type. Must be 'fungi', 'animal', or 'plant'")
+end
+
+cfg = RESPONSE_CONFIG[response_type]
+response_col = cfg.response_col
 
 # Load preprocessed data from pipeline
 println("Loading preprocessed data from: $data_path")
@@ -76,10 +127,14 @@ arrow_table = Arrow.Table(data_path)
 df = DataFrame(arrow_table)
 println("Loaded $(nrow(df)) rows with $(ncol(df)) columns")
 
-# Identify response variable
-response_col = :fungi_richness
+# Verify response variable exists
 if !(response_col in propertynames(df))
     error("Response variable $response_col not found in data!")
+end
+
+# Convert response to Float64 if needed (for animal/plant responses)
+if response_type in ["animal", "plant"]
+    df[!, response_col] = Float64.(df[!, response_col])
 end
 
 # Group predictors based on naming patterns
@@ -112,9 +167,10 @@ groups["seasonal_temp"] = filter(c -> occursin("bio04_std", c), cols)
 # PET
 groups["pet"] = filter(c -> occursin("pet_mm_month_std", c), cols)
 
-# Biodiversity (log standardized versions)
-groups["plant_biodiv"] = filter(c -> occursin("plants_richness_log_std", c), cols)
-groups["animal_biodiv"] = filter(c -> occursin("vertebrates_richness_log_std", c), cols)
+# Biodiversity predictors - configured based on response type
+for (group_name, predictor_vars) in cfg.biodiv_predictors
+    groups[group_name] = filter(c -> c in predictor_vars, cols)
+end
 
 # Remove empty groups
 filter!(p -> !isempty(p.second), groups)
@@ -136,26 +192,34 @@ else
 end
 
 # Fit null model with FIXED theta
-println("\nFitting null model with FIXED theta = 18.83...")
+fixed_theta = config["lmg_fixed_theta"]
+println("\nFitting null model for $response_col with FIXED theta = $fixed_theta...")
 using Distributions: NegativeBinomial
-null_formula = @formula(fungi_richness ~ 1)
-null_dist = NegativeBinomial(18.83, 0.5)
+# Build formula dynamically based on response
+null_formula = eval(Meta.parse("@formula($response_col ~ 1)"))
+null_dist = NegativeBinomial(fixed_theta, 0.5)
 null_model = glm(null_formula, data_sample, null_dist, LogLink())
 null_dev = deviance(null_model)
 println("Null deviance: $(round(null_dev, digits=2))")
-println("Using FIXED theta: 18.83 (median from theta distribution analysis)")
+println("Using FIXED theta: $fixed_theta")
 
 # Generate orderings - sample 1/100 for faster execution
 group_names = collect(keys(groups))
 n_groups = length(group_names)
 n_total_orderings = factorial(n_groups)
 
-# Sample 1/100 of all orderings (approximately 3629 orderings)
+# Sample orderings based on max_orderings from config
 Random.seed!(42)
 all_perms = collect(permutations(group_names))
-n_sample = max(100, div(n_total_orderings, 100))  # Sample 1/100, minimum 100
-sampled_indices = sample(1:n_total_orderings, n_sample, replace=false)
-all_orderings = all_perms[sampled_indices]
+
+# max_orderings already loaded from config at the top
+n_sample = min(max_orderings, n_total_orderings)
+if n_sample < n_total_orderings
+    sampled_indices = sample(1:n_total_orderings, n_sample, replace=false)
+    all_orderings = all_perms[sampled_indices]
+else
+    all_orderings = all_perms
+end
 
 println("\nSampling $(length(all_orderings)) orderings from $n_total_orderings total ($(n_groups)! = $n_total_orderings)")
 
@@ -244,21 +308,28 @@ end
 lmg_importance = vec(mean(importance_matrix, dims=1))
 total_r2 = sum(lmg_importance)
 
-println("\nUsing FIXED theta = 18.83 for all models")
-println("(Based on median of theta distribution from variable-theta analysis)")
+println("\nUsing FIXED theta = $fixed_theta for all models")
+println("Response variable: $response_col")
+if response_type != "fungi"
+    println("Fungi is now a PREDICTOR")
+end
 
-# Save results
-output_dir = "/scratch/yl998/lmg_results"
+# Save results - get output dir from config
+if !haskey(config, "lmg_output_dir")
+    error("Missing required LMG config parameter: lmg_output_dir")
+end
+output_dir = config["lmg_output_dir"]
 mkpath(output_dir)
 timestamp = Dates.format(now(), "yyyymmdd_HHMMSS")
-output_file = joinpath(output_dir, "lmg_importance_fixed_theta_$(timestamp).json")
+output_file = joinpath(output_dir, "lmg_importance_$(response_type)_$(timestamp).json")
 
 # Prepare results
 results = Dict(
+    "response" => String(response_col),
     "importance" => Dict(group_names[i] => lmg_importance[i] for i in 1:n_groups),
     "importance_pct" => Dict(group_names[i] => 100 * lmg_importance[i] for i in 1:n_groups),
     "total_r2" => total_r2,
-    "fixed_theta" => 18.83,
+    "fixed_theta" => fixed_theta,
     "metadata" => Dict(
         "n_samples" => nrow(data_sample),
         "n_orderings" => length(all_orderings),
@@ -281,7 +352,7 @@ end
 
 # Print results
 println("\n" * "="^60)
-println("LMG IMPORTANCE RESULTS")
+println("LMG IMPORTANCE RESULTS - $(uppercase(response_type)) RESPONSE")
 println("="^60)
 println("Total R²: $(round(total_r2, digits=4)) ($(round(100*total_r2, digits=2))%)")
 println("\nRelative Importance (sorted):")
