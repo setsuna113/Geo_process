@@ -7,6 +7,10 @@ regression_analysis:
   data:
     spatial_grid_step: 1
 
+# Method 1 specific configuration
+method1:
+  response: "fungi"  # Options: fungi, plants, vertebrates
+
 # Ridge regression configuration for GLM models
 ridge:
   enabled: false  # Disabled - not effective with 4.3M observations
