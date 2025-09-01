@@ -72,7 +72,7 @@ class OptimizedLGBMRegressor(BaseEstimator, RegressorMixin):
         
         # Other parameters
         self.max_bin = config['max_bin']
-        self.early_stopping_rounds = config['early_stopping_rounds']
+        # Early stopping removed - always run full iterations
         self.first_metric_only = config['first_metric_only']
         self.cat_smooth = config['cat_smooth']
         self.max_cat_to_onehot = config['max_cat_to_onehot']
@@ -124,8 +124,7 @@ class OptimizedLGBMRegressor(BaseEstimator, RegressorMixin):
             'learning_rate': self.learning_rate,
             'num_iterations': self.num_iterations,
             
-            # Early stopping from config
-            'early_stopping_rounds': self.early_stopping_rounds,
+            # No early stopping - run all iterations
             'first_metric_only': self.first_metric_only,
             
             # Categorical features from config
