@@ -105,7 +105,9 @@ class Method1H0H1GLM:
         full_aic = self.model_full.get('aic', 'N/A') if self.model_full else 'N/A'
         
         if isinstance(null_aic, (int, float)) and isinstance(full_aic, (int, float)):
-            logger.info(f"Julia results set: null model AIC={null_aic:.2f}, full model AIC={full_aic:.2f}")
+            logger.info(
+                f"Julia results set: null model AIC={null_aic:.2f}, "
+                f"full model AIC={full_aic:.2f}")
         else:
             logger.info(f"Julia results set: null model AIC={null_aic}, full model AIC={full_aic}")
     
@@ -135,7 +137,9 @@ class Method1H0H1GLM:
             null_dev = self.model_null.get('deviance', 0) 
             full_dev = self.model_full.get('deviance', 0)
             lrt_result['lr_statistic'] = null_dev - full_dev
-            logger.warning(f"Fixed LR statistic: {lrt_result['lr_statistic']:.2f} (was incorrectly full deviance)")
+            logger.warning(
+                f"Fixed LR statistic: {lrt_result['lr_statistic']:.2f} "
+                f"(was incorrectly full deviance)")
         
         results['likelihood_ratio_test'] = lrt_result
         logger.info(f"LRT (PRIMARY TEST): χ²={lrt_result.get('lr_statistic', 0):.2f}, "
@@ -424,8 +428,10 @@ class Method1H0H1GLM:
                         }
                 },
                 'best_model': {
-                    'aic': 'full' if self.model_full.get('aic', 0) < self.model_null.get('aic', 0) else 'null',
-                    'bic': 'full' if self.model_full.get('bic', 0) < self.model_null.get('bic', 0) else 'null'
+                    'aic': ('full' if self.model_full.get('aic', 0) < 
+                            self.model_null.get('aic', 0) else 'null'),
+                    'bic': ('full' if self.model_full.get('bic', 0) < 
+                            self.model_null.get('bic', 0) else 'null')
                 }
             }
             
@@ -572,7 +578,8 @@ class Method1H0H1GLM:
                 
                 # Save comparison details for supplementary
                 if 'comparison_details' in lrt_report:
-                    supplementary_tables.append(("lrt_comparison", lrt_report['comparison_details']))
+                    supplementary_tables.append(
+                        ("lrt_comparison", lrt_report['comparison_details']))
                 
                 if 'latex_table' in lrt_report:
                     latex_tables.append(("LRT", lrt_report['latex_table']))
