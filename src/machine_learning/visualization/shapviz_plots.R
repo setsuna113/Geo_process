@@ -20,27 +20,54 @@ theme_set(theme_minimal())
 load_shap_data <- function(model_dir, model_name) {
   message(sprintf("Loading SHAP data for model: %s", model_name))
   
-  # Read SHAP values
-  shap_file <- file.path(model_dir, paste0(model_name, "_shap_values.csv"))
-  shap_values <- as.matrix(read_csv(shap_file, show_col_types = FALSE))
+  # Try new single Arrow file first
+  arrow_file <- file.path(model_dir, paste0(model_name, "_shap_results.arrow"))
   
-  # Read feature data
-  feature_file <- file.path(model_dir, paste0(model_name, "_features.csv"))
-  X <- read_csv(feature_file, show_col_types = FALSE)
-  
-  # Read metadata
-  metadata_file <- file.path(model_dir, paste0(model_name, "_shap_metadata.json"))
-  metadata <- fromJSON(metadata_file)
+  if (file.exists(arrow_file)) {
+    # Load from single Arrow file
+    library(arrow)
+    data <- read_feather(arrow_file)
+    
+    # Extract metadata from Arrow schema
+    arrow_table <- arrow::read_feather(arrow_file, as_data_frame = FALSE)
+    metadata <- arrow_table$schema$metadata
+    
+    # Separate features and SHAP values based on column names
+    feature_cols <- grep("^shap_", names(data), value = TRUE, invert = TRUE)
+    shap_cols <- grep("^shap_", names(data), value = TRUE)
+    
+    # Extract data
+    X <- data[, feature_cols]
+    shap_values <- as.matrix(data[, shap_cols])
+    colnames(shap_values) <- gsub("^shap_", "", shap_cols)  # Remove prefix
+    
+    # Parse baseline from metadata
+    baseline <- as.numeric(metadata$baseline)
+    
+    message(sprintf("  Loaded from single Arrow file: %d samples with %d features", 
+                    nrow(shap_values), ncol(shap_values)))
+  } else {
+    # Fallback to old CSV format for backward compatibility
+    shap_file <- file.path(model_dir, paste0(model_name, "_shap_values.csv"))
+    shap_values <- as.matrix(read_csv(shap_file, show_col_types = FALSE))
+    
+    feature_file <- file.path(model_dir, paste0(model_name, "_features.csv"))
+    X <- read_csv(feature_file, show_col_types = FALSE)
+    
+    metadata_file <- file.path(model_dir, paste0(model_name, "_shap_metadata.json"))
+    metadata <- fromJSON(metadata_file)
+    baseline <- metadata$baseline
+    
+    message(sprintf("  Loaded from CSV files (legacy): %d samples with %d features", 
+                    nrow(shap_values), ncol(shap_values)))
+  }
   
   # Create shapviz object
   sv <- shapviz(
     object = shap_values,
     X = X,
-    baseline = metadata$baseline
+    baseline = baseline
   )
-  
-  message(sprintf("  Loaded %d samples with %d features", 
-                  nrow(shap_values), ncol(shap_values)))
   
   return(sv)
 }
