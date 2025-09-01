@@ -182,22 +182,30 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
         df.plants_x_vertebrates = interaction
         println("Added and standardized interaction term: plants_x_vertebrates_std for DML")
     else
-        # GLM needs integers and log transforms
-        df.fungi_richness = round.(Int, df.fungi_richness)
+        # GLM needs integers for response variables
+        # Create integer versions (for use as response)
+        df.fungi_richness_int = round.(Int, df.fungi_richness)
+        df.plants_richness_int = round.(Int, df.plants_richness)
+        df.vertebrates_richness_int = round.(Int, df.vertebrates_richness)
         
-        # Log transform first
+        # Create standardized versions (for use as predictors)
+        # Using 2SD method for all biodiversity variables
+        df.fungi_richness_std = (df.fungi_richness .- mean(df.fungi_richness)) ./ (2 .* std(df.fungi_richness))
+        df.plants_richness_std = (df.plants_richness .- mean(df.plants_richness)) ./ (2 .* std(df.plants_richness))
+        df.vertebrates_richness_std = (df.vertebrates_richness .- mean(df.vertebrates_richness)) ./ (2 .* std(df.vertebrates_richness))
+        
+        # Keep log versions for backward compatibility (Method2 uses them)
         plants_log = log.(df.plants_richness .+ 1)
         vertebrates_log = log.(df.vertebrates_richness .+ 1)
-        
-        # Then standardize using 2SD method for fair comparison
         df.plants_richness_log_std = (plants_log .- mean(plants_log)) ./ (2 .* std(plants_log))
         df.vertebrates_richness_log_std = (vertebrates_log .- mean(vertebrates_log)) ./ (2 .* std(vertebrates_log))
-        
-        # Keep unstandardized versions for backward compatibility
         df.plants_richness_log = plants_log
         df.vertebrates_richness_log = vertebrates_log
         
-        println("Log-transformed and standardized biotic predictors (2SD method)")
+        # Keep original fungi_richness for backward compatibility
+        df.fungi_richness = df.fungi_richness_int
+        
+        println("Created integer and standardized versions of biodiversity variables")
     end
     
     return df
@@ -212,6 +220,26 @@ end
 function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Float64, Nothing}=nothing)
     results = ModelResult[]
     
+    # Get response type from config (Method1-specific)
+    method1_config = get(state.config, "method1", Dict())
+    response_type = get(method1_config, "response", "fungi")
+    
+    # Configure response variable and biotic predictors based on type
+    if response_type == "fungi"
+        response_var = :fungi_richness_int  # Integer version for response
+        biotic = ["plants_richness_std", "vertebrates_richness_std"]  # Standardized for predictors
+    elseif response_type == "plants"
+        response_var = :plants_richness_int
+        biotic = ["fungi_richness_std", "vertebrates_richness_std"]
+    elseif response_type == "vertebrates"
+        response_var = :vertebrates_richness_int
+        biotic = ["fungi_richness_std", "plants_richness_std"]
+    else
+        error("Invalid response type for Method 1: $response_type. Must be 'fungi', 'plants', or 'vertebrates'")
+    end
+    
+    println("Method 1: Using response variable $response_var")
+    
     # Features - now includes all environmental variables
     climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
     soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
@@ -221,15 +249,14 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     
     # Combine all abiotic features
     base = vcat(climate, soil, terrain, water, state.mesf_columns)
-    biotic = ["plants_richness_log_std", "vertebrates_richness_log_std"]
     
     # Null model - use ridge when we have 200+ MESF components
-    formula_null = Term(:fungi_richness) ~ sum(Term.(Symbol.(base)))
+    formula_null = Term(response_var) ~ sum(Term.(Symbol.(base)))
     model_null = negbin(formula_null, state.data, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method1_null", model_null, extract_diagnostics_and_save(model_null, "method1_null", state)))
     
     # Full model - use ridge when we have 200+ MESF components
-    formula_full = Term(:fungi_richness) ~ sum(Term.(Symbol.(vcat(base, biotic))))
+    formula_full = Term(response_var) ~ sum(Term.(Symbol.(vcat(base, biotic))))
     model_full = negbin(formula_full, state.data, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method1_full", model_full, extract_diagnostics_and_save(model_full, "method1_full", state)))
     
@@ -239,7 +266,8 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
         "lr_statistic" => lrt.deviance[2],
         "df" => lrt.dof[2],
         "p_value" => lrt.pval[2],
-        "test_type" => "Likelihood Ratio Test"
+        "test_type" => "Likelihood Ratio Test",
+        "response" => String(response_var)
     )
     
     println("Method 1: AIC null=$(round(aic(model_null), digits=2)), full=$(round(aic(model_full), digits=2))")
@@ -276,7 +304,7 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     
     # Continuous interaction - use ridge when we have 200+ MESF components
     cont_features = vcat(base, ["bio04_std_x_plants_log_std"])
-    formula_cont = Term(:fungi_richness) ~ sum(Term.(Symbol.(cont_features)))
+    formula_cont = Term(:fungi_richness_int) ~ sum(Term.(Symbol.(cont_features)))
     model_cont = negbin(formula_cont, df, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics_and_save(model_cont, "method2_continuous", state)))
     
@@ -292,7 +320,7 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
         base_cat,
         ["temperate", "plant_high", "temperate_x_plant_high"]  # Categorical main effects + interaction
     )
-    formula_cat = Term(:fungi_richness) ~ sum(Term.(Symbol.(cat_features)))
+    formula_cat = Term(:fungi_richness_int) ~ sum(Term.(Symbol.(cat_features)))
     model_cat = negbin(formula_cat, df, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method2_categorical", model_cat, extract_diagnostics_and_save(model_cat, "method2_categorical", state)))
     
