@@ -182,22 +182,19 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
         df.plants_x_vertebrates = interaction
         println("Added and standardized interaction term: plants_x_vertebrates_std for DML")
     else
-        # GLM needs integers and log transforms
-        df.fungi_richness = round.(Int, df.fungi_richness)
+        # GLM needs integers for response variables
+        # Create integer versions (for use as response)
+        df.fungi_richness_int = round.(Int, df.fungi_richness)
+        df.plants_richness_int = round.(Int, df.plants_richness)
+        df.vertebrates_richness_int = round.(Int, df.vertebrates_richness)
         
-        # Log transform first
-        plants_log = log.(df.plants_richness .+ 1)
-        vertebrates_log = log.(df.vertebrates_richness .+ 1)
+        # Create standardized versions (for use as predictors)
+        # Using 2SD method for all biodiversity variables
+        df.fungi_richness_std = (df.fungi_richness .- mean(df.fungi_richness)) ./ (2 .* std(df.fungi_richness))
+        df.plants_richness_std = (df.plants_richness .- mean(df.plants_richness)) ./ (2 .* std(df.plants_richness))
+        df.vertebrates_richness_std = (df.vertebrates_richness .- mean(df.vertebrates_richness)) ./ (2 .* std(df.vertebrates_richness))
         
-        # Then standardize using 2SD method for fair comparison
-        df.plants_richness_log_std = (plants_log .- mean(plants_log)) ./ (2 .* std(plants_log))
-        df.vertebrates_richness_log_std = (vertebrates_log .- mean(vertebrates_log)) ./ (2 .* std(vertebrates_log))
-        
-        # Keep unstandardized versions for backward compatibility
-        df.plants_richness_log = plants_log
-        df.vertebrates_richness_log = vertebrates_log
-        
-        println("Log-transformed and standardized biotic predictors (2SD method)")
+        println("Created integer and standardized versions of biodiversity variables")
     end
     
     return df
@@ -212,6 +209,26 @@ end
 function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Float64, Nothing}=nothing)
     results = ModelResult[]
     
+    # Get response type from config (Method1-specific)
+    method1_config = get(state.config, "method1", Dict())
+    response_type = get(method1_config, "response", "fungi")
+    
+    # Configure response variable and biotic predictors based on type
+    if response_type == "fungi"
+        response_var = :fungi_richness_int  # Integer version for response
+        biotic = ["plants_richness_std", "vertebrates_richness_std"]  # Standardized for predictors
+    elseif response_type == "plants"
+        response_var = :plants_richness_int
+        biotic = ["fungi_richness_std", "vertebrates_richness_std"]
+    elseif response_type == "vertebrates"
+        response_var = :vertebrates_richness_int
+        biotic = ["fungi_richness_std", "plants_richness_std"]
+    else
+        error("Invalid response type for Method 1: $response_type. Must be 'fungi', 'plants', or 'vertebrates'")
+    end
+    
+    println("Method 1: Using response variable $response_var")
+    
     # Features - now includes all environmental variables
     climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
     soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
@@ -221,15 +238,14 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     
     # Combine all abiotic features
     base = vcat(climate, soil, terrain, water, state.mesf_columns)
-    biotic = ["plants_richness_log_std", "vertebrates_richness_log_std"]
     
     # Null model - use ridge when we have 200+ MESF components
-    formula_null = Term(:fungi_richness) ~ sum(Term.(Symbol.(base)))
+    formula_null = Term(response_var) ~ sum(Term.(Symbol.(base)))
     model_null = negbin(formula_null, state.data, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method1_null", model_null, extract_diagnostics_and_save(model_null, "method1_null", state)))
     
     # Full model - use ridge when we have 200+ MESF components
-    formula_full = Term(:fungi_richness) ~ sum(Term.(Symbol.(vcat(base, biotic))))
+    formula_full = Term(response_var) ~ sum(Term.(Symbol.(vcat(base, biotic))))
     model_full = negbin(formula_full, state.data, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method1_full", model_full, extract_diagnostics_and_save(model_full, "method1_full", state)))
     
@@ -239,7 +255,8 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
         "lr_statistic" => lrt.deviance[2],
         "df" => lrt.dof[2],
         "p_value" => lrt.pval[2],
-        "test_type" => "Likelihood Ratio Test"
+        "test_type" => "Likelihood Ratio Test",
+        "response" => String(response_var)
     )
     
     println("Method 1: AIC null=$(round(aic(model_null), digits=2)), full=$(round(aic(model_full), digits=2))")
@@ -256,12 +273,12 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     median_bio4 = median(df.bio04_std)
     df.temperate = Int.(df.bio04_std .> median_bio4)
     
-    # FIXED: Use log-transformed plants to match continuous model
-    median_plants = median(df.plants_richness_log_std)
-    df.plant_high = Int.(df.plants_richness_log_std .> median_plants)
+    # Use standardized plants for categorical split
+    median_plants = median(df.plants_richness_std)
+    df.plant_high = Int.(df.plants_richness_std .> median_plants)
     
     df.temperate_x_plant_high = df.temperate .* df.plant_high
-    df.bio04_std_x_plants_log_std = df.bio04_std .* df.plants_richness_log_std
+    df.bio04_std_x_plants_std = df.bio04_std .* df.plants_richness_std
     
     # Features - now includes all environmental variables
     climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
@@ -269,21 +286,21 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
                "aspect_cos_std", "aspect_sin_std"]
     water = ["pet_mm_month_std"]
-    biodiv = ["plants_richness_log_std", "vertebrates_richness_log_std"]
+    biodiv = ["plants_richness_std", "vertebrates_richness_std"]
     
     # Combine all features
     base = vcat(climate, soil, terrain, water, biodiv, state.mesf_columns)
     
     # Continuous interaction - use ridge when we have 200+ MESF components
-    cont_features = vcat(base, ["bio04_std_x_plants_log_std"])
-    formula_cont = Term(:fungi_richness) ~ sum(Term.(Symbol.(cont_features)))
+    cont_features = vcat(base, ["bio04_std_x_plants_std"])
+    formula_cont = Term(:fungi_richness_int) ~ sum(Term.(Symbol.(cont_features)))
     model_cont = negbin(formula_cont, df, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics_and_save(model_cont, "method2_continuous", state)))
     
     # Categorical interaction - replace continuous bio04 and plants with categorical versions
-    # Remove bio04_std and plants_richness_log from base, add categorical versions
+    # Remove bio04_std and plants_richness_std from base, add categorical versions
     climate_cat = ["bio01_std", "bio12_std", "bio15_std"]  # Removed bio04_std
-    biodiv_cat = ["vertebrates_richness_log_std"]  # Removed plants_richness_log
+    biodiv_cat = ["vertebrates_richness_std"]  # Removed plants_richness_std
     
     base_cat = vcat(climate_cat, soil, terrain, water, biodiv_cat, state.mesf_columns)
     
@@ -292,7 +309,7 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
         base_cat,
         ["temperate", "plant_high", "temperate_x_plant_high"]  # Categorical main effects + interaction
     )
-    formula_cat = Term(:fungi_richness) ~ sum(Term.(Symbol.(cat_features)))
+    formula_cat = Term(:fungi_richness_int) ~ sum(Term.(Symbol.(cat_features)))
     model_cat = negbin(formula_cat, df, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method2_categorical", model_cat, extract_diagnostics_and_save(model_cat, "method2_categorical", state)))
     
@@ -307,7 +324,8 @@ function fit_method3_dml(state::PipelineState)
         include(joinpath(@__DIR__, "multivariable_dml_final.jl"))
     end
     
-    # Verify raw counts
+    # DML uses raw counts (not _int versions)
+    # These are created in preprocessing for DML
     required = ["fungi_richness", "plants_richness", "vertebrates_richness"]
     for col in required
         if !(Symbol(col) in propertynames(state.data))
@@ -352,7 +370,7 @@ end
 
 function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
                      mode::String="normal", bootstrap_iterations::Int=100, dump_for_dharma::Bool=false,
-                     compute_lmg::Bool=false, lmg_samples::Int=100000, lmg_parallel::Int=30, lmg_response::String="fungi")
+                     compute_lmg::Bool=false)
     # Load config
     config_path = "src/config/ml/ml_config.yml"
     config = YAML.load_file(config_path)
@@ -411,25 +429,16 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         Arrow.write(temp_path, state.data)
         println("Data saved: $(nrow(state.data)) rows, $(ncol(state.data)) columns")
         
-        # Determine max orderings (default 1000 for sampling, or "all" for complete)
-        max_orderings = lmg_samples >= 1000000 ? 1000000 : 1000  # If huge sample, allow more orderings
-        
-        # Call standalone LMG script with preprocessed data
+        # Call unified LMG script - it will read all params from config
         println("Calling LMG analysis script...")
         
-        # Choose the appropriate LMG script based on response variable
-        lmg_script = if lmg_response == "plant"
-            joinpath(@__DIR__, "run_lmg_plant_analysis.jl")
-        elseif lmg_response == "animal"
-            joinpath(@__DIR__, "run_lmg_animal_analysis.jl")
-        else  # default to fungi
-            joinpath(@__DIR__, "run_lmg_analysis.jl")
-        end
+        lmg_script = joinpath(@__DIR__, "run_lmg_analysis.jl")
         
-        println("Using LMG script for $(lmg_response) response: $lmg_script")
+        println("LMG script will read all parameters from config")
         
         try
-            run(`julia $lmg_script $temp_path $lmg_samples $max_orderings`)
+            # Only pass the preprocessed data path
+            run(`julia $lmg_script $temp_path`)
             println("LMG analysis completed successfully!")
         catch e
             println("ERROR in LMG analysis: $e")
@@ -442,7 +451,7 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
         rm(temp_path)
         println("Temporary data file cleaned up.")
         
-        return Dict("status" => "lmg_complete", "samples" => lmg_samples)
+        return Dict("status" => "lmg_complete")
     end
     
     # BOOTSTRAP MODE
@@ -561,72 +570,31 @@ if length(ARGS) > 0
     
     # Check for LMG importance analysis mode
     if method == "lmg"
-        # LMG mode: lmg <model> <data_path> [spatial_step] [n_samples]
-        if length(ARGS) < 3
-            println("Usage: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
-            println("Models: method1, method2")
-            exit(1)
+        # LMG mode: just verify config exists and run
+        println("Running LMG importance analysis from config...")
+        
+        # Load config to get model and data path for preprocessing
+        config_path = "src/config/ml/ml_config.yml"
+        config = YAML.load_file(config_path)
+        
+        # Only need model and data path for preprocessing
+        # Everything else will be read by LMG script
+        if !haskey(config, "lmg_model") || !haskey(config, "lmg_data_path") || !haskey(config, "lmg_spatial_step")
+            error("Missing required LMG config parameters: lmg_model, lmg_data_path, or lmg_spatial_step")
         end
         
-        model = ARGS[2]
-        data_path = ARGS[3]
-        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
-        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
+        model = config["lmg_model"]
+        data_path = config["lmg_data_path"]
+        spatial_step = config["lmg_spatial_step"]
         
-        println("Running LMG importance analysis...")
-        println("  Model: $model")
-        println("  Data: $data_path")
+        println("  Preprocessing with model: $model")
+        println("  Data source: $data_path")
         println("  Spatial step: $spatial_step")
-        println("  Sample size: $n_samples")
+        println("  (All other parameters from config)")
         
-        run_pipeline(model, data_path, spatial_step, 
-                    compute_lmg=true, lmg_samples=n_samples)
+        # Pass compute_lmg=true, script will read all params from config
+        run_pipeline(model, data_path, spatial_step, compute_lmg=true)
     
-    # Check for LMG with plant response
-    elseif method == "lmg_plant"
-        # LMG mode with plant as response
-        if length(ARGS) < 3
-            println("Usage: julia $PROGRAM_FILE lmg_plant <model> <data_path> [spatial_step] [n_samples]")
-            println("Models: method1, method2")
-            exit(1)
-        end
-        
-        model = ARGS[2]
-        data_path = ARGS[3]
-        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
-        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
-        
-        println("Running LMG importance analysis with PLANT response...")
-        println("  Model: $model")
-        println("  Data: $data_path")
-        println("  Spatial step: $spatial_step")
-        println("  Sample size: $n_samples")
-        
-        run_pipeline(model, data_path, spatial_step, 
-                    compute_lmg=true, lmg_samples=n_samples, lmg_response="plant")
-    
-    # Check for LMG with animal response
-    elseif method == "lmg_animal"
-        # LMG mode with animal as response
-        if length(ARGS) < 3
-            println("Usage: julia $PROGRAM_FILE lmg_animal <model> <data_path> [spatial_step] [n_samples]")
-            println("Models: method1, method2")
-            exit(1)
-        end
-        
-        model = ARGS[2]
-        data_path = ARGS[3]
-        spatial_step = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 1000
-        n_samples = length(ARGS) > 4 ? parse(Int, ARGS[5]) : 100000
-        
-        println("Running LMG importance analysis with ANIMAL response...")
-        println("  Model: $model")
-        println("  Data: $data_path")
-        println("  Spatial step: $spatial_step")
-        println("  Sample size: $n_samples")
-        
-        run_pipeline(model, data_path, spatial_step, 
-                    compute_lmg=true, lmg_samples=n_samples, lmg_response="animal")
     
     # Check for dharma mode
     elseif method == "dharma"
@@ -686,7 +654,7 @@ if length(ARGS) > 0
         println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
         println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
         println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
-        println("  LMG: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
+        println("  LMG: julia $PROGRAM_FILE lmg  (all parameters from config)")
         println("Methods: method1, method2, method3/dml")
     end
 else
@@ -694,5 +662,5 @@ else
     println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
     println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
     println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
-    println("  LMG: julia $PROGRAM_FILE lmg <model> <data_path> [spatial_step] [n_samples]")
+    println("  LMG: julia $PROGRAM_FILE lmg  (all parameters from config)")
 end
