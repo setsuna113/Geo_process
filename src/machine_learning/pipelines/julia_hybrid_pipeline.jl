@@ -252,7 +252,7 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     # LRT
     lrt = lrtest(model_null, model_full)
     lrt_result = Dict(
-        "lr_statistic" => lrt.deviance[2],
+        "lr_statistic" => lrt.deviance[1] - lrt.deviance[2],  # Correct: difference in deviances
         "df" => lrt.dof[2],
         "p_value" => lrt.pval[2],
         "test_type" => "Likelihood Ratio Test",
@@ -532,7 +532,7 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
             # Compare continuous interaction model (nested - adds interaction term)
             lrt_a = lrtest(all_models["method1_full"], all_models["method2_continuous"])
             all_results["lrt_method1_vs_method2_continuous"] = Dict(
-                "lr_statistic" => lrt_a.deviance[2],
+                "lr_statistic" => lrt_a.deviance[1] - lrt_a.deviance[2],  # Correct: difference in deviances
                 "df" => lrt_a.dof[2],
                 "p_value" => lrt_a.pval[2],
                 "comparison" => "method1_full vs method2_continuous (adds continuous interaction)"

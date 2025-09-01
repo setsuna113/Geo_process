@@ -209,8 +209,7 @@ class WaldMethod:
                     wald_results=results.get('predictors', {}),
                     sesoi_threshold=self.sesoi_threshold,
                     tost_bounds=self.tost_bounds,
-                    title='Method 1: Wald Test Analysis',
-                    filter_mesf=False  # Show MESF variables in analysis
+                    title='Method 1: Wald Test Analysis'
                 )
                 
                 # Save both figures

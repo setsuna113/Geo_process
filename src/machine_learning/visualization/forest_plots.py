@@ -123,21 +123,13 @@ class ForestDataProcessor:
                 sesoi_results)
     
     @staticmethod
-    def prepare_smart_forest_data(wald_results: Dict[str, Any],
-                                 filter_mesf: bool = True,
-                                 top_n: Optional[int] = 15) -> Dict[str, Any]:
-        """Prepare data for smart forest plot."""
+    def prepare_smart_forest_data(wald_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare data for smart forest plot - shows ALL predictors."""
         # Get sorted predictor order
         sorted_predictors = ForestDataProcessor.sort_by_importance(wald_results)
         
-        # Filter if requested
-        if filter_mesf:
-            sorted_predictors = ForestDataProcessor.filter_predictors(
-                sorted_predictors, filter_mesf=True)
-        
-        # Limit to top N
-        if top_n and len(sorted_predictors) > top_n:
-            sorted_predictors = sorted_predictors[:top_n]
+        # NO FILTERING - Show ALL predictors
+        # NO LIMITING - Show ALL predictors
         
         # Extract data in order
         coefficients, std_errors, sesoi_results = \
@@ -203,8 +195,7 @@ def create_wald_visualization(
     sesoi_threshold: float = 0.1,  # Default SESOI threshold (10% change on response scale)
     tost_bounds: Tuple[float, float] = (-0.05, 0.05),  # Default TOST bounds (±5%)
     title: str = "Wald Test Analysis",
-    figsize: Tuple[int, int] = (10, 8),  # Size for individual plots
-    filter_mesf: bool = True  # Whether to filter MESF terms
+    figsize: Tuple[int, int] = (10, 8)  # Size for individual plots
 ) -> Tuple[plt.Figure, plt.Figure]:
     """Create TWO SEPARATE Wald test visualizations.
     
@@ -217,7 +208,6 @@ def create_wald_visualization(
         tost_bounds: Equivalence bounds for TOST
         title: Main title for the figures
         figsize: Figure size for each individual plot
-        filter_mesf: Whether to filter out MESF spatial terms
         
     Returns:
         Tuple of (sesoi_figure, tost_figure)
@@ -226,7 +216,7 @@ def create_wald_visualization(
     fig_sesoi = plt.figure(figsize=figsize)
     ax_sesoi = fig_sesoi.add_subplot(111)
     _plot_smart_forest(ax_sesoi, wald_results, sesoi_threshold, 
-                      filter_mesf=filter_mesf, title="SESOI (Smallest Effect Size of Interest) Test")
+                      title="SESOI (Smallest Effect Size of Interest) Test")
     fig_sesoi.suptitle(f"{title} - SESOI Analysis", fontsize=14, fontweight='bold')
     plt.figure(fig_sesoi.number)
     plt.tight_layout()
@@ -329,17 +319,16 @@ def create_method2_comparison(
 
 
 def _plot_smart_forest(ax: plt.Axes, wald_results: Dict[str, Any], 
-                      sesoi_threshold: float, filter_mesf: bool = True,
-                      title: str = "Forest Plot", top_n: Optional[int] = 15):
-    """Smart forest plot with sorting, filtering, and name cleaning.
+                      sesoi_threshold: float,
+                      title: str = "Forest Plot"):
+    """Smart forest plot with sorting and name cleaning.
     
-    Can handle both filtered (smart mode) and unfiltered (comprehensive/compact) data.
+    Shows ALL predictors, no filtering or limiting.
     Always sorts by importance and cleans names.
     """
     
-    # Step 1: Process data - always sort and clean names
-    processed_data = ForestDataProcessor.prepare_smart_forest_data(
-        wald_results, filter_mesf=filter_mesf, top_n=top_n)
+    # Step 1: Process data - always sort and clean names, show ALL predictors
+    processed_data = ForestDataProcessor.prepare_smart_forest_data(wald_results)
     
     if not processed_data['predictors']:
         ax.text(0.5, 0.5, 'No data available', ha='center', va='center')
