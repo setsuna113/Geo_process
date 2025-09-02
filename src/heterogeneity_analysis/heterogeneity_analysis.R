@@ -19,6 +19,184 @@ library(ggplot2)
 has_cocor <- requireNamespace("cocor", quietly = TRUE)
 if (has_cocor) library(cocor)
 
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+#' Load and standardize biodiversity data
+#' @param data_path Path to data file
+#' @param max_samples Maximum samples to use
+#' @return Standardized dataframe
+load_and_prepare_data <- function(data_path, max_samples = 50000) {
+  cat("Loading data from:", data_path, "\n")
+  data <- read_feather(data_path)
+  
+  n_samples <- nrow(data)
+  cat("Total samples:", format(n_samples, big.mark=","), "\n")
+  
+  # Standardize column names
+  cat("Checking and standardizing column names...\n")
+  
+  # Handle fungi columns
+  if (!"fungi_richness" %in% names(data)) {
+    if (all(c("am_fungi_richness", "ecm_fungi_richness") %in% names(data))) {
+      data$fungi_richness <- data$am_fungi_richness + data$ecm_fungi_richness
+      cat("  Combined AM and ECM fungi into total fungi richness\n")
+    }
+  }
+  
+  # Handle vertebrates column
+  if (!"vertebrates_richness" %in% names(data) && "terrestrial_richness" %in% names(data)) {
+    data$vertebrates_richness <- data$terrestrial_richness
+    cat("  Using terrestrial_richness as vertebrates_richness\n")
+  }
+  
+  # Handle coordinates
+  if (!all(c("longitude", "latitude") %in% names(data))) {
+    if (all(c("x", "y") %in% names(data))) {
+      data$longitude <- data$x
+      data$latitude <- data$y
+      cat("  Using x/y as longitude/latitude\n")
+    }
+  }
+  
+  # Sample if too large
+  if (n_samples > max_samples) {
+    cat("\nDataset is very large (", format(n_samples, big.mark=","), " rows)\n", sep="")
+    cat("Sampling ", format(max_samples, big.mark=","), " rows for analysis...\n", sep="")
+    set.seed(42)
+    data <- data[sample(n_samples, max_samples), ]
+  }
+  
+  return(data)
+}
+
+#' Run PERMANOVA analysis
+#' @param data Data with biome assignments
+#' @param permutations Number of permutations
+#' @return PERMANOVA results
+run_permanova_analysis <- function(data, permutations = 999) {
+  cat(paste(rep("=", 60), collapse=""), "\n")
+  cat("1. PERMANOVA: Testing for biome differences in composition\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
+  
+  # Create community matrix
+  community <- cbind(
+    data$fungi_richness,
+    data$plants_richness,
+    data$vertebrates_richness
+  )
+  colnames(community) <- c("fungi", "plants", "vertebrates")
+  
+  # Run PERMANOVA
+  adonis_result <- adonis2(
+    community ~ biome_code,
+    data = data,
+    permutations = permutations,
+    method = "euclidean"
+  )
+  
+  print(adonis_result)
+  
+  if (adonis_result$`Pr(>F)`[1] < 0.05) {
+    cat("\n✓ Significant differences in biodiversity composition between biomes\n")
+  } else {
+    cat("\n✗ No significant differences between biomes\n")
+  }
+  
+  return(adonis_result)
+}
+
+#' Run beta dispersion analysis
+#' @param data Data with biome assignments
+#' @param permutations Number of permutations
+#' @param output_dir Directory for plots
+#' @return Beta dispersion results
+run_beta_dispersion <- function(data, permutations = 999, output_dir = ".") {
+  cat("\n", paste(rep("=", 60), collapse=""), "\n")
+  cat("2. BETA DISPERSION: Testing variance heterogeneity\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
+  
+  # Create community matrix
+  community <- cbind(
+    data$fungi_richness,
+    data$plants_richness,
+    data$vertebrates_richness
+  )
+  
+  # Calculate distances and dispersion
+  dist_comm <- dist(community, method = "euclidean")
+  beta_disp <- betadisper(dist_comm, data$biome_code)
+  
+  # Test for differences
+  permutest_result <- permutest(beta_disp, permutations = permutations)
+  print(permutest_result)
+  
+  if (permutest_result$tab$`Pr(>F)`[1] < 0.05) {
+    cat("\n✓ Significant heterogeneity in variance between biomes\n")
+  } else {
+    cat("\n✗ Homogeneous variance across biomes\n")
+  }
+  
+  # Save plot
+  pdf(file.path(output_dir, "beta_dispersion.pdf"), width = 10, height = 8)
+  plot(beta_disp, main = "Beta Dispersion by Biome")
+  dev.off()
+  
+  return(list(beta_disp = beta_disp, permutest = permutest_result))
+}
+
+#' Analyze correlations by biome
+#' @param data Data with biome assignments
+#' @param min_samples_per_biome Minimum samples required
+#' @param output_dir Directory for outputs
+#' @return Correlation results by biome
+analyze_correlations_by_biome <- function(data, min_samples_per_biome = 100, output_dir = ".") {
+  cat("\n", paste(rep("=", 60), collapse=""), "\n")
+  cat("3. CORRELATION ANALYSIS BY BIOME\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
+  
+  # Get biomes with sufficient samples
+  biome_counts <- table(data$biome_code)
+  valid_biomes <- names(biome_counts)[biome_counts >= min_samples_per_biome]
+  
+  cat(sprintf("Analyzing %d biomes with >= %d samples\n\n",
+              length(valid_biomes), min_samples_per_biome))
+  
+  # Store results
+  correlation_results <- list()
+  
+  for (biome in valid_biomes) {
+    biome_data <- data[data$biome_code == biome, ]
+    biome_name <- unique(biome_data$biome_name)[1]
+    
+    cat(sprintf("Biome %s: %s (n=%d)\n", 
+                biome, biome_name, nrow(biome_data)))
+    
+    # Calculate correlations
+    cor_matrix <- cor(biome_data[, c("fungi_richness", "plants_richness", "vertebrates_richness")],
+                     use = "complete.obs", method = "pearson")
+    
+    # Store results
+    correlation_results[[biome]] <- list(
+      biome_code = biome,
+      biome_name = biome_name,
+      n_samples = nrow(biome_data),
+      cor_matrix = cor_matrix,
+      cor_fungi_plants = cor_matrix["fungi_richness", "plants_richness"],
+      cor_fungi_verts = cor_matrix["fungi_richness", "vertebrates_richness"],
+      cor_plants_verts = cor_matrix["plants_richness", "vertebrates_richness"]
+    )
+    
+    # Print key correlations
+    cat(sprintf("  Fungi-Plants: r=%.3f\n", cor_matrix["fungi_richness", "plants_richness"]))
+    cat(sprintf("  Fungi-Vertebrates: r=%.3f\n", cor_matrix["fungi_richness", "vertebrates_richness"]))
+    cat(sprintf("  Plants-Vertebrates: r=%.3f\n\n", cor_matrix["plants_richness", "vertebrates_richness"]))
+  }
+  
+  return(correlation_results)
+}
+
 #' Perform heterogeneity analysis across biomes
 #'
 #' @param data_path Path to biodiversity data (RAW data, not residuals)
@@ -50,66 +228,18 @@ heterogeneity_analysis <- function(
   # Create output directory
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   
-  # Load data
-  cat("Loading data from:", data_path, "\n")
-  data <- read_feather(data_path)
+  # Load and prepare data using helper function
+  data <- load_and_prepare_data(data_path, max_samples = 50000)
+  
+  # Validate required columns
+  required_cols <- c("fungi_richness", "plants_richness", "vertebrates_richness", 
+                     "longitude", "latitude")
+  missing_cols <- setdiff(required_cols, names(data))
+  if (length(missing_cols) > 0) {
+    stop("Missing required columns after standardization: ", paste(missing_cols, collapse = ", "))
+  }
   
   n_samples <- nrow(data)
-  cat("Total samples:", format(n_samples, big.mark=","), "\n")
-  
-  # Handle column name variations
-  cat("Checking and standardizing column names...\n")
-  
-  # Fungi - could be separate AM and ECM or combined
-  if ("fungi_richness" %in% names(data)) {
-    # Already has combined fungi column
-  } else if (all(c("am_fungi_richness", "ecm_fungi_richness") %in% names(data))) {
-    # Combine AM and ECM fungi
-    data$fungi_richness <- data$am_fungi_richness + data$ecm_fungi_richness
-    cat("  Combined AM and ECM fungi into total fungi richness\n")
-  } else {
-    stop("Could not find fungi richness data (need 'fungi_richness' or both 'am_fungi_richness' and 'ecm_fungi_richness')")
-  }
-  
-  # Plants
-  if (!"plants_richness" %in% names(data)) {
-    stop("Missing required column: plants_richness")
-  }
-  
-  # Vertebrates - might be called terrestrial_richness
-  if ("vertebrates_richness" %in% names(data)) {
-    # Already has vertebrates column
-  } else if ("terrestrial_richness" %in% names(data)) {
-    data$vertebrates_richness <- data$terrestrial_richness
-    cat("  Using terrestrial_richness as vertebrates_richness\n")
-  } else {
-    stop("Could not find vertebrates data (need 'vertebrates_richness' or 'terrestrial_richness')")
-  }
-  
-  # Coordinates - might be x/y or longitude/latitude
-  if (!all(c("longitude", "latitude") %in% names(data))) {
-    if (all(c("x", "y") %in% names(data))) {
-      data$longitude <- data$x
-      data$latitude <- data$y
-      cat("  Using x/y as longitude/latitude\n")
-    } else {
-      stop("Could not find coordinates (need 'longitude'/'latitude' or 'x'/'y')")
-    }
-  }
-  
-  # Sample if dataset is too large
-  # Note: PERMANOVA computational complexity is O(n²) for distance matrix
-  # With 14 biomes and 999 permutations, practical limit is ~50k samples
-  max_samples <- 50000  # Balance between representation and computation
-  if (n_samples > max_samples) {
-    cat("\nDataset is very large (", format(n_samples, big.mark=","), " rows)\n", sep="")
-    cat("Sampling ", format(max_samples, big.mark=","), " rows for analysis...\n", sep="")
-    set.seed(42)
-    sample_idx <- sample(n_samples, max_samples)
-    data <- data[sample_idx, ]
-    n_samples <- nrow(data)
-  }
-  
   cat("\nProceeding with", format(n_samples, big.mark=","), "samples\n\n")
   
   # ============ Assign Biomes ============
@@ -340,116 +470,28 @@ heterogeneity_analysis <- function(
   
   # ============ 1. PERMANOVA: Test Composition Differences ============
   
-  cat(paste(rep("=", 60), collapse=""), "\n")
-  cat("1. PERMANOVA: Testing for biome differences in composition\n")
-  cat(paste(rep("=", 60), collapse=""), "\n\n")
-  
-  # Create community matrix
-  community <- cbind(
-    data$fungi_richness,
-    data$plants_richness,
-    data$vertebrates_richness
-  )
-  colnames(community) <- c("fungi", "plants", "vertebrates")
-  
-  # Run PERMANOVA
-  adonis_result <- adonis2(
-    community ~ biome_code,
-    data = data,
-    permutations = permutations,  # Use parameter value (default 999)
-    method = "euclidean"
-  )
-  
-  print(adonis_result)
-  
-  if (adonis_result$`Pr(>F)`[1] < 0.05) {
-    cat("\n✓ Significant differences in biodiversity composition between biomes\n")
-  } else {
-    cat("\n✗ No significant differences between biomes\n")
-  }
+  adonis_result <- run_permanova_analysis(data, permutations)
   
   # ============ 2. BETA DISPERSION: Test Variance Heterogeneity ============
   
-  cat("\n", paste(rep("=", 60), collapse=""), "\n")
-  cat("2. BETA DISPERSION: Testing variance heterogeneity\n")
-  cat(paste(rep("=", 60), collapse=""), "\n\n")
-  
-  # Calculate distances
-  dist_comm <- dist(community, method = "euclidean")
-  
-  # Beta dispersion analysis
-  beta_disp <- betadisper(dist_comm, data$biome_code)
-  
-  # Test for differences in dispersion
-  permutest_result <- permutest(beta_disp, permutations = permutations)
-  print(permutest_result)
-  
-  if (permutest_result$tab$`Pr(>F)`[1] < 0.05) {
-    cat("\n✓ Significant heterogeneity in variance between biomes\n")
-  } else {
-    cat("\n✗ Homogeneous variance across biomes\n")
-  }
-  
-  # Save beta dispersion plot
-  pdf(file.path(output_dir, "beta_dispersion.pdf"), width = 10, height = 8)
-  plot(beta_disp, main = "Beta Dispersion by Biome")
-  dev.off()
+  beta_results <- run_beta_dispersion(data, permutations, output_dir)
   
   # ============ 3. CORRELATION ANALYSIS BY BIOME (Core Analysis) ============
   
-  cat("\n", paste(rep("=", 60), collapse=""), "\n")
-  cat("3. CORRELATION ANALYSIS BY BIOME\n")
-  cat(paste(rep("=", 60), collapse=""), "\n\n")
+  correlation_results <- analyze_correlations_by_biome(data, min_samples_per_biome, output_dir)
   
-  # Get biomes with sufficient samples
-  biome_counts <- table(data$biome_code)
-  valid_biomes <- names(biome_counts)[biome_counts >= min_samples_per_biome]
-  
-  cat(sprintf("Analyzing %d biomes with >= %d samples\n\n",
-              length(valid_biomes), min_samples_per_biome))
-  
-  # Store correlations for each biome
-  biome_correlations <- list()
-  correlation_summary <- data.frame()
-  
-  for (biome in valid_biomes) {
-    idx <- which(data$biome_code == biome)
-    biome_name <- unique(data$biome_name[idx])[1]
-    n_biome <- length(idx)
-    
-    cat(sprintf("Biome %s: %s (n=%d)\n", biome, biome_name, n_biome))
-    
-    # Calculate correlation matrix
-    biome_data <- data[idx, c("fungi_richness", "plants_richness", "vertebrates_richness")]
-    cor_mat <- cor(biome_data, use = "complete.obs")
-    
-    # Store full correlation matrix
-    biome_correlations[[biome]] <- list(
-      cor_matrix = cor_mat,
-      n = n_biome,
-      biome_name = biome_name
+  # Create summary dataframe from results
+  correlation_summary <- do.call(rbind, lapply(correlation_results, function(x) {
+    data.frame(
+      biome_code = x$biome_code,
+      biome_name = x$biome_name,
+      n_sites = x$n_samples,
+      cor_fungi_plants = x$cor_fungi_plants,
+      cor_fungi_vertebrates = x$cor_fungi_verts,
+      cor_plants_vertebrates = x$cor_plants_verts,
+      mean_abs_cor = mean(abs(c(x$cor_fungi_plants, x$cor_fungi_verts, x$cor_plants_verts)))
     )
-    
-    # Extract pairwise correlations
-    fungi_plants <- cor_mat[1, 2]
-    fungi_vertebrates <- cor_mat[1, 3]
-    plants_vertebrates <- cor_mat[2, 3]
-    
-    cat(sprintf("  Fungi-Plants: r = %.3f\n", fungi_plants))
-    cat(sprintf("  Fungi-Vertebrates: r = %.3f\n", fungi_vertebrates))
-    cat(sprintf("  Plants-Vertebrates: r = %.3f\n", plants_vertebrates))
-    
-    # Add to summary
-    correlation_summary <- rbind(correlation_summary, data.frame(
-      biome_code = biome,
-      biome_name = biome_name,
-      n_sites = n_biome,
-      cor_fungi_plants = fungi_plants,
-      cor_fungi_vertebrates = fungi_vertebrates,
-      cor_plants_vertebrates = plants_vertebrates,
-      mean_abs_cor = mean(abs(c(fungi_plants, fungi_vertebrates, plants_vertebrates)))
-    ))
-  }
+  }))
   
   # Save correlation summary
   write.csv(correlation_summary,
