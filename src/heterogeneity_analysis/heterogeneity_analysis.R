@@ -569,21 +569,21 @@ heterogeneity_analysis <- function(
   return(results)
 }
 
-# Run if executed directly (commented out for sourcing)
-# if (!interactive()) {
-#   args <- commandArgs(trailingOnly = TRUE)
-#   
-#   if (length(args) > 0) {
-#     data_path <- args[1]
-#   } else {
-#     stop("Please provide data path as argument")
-#   }
-#   
-#   if (length(args) > 1) {
-#     output_dir <- args[2]
-#   } else {
-#     output_dir <- "./results/heterogeneity_analysis"
-#   }
-#   
-#   results <- heterogeneity_analysis(data_path, output_dir)
-# }
+# Run if executed directly
+if (!interactive()) {
+  args <- commandArgs(trailingOnly = TRUE)
+  
+  if (length(args) > 0) {
+    data_path <- args[1]
+  } else {
+    stop("Please provide data path as argument")
+  }
+  
+  if (length(args) > 1) {
+    output_dir <- args[2]
+  } else {
+    output_dir <- "./results/heterogeneity_analysis"
+  }
+  
+  results <- heterogeneity_analysis(data_path, output_dir)
+}
