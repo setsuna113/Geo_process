@@ -659,6 +659,7 @@ class HeterogeneousEffectEstimator:
         """Extract results from fitted CausalForestDML"""
         
         # Get feature importances
+        importances = self.estimator.feature_importances_
         
         n_modifiers = len(importances)
         if modifier_names is None:
@@ -833,18 +834,19 @@ class CausalEffectPipeline:
         additional_cols = {}
         
         # Get coordinates (check for different naming conventions)
-        if 'longitude' in self.data.columns and 'latitude' in self.data.columns:
-            additional_cols['longitude'] = self.data['longitude'].values
-            additional_cols['latitude'] = self.data['latitude'].values
-        elif 'x' in self.data.columns and 'y' in self.data.columns:
-            additional_cols['longitude'] = self.data['x'].values
-            additional_cols['latitude'] = self.data['y'].values
+        # self.data is a dict with numpy arrays
+        if 'longitude' in self.data and 'latitude' in self.data:
+            additional_cols['longitude'] = self.data['longitude']
+            additional_cols['latitude'] = self.data['latitude']
+        elif 'x' in self.data and 'y' in self.data:
+            additional_cols['longitude'] = self.data['x']
+            additional_cols['latitude'] = self.data['y']
         
         # Get environmental variables if present
         env_vars = ['temperature', 'precipitation', 'elevation', 'soil_pH']
         for var in env_vars:
-            if var in self.data.columns:
-                additional_cols[var] = self.data[var].values
+            if var in self.data:
+                additional_cols[var] = self.data[var]
         
         # Store results with proper structure for saving
         self.last_results = {
