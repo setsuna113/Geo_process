@@ -10,11 +10,13 @@ library(dplyr)
 library(ggplot2)
 
 # Set up paths - use environment variable or relative path
-data_path <- Sys.getenv("BIODIV_DATA_PATH", 
-                        default = file.path(dirname(getwd()), "data", "biodiv_1x_renamed.arrow"))
+data_path <- Sys.getenv("BIODIV_DATA_PATH")
+if (data_path == "") {
+  data_path <- file.path(dirname(getwd()), "data", "biodiv_1x_renamed.arrow")
+}
 if (!file.exists(data_path)) {
   # Try alternate location
-  data_path <- "/scratch/yl998/biodiv_1x_renamed.arrow"
+  data_path <- "/scratch/yl998/biodiversity_climate_production_1x_corrected.arrow"
   if (!file.exists(data_path)) {
     stop("Data file not found. Set BIODIV_DATA_PATH environment variable or place data in ../data/")
   }
@@ -57,8 +59,8 @@ sem_data <- df %>%
     mycorrhizal_richness,
     am_fungi_richness,
     ecm_fungi_richness,
-    plant_richness,
-    animal_richness,
+    plant_richness = plants_richness,
+    animal_richness = terrestrial_richness,
     
     # Climate variables (WorldClim BioClim)
     temp = bio01,           # Annual mean temperature
@@ -76,8 +78,7 @@ sem_data <- df %>%
     soil_ph,
     
     # Other environmental
-    pet_mean,               # Potential evapotranspiration
-    pet_range
+    pet_mean = pet_mm_month
   )
 
 # Remove rows with NA in key variables
