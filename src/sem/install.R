@@ -8,7 +8,7 @@ cat("========================================\n\n")
 options(repos = c(CRAN = "https://cloud.r-project.org"))
 
 # Core packages that MUST work
-required <- c("feather", "dplyr", "ggplot2", "MASS", "nlme", "lme4")
+required <- c("arrow", "feather", "dplyr", "ggplot2", "MASS", "nlme", "lme4")
 
 # Install core packages
 for(pkg in required) {
