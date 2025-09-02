@@ -5,11 +5,11 @@ regression_analysis:
     scale_features: false
   
   data:
-    spatial_grid_step: 1
+    spatial_grid_step: 10
 
 # Method 1 specific configuration
 method1:
-  response: "fungi"
+  response: "vertebrates"
   log_biodiversity: true  # If true, log-transform biodiversity predictors before standardization
 
 # Ridge regression configuration for GLM models

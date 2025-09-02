@@ -147,14 +147,27 @@ variance_partitioning_analysis <- function(
   
   cat("\n\nGenerating visualizations...\n")
   
+  # Create RDA biplots using vegan's native plot function
+  png(file.path(output_dir, "rda_biplot_fungi.png"), width = 800, height = 800)
+  plot(rda1, main = "RDA: Fungi ~ Plants + Vertebrates")
+  dev.off()
+  
+  png(file.path(output_dir, "rda_biplot_plants.png"), width = 800, height = 800)
+  plot(rda2, main = "RDA: Plants ~ Fungi + Vertebrates")
+  dev.off()
+  
+  png(file.path(output_dir, "rda_biplot_vertebrates.png"), width = 800, height = 800)
+  plot(rda3, main = "RDA: Vertebrates ~ Fungi + Plants")
+  dev.off()
+  
   # Create correlation heatmap
-  pdf(file.path(output_dir, "correlation_heatmap.pdf"), width = 8, height = 6)
+  png(file.path(output_dir, "correlation_heatmap.png"), width = 800, height = 600)
   
   # Prepare data for heatmap
   cor_df <- reshape2::melt(cor_matrix)
   names(cor_df) <- c("Taxa1", "Taxa2", "Correlation")
   
-  ggplot(cor_df, aes(x = Taxa1, y = Taxa2, fill = Correlation)) +
+  print(ggplot(cor_df, aes(x = Taxa1, y = Taxa2, fill = Correlation)) +
     geom_tile() +
     geom_text(aes(label = round(Correlation, 2)), color = "white", size = 5) +
     scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
@@ -164,12 +177,12 @@ variance_partitioning_analysis <- function(
          x = "", y = "") +
     theme_minimal() +
     theme(axis.text = element_text(size = 12),
-          plot.title = element_text(size = 14, face = "bold"))
+          plot.title = element_text(size = 14, face = "bold")))
   
   dev.off()
   
   # Create RDA comparison plot
-  pdf(file.path(output_dir, "rda_comparison.pdf"), width = 10, height = 4)
+  png(file.path(output_dir, "rda_comparison.png"), width = 1000, height = 400)
   
   r2_data <- data.frame(
     Model = c("Fungi ~ P+V", "Plants ~ F+V", "Vertebrates ~ F+P"),
@@ -178,7 +191,7 @@ variance_partitioning_analysis <- function(
     P_value = c(anova1$`Pr(>F)`[1], anova2$`Pr(>F)`[1], anova3$`Pr(>F)`[1])
   )
   
-  ggplot(r2_data, aes(x = Model, y = R2)) +
+  print(ggplot(r2_data, aes(x = Model, y = R2)) +
     geom_bar(stat = "identity", fill = "steelblue", alpha = 0.7) +
     geom_bar(aes(y = Adj_R2), stat = "identity", fill = "darkblue", alpha = 0.9) +
     geom_text(aes(label = sprintf("p=%.3f", P_value)), 
@@ -187,7 +200,7 @@ variance_partitioning_analysis <- function(
     labs(title = "RDA Model Comparison",
          subtitle = "Variance explained in residuals (dark = adjusted R²)",
          x = "Model", y = "R²") +
-    theme_minimal()
+    theme_minimal())
   
   dev.off()
   
@@ -268,10 +281,10 @@ variance_partitioning_analysis <- function(
   
   cat("\nGenerating network visualization...\n")
   
-  pdf(file.path(output_dir, "network_strength.pdf"), width = 10, height = 8)
+  png(file.path(output_dir, "network_strength.png"), width = 1000, height = 800)
   
   # Bar plot of RDA R²
-  ggplot(network_strength, aes(x = Taxon, y = RDA_R2 * 100)) +
+  print(ggplot(network_strength, aes(x = Taxon, y = RDA_R2 * 100)) +
     geom_bar(stat = "identity", fill = "steelblue") +
     geom_text(aes(label = sprintf("%.1f%%", RDA_R2 * 100)), 
               vjust = -0.5, size = 5) +
@@ -281,7 +294,7 @@ variance_partitioning_analysis <- function(
          x = "Taxon",
          y = "Variance Explained (%)") +
     theme_minimal() +
-    theme(text = element_text(size = 14))
+    theme(text = element_text(size = 14)))
   
   dev.off()
   
@@ -325,9 +338,12 @@ variance_partitioning_analysis <- function(
   
   cat("\nResults saved to:", output_dir, "\n")
   cat("Files generated:\n")
-  cat("  - correlation_heatmap.pdf\n")
-  cat("  - rda_comparison.pdf\n")
-  cat("  - network_strength.pdf\n")
+  cat("  - rda_biplot_fungi.png\n")
+  cat("  - rda_biplot_plants.png\n")
+  cat("  - rda_biplot_vertebrates.png\n")
+  cat("  - correlation_heatmap.png\n")
+  cat("  - rda_comparison.png\n")
+  cat("  - network_strength.png\n")
   cat("  - correlation_summary.csv\n")
   cat("  - rda_summary.csv\n")
   cat("  - residual_analysis_results.rds\n")

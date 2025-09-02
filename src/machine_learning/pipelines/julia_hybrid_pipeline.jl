@@ -252,12 +252,12 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     # Null model - use ridge when we have 200+ MESF components
     formula_null = Term(response_var) ~ sum(Term.(Symbol.(base)))
     model_null = negbin(formula_null, state.data, LogLink(), ridge=use_ridge, theta=theta)
-    push!(results, ModelResult("method1_$(response_type)_null", model_null, extract_diagnostics_and_save(model_null, "method1_$(response_type)_null", state)))
+    push!(results, ModelResult("method1_null", model_null, extract_diagnostics_and_save(model_null, "method1_null", state)))
     
     # Full model - use ridge when we have 200+ MESF components
     formula_full = Term(response_var) ~ sum(Term.(Symbol.(vcat(base, biotic))))
     model_full = negbin(formula_full, state.data, LogLink(), ridge=use_ridge, theta=theta)
-    push!(results, ModelResult("method1_$(response_type)_full", model_full, extract_diagnostics_and_save(model_full, "method1_$(response_type)_full", state)))
+    push!(results, ModelResult("method1_full", model_full, extract_diagnostics_and_save(model_full, "method1_full", state)))
     
     # LRT
     lrt = lrtest(model_null, model_full)
@@ -383,7 +383,7 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
                      compute_lmg::Bool=false)
     # Load config
     config_path = "src/config/ml/ml_config.yml"
-    config = YAML.load_file(config_path)
+    config = Dict{String, Any}(string(k) => v for (k, v) in YAML.load_file(config_path))
     
     # Load data
     println("="^60)

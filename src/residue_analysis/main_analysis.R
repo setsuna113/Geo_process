@@ -41,6 +41,12 @@ parse_args <- function() {
     # First arg should be config file
     if (file.exists(args[1])) {
       user_config <- fromJSON(args[1])
+      # Extract first element if values are arrays (fromJSON quirk)
+      for (key in names(user_config)) {
+        if (is.list(user_config[[key]]) && length(user_config[[key]]) == 1) {
+          user_config[[key]] <- user_config[[key]][[1]]
+        }
+      }
       config <- modifyList(config, user_config)
     }
   }

@@ -160,7 +160,7 @@ spatial_diagnostics <- function(
   print(correlogram)
   
   # Plot correlogram
-  pdf(file.path(output_dir, "mantel_correlogram.pdf"), width = 10, height = 6)
+  png(file.path(output_dir, "mantel_correlogram.png"), width = 1000, height = 600)
   plot(correlogram, main = "Spatial Correlogram of Residuals")
   abline(h = 0, lty = 2, col = "gray")
   dev.off()
@@ -240,7 +240,7 @@ spatial_diagnostics <- function(
   cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   # Create spatial plots
-  pdf(file.path(output_dir, "spatial_residuals.pdf"), width = 15, height = 5)
+  png(file.path(output_dir, "spatial_residuals.png"), width = 1500, height = 500)
   par(mfrow = c(1, 3))
   
   # Sample for visualization if too many points

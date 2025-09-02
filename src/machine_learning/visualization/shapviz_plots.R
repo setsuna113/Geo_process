@@ -333,59 +333,6 @@ process_models <- function(shap_base_dir, output_base_dir = "results/shapviz",
   return(results)
 }
 
-#' Create comparative plots across models
-#'
-#' @param results List of results from process_models
-#' @param output_dir Directory to save comparative plots
-create_comparative_plots <- function(results, output_dir = "results/shapviz/comparative") {
-  
-  if (length(results) < 2) {
-    message("Need at least 2 models for comparative plots")
-    return(NULL)
-  }
-  
-  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
-  
-  message("Creating comparative plots...")
-  
-  # Extract importance from each model
-  importance_data <- list()
-  for (model_name in names(results)) {
-    sv <- results[[model_name]]$shapviz_object
-    imp <- sv_importance(sv, kind = "no")
-    imp_df <- data.frame(
-      feature = rownames(imp),
-      importance = imp$value,
-      model = model_name
-    )
-    importance_data[[model_name]] <- imp_df
-  }
-  
-  # Combine importance data
-  importance_combined <- bind_rows(importance_data)
-  
-  # Create comparative importance plot
-  p_comparative <- ggplot(importance_combined, 
-                          aes(x = reorder(feature, importance), 
-                              y = importance, 
-                              fill = model)) +
-    geom_bar(stat = "identity", position = "dodge") +
-    coord_flip() +
-    labs(title = "Comparative Feature Importance Across Models",
-         x = "Feature",
-         y = "Mean |SHAP value|",
-         fill = "Model") +
-    theme_minimal() +
-    theme(plot.title = element_text(size = 14, face = "bold"),
-          legend.position = "bottom")
-  
-  ggsave(file.path(output_dir, "comparative_importance.png"),
-         p_comparative, width = 12, height = 8, dpi = 150)
-  
-  message(sprintf("Comparative plots saved to: %s", output_dir))
-  
-  return(p_comparative)
-}
 
 # Main function for command-line usage
 main <- function() {
@@ -409,11 +356,6 @@ main <- function() {
   
   # Process models
   results <- process_models(shap_dir, output_dir, models)
-  
-  # Create comparative plots if multiple models
-  if (length(results) > 1) {
-    create_comparative_plots(results, file.path(output_dir, "comparative"))
-  }
   
   message("\n=== shapviz visualization complete ===")
 }
