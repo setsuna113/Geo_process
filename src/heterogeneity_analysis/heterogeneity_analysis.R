@@ -34,6 +34,19 @@ heterogeneity_analysis <- function(
   use_preassigned_biomes = FALSE
 ) {
   
+  # Validate permutations parameter
+  if (permutations < 999) {
+    warning("Using fewer than 999 permutations (", permutations, ") compromises statistical power.\n",
+            "Minimum recommended: 999 for p < 0.05\n",
+            "For publication quality: 9999 permutations\n",
+            "Results may have increased Type II error rate.")
+    
+    if (permutations < 99) {
+      stop("Permutations must be at least 99 for meaningful p-values.\n",
+           "Current value: ", permutations)
+    }
+  }
+  
   # Create output directory
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   
@@ -85,7 +98,9 @@ heterogeneity_analysis <- function(
   }
   
   # Sample if dataset is too large
-  max_samples <- 50000  # Reduced for computational feasibility
+  # Note: PERMANOVA computational complexity is O(n²) for distance matrix
+  # With 14 biomes and 999 permutations, practical limit is ~50k samples
+  max_samples <- 50000  # Balance between representation and computation
   if (n_samples > max_samples) {
     cat("\nDataset is very large (", format(n_samples, big.mark=","), " rows)\n", sep="")
     cat("Sampling ", format(max_samples, big.mark=","), " rows for analysis...\n", sep="")
@@ -337,11 +352,11 @@ heterogeneity_analysis <- function(
   )
   colnames(community) <- c("fungi", "plants", "vertebrates")
   
-  # Run PERMANOVA with fewer permutations for speed
+  # Run PERMANOVA
   adonis_result <- adonis2(
     community ~ biome_code,
     data = data,
-    permutations = 99,  # Reduced for speed
+    permutations = permutations,  # Use parameter value (default 999)
     method = "euclidean"
   )
   
@@ -366,7 +381,7 @@ heterogeneity_analysis <- function(
   beta_disp <- betadisper(dist_comm, data$biome_code)
   
   # Test for differences in dispersion
-  permutest_result <- permutest(beta_disp, permutations = 99)
+  permutest_result <- permutest(beta_disp, permutations = permutations)
   print(permutest_result)
   
   if (permutest_result$tab$`Pr(>F)`[1] < 0.05) {
