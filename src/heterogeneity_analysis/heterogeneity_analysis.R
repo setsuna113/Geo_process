@@ -659,7 +659,7 @@ heterogeneity_analysis <- function(
   # ============ SAVE RESULTS ============
   
   results <- list(
-    biome_correlations = biome_correlations,
+    biome_correlations = correlation_results,
     correlation_summary = correlation_summary,
     adonis_result = adonis_result,
     beta_dispersion = beta_disp,
