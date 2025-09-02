@@ -53,7 +53,7 @@ end
 # ============================================================================
 
 # Process DataFrame with MESF - expects already sampled data
-function process_with_mesf(df::DataFrame, method::String)
+function process_with_mesf(df::DataFrame, method::String, config::Dict{String, Any})
     # Data is already sampled at load time if needed
     
     # Load MESF from Python cache BEFORE removing NaN
@@ -101,7 +101,7 @@ function process_with_mesf(df::DataFrame, method::String)
     
     # First preprocess data (without MESF since we don't have it yet)
     println("Preprocessing data...")
-    df = preprocess_data(df, method, String[])
+    df = preprocess_data(df, method, String[], config)
     
     # Use ALL MESF components from cache (no limiting)
     n_mesf_available = size(pca_components, 2)
@@ -119,7 +119,7 @@ function process_with_mesf(df::DataFrame, method::String)
     return df, mesf_columns
 end
 
-function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{String})
+function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{String}, config::Dict{String, Any})
     # Don't use dropmissing - it's too aggressive
     # We'll handle NaN values per column as needed
     
@@ -189,10 +189,20 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
         df.vertebrates_richness_int = round.(Int, df.vertebrates_richness)
         
         # Create standardized versions (for use as predictors)
-        # Using 2SD method for all biodiversity variables
-        df.fungi_richness_std = (df.fungi_richness .- mean(df.fungi_richness)) ./ (2 .* std(df.fungi_richness))
-        df.plants_richness_std = (df.plants_richness .- mean(df.plants_richness)) ./ (2 .* std(df.plants_richness))
-        df.vertebrates_richness_std = (df.vertebrates_richness .- mean(df.vertebrates_richness)) ./ (2 .* std(df.vertebrates_richness))
+        # Single function to handle transform + standardize (no special cases)
+        transform_and_standardize(data, should_log) = begin
+            transformed = should_log ? log.(data .+ 1) : data
+            (transformed .- mean(transformed)) ./ (2 .* std(transformed))
+        end
+        
+        # Check if we should log-transform before standardizing
+        log_biodiv = get(get(config, "method1", Dict()), "log_biodiversity", false)
+        log_biodiv && println("Using log-transformed biodiversity predictors")
+        
+        # Apply transformation uniformly (no branching)
+        df.fungi_richness_std = transform_and_standardize(df.fungi_richness, log_biodiv)
+        df.plants_richness_std = transform_and_standardize(df.plants_richness, log_biodiv)
+        df.vertebrates_richness_std = transform_and_standardize(df.vertebrates_richness, log_biodiv)
         
         println("Created integer and standardized versions of biodiversity variables")
     end
@@ -401,7 +411,7 @@ function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
     end
     
     # Process with MESF
-    data, mesf_columns = process_with_mesf(df_raw, method)  # Already sampled if needed
+    data, mesf_columns = process_with_mesf(df_raw, method, config)
     
     # Create state
     state = PipelineState(
