@@ -189,25 +189,20 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
         df.vertebrates_richness_int = round.(Int, df.vertebrates_richness)
         
         # Create standardized versions (for use as predictors)
+        # Single function to handle transform + standardize (no special cases)
+        transform_and_standardize(data, should_log) = begin
+            transformed = should_log ? log.(data .+ 1) : data
+            (transformed .- mean(transformed)) ./ (2 .* std(transformed))
+        end
+        
         # Check if we should log-transform before standardizing
         log_biodiv = get(get(config, "method1", Dict()), "log_biodiversity", false)
+        log_biodiv && println("Using log-transformed biodiversity predictors")
         
-        if log_biodiv
-            # Log transform then standardize
-            println("Using log-transformed biodiversity predictors")
-            fungi_log = log.(df.fungi_richness .+ 1)
-            plants_log = log.(df.plants_richness .+ 1)
-            vertebrates_log = log.(df.vertebrates_richness .+ 1)
-            
-            df.fungi_richness_std = (fungi_log .- mean(fungi_log)) ./ (2 .* std(fungi_log))
-            df.plants_richness_std = (plants_log .- mean(plants_log)) ./ (2 .* std(plants_log))
-            df.vertebrates_richness_std = (vertebrates_log .- mean(vertebrates_log)) ./ (2 .* std(vertebrates_log))
-        else
-            # Just standardize (2SD method)
-            df.fungi_richness_std = (df.fungi_richness .- mean(df.fungi_richness)) ./ (2 .* std(df.fungi_richness))
-            df.plants_richness_std = (df.plants_richness .- mean(df.plants_richness)) ./ (2 .* std(df.plants_richness))
-            df.vertebrates_richness_std = (df.vertebrates_richness .- mean(df.vertebrates_richness)) ./ (2 .* std(df.vertebrates_richness))
-        end
+        # Apply transformation uniformly (no branching)
+        df.fungi_richness_std = transform_and_standardize(df.fungi_richness, log_biodiv)
+        df.plants_richness_std = transform_and_standardize(df.plants_richness, log_biodiv)
+        df.vertebrates_richness_std = transform_and_standardize(df.vertebrates_richness, log_biodiv)
         
         println("Created integer and standardized versions of biodiversity variables")
     end
