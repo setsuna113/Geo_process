@@ -1,34 +1,31 @@
-from src.abstractions.ml_io import save_pipeline_results, load_pipeline_results
-# UPDATED: Use LinearDML with residual extraction capability
-from src.machine_learning.doubleML.linear_dml_with_residuals import LinearDMLWithResiduals as LinearDML
-from econml.dml import CausalForestDML
-# Note: Line 3 appears to be misplaced code, commenting it out
-# importances = self.estimator.feature_importances_
-from pathlib import Path
-from sklearn.multioutput import MultiOutputRegressor
-from src.machine_learning.doubleML.optimized_lgbm import OptimizedLGBMRegressor
-from typing import Dict, List, Optional, Tuple, Any, Union
-import json
-import numpy as np
-import pandas as pd
-import pickle
-import psutil
-import pyarrow.feather as feather
-import pyarrow.parquet as pq
-import time
-import yaml
 #!/usr/bin/env python3
-"""
-Refactored Causal Effect Pipeline
+"""Refactored Causal Effect Pipeline
+
 Principle: Clear separation between homogeneous (LinearDML) and heterogeneous (CausalForestDML) effects
 Author: Following Linus's KISS principle
 """
 
+# Standard library imports
+import json
+import pickle
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any, Union
 
-# Import our optimized LightGBM
-# ALWAYS use absolute import to avoid pickle issues
+# Third-party imports
+import numpy as np
+import pandas as pd
+import psutil
+import yaml
+import pyarrow.feather as feather
+import pyarrow.parquet as pq
+from sklearn.multioutput import MultiOutputRegressor
+from econml.dml import CausalForestDML
 
-# Import EconML estimators
+# Local imports
+from src.abstractions.ml_io import save_pipeline_results, load_pipeline_results
+from src.machine_learning.doubleML.optimized_lgbm import OptimizedLGBMRegressor
+from src.machine_learning.doubleML.linear_dml_with_residuals import LinearDMLWithResiduals as LinearDML
 
 
 # ==================== Configuration Loading ====================

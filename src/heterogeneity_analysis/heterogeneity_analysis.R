@@ -27,7 +27,17 @@ if (has_cocor) library(cocor)
 #' @param data_path Path to data file
 #' @param max_samples Maximum samples to use
 #' @return Standardized dataframe
-load_and_prepare_data <- function(data_path, max_samples = 50000) {
+load_and_prepare_data <- function(data_path, max_samples = 45000) {
+  # HARD LIMIT: 46,340 samples maximum
+  # Reason: PERMANOVA creates n×n distance matrix. R's .Fortran routines use 
+  # 32-bit integers with max value 2^31-1 = 2,147,483,647
+  # For n=46,340: n² = 2,147,395,600 < 2^31-1 ✓
+  # For n=50,000: n² = 2,500,000,000 > 2^31-1 ✗ (integer overflow)
+  if (max_samples > 46340) {
+    stop("FATAL: max_samples cannot exceed 46,340 due to .Fortran integer limit.\n",
+         "Distance matrix would have ", format(as.numeric(max_samples)^2, scientific=FALSE), 
+         " elements, exceeding 2^31-1 = 2,147,483,647")
+  }
   cat("Loading data from:", data_path, "\n")
   data <- read_feather(data_path)
   
@@ -61,9 +71,12 @@ load_and_prepare_data <- function(data_path, max_samples = 50000) {
   }
   
   # Sample if too large
+  # .Fortran integer limit: distance matrix n×n must be < 2^31-1
+  # Maximum n = sqrt(2^31-1) ≈ 46,340
   if (n_samples > max_samples) {
     cat("\nDataset is very large (", format(n_samples, big.mark=","), " rows)\n", sep="")
     cat("Sampling ", format(max_samples, big.mark=","), " rows for analysis...\n", sep="")
+    cat("(.Fortran limit: distance matrix must have <2^31 elements)\n")
     set.seed(42)
     data <- data[sample(n_samples, max_samples), ]
   }
@@ -228,8 +241,11 @@ heterogeneity_analysis <- function(
   # Create output directory
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   
-  # Load and prepare data using helper function
-  data <- load_and_prepare_data(data_path, max_samples = 50000)
+  # Load and prepare data using helper function  
+  # HARD LIMIT: 45,000 samples (45,000² = 2.025 billion < 2^31-1 = 2.147 billion)
+  # This is a fundamental R limitation - PERMANOVA's distance matrix uses .Fortran
+  # which has 32-bit integer indexing. Exceeding causes "long vectors not supported" error.
+  data <- load_and_prepare_data(data_path, max_samples = 45000)
   
   # Validate required columns
   required_cols <- c("fungi_richness", "plants_richness", "vertebrates_richness", 
