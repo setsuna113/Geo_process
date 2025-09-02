@@ -9,25 +9,45 @@ library(piecewiseSEM)
 library(dplyr)
 library(ggplot2)
 
-# Set up paths
-data_path <- "/scratch/yl998/biodiv_1x_renamed.arrow"
+# Set up paths - use environment variable or relative path
+data_path <- Sys.getenv("BIODIV_DATA_PATH", 
+                        default = file.path(dirname(getwd()), "data", "biodiv_1x_renamed.arrow"))
+if (!file.exists(data_path)) {
+  # Try alternate location
+  data_path <- "/scratch/yl998/biodiv_1x_renamed.arrow"
+  if (!file.exists(data_path)) {
+    stop("Data file not found. Set BIODIV_DATA_PATH environment variable or place data in ../data/")
+  }
+}
 output_dir <- "src/sem/outputs"
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 cat("=== Mycorrhizal SEM Analysis ===\n")
 cat("Loading data from:", data_path, "\n")
 
-# Load Arrow data
-df <- read_feather(data_path)
+# Load Arrow data - use appropriate function based on package
+if (requireNamespace("arrow", quietly = TRUE)) {
+  df <- arrow::read_feather(data_path)
+} else if (requireNamespace("feather", quietly = TRUE)) {
+  df <- feather::read_feather(data_path)
+} else {
+  stop("Neither arrow nor feather package available for reading data")
+}
 
 cat("Data dimensions:", nrow(df), "rows x", ncol(df), "columns\n\n")
 
 # Prepare data for SEM
 # We have both AM and ECM fungi - create total mycorrhizal richness
+# Note: Only combine when both are non-NA, otherwise keep as NA
 sem_data <- df %>%
   mutate(
-    # Combine AM and ECM fungi richness
-    mycorrhizal_richness = coalesce(am_fungi_richness, 0) + coalesce(ecm_fungi_richness, 0)
+    # Only combine fungi richness when we have actual data
+    mycorrhizal_richness = case_when(
+      !is.na(am_fungi_richness) & !is.na(ecm_fungi_richness) ~ am_fungi_richness + ecm_fungi_richness,
+      !is.na(am_fungi_richness) & is.na(ecm_fungi_richness) ~ am_fungi_richness,
+      is.na(am_fungi_richness) & !is.na(ecm_fungi_richness) ~ ecm_fungi_richness,
+      TRUE ~ NA_real_
+    )
   ) %>%
   select(
     # Coordinates
@@ -74,13 +94,74 @@ sem_data_clean <- sem_data %>%
 
 cat("Clean data dimensions:", nrow(sem_data_clean), "rows\n")
 
-# If data is too large, sample for initial analysis
+# If data is too large, use stratified sampling to maintain spatial representation
 if(nrow(sem_data_clean) > 100000) {
-  cat("Data is large. Sampling 100,000 rows for analysis...\n")
+  cat("Data is large. Using stratified spatial sampling...\n")
   set.seed(42)
+  
+  # Create spatial bins for stratified sampling
   sem_data_clean <- sem_data_clean %>%
-    sample_n(100000)
+    mutate(
+      x_bin = cut(x, breaks = 10),
+      y_bin = cut(y, breaks = 10),
+      strata = paste(x_bin, y_bin, sep = "_")
+    ) %>%
+    group_by(strata) %>%
+    sample_n(size = min(n(), ceiling(100000 / n_distinct(.$strata))), replace = FALSE) %>%
+    ungroup() %>%
+    select(-x_bin, -y_bin, -strata) %>%
+    slice_sample(n = min(100000, n()))  # Ensure exactly 100k rows
+  
+  cat("Sampled", nrow(sem_data_clean), "rows maintaining spatial distribution\n")
 }
+
+# Data validation
+cat("\n=== Data Validation ===\n")
+
+# Check for invalid values
+invalid_checks <- list(
+  negative_richness = sum(sem_data_clean$mycorrhizal_richness < 0, na.rm = TRUE),
+  negative_plants = sum(sem_data_clean$plant_richness < 0, na.rm = TRUE),
+  negative_animals = sum(sem_data_clean$animal_richness < 0, na.rm = TRUE),
+  extreme_temp = sum(abs(sem_data_clean$temp) > 100, na.rm = TRUE),
+  invalid_ph = sum(sem_data_clean$soil_ph < 0 | sem_data_clean$soil_ph > 14, na.rm = TRUE)
+)
+
+for(check in names(invalid_checks)) {
+  if(invalid_checks[[check]] > 0) {
+    warning(paste(check, ":", invalid_checks[[check]], "invalid values detected"))
+  }
+}
+
+# Check for multicollinearity
+cat("Checking multicollinearity in environmental variables...\n")
+env_vars <- sem_data_clean %>%
+  select(temp, precip, soil_carbon, soil_ph, elevation) %>%
+  na.omit()
+
+if(nrow(env_vars) > 10) {
+  cor_matrix <- cor(env_vars)
+  high_cor <- which(abs(cor_matrix) > 0.8 & cor_matrix < 1, arr.ind = TRUE)
+  if(nrow(high_cor) > 0) {
+    warning("High correlation detected between environmental variables")
+    print(high_cor)
+  }
+}
+
+# Outlier detection using IQR method
+detect_outliers <- function(x) {
+  q <- quantile(x, probs = c(0.25, 0.75), na.rm = TRUE)
+  iqr <- q[2] - q[1]
+  outliers <- x < (q[1] - 3 * iqr) | x > (q[2] + 3 * iqr)
+  return(sum(outliers, na.rm = TRUE))
+}
+
+outlier_counts <- sem_data_clean %>%
+  select(mycorrhizal_richness, plant_richness, animal_richness) %>%
+  summarise(across(everything(), detect_outliers))
+
+cat("Extreme outliers detected:\n")
+print(outlier_counts)
 
 # Standardize variables for better convergence
 cat("\nStandardizing variables...\n")
