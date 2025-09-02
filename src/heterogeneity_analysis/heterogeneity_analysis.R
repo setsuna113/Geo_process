@@ -85,11 +85,12 @@ heterogeneity_analysis <- function(
   }
   
   # Sample if dataset is too large
-  if (n_samples > 500000) {
+  max_samples <- 50000  # Reduced for computational feasibility
+  if (n_samples > max_samples) {
     cat("\nDataset is very large (", format(n_samples, big.mark=","), " rows)\n", sep="")
-    cat("Sampling 500,000 rows for analysis...\n")
+    cat("Sampling ", format(max_samples, big.mark=","), " rows for analysis...\n", sep="")
     set.seed(42)
-    sample_idx <- sample(n_samples, 500000)
+    sample_idx <- sample(n_samples, max_samples)
     data <- data[sample_idx, ]
     n_samples <- nrow(data)
   }
@@ -148,66 +149,103 @@ heterogeneity_analysis <- function(
     }
   }
   
-  # Download if not found
-  max_attempts <- 3
+  # Download if not found - WITH SAFETY LIMITS
+  max_attempts <- 2  # Reduced from 3
   attempt <- 1
+  max_download_size <- 200 * 1024 * 1024  # 200MB limit
+  temp_files <- c()  # Track temp files for cleanup
   
   while (is.null(wwf_file) || !file.exists(wwf_file)) {
     cat(sprintf("\nAttempt %d/%d: Downloading WWF ecoregions...\n", attempt, max_attempts))
     
     dir.create(wwf_dir, recursive = TRUE, showWarnings = FALSE)
     
-    # Try different download sources
-    urls <- c(
-      "https://files.worldwildlife.org/wwfcmsprod/files/Publication/file/6kcchn7e3u_official_teow.zip",
-      "https://www.worldwildlife.org/publications/terrestrial-ecoregions-of-the-world",
-      "https://storage.googleapis.com/teow2016/Ecoregions2017.zip"
-    )
+    # Only use verified URL
+    url <- "https://storage.googleapis.com/teow2016/Ecoregions2017.zip"
+    zip_file <- file.path(wwf_dir, paste0("wwf_attempt_", attempt, ".zip"))
+    temp_files <- c(temp_files, zip_file)
+    
+    # Clean up any previous failed attempts
+    if (file.exists(zip_file)) {
+      file.remove(zip_file)
+    }
     
     success <- FALSE
-    for (url in urls) {
-      cat("Trying URL:", url, "\n")
-      zip_file <- file.path(wwf_dir, paste0("wwf_attempt_", attempt, ".zip"))
+    tryCatch({
+      # Download with size limit and timeout
+      cat("Downloading from:", url, "\n")
+      cat("Max size: 200MB, Timeout: 60s\n")
       
-      tryCatch({
-        # Use wget which is more reliable for large files
-        system2("wget", 
-                args = c("-O", zip_file, "--timeout=60", "--tries=2", url),
-                stdout = TRUE, stderr = TRUE)
-        
-        # Check if file is actually a zip
+      # Use curl with size limit instead of wget
+      download_result <- download.file(
+        url = url,
+        destfile = zip_file,
+        method = "curl",
+        quiet = FALSE,
+        mode = "wb",
+        extra = c("--max-filesize", as.character(max_download_size),
+                  "--connect-timeout", "30",
+                  "--max-time", "120")
+      )
+      
+      # Verify download
+      if (file.exists(zip_file)) {
         file_info <- file.info(zip_file)
-        if (file_info$size > 1000000) {  # Should be at least 1MB
-          cat("Download successful, extracting...\n")
-          unzip(zip_file, exdir = wwf_dir)
+        
+        # Check size is reasonable (WWF data is ~150MB)
+        if (file_info$size > 100000000 && file_info$size < max_download_size) {
+          cat("Download complete:", round(file_info$size/1024/1024, 1), "MB\n")
           
-          # Find the shapefile
-          shp_files <- list.files(wwf_dir, pattern = "\\.shp$", recursive = TRUE, full.names = TRUE)
-          if (length(shp_files) > 0) {
-            wwf_file <- shp_files[1]
-            cat("Extraction successful! Found shapefile at:", wwf_file, "\n")
-            success <- TRUE
-            break
+          # Extract with error handling
+          unzip_result <- tryCatch({
+            unzip(zip_file, exdir = wwf_dir, overwrite = FALSE)
+            TRUE
+          }, error = function(e) {
+            cat("Extraction failed:", e$message, "\n")
+            FALSE
+          })
+          
+          if (unzip_result) {
+            # Find the shapefile
+            shp_files <- list.files(wwf_dir, pattern = "\\.shp$", recursive = TRUE, full.names = TRUE)
+            if (length(shp_files) > 0) {
+              wwf_file <- shp_files[1]
+              cat("Found shapefile:", wwf_file, "\n")
+              success <- TRUE
+              
+              # Clean up zip file after successful extraction
+              file.remove(zip_file)
+            }
           }
         } else {
-          cat("Downloaded file too small, likely an error page\n")
+          cat("Invalid file size:", round(file_info$size/1024/1024, 1), "MB\n")
         }
-      }, error = function(e) {
-        cat("Download failed:", e$message, "\n")
-      })
-    }
+      }
+    }, error = function(e) {
+      cat("Download error:", e$message, "\n")
+    }, finally = {
+      # Always clean up failed downloads
+      if (!success && file.exists(zip_file)) {
+        file.remove(zip_file)
+      }
+    })
     
     if (success) break
     
     attempt <- attempt + 1
     if (attempt > max_attempts) {
+      # Clean up all temp files before stopping
+      for (temp_file in temp_files) {
+        if (file.exists(temp_file)) file.remove(temp_file)
+      }
+      
       stop("FATAL: Could not download WWF ecoregions after ", max_attempts, 
            " attempts. WWF data is REQUIRED for heterogeneity analysis.\n",
-           "Please download manually from: https://www.worldwildlife.org/publications/terrestrial-ecoregions-of-the-world\n",
-           "And place in: ", wwf_dir)
+           "The WWF shapefile is already downloaded at: /scratch/yl998/data/wwf_ecoregions/Ecoregions2017.shp\n",
+           "Or download manually (150MB) from: https://storage.googleapis.com/teow2016/Ecoregions2017.zip")
     }
     
-    Sys.sleep(2)  # Wait before retry
+    Sys.sleep(1)  # Shorter wait
   }
   
   # Load sf package (required for WWF data)
@@ -569,8 +607,8 @@ heterogeneity_analysis <- function(
   return(results)
 }
 
-# Run if executed directly
-if (!interactive()) {
+# Run if executed directly as script (not when sourced)
+if (!interactive() && sys.nframe() == 0) {
   args <- commandArgs(trailingOnly = TRUE)
   
   if (length(args) > 0) {
