@@ -21,25 +21,27 @@ library(gridExtra)
 #' @param sample_size Sample size for computationally intensive tests
 #' @return List containing correlation matrix and summary statistics
 analyze_residual_distributions <- function(
-  data_path = "/scratch/yl998/econml_results_5m/homogeneous/residuals.arrow",
-  output_dir = "./results/distribution",
-  sample_size = 10000
+  data,
+  data_viz = NULL,
+  output_dir = "./results/distribution"
 ) {
   
   # Create output directory
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
   
-  # Load residuals
-  cat("Loading residuals from:", data_path, "\n")
-  data <- read_feather(data_path)
-  
   n_samples <- nrow(data)
-  cat("Total samples:", format(n_samples, big.mark=","), "\n\n")
+  cat("Analyzing", format(n_samples, big.mark=","), "samples\n")
+  
+  # Use visualization sample if provided
+  if (is.null(data_viz)) {
+    data_viz <- data
+  }
+  cat("Using", format(nrow(data_viz), big.mark=","), "samples for visualization\n\n")
   
   # ============ Distribution Plots ============
   
   # Set up multi-panel plot
-  pdf(file.path(output_dir, "distribution_plots.pdf"), width = 12, height = 8)
+  png(file.path(output_dir, "distribution_plots.png"), width = 1200, height = 800)
   par(mfrow = c(2, 3))
   
   # Histograms with density overlay
@@ -74,9 +76,9 @@ analyze_residual_distributions <- function(
   
   # ============ Summary Statistics ============
   
-  cat("=" * 60, "\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("SUMMARY STATISTICS\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   summary_stats <- list()
   
@@ -108,18 +110,23 @@ analyze_residual_distributions <- function(
   
   # ============ Normality Tests ============
   
-  cat("=" * 60, "\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("NORMALITY TESTS (on sample)\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   # Sample for Shapiro-Wilk test (max 5000 observations)
   set.seed(42)
-  sample_idx <- sample(1:n_samples, min(sample_size, 5000))
+  # Use subset of visualization sample for normality tests (max 5000 for Shapiro)
+  if (nrow(data_viz) > 5000) {
+    test_sample <- data_viz[sample(nrow(data_viz), 5000), ]
+  } else {
+    test_sample <- data_viz
+  }
   
   normality_tests <- list()
   
   for (i in 1:3) {
-    x_sample <- data[[taxa[i]]][sample_idx]
+    x_sample <- test_sample[[taxa[i]]]
     
     # Shapiro-Wilk test
     shapiro_result <- shapiro.test(x_sample)
@@ -141,9 +148,9 @@ analyze_residual_distributions <- function(
   
   # ============ Correlation Analysis ============
   
-  cat("=" * 60, "\n")
+  cat(paste(rep("=", 60), collapse=""), "\n")
   cat("CORRELATION MATRIX\n")
-  cat("=" * 60, "\n\n")
+  cat(paste(rep("=", 60), collapse=""), "\n\n")
   
   # Compute correlation matrix
   cor_matrix <- cor(data[, taxa], use = "complete.obs")
@@ -170,10 +177,7 @@ analyze_residual_distributions <- function(
   
   cat("\nGenerating scatterplot matrix...\n")
   
-  # Sample for visualization
-  viz_idx <- sample(1:n_samples, min(sample_size, n_samples))
-  
-  pdf(file.path(output_dir, "scatterplot_matrix.pdf"), width = 10, height = 10)
+  png(file.path(output_dir, "scatterplot_matrix.png"), width = 1000, height = 1000)
   
   # Custom panel function for pairs plot
   panel.cor <- function(x, y, ...) {
@@ -195,7 +199,7 @@ analyze_residual_distributions <- function(
     rect(breaks[-nB], 0, breaks[-1], y, col = "lightblue", border = "white")
   }
   
-  pairs(data[viz_idx, taxa],
+  pairs(data_viz[, taxa],
         labels = taxa_labels,
         diag.panel = panel.hist,
         upper.panel = panel.cor,
@@ -226,21 +230,5 @@ analyze_residual_distributions <- function(
   return(results)
 }
 
-# Run if executed directly
-if (!interactive()) {
-  args <- commandArgs(trailingOnly = TRUE)
-  
-  if (length(args) > 0) {
-    data_path <- args[1]
-  } else {
-    data_path <- "/scratch/yl998/econml_results_5m/homogeneous/residuals.arrow"
-  }
-  
-  if (length(args) > 1) {
-    output_dir <- args[2]
-  } else {
-    output_dir <- "./results/distribution"
-  }
-  
-  results <- analyze_residual_distributions(data_path, output_dir)
-}
+# This file should be sourced from main_analysis.R
+# Do not run if sourced
