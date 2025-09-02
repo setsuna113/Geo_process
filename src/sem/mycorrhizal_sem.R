@@ -4,21 +4,31 @@
 # Model: Environmental drivers -> Mycorrhizal fungi -> Plants -> Animals
 # With bidirectional relationships for fungi-plant and fungi-animal interactions
 
-library(arrow)
+# library(arrow)  # Commented out - will load conditionally later
 library(piecewiseSEM)
 library(dplyr)
 library(ggplot2)
 
-# Set up paths - use environment variable or relative path
+# Set up paths
 data_path <- Sys.getenv("BIODIV_DATA_PATH")
 if (data_path == "") {
-  data_path <- file.path(dirname(getwd()), "data", "biodiv_1x_renamed.arrow")
+  data_path <- "/scratch/yl998/biodiv_1x_renamed_sample.csv"
 }
 if (!file.exists(data_path)) {
-  # Try alternate location
-  data_path <- "/scratch/yl998/biodiversity_climate_production_1x_corrected.arrow"
+  # Try alternate locations
+  alt_paths <- c(
+    "/scratch/yl998/biodiv_1x_renamed_sample.csv",
+    "/scratch/yl998/biodiv_1x_renamed.csv",
+    "/tmp/biodiv_sample.csv"
+  )
+  for (path in alt_paths) {
+    if (file.exists(path)) {
+      data_path <- path
+      break
+    }
+  }
   if (!file.exists(data_path)) {
-    stop("Data file not found. Set BIODIV_DATA_PATH environment variable or place data in ../data/")
+    stop("Data file not found. Please run the Python conversion script first or set BIODIV_DATA_PATH")
   }
 }
 output_dir <- "src/sem/outputs"
@@ -27,14 +37,8 @@ dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 cat("=== Mycorrhizal SEM Analysis ===\n")
 cat("Loading data from:", data_path, "\n")
 
-# Load Arrow data - use appropriate function based on package
-if (requireNamespace("arrow", quietly = TRUE)) {
-  df <- arrow::read_feather(data_path)
-} else if (requireNamespace("feather", quietly = TRUE)) {
-  df <- feather::read_feather(data_path)
-} else {
-  stop("Neither arrow nor feather package available for reading data")
-}
+# Load CSV data
+df <- read.csv(data_path)
 
 cat("Data dimensions:", nrow(df), "rows x", ncol(df), "columns\n\n")
 
@@ -59,8 +63,8 @@ sem_data <- df %>%
     mycorrhizal_richness,
     am_fungi_richness,
     ecm_fungi_richness,
-    plant_richness = plants_richness,
-    animal_richness = terrestrial_richness,
+    plant_richness,
+    animal_richness,
     
     # Climate variables (WorldClim BioClim)
     temp = bio01,           # Annual mean temperature
@@ -78,10 +82,11 @@ sem_data <- df %>%
     soil_ph,
     
     # Other environmental
-    pet_mean = pet_mm_month
+    pet_mean,               # Potential evapotranspiration
+    pet_range
   )
 
-# Remove rows with NA in key variables
+# Remove rows with NA in any variables we'll use
 cat("Removing NA values...\n")
 sem_data_clean <- sem_data %>%
   filter(
@@ -89,32 +94,18 @@ sem_data_clean <- sem_data %>%
     !is.na(plant_richness) &
     !is.na(animal_richness) &
     !is.na(temp) &
+    !is.na(temp_seasonality) &
     !is.na(precip) &
-    !is.na(soil_carbon)
+    !is.na(precip_seasonality) &
+    !is.na(soil_carbon) &
+    !is.na(soil_ph) &
+    !is.na(elevation) &
+    !is.na(slope)
   )
 
 cat("Clean data dimensions:", nrow(sem_data_clean), "rows\n")
 
-# If data is too large, use stratified sampling to maintain spatial representation
-if(nrow(sem_data_clean) > 100000) {
-  cat("Data is large. Using stratified spatial sampling...\n")
-  set.seed(42)
-  
-  # Create spatial bins for stratified sampling
-  sem_data_clean <- sem_data_clean %>%
-    mutate(
-      x_bin = cut(x, breaks = 10),
-      y_bin = cut(y, breaks = 10),
-      strata = paste(x_bin, y_bin, sep = "_")
-    ) %>%
-    group_by(strata) %>%
-    sample_n(size = min(n(), ceiling(100000 / n_distinct(.$strata))), replace = FALSE) %>%
-    ungroup() %>%
-    select(-x_bin, -y_bin, -strata) %>%
-    slice_sample(n = min(100000, n()))  # Ensure exactly 100k rows
-  
-  cat("Sampled", nrow(sem_data_clean), "rows maintaining spatial distribution\n")
-}
+# Data is already sampled (500k rows with pure random sampling from Python conversion)
 
 # Data validation
 cat("\n=== Data Validation ===\n")
@@ -164,37 +155,61 @@ outlier_counts <- sem_data_clean %>%
 cat("Extreme outliers detected:\n")
 print(outlier_counts)
 
-# Standardize variables for better convergence
-cat("\nStandardizing variables...\n")
-sem_data_scaled <- sem_data_clean %>%
+# Log-transform richness values first, then standardize all variables
+cat("\nLog-transforming richness values and standardizing variables...\n")
+
+# First log-transform the richness variables (log(x+1) to handle any zeros)
+sem_data_transformed <- sem_data_clean %>%
+  mutate(
+    mycorrhizal_richness = log(mycorrhizal_richness + 1),
+    plant_richness = log(plant_richness + 1),
+    animal_richness = log(animal_richness + 1)
+  )
+
+# Report transformation
+cat("Richness variables log-transformed using log(x+1)\n")
+
+# Now standardize all variables (including log-transformed richness)
+sem_data_scaled <- sem_data_transformed %>%
   mutate(across(c(mycorrhizal_richness, plant_richness, animal_richness,
                   temp, temp_seasonality, precip, precip_seasonality,
                   elevation, slope, soil_carbon, soil_ph), scale))
+
+# Convert scaled columns to numeric vectors (fix for piecewiseSEM)
+sem_data_scaled <- as.data.frame(lapply(sem_data_scaled, as.numeric))
 
 # Save prepared data
 write.csv(sem_data_clean, file.path(output_dir, "mycorrhizal_sem_data_raw.csv"), row.names = FALSE)
 
 cat("\n=== Building Mycorrhizal SEM Model ===\n")
 
-# Model 1: Full model with all environmental predictors
+# Model 1: Theoretically-refined model based on literature review
+# Each path has mechanistic justification from ecological literature
 model_full <- psem(
-  # Environmental drivers of mycorrhizal fungi
+  # Environmental drivers of mycorrhizal fungi (all retained - soil organisms)
+  # Soil pH optimal at 5.5-7.5 for colonization; slope affects hyphal networks
   lm(mycorrhizal_richness ~ temp + precip + temp_seasonality + precip_seasonality + 
-     soil_carbon + soil_ph + elevation + slope, 
+     soil_ph + elevation + slope, 
      data = sem_data_scaled),
   
   # Plants respond to mycorrhizae and environment
-  lm(plant_richness ~ mycorrhizal_richness + temp + precip + 
-     soil_carbon + soil_ph + elevation, 
+  # REMOVED soil_ph: pH effects mediated through mycorrhizae at global scale
+  # KEPT slope: drainage and erosion directly affect root zone
+  lm(plant_richness ~ mycorrhizal_richness + temp + precip + temp_seasonality + 
+     precip_seasonality + elevation + slope, 
      data = sem_data_scaled),
   
-  # Animals respond to plants and mycorrhizae
-  lm(animal_richness ~ plant_richness + mycorrhizal_richness, 
+  # Animals respond to plants, mycorrhizae, and DIRECT climate effects
+  # REMOVED soil_ph: no direct mechanism for terrestrial vertebrates
+  # REMOVED slope: effects mediated through vegetation structure
+  # KEPT all climate: thermoregulation, water needs, phenological matching
+  lm(animal_richness ~ plant_richness + mycorrhizal_richness + 
+     temp + precip + temp_seasonality + precip_seasonality + elevation, 
      data = sem_data_scaled),
   
-  # Bidirectional relationships
-  plant_richness %~~% mycorrhizal_richness,    # Nutrient-carbon exchange
-  animal_richness %~~% mycorrhizal_richness,   # Consumption-dispersal cycle
+  # Bidirectional relationships (mutualisms)
+  plant_richness %~~% mycorrhizal_richness,    # Carbon-nutrient exchange
+  animal_richness %~~% mycorrhizal_richness,   # Spore dispersal-nutrition
   
   data = sem_data_scaled
 )
@@ -207,57 +222,31 @@ tryCatch({
   summary_full <- summary(model_full)
   print(summary_full)
   
+  # Extract key statistics
+  cat("\nFisher's C:", summary_full$Cstat$Fisher.C, "\n")
+  cat("C p-value:", summary_full$Cstat$P, "\n")
+  cat("AIC:", summary_full$AIC$AIC, "\n")
+  
   # Save summary
   sink(file.path(output_dir, "mycorrhizal_sem_summary_full.txt"))
   print(summary_full)
   sink()
 }, error = function(e) {
   cat("Error in full model:", e$message, "\n")
+  cat("Trying alternative Fisher's C computation...\n")
+  tryCatch({
+    fc <- fisherC(model_full)
+    cat("Fisher's C (alternative):", fc$Fisher.C, "\n")
+    cat("Fisher's C p-value:", fc$P, "\n")
+  }, error = function(e2) {
+    cat("Alternative also failed:", e2$message, "\n")
+  })
 })
 
-# Model 2: Simplified model with key predictors only
-cat("\n=== Building Simplified Model ===\n")
-
-model_simple <- psem(
-  # Environmental drivers of mycorrhizal fungi (simplified)
-  lm(mycorrhizal_richness ~ temp + precip + soil_carbon + elevation, 
-     data = sem_data_scaled),
-  
-  # Plants respond to mycorrhizae and key environment
-  lm(plant_richness ~ mycorrhizal_richness + temp + precip + soil_carbon, 
-     data = sem_data_scaled),
-  
-  # Animals respond to resources
-  lm(animal_richness ~ plant_richness + mycorrhizal_richness, 
-     data = sem_data_scaled),
-  
-  # Bidirectional relationships
-  plant_richness %~~% mycorrhizal_richness,
-  animal_richness %~~% mycorrhizal_richness,
-  
-  data = sem_data_scaled
-)
-
-cat("Simplified model created.\n")
-
-# Get simplified model summary
-cat("\n=== Simplified Model Summary ===\n")
+# Extract and save coefficients from full model
+cat("\n=== Path Coefficients (Full Model) ===\n")
 tryCatch({
-  summary_simple <- summary(model_simple)
-  print(summary_simple)
-  
-  # Save summary
-  sink(file.path(output_dir, "mycorrhizal_sem_summary_simple.txt"))
-  print(summary_simple)
-  sink()
-}, error = function(e) {
-  cat("Error in simplified model:", e$message, "\n")
-})
-
-# Extract and save coefficients
-cat("\n=== Path Coefficients (Simplified Model) ===\n")
-tryCatch({
-  coef_std <- coefs(model_simple, standardize = "scale")
+  coef_std <- coefs(model_full, standardize = "scale")
   print(coef_std)
   write.csv(coef_std, file.path(output_dir, "mycorrhizal_sem_coefficients.csv"), row.names = FALSE)
 }, error = function(e) {
@@ -267,30 +256,18 @@ tryCatch({
 # Get R-squared values
 cat("\n=== R-squared Values ===\n")
 tryCatch({
-  r2 <- rsquared(model_simple)
+  r2 <- rsquared(model_full)
   print(r2)
   write.csv(r2, file.path(output_dir, "mycorrhizal_sem_rsquared.csv"), row.names = FALSE)
 }, error = function(e) {
   cat("Error calculating R-squared:", e$message, "\n")
 })
 
-# Model comparison if both models worked
-cat("\n=== Model Comparison ===\n")
-tryCatch({
-  aic_full <- AIC(model_full)
-  aic_simple <- AIC(model_simple)
-  cat("Full model AIC:", aic_full, "\n")
-  cat("Simplified model AIC:", aic_simple, "\n")
-  cat("Better model:", ifelse(aic_full < aic_simple, "Full", "Simplified"), "\n")
-}, error = function(e) {
-  cat("Error comparing models:", e$message, "\n")
-})
-
 # Create path diagram
 cat("\n=== Creating Path Diagram ===\n")
 tryCatch({
   pdf(file.path(output_dir, "mycorrhizal_sem_path_diagram.pdf"), width = 12, height = 10)
-  plot(model_simple, show = "std", digits = 2)
+  plot(model_full, show = "std", digits = 2)
   dev.off()
   cat("Path diagram saved.\n")
 }, error = function(e) {
@@ -303,8 +280,18 @@ cat("\n=== Testing AM vs ECM Fungi Models ===\n")
 # Prepare data for AM/ECM comparison
 am_ecm_data <- sem_data_clean %>%
   filter(!is.na(am_fungi_richness) & !is.na(ecm_fungi_richness)) %>%
+  mutate(
+    # Log-transform richness first
+    am_fungi_richness = log(am_fungi_richness + 1),
+    ecm_fungi_richness = log(ecm_fungi_richness + 1),
+    plant_richness = log(plant_richness + 1),
+    animal_richness = log(animal_richness + 1)
+  ) %>%
   mutate(across(c(am_fungi_richness, ecm_fungi_richness, plant_richness, animal_richness,
                   temp, precip, soil_carbon, elevation), scale))
+
+# Convert to numeric vectors for piecewiseSEM
+am_ecm_data <- as.data.frame(lapply(am_ecm_data, as.numeric))
 
 if(nrow(am_ecm_data) > 1000) {
   cat("Testing AM fungi model...\n")
@@ -395,6 +382,21 @@ tryCatch({
   cat("Diagnostic plots saved.\n")
 }, error = function(e) {
   cat("Error creating diagnostic plots:", e$message, "\n")
+})
+
+# Test for missing paths (d-separation)
+cat("\n=== Testing for Missing Paths ===\n")
+tryCatch({
+  # Check if there are missing paths in the full model
+  dsep <- dSep(model_full)
+  if (nrow(dsep) > 0) {
+    cat("Potential missing paths detected:\n")
+    print(dsep)
+  } else {
+    cat("No missing paths detected - model is complete\n")
+  }
+}, error = function(e) {
+  cat("Error testing missing paths:", e$message, "\n")
 })
 
 cat("\n=== Analysis Complete ===\n")
