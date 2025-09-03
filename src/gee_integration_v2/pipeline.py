@@ -48,7 +48,6 @@ class GEEConfig:
             service_account_key=auth.get('service_account_key'),
             project_id=auth.get('project_id'),
             gcs_bucket=gee_config.get('upload', {}).get('bucket'),
-            input_dir=Path(data.get('input_dir', 'data/input')),
             output_dir=Path(data.get('output_dir', 'outputs')),
             state_dir=Path(data.get('state_dir', 'state')),
             base_resolution=data.get('base_resolution', 0.016666666666667),
@@ -58,11 +57,11 @@ class GEEConfig:
         # 添加生物多样性资产和reducers
         config.biodiversity_assets = data.get('biodiversity_assets', {})
         config.biodiversity_reducers = data.get('biodiversity_reducers', {})
+        config.biodiversity_upload_paths = data.get('biodiversity_upload_paths', {})
         
         return config
     
-    # 输入输出
-    input_dir: Path = field(default_factory=lambda: Path('data/input'))
+    # 输出和状态目录
     output_dir: Path = field(default_factory=lambda: Path('data/output'))
     state_dir: Path = field(default_factory=lambda: Path('data/state'))
     
@@ -126,8 +125,7 @@ class GEEPipeline:
         self.gee_ops = GEEOperations(
             config.service_account_key,
             config.project_id, 
-            config.gcs_bucket,
-            test_mode=test_mode
+            config.gcs_bucket
         )
         self.processor = DataProcessor(config)
         self.exporter = ExportManager(config, self.gee_ops)
@@ -135,12 +133,11 @@ class GEEPipeline:
         # 状态管理
         self.state: Optional[PipelineState] = None
     
-    def run(self, tif_files: Dict[str, Path], resume: bool = False) -> Dict[str, Path]:
+    def run(self, resume: bool = False) -> Dict[str, Path]:
         """
-        执行完整流程
+        执行完整流程 - 使用config中的biodiversity_assets
         
         Args:
-            tif_files: {名称: TIF文件路径} 字典
             resume: 是否从上次中断处恢复
             
         Returns:
@@ -157,15 +154,10 @@ class GEEPipeline:
         else:
             self.state = PipelineState(step='upload')
         
-        # 2. 验证输入文件
+        # 2. 检查和设置GEE资产
         if self.state.step == 'upload' and not self.state.asset_ids:
-            logger.info("=== Step 1: Validating TIF files ===")
-            self._validate_inputs(tif_files)
-        
-        # 3. 上传到GEE
-        if self.state.can_resume_from('upload'):
-            logger.info("=== Step 2: Uploading to GEE ===")
-            self._upload_to_gee(tif_files)
+            logger.info("=== Step 1: Checking GEE assets ===")
+            self._setup_gee_assets()
             self.state.step = 'process'
             self._save_state()
         
@@ -193,32 +185,40 @@ class GEEPipeline:
         logger.info("✅ Pipeline completed successfully!")
         return self.state.completed_exports
     
-    def _validate_inputs(self, tif_files: Dict[str, Path]):
-        """验证输入文件"""
-        for name, path in tif_files.items():
-            if not self.validator.validate_tif(path):
-                raise ValueError(f"Invalid TIF file: {path}")
-        
-        # 验证批次兼容性
-        paths = list(tif_files.values())
-        if len(paths) > 1 and not self.validator.validate_batch_compatibility(paths):
-            raise ValueError("TIF files are not compatible (different CRS or resolution)")
-        
-        logger.info(f"✅ Validated {len(tif_files)} TIF files")
-    
-    def _upload_to_gee(self, tif_files: Dict[str, Path]):
-        """上传文件到GEE"""
+    def _setup_gee_assets(self):
+        """检查GEE资产是否存在，如果存在直接使用，否则尝试上传"""
         if not self.state.asset_ids:
             self.state.asset_ids = {}
         
-        for name, path in tif_files.items():
+        # 使用配置中的biodiversity_assets
+        if not hasattr(self.config, 'biodiversity_assets'):
+            raise ValueError("No biodiversity_assets defined in config")
+        
+        import ee
+        for name, asset_path in self.config.biodiversity_assets.items():
             if name not in self.state.asset_ids:
-                logger.info(f"Uploading {name}...")
-                _, asset_id = self.gee_ops.upload_single_file(str(path), name)
-                self.state.asset_ids[name] = asset_id
-                self._save_state()  # 每个文件后保存状态
+                try:
+                    # 尝试加载GEE资产
+                    asset = ee.Image(asset_path)
+                    # 尝试获取信息以验证资产存在
+                    info = asset.getInfo()
+                    logger.info(f"✅ Found GEE asset: {name} at {asset_path}")
+                    self.state.asset_ids[name] = asset_path
+                except Exception as e:
+                    # 资产不存在，检查是否有上传路径
+                    if hasattr(self.config, 'biodiversity_upload_paths') and name in self.config.biodiversity_upload_paths:
+                        upload_path = self.config.biodiversity_upload_paths[name]
+                        logger.info(f"Asset {name} not found in GEE, uploading from {upload_path}")
+                        _, asset_id = self.gee_ops.upload_single_file(str(upload_path), name)
+                        self.state.asset_ids[name] = asset_id
+                    else:
+                        raise ValueError(f"GEE asset {name} not found at {asset_path} and no upload path provided")
+                
+                self._save_state()
             else:
-                logger.info(f"⏭️ Skipping {name} - already uploaded")
+                logger.info(f"⏭️ Using cached asset: {name}")
+        
+        logger.info(f"✅ All {len(self.state.asset_ids)} biodiversity assets ready")
     
     def _process_data(self):
         """处理数据"""
@@ -290,39 +290,17 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description='GEE Biodiversity Data Pipeline')
-    parser.add_argument('--service-account', required=True, help='Service account key file')
-    parser.add_argument('--project', required=True, help='GCP project ID')
-    parser.add_argument('--bucket', required=True, help='GCS bucket name')
-    parser.add_argument('--input-dir', default='data/input', help='Input directory with TIF files')
-    parser.add_argument('--output-dir', default='data/output', help='Output directory')
+    parser.add_argument('--config', required=True, help='YAML config file path')
     parser.add_argument('--resume', action='store_true', help='Resume from last checkpoint')
     
     args = parser.parse_args()
     
-    # 配置
-    config = GEEConfig(
-        service_account_key=args.service_account,
-        project_id=args.project,
-        gcs_bucket=args.bucket,
-        input_dir=Path(args.input_dir),
-        output_dir=Path(args.output_dir)
-    )
-    
-    # 查找输入文件
-    tif_files = {}
-    for tif_path in config.input_dir.glob('*.tif'):
-        name = tif_path.stem
-        tif_files[name] = tif_path
-    
-    if not tif_files:
-        logger.error(f"No TIF files found in {config.input_dir}")
-        return
-    
-    logger.info(f"Found {len(tif_files)} TIF files")
+    # 从YAML加载配置
+    config = GEEConfig.from_yaml(args.config)
     
     # 运行流程
     pipeline = GEEPipeline(config)
-    results = pipeline.run(tif_files, resume=args.resume)
+    results = pipeline.run(resume=args.resume)
     
     # 输出结果
     logger.info("=== Results ===")

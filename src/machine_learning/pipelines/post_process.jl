@@ -264,6 +264,14 @@ function save_glm_results(results::Dict, state)
         npzwrite(joinpath(state.output_dir, "$(model_name)_residuals.npz"), residuals)
     end
     
+    # Extract response type from config ONLY
+    method1_config = get(state.config, "method1", Dict())
+    response_type = get(method1_config, "response", nothing)
+    
+    if isnothing(response_type)
+        error("Response type MUST be specified in config under method1.response")
+    end
+    
     # Prepare final output with full metadata (matching original)
     output = Dict(
         "models" => clean_results,
@@ -272,12 +280,13 @@ function save_glm_results(results::Dict, state)
             "n_cols" => ncol(state.data),
             "mesf_count" => length(state.mesf_columns),
             "timestamp" => timestamp,
-            "julia_version" => string(VERSION)
+            "julia_version" => string(VERSION),
+            "response_type" => response_type  # ADD THIS!
         )
     )
     
-    # Save JSON
-    json_file = joinpath(state.output_dir, "julia_results_$(timestamp).json")
+    # ALWAYS save with response type in filename
+    json_file = joinpath(state.output_dir, "julia_results_$(response_type)_$(timestamp).json")
     open(json_file, "w") do f
         JSON.print(f, output, 4)
     end
@@ -289,10 +298,11 @@ function save_glm_results(results::Dict, state)
     # Note: Analysis data (for SHAP/DHARMa) is dumped earlier in pipeline after preprocessing
     # via dump_analysis_data() which handles both SHAP background and DHARMa data in one place
     
-    # Update symlink
-    latest = joinpath(state.output_dir, "julia_results_latest.json")
-    rm(latest, force=true)
-    symlink(basename(json_file), latest)
+    # Create response-specific symlink
+    response_latest = joinpath(state.output_dir, "julia_results_$(response_type)_latest.json")
+    rm(response_latest, force=true)
+    symlink(basename(json_file), response_latest)
+    println("Created symlink: julia_results_$(response_type)_latest.json -> $(basename(json_file))")
     
     println("GLM results saved: $json_file")
     return json_file

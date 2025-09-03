@@ -1,4 +1,9 @@
 # ML Configuration File
+
+# Julia pipeline configuration
+julia:
+  num_threads: 120  # Number of Julia threads (system has 256 cores)
+
 regression_analysis:
   preprocessing:
     drop_na: true
@@ -6,10 +11,11 @@ regression_analysis:
   
   data:
     spatial_grid_step: 10
+    data_path: /scratch/yl998/biodiversity_climate_production_WITH_MOD44B.arrow
 
 # Method 1 specific configuration
 method1:
-  response: "vertebrates"
+  response: "plants"
   log_biodiversity: true  # If true, log-transform biodiversity predictors before standardization
 
 # Ridge regression configuration for GLM models
@@ -86,7 +92,6 @@ negbin:
 
 # LMG Importance Analysis Configuration
 lmg_model: "method1"  # Model to use for preprocessing: method1 or method2
-lmg_data_path: "/maps-priv/jacob/gaia_data/integrated_richness_v3.arrow"  # Data source
 lmg_response: "fungi"
 lmg_spatial_step: 1000  # Spatial subsampling step
 lmg_n_samples: 100000  # Number of samples for analysis

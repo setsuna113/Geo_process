@@ -9,8 +9,7 @@ gee:
   upload:
     bucket: biodiv-gee-yl998
 
-# 输入输出路径
-input_dir: data/production
+# 输出路径
 output_dir: /scratch/yl998/gee_outputs
 state_dir: /scratch/yl998/gee_state
 
@@ -19,17 +18,17 @@ base_resolution: 0.016666666666667  # ~1.85km (1/60度)
 
 # 生物多样性数据集（GEE Assets）
 biodiversity_assets:
-  daru-plants-richness: users/nicolasdeffense/mwd24/species_richness/daru-plants-richness
-  iucn-terrestrial-richness: users/nicolasdeffense/mwd24/species_richness/iucn-terrestrial-richness
-  AM_Fungi_Richness_Predicted: users/nicolasdeffense/mwd24/species_richness/AM_Fungi_Richness_Predicted
-  EcM_Fungi_Richness_Predicted: users/nicolasdeffense/mwd24/species_richness/EcM_Fungi_Richness_Predicted
+  plants_richness: projects/triple-carrier-441622-t1/assets/plants_richness
+  terrestrial_richness: projects/triple-carrier-441622-t1/assets/terrestrial_richness
+  am_fungi_richness: projects/triple-carrier-441622-t1/assets/am_fungi_richness
+  ecm_fungi_richness: projects/triple-carrier-441622-t1/assets/ecm_fungi_richness
 
 # 生物多样性数据的处理方法
 biodiversity_reducers:
-  daru-plants-richness: max
-  iucn-terrestrial-richness: max
-  AM_Fungi_Richness_Predicted: mean
-  EcM_Fungi_Richness_Predicted: mean
+  plants_richness: max
+  terrestrial_richness: max
+  am_fungi_richness: mean
+  ecm_fungi_richness: mean
 
 # 外部数据集配置
 external_datasets:
@@ -64,3 +63,10 @@ external_datasets:
     image: projects/soilgrids-isric/phh2o_mean
     bands: [phh2o_0-5cm_mean]
     rename: [soil_ph]
+  
+  - name: modis_vegetation_cover
+    collection: MODIS/061/MOD44B  # 250m resolution, annual
+    bands: [Percent_Tree_Cover, Percent_NonTree_Vegetation, Percent_NonVegetated]
+    reducer: mean
+    filter_dates: ['2015-01-01', '2024-03-05']  # Latest 10 years (MOD44B available through March 2024)
+    rename: [tree_cover_pct, nontree_veg_pct, nonvegetated_pct]
