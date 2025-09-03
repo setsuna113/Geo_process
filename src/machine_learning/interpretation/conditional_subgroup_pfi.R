@@ -26,15 +26,21 @@ CONFIG <- list(
 
 #' Load Julia GLM results and create predict function
 load_glm_model <- function(response_type) {
-  # Map response types to the latest Julia results files based on intercept values
-  # Fungi: intercept ~3.8 (exp=45), Plants: intercept ~6.5 (exp=650), Vertebrates: intercept ~5.1 (exp=164)
-  file_map <- list(
-    fungi = "julia_results_fungi_2025-09-03_14-32-29.json",
-    plants = "julia_results_plants_2025-09-03_14-44-31.json",
-    vertebrates = "julia_results_vertebrates_2025-09-03_14-39-49.json"
-  )
+  # Find the latest julia_results file for this response type
+  pattern <- sprintf("julia_results_%s_*.json", response_type)
   
-  julia_results_file <- file.path(CONFIG$julia_results_dir, file_map[[response_type]])
+  # Get all matching files in the results directory
+  json_files <- list.files(CONFIG$julia_results_dir, pattern = pattern, full.names = TRUE)
+  
+  if (length(json_files) == 0) {
+    stop(sprintf("No julia_results files found for %s in %s", response_type, CONFIG$julia_results_dir))
+  }
+  
+  # Sort by modification time and get the most recent
+  file_info <- file.info(json_files)
+  julia_results_file <- json_files[which.max(file_info$mtime)]
+  
+  message(sprintf("Using latest results file: %s", basename(julia_results_file)))
   model_name <- "method1_full"  # These files use generic names
   
   if (!file.exists(julia_results_file)) {
