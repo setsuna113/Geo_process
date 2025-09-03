@@ -27,7 +27,7 @@ if (has_cocor) library(cocor)
 #' @param data_path Path to data file
 #' @param max_samples Maximum samples to use
 #' @return Standardized dataframe
-load_and_prepare_data <- function(data_path, max_samples = 45000) {
+load_and_prepare_data <- function(data_path, max_samples = 10000) {
   # HARD LIMIT: 46,340 samples maximum
   # Reason: PERMANOVA creates n×n distance matrix. R's .Fortran routines use 
   # 32-bit integers with max value 2^31-1 = 2,147,483,647
@@ -245,7 +245,7 @@ heterogeneity_analysis <- function(
   # HARD LIMIT: 45,000 samples (45,000² = 2.025 billion < 2^31-1 = 2.147 billion)
   # This is a fundamental R limitation - PERMANOVA's distance matrix uses .Fortran
   # which has 32-bit integer indexing. Exceeding causes "long vectors not supported" error.
-  data <- load_and_prepare_data(data_path, max_samples = 45000)
+  data <- load_and_prepare_data(data_path, max_samples = 10000)
   
   # Validate required columns
   required_cols <- c("fungi_richness", "plants_richness", "vertebrates_richness", 

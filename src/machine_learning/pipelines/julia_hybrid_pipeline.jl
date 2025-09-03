@@ -22,10 +22,18 @@ include("post_process.jl")
 using .Main: extract_diagnostics_and_save, process_dml_results,
              save_glm_results, save_bootstrap_results, dump_analysis_data, save_dml_results
 
-# Configure BLAS threads for optimal performance
-# Set to 1 to avoid competition with Julia's own parallelism
+# Configure BLAS threads from config or use default
+config_path = "src/config/ml/ml_config.yml"
+if isfile(config_path)
+    config = YAML.load_file(config_path)
+    num_threads = get(get(config, "julia", Dict()), "num_threads", 120)
+    ENV["JULIA_NUM_THREADS"] = string(num_threads)
+else
+    num_threads = 120
+end
+# Set BLAS to 1 to avoid competition with Julia's own parallelism
 BLAS.set_num_threads(1)
-println("BLAS threads set to: $(BLAS.get_num_threads())")
+println("Julia configured with $num_threads threads, BLAS threads set to: $(BLAS.get_num_threads())")
 
 # MESF is computed by Python and cached as NPY files
 # No Julia MESF module needed - just load from cache
@@ -141,9 +149,11 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
     df.fungi_richness = df.am_fungi_richness .+ df.ecm_fungi_richness
     
     # Standardize all environmental variables (2SD method) using broadcast operations
-    env_vars = [:bio01, :bio04, :bio12, :bio15, :elevation,
-                :pet_mm_month, :sand_content_pct, :soil_organic_carbon, 
-                :soil_ph, :slope, :tpi]
+    # EXACT column names from MOD44B data:
+    env_vars = [:annual_temp, :temp_seasonality, :annual_precip, :precip_seasonality,
+                :elevation, :pet, :sand_content_pct, :soil_organic_carbon, 
+                :soil_ph, :slope, :tpi, :modis_tree_cover_pct, 
+                :modis_nontree_veg_pct, :modis_bare_ground_pct]
     
     for var in env_vars
         col_std = Symbol(string(var) * "_std")
@@ -240,14 +250,15 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     println("Method 1: Using response variable $response_var")
     
     # Features - now includes all environmental variables
-    climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
+    climate = ["annual_temp_std", "temp_seasonality_std", "annual_precip_std", "precip_seasonality_std"]
     soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std", 
                "aspect_cos_std", "aspect_sin_std"]
-    water = ["pet_mm_month_std"]
+    water = ["pet_std"]
+    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std", "modis_bare_ground_pct_std"]
     
     # Combine all abiotic features
-    base = vcat(climate, soil, terrain, water, state.mesf_columns)
+    base = vcat(climate, soil, terrain, water, vegetation, state.mesf_columns)
     
     # Null model - use ridge when we have 200+ MESF components
     formula_null = Term(response_var) ~ sum(Term.(Symbol.(base)))
@@ -280,39 +291,40 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     
     # Add categorical features
     df = state.data
-    median_bio4 = median(df.bio04_std)
-    df.temperate = Int.(df.bio04_std .> median_bio4)
+    median_bio4 = median(df.temp_seasonality_std)
+    df.temperate = Int.(df.temp_seasonality_std .> median_bio4)
     
     # Use standardized plants for categorical split
     median_plants = median(df.plants_richness_std)
     df.plant_high = Int.(df.plants_richness_std .> median_plants)
     
     df.temperate_x_plant_high = df.temperate .* df.plant_high
-    df.bio04_std_x_plants_std = df.bio04_std .* df.plants_richness_std
+    df.temp_seasonality_std_x_plants_std = df.temp_seasonality_std .* df.plants_richness_std
     
     # Features - now includes all environmental variables
-    climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
+    climate = ["annual_temp_std", "temp_seasonality_std", "annual_precip_std", "precip_seasonality_std"]
     soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
                "aspect_cos_std", "aspect_sin_std"]
-    water = ["pet_mm_month_std"]
+    water = ["pet_std"]
+    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std", "modis_bare_ground_pct_std"]
     biodiv = ["plants_richness_std", "vertebrates_richness_std"]
     
     # Combine all features
-    base = vcat(climate, soil, terrain, water, biodiv, state.mesf_columns)
+    base = vcat(climate, soil, terrain, water, vegetation, biodiv, state.mesf_columns)
     
     # Continuous interaction - use ridge when we have 200+ MESF components
-    cont_features = vcat(base, ["bio04_std_x_plants_std"])
+    cont_features = vcat(base, ["temp_seasonality_std_x_plants_std"])
     formula_cont = Term(:fungi_richness_int) ~ sum(Term.(Symbol.(cont_features)))
     model_cont = negbin(formula_cont, df, LogLink(), ridge=use_ridge, theta=theta)
     push!(results, ModelResult("method2_continuous", model_cont, extract_diagnostics_and_save(model_cont, "method2_continuous", state)))
     
     # Categorical interaction - replace continuous bio04 and plants with categorical versions
-    # Remove bio04_std and plants_richness_std from base, add categorical versions
-    climate_cat = ["bio01_std", "bio12_std", "bio15_std"]  # Removed bio04_std
+    # Remove temp_seasonality_std and plants_richness_std from base, add categorical versions
+    climate_cat = ["annual_temp_std", "annual_precip_std", "precip_seasonality_std"]  # Removed temp_seasonality_std
     biodiv_cat = ["vertebrates_richness_std"]  # Removed plants_richness_std
     
-    base_cat = vcat(climate_cat, soil, terrain, water, biodiv_cat, state.mesf_columns)
+    base_cat = vcat(climate_cat, soil, terrain, water, vegetation, biodiv_cat, state.mesf_columns)
     
     # Add categorical main effects and interaction
     cat_features = vcat(
@@ -344,13 +356,14 @@ function fit_method3_dml(state::PipelineState)
     end
     
     # Setup - now includes all environmental variables as confounders
-    climate = ["bio01_std", "bio04_std", "bio12_std", "bio15_std"]
+    climate = ["annual_temp_std", "temp_seasonality_std", "annual_precip_std", "precip_seasonality_std"]
     soil = ["sand_content_pct_std", "soil_organic_carbon_std", "soil_ph_std"]
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
                "aspect_cos_std", "aspect_sin_std"]
-    water = ["pet_mm_month_std"]
+    water = ["pet_std"]
+    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std", "modis_bare_ground_pct_std"]
     
-    confounders = vcat(climate, soil, terrain, water, state.mesf_columns)
+    confounders = vcat(climate, soil, terrain, water, vegetation, state.mesf_columns)
     
     # Include interaction term as per DML paper recommendation for 2 treatments
     # The paper notation: A = [a, b], A° = [a×b]
@@ -378,12 +391,22 @@ end
 # PIPELINE RUNNER
 # ============================================================================
 
-function run_pipeline(method::String, data_path::String, spatial_step::Int=1000;
+function run_pipeline(method::String;
                      mode::String="normal", bootstrap_iterations::Int=100, dump_for_dharma::Bool=false,
                      compute_lmg::Bool=false)
     # Load config
     config_path = "src/config/ml/ml_config.yml"
     config = Dict{String, Any}(string(k) => v for (k, v) in YAML.load_file(config_path))
+    
+    # ALWAYS read data_path and spatial_step from config
+    regression_config = get(config, "regression_analysis", Dict())
+    data_config = get(regression_config, "data", Dict())
+    data_path = get(data_config, "data_path", nothing)
+    if isnothing(data_path)
+        error("data_path not found in config at regression_analysis.data.data_path!")
+    end
+    spatial_step = get(data_config, "spatial_grid_step", 10)
+    println("Using from config: data=$data_path, step=$spatial_step")
     
     # Load data
     println("="^60)
@@ -587,42 +610,29 @@ if length(ARGS) > 0
         config_path = "src/config/ml/ml_config.yml"
         config = YAML.load_file(config_path)
         
-        # Only need model and data path for preprocessing
-        # Everything else will be read by LMG script
-        if !haskey(config, "lmg_model") || !haskey(config, "lmg_data_path") || !haskey(config, "lmg_spatial_step")
-            error("Missing required LMG config parameters: lmg_model, lmg_data_path, or lmg_spatial_step")
+        # Only need model for preprocessing
+        # Everything else will be read from config
+        if !haskey(config, "lmg_model")
+            error("Missing required LMG config parameter: lmg_model")
         end
         
         model = config["lmg_model"]
-        data_path = config["lmg_data_path"]
-        spatial_step = config["lmg_spatial_step"]
-        
         println("  Preprocessing with model: $model")
-        println("  Data source: $data_path")
-        println("  Spatial step: $spatial_step")
-        println("  (All other parameters from config)")
+        println("  (All parameters from config)")
         
         # Pass compute_lmg=true, script will read all params from config
-        run_pipeline(model, data_path, spatial_step, compute_lmg=true)
+        run_pipeline(model, compute_lmg=true)
     
     
     # Check for dharma mode
     elseif method == "dharma"
-        # DHARMa dump mode: dharma <data_path> [spatial_step]
-        if length(ARGS) < 2
-            println("Usage: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
-            exit(1)
-        end
-        
-        data_path = ARGS[2]
-        spatial_step = length(ARGS) > 2 ? parse(Int, ARGS[3]) : 1000
+        # DHARMa dump mode - ALL from config
         
         println("Dumping preprocessed data for DHARMa diagnostics...")
-        println("  Data: $data_path")
-        println("  Spatial step: $spatial_step")
+        println("  (All parameters from config)")
         
         # Run for method1/2 (they share preprocessing)
-        run_pipeline("method1", data_path, spatial_step, dump_for_dharma=true)
+        run_pipeline("method1", dump_for_dharma=true)
         
     # Check for bootstrap mode
     elseif method == "bootstrap"
@@ -634,43 +644,41 @@ if length(ARGS) > 0
         end
         
         model = ARGS[2]
-        data_path = ARGS[3]
-        iterations = length(ARGS) > 3 ? parse(Int, ARGS[4]) : 100
+        iterations = length(ARGS) > 2 ? parse(Int, ARGS[3]) : 100
         
         println("Running bootstrap analysis...")
         println("  Model: $model")
-        println("  Data: $data_path")
-        println("  Spatial step: 1 (HARDCODED - uses full dataset)")
         println("  Iterations: $iterations")
+        println("  (Data path and spatial step from config)")
         
-        # HARDCODE spatial_step=1 for bootstrap - always use full dataset
-        run_pipeline(model, data_path, 1, 
+        # Bootstrap mode - ALL from config
+        run_pipeline(model,
                     mode="bootstrap", bootstrap_iterations=iterations)
         
     elseif method in ["method1", "method2", "method3", "dml"]
-        # Normal mode
-        data_path = length(ARGS) > 1 ? ARGS[2] : error("Data path required")
-        spatial_step = length(ARGS) > 2 ? parse(Int, ARGS[3]) : 1000
+        # Normal mode - ALL parameters from config
         
         # For method3/dml, load the DML module early
         if method in ["method3", "dml"]
             include(joinpath(@__DIR__, "multivariable_dml_final.jl"))
         end
         
-        run_pipeline(method, data_path, spatial_step)
+        run_pipeline(method)
         
     else
         println("Usage:")
-        println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
-        println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
-        println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
-        println("  LMG: julia $PROGRAM_FILE lmg  (all parameters from config)")
+        println("  Normal: julia $PROGRAM_FILE <method>")
+        println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> [iterations]")
+        println("  DHARMa: julia $PROGRAM_FILE dharma")
+        println("  LMG: julia $PROGRAM_FILE lmg")
         println("Methods: method1, method2, method3/dml")
+        println("Note: ALL parameters (data_path, spatial_step, num_threads) from config")
     end
 else
     println("Usage:")
-    println("  Normal: julia $PROGRAM_FILE <method> <data_path> [spatial_step]")
-    println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> <data_path> [iterations]")
-    println("  DHARMa: julia $PROGRAM_FILE dharma <data_path> [spatial_step]")
-    println("  LMG: julia $PROGRAM_FILE lmg  (all parameters from config)")
+    println("  Normal: julia $PROGRAM_FILE <method>")
+    println("  Bootstrap: julia $PROGRAM_FILE bootstrap <model> [iterations]")
+    println("  DHARMa: julia $PROGRAM_FILE dharma")
+    println("  LMG: julia $PROGRAM_FILE lmg")
+    println("Note: ALL parameters (data_path, spatial_step, num_threads) from config")
 end
