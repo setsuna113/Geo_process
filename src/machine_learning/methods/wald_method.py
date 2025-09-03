@@ -205,8 +205,12 @@ class WaldMethod:
             if method == 'method1':
                 # Standard Method 1: Now returns TWO separate figures
                 from ..visualization.forest_plots import create_wald_visualization
+                import numpy as np
+                
+                # No transformation needed - coefficients on log scale are correct
+                # when plotted on linear scale (they represent log fold changes)
                 fig_sesoi, fig_tost = create_wald_visualization(
-                    wald_results=results.get('predictors', {}),
+                    wald_results=results,
                     sesoi_threshold=self.sesoi_threshold,
                     tost_bounds=self.tost_bounds,
                     title='Method 1: Wald Test Analysis'

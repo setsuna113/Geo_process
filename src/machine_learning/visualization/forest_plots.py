@@ -34,7 +34,14 @@ class ForestDataProcessor:
     def calculate_importance(wald_results: Dict[str, Any]) -> Dict[str, float]:
         """Calculate importance scores (|z-score|) for all predictors."""
         importance = {}
-        for predictor, result in wald_results.items():
+        
+        # Handle nested structure with 'predictors' key
+        if 'predictors' in wald_results:
+            predictors_dict = wald_results['predictors']
+        else:
+            predictors_dict = wald_results
+            
+        for predictor, result in predictors_dict.items():
             if predictor == 'overall' or not isinstance(result, dict):
                 continue
                 
@@ -100,17 +107,23 @@ class ForestDataProcessor:
     
     @staticmethod
     def extract_ordered_data(wald_results: Dict[str, Any], 
-                            predictor_order: List[str]) -> Tuple[np.ndarray, np.ndarray, List]:
+                            predictor_order: List[str]) -> Dict[str, Any]:
         """Extract coefficients and errors in specified order."""
         coefficients = []
         std_errors = []
         sesoi_results = []
         
+        # Handle nested structure with 'predictors' key
+        if 'predictors' in wald_results:
+            predictors_dict = wald_results['predictors']
+        else:
+            predictors_dict = wald_results
+        
         for predictor in predictor_order:
-            if predictor not in wald_results:
+            if predictor not in predictors_dict:
                 continue
                 
-            result = wald_results[predictor]
+            result = predictors_dict[predictor]
             coefficients.append(result.get('coefficient', 0))
             std_errors.append(result.get('standard_error', 0))
             
@@ -118,9 +131,11 @@ class ForestDataProcessor:
             sesoi_test = result.get('sesoi_test', {})
             sesoi_results.append(sesoi_test.get('exceeds_threshold', False))
         
-        return (np.array(coefficients), 
-                np.array(std_errors), 
-                sesoi_results)
+        return {
+            'coefficients': np.array(coefficients),
+            'std_errors': np.array(std_errors),
+            'sesoi_results': sesoi_results
+        }
     
     @staticmethod
     def prepare_smart_forest_data(wald_results: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,8 +147,7 @@ class ForestDataProcessor:
         # NO LIMITING - Show ALL predictors
         
         # Extract data in order
-        coefficients, std_errors, sesoi_results = \
-            ForestDataProcessor.extract_ordered_data(wald_results, sorted_predictors)
+        extracted_data = ForestDataProcessor.extract_ordered_data(wald_results, sorted_predictors)
         
         # Clean names
         clean_names = ForestDataProcessor.clean_predictor_names(sorted_predictors)
@@ -141,9 +155,9 @@ class ForestDataProcessor:
         return {
             'predictors': sorted_predictors,
             'clean_names': clean_names,
-            'coefficients': coefficients,
-            'std_errors': std_errors,
-            'sesoi_results': sesoi_results,
+            'coefficients': extracted_data['coefficients'],
+            'std_errors': extracted_data['std_errors'],
+            'sesoi_results': extracted_data['sesoi_results'],
             'importance': ForestDataProcessor.calculate_importance(wald_results)
         }
     
@@ -158,7 +172,13 @@ class ForestDataProcessor:
         p_values = []
         wald_stats = []
         
-        for predictor, result in wald_results.items():
+        # Handle nested structure with 'predictors' key
+        if 'predictors' in wald_results:
+            predictors_dict = wald_results['predictors']
+        else:
+            predictors_dict = wald_results
+        
+        for predictor, result in predictors_dict.items():
             if predictor == 'overall' or not isinstance(result, dict):
                 continue
             predictors.append(predictor)
@@ -360,33 +380,34 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
     """Base function for SESOI forest plot (internal use only).
     
     Pure plotting function with 4-layer SESOI judgment logic.
-    No data processing - only visualization.
+    Works with log-scale coefficients from GLM.
     
     Args:
         ax: Matplotlib axes
         predictors: List of predictor names (for display)
-        coefficients: Array of coefficient values
-        std_errors: Array of standard errors
+        coefficients: Array of coefficient values (on log scale)
+        std_errors: Array of standard errors (on log scale)
         sesoi_results: List of SESOI test results (exceeds_threshold)
-        sesoi_threshold: SESOI threshold value
+        sesoi_threshold: SESOI threshold value (on log scale)
     """
     if not predictors:
         ax.text(0.5, 0.5, 'No data available', ha='center', va='center')
         ax.set_title('SESOI Forest Plot')
         return
     
-    # Calculate 90% CIs for SESOI testing (single-sided α=0.05)
     coefficients = np.array(coefficients)
     std_errors = np.array(std_errors)
-    ci_lower_90 = coefficients - 1.645 * std_errors  # 90% CI
+    
+    # Calculate 90% CIs on log scale
+    ci_lower_90 = coefficients - 1.645 * std_errors
     ci_upper_90 = coefficients + 1.645 * std_errors
     
-    # Color based on SESOI test results (two-tailed test)
+    # Color based on SESOI test results (two-tailed test on log scale)
     colors = []
     markers = []
     for i, (coef, exceeds_sesoi) in enumerate(zip(coefficients, sesoi_results)):
         if exceeds_sesoi:
-            # Statistically exceeds SESOI threshold (|β| > threshold with p < 0.05)
+            # Statistically exceeds SESOI threshold
             colors.append('darkgreen' if coef > 0 else 'darkred')
             markers.append('o')  # Filled circle
         elif abs(coef) > sesoi_threshold:
@@ -402,9 +423,9 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
             colors.append('orange')
             markers.append('d')  # Diamond
     
-    # Add SESOI regions
+    # Add SESOI regions on log scale
     ax.axvspan(-sesoi_threshold, sesoi_threshold, alpha=0.1, color='gray', 
-              label=f'Negligible (|β| < {sesoi_threshold:.2f})')
+              label=f'Negligible effect (±{sesoi_threshold:.2f})')
     
     # Plot with 90% CI
     y_pos = np.arange(len(predictors))
@@ -417,8 +438,7 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
                    markeredgecolor='black', markeredgewidth=0.5,
                    alpha=0.9)
     
-    # Reference lines
-    ax.axvline(x=0, color='black', linestyle='-', alpha=0.3, linewidth=1, label='Zero')
+    # Reference lines for log scale
     ax.axvline(x=sesoi_threshold, color='red', linestyle='--', alpha=0.5, linewidth=1.5, 
               label=f'SESOI = {sesoi_threshold:.2f}')
     ax.axvline(x=-sesoi_threshold, color='red', linestyle='--', alpha=0.5, linewidth=1.5)
@@ -426,8 +446,9 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
     # Styling
     ax.set_yticks(y_pos)
     ax.set_yticklabels(predictors)
-    ax.set_xlabel('Coefficient Value', fontsize=10)
-    ax.set_title('SESOI Two-Tailed Test: |β| > threshold', fontsize=11, fontweight='bold')
+    ax.axvline(0, color='black', linestyle='--', alpha=0.5)  # Reference at 0 (no effect on log scale)
+    ax.set_xlabel('Log Coefficient', fontsize=10)
+    ax.set_title('SESOI Test: Meaningful Effect Size', fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='x')
     
     # Legend with proper SESOI test interpretation
@@ -445,7 +466,7 @@ def _plot_sesoi_forest_base(ax: plt.Axes,
                markersize=8, label='Negligible (|β| < 50% SESOI)'),
         Line2D([0], [0], marker='d', color='w', markerfacecolor='orange', 
                markersize=8, label='Borderline (50-100% SESOI)'),
-        Line2D([0], [0], color='red', linestyle='--', label=f'SESOI Threshold (±{sesoi_threshold:.2f})')
+        Line2D([0], [0], color='red', linestyle='--', label=f'SESOI Threshold (±{sesoi_threshold:.2f} log units)')
     ]
     ax.legend(handles=legend_elements, loc='best', fontsize=7, title='Two-tailed SESOI Test')
     

@@ -78,7 +78,8 @@ class DataProcessor:
         # Step 4: 添加外部数据集（climate, elevation, PET等）
         final = self.add_external_datasets(masked, self.base_scale)
         
-        logger.info(f"Processing complete: {final.bandNames().size()} bands")
+        # Don't log the EE object directly - it will print entire structure
+        logger.info(f"Processing complete with all bands")
         
         # 返回字典格式以兼容现有接口
         return {'1x': final}
@@ -182,6 +183,11 @@ class DataProcessor:
                     pattern = dataset['rename_pattern']
                     band_names = [pattern.format(band=b) for b in dataset['bands']]
                     data = data.rename(band_names)
+                
+                # Apply scale factor if specified (e.g., for MODIS VI products)
+                if 'scale_factor' in dataset:
+                    data = data.multiply(dataset['scale_factor'])
+                    logger.info(f"Applied scale factor {dataset['scale_factor']} to {name}")
                 
                 # 关键：使用GEE的pyramid - reproject到目标scale
                 # GEE会自动从pyramid中选择合适的级别！
