@@ -541,9 +541,9 @@ heterogeneity_analysis <- function(
     
     # Test each pairwise correlation
     pairs <- list(
-      c("Fungi-Plants", 1, 2),
-      c("Fungi-Vertebrates", 1, 3),
-      c("Plants-Vertebrates", 2, 3)
+      c("Fungi-Plants", "fungi_richness", "plants_richness"),
+      c("Fungi-Vertebrates", "fungi_richness", "vertebrates_richness"),
+      c("Plants-Vertebrates", "plants_richness", "vertebrates_richness")
     )
     
     for (pair in pairs) {
@@ -583,6 +583,14 @@ heterogeneity_analysis <- function(
   cat(paste(rep("=", 60), collapse=""), "\n")
   cat("5. NMDS ORDINATION\n")
   cat(paste(rep("=", 60), collapse=""), "\n\n")
+  
+  # Recreate community matrix for NMDS (in case it wasn't created globally)
+  community <- cbind(
+    data$fungi_richness,
+    data$plants_richness,
+    data$vertebrates_richness
+  )
+  colnames(community) <- c("fungi", "plants", "vertebrates")
   
   # Sample for NMDS if too many points
   nmds_sample_size <- min(5000, n_samples)
