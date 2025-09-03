@@ -69,4 +69,4 @@ external_datasets:
     bands: [Percent_Tree_Cover, Percent_NonTree_Vegetation, Percent_NonVegetated]
     reducer: mean
     filter_dates: ['2015-01-01', '2024-03-05']  # Latest 10 years (MOD44B available through March 2024)
-    rename: [tree_cover_pct, nontree_veg_pct, nonvegetated_pct]
+    rename: [modis_tree_cover_pct, modis_nontree_veg_pct, modis_bare_ground_pct]
