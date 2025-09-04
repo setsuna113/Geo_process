@@ -12,24 +12,10 @@ library(ggplot2)
 # Set up paths
 data_path <- Sys.getenv("BIODIV_DATA_PATH")
 if (data_path == "") {
-  data_path <- "/scratch/yl998/biodiv_1x_renamed_sample.csv"
+  data_path <- "/scratch/yl998/biodiv_with_coverage_sample.csv"
 }
 if (!file.exists(data_path)) {
-  # Try alternate locations
-  alt_paths <- c(
-    "/scratch/yl998/biodiv_1x_renamed_sample.csv",
-    "/scratch/yl998/biodiv_1x_renamed.csv",
-    "/tmp/biodiv_sample.csv"
-  )
-  for (path in alt_paths) {
-    if (file.exists(path)) {
-      data_path <- path
-      break
-    }
-  }
-  if (!file.exists(data_path)) {
-    stop("Data file not found. Please run the Python conversion script first or set BIODIV_DATA_PATH")
-  }
+  stop("Data file not found. Please run the Python conversion script first or set BIODIV_DATA_PATH")
 }
 output_dir <- "src/sem/outputs"
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
@@ -43,65 +29,80 @@ df <- read.csv(data_path)
 cat("Data dimensions:", nrow(df), "rows x", ncol(df), "columns\n\n")
 
 # Prepare data for SEM
-# We have both AM and ECM fungi - create total mycorrhizal richness
-# Note: Only combine when both are non-NA, otherwise keep as NA
-sem_data <- df %>%
-  mutate(
-    # Only combine fungi richness when we have actual data
-    mycorrhizal_richness = case_when(
-      !is.na(am_fungi_richness) & !is.na(ecm_fungi_richness) ~ am_fungi_richness + ecm_fungi_richness,
-      !is.na(am_fungi_richness) & is.na(ecm_fungi_richness) ~ am_fungi_richness,
-      is.na(am_fungi_richness) & !is.na(ecm_fungi_richness) ~ ecm_fungi_richness,
-      TRUE ~ NA_real_
+# Check if we have vegetation coverage data
+has_coverage <- "tree_cover" %in% names(df)
+
+if (!has_coverage) {
+  # Original data without coverage
+  sem_data <- df %>%
+    mutate(
+      mycorrhizal_richness = case_when(
+        !is.na(am_fungi_richness) & !is.na(ecm_fungi_richness) ~ am_fungi_richness + ecm_fungi_richness,
+        !is.na(am_fungi_richness) & is.na(ecm_fungi_richness) ~ am_fungi_richness,
+        is.na(am_fungi_richness) & !is.na(ecm_fungi_richness) ~ ecm_fungi_richness,
+        TRUE ~ NA_real_
+      )
+    ) %>%
+    select(
+      x, y,
+      mycorrhizal_richness, am_fungi_richness, ecm_fungi_richness,
+      plant_richness, animal_richness,
+      temp = bio01, temp_seasonality = bio04,
+      precip = bio12, precip_seasonality = bio15,
+      elevation, slope, tpi,
+      soil_carbon = soil_organic_carbon, soil_ph,
+      pet_mean, pet_range
     )
-  ) %>%
-  select(
-    # Coordinates
-    x, y,
-    
-    # Biodiversity variables
-    mycorrhizal_richness,
-    am_fungi_richness,
-    ecm_fungi_richness,
-    plant_richness,
-    animal_richness,
-    
-    # Climate variables (WorldClim BioClim)
-    temp = bio01,           # Annual mean temperature
-    temp_seasonality = bio04,  # Temperature seasonality
-    precip = bio12,         # Annual precipitation  
-    precip_seasonality = bio15, # Precipitation seasonality
-    
-    # Topography
-    elevation,
-    slope,
-    tpi,                    # Topographic position index
-    
-    # Soil
-    soil_carbon = soil_organic_carbon,
-    soil_ph,
-    
-    # Other environmental
-    pet_mean,               # Potential evapotranspiration
-    pet_range
-  )
+} else {
+  # Data with vegetation coverage
+  sem_data <- df %>%
+    select(
+      x, y,
+      mycorrhizal_richness, am_fungi_richness, ecm_fungi_richness,
+      plant_richness, animal_richness,
+      tree_cover, nontree_veg, bare_ground,
+      temp = bio01, temp_seasonality = bio04,
+      precip = bio12, precip_seasonality = bio15,
+      elevation, slope, tpi,
+      soil_carbon = soil_organic_carbon, soil_ph,
+      pet_mean, pet_range
+    )
+}
 
 # Remove rows with NA in any variables we'll use
 cat("Removing NA values...\n")
-sem_data_clean <- sem_data %>%
-  filter(
-    !is.na(mycorrhizal_richness) &
-    !is.na(plant_richness) &
-    !is.na(animal_richness) &
-    !is.na(temp) &
-    !is.na(temp_seasonality) &
-    !is.na(precip) &
-    !is.na(precip_seasonality) &
-    !is.na(soil_carbon) &
-    !is.na(soil_ph) &
-    !is.na(elevation) &
-    !is.na(slope)
-  )
+if (!has_coverage) {
+  sem_data_clean <- sem_data %>%
+    filter(
+      !is.na(mycorrhizal_richness) &
+      !is.na(plant_richness) &
+      !is.na(animal_richness) &
+      !is.na(temp) &
+      !is.na(temp_seasonality) &
+      !is.na(precip) &
+      !is.na(precip_seasonality) &
+      !is.na(soil_carbon) &
+      !is.na(soil_ph) &
+      !is.na(elevation) &
+      !is.na(slope)
+    )
+} else {
+  sem_data_clean <- sem_data %>%
+    filter(
+      !is.na(mycorrhizal_richness) &
+      !is.na(plant_richness) &
+      !is.na(animal_richness) &
+      !is.na(tree_cover) &
+      !is.na(nontree_veg) &
+      !is.na(temp) &
+      !is.na(temp_seasonality) &
+      !is.na(precip) &
+      !is.na(precip_seasonality) &
+      !is.na(soil_carbon) &
+      !is.na(soil_ph) &
+      !is.na(elevation)
+    )
+}
 
 cat("Clean data dimensions:", nrow(sem_data_clean), "rows\n")
 
@@ -170,10 +171,18 @@ sem_data_transformed <- sem_data_clean %>%
 cat("Richness variables log-transformed using log(x+1)\n")
 
 # Now standardize all variables (including log-transformed richness)
-sem_data_scaled <- sem_data_transformed %>%
-  mutate(across(c(mycorrhizal_richness, plant_richness, animal_richness,
-                  temp, temp_seasonality, precip, precip_seasonality,
-                  elevation, slope, soil_carbon, soil_ph), scale))
+if (!has_coverage) {
+  sem_data_scaled <- sem_data_transformed %>%
+    mutate(across(c(mycorrhizal_richness, plant_richness, animal_richness,
+                    temp, temp_seasonality, precip, precip_seasonality,
+                    elevation, slope, soil_carbon, soil_ph, pet_mean), scale))
+} else {
+  sem_data_scaled <- sem_data_transformed %>%
+    mutate(across(c(mycorrhizal_richness, plant_richness, animal_richness,
+                    tree_cover, nontree_veg,
+                    temp, temp_seasonality, precip, precip_seasonality,
+                    elevation, slope, soil_carbon, soil_ph, pet_mean), scale))
+}
 
 # Convert scaled columns to numeric vectors (fix for piecewiseSEM)
 sem_data_scaled <- as.data.frame(lapply(sem_data_scaled, as.numeric))
@@ -183,36 +192,70 @@ write.csv(sem_data_clean, file.path(output_dir, "mycorrhizal_sem_data_raw.csv"),
 
 cat("\n=== Building Mycorrhizal SEM Model ===\n")
 
-# Model 1: Theoretically-refined model based on literature review
-# Each path has mechanistic justification from ecological literature
-model_full <- psem(
-  # Environmental drivers of mycorrhizal fungi (all retained - soil organisms)
-  # Soil pH optimal at 5.5-7.5 for colonization; slope affects hyphal networks
-  lm(mycorrhizal_richness ~ temp + precip + temp_seasonality + precip_seasonality + 
-     soil_ph + elevation + slope, 
-     data = sem_data_scaled),
+if (!has_coverage) {
+  cat("Building model WITHOUT vegetation coverage\n")
   
-  # Plants respond to mycorrhizae and environment
-  # REMOVED soil_ph: pH effects mediated through mycorrhizae at global scale
-  # KEPT slope: drainage and erosion directly affect root zone
-  lm(plant_richness ~ mycorrhizal_richness + temp + precip + temp_seasonality + 
-     precip_seasonality + elevation + slope, 
-     data = sem_data_scaled),
+  model_full <- psem(
+    # Environmental drivers of mycorrhizal fungi
+    lm(mycorrhizal_richness ~ temp + precip + temp_seasonality + precip_seasonality + 
+       soil_ph + soil_carbon + elevation, 
+       data = sem_data_scaled),
+    
+    # Plants respond to mycorrhizae and environment  
+    lm(plant_richness ~ mycorrhizal_richness + precip + slope, 
+       data = sem_data_scaled),
+    
+    # Animals respond to biological predictors
+    lm(animal_richness ~ plant_richness + mycorrhizal_richness, 
+       data = sem_data_scaled),
+    
+    # Bidirectional relationships
+    plant_richness %~~% mycorrhizal_richness,
+    animal_richness %~~% mycorrhizal_richness,
+    
+    data = sem_data_scaled
+  )
+} else {
+  cat("Building model WITH vegetation coverage (refined - weak paths removed)\n")
   
-  # Animals respond to plants, mycorrhizae, and DIRECT climate effects
-  # REMOVED soil_ph: no direct mechanism for terrestrial vertebrates
-  # REMOVED slope: effects mediated through vegetation structure
-  # KEPT all climate: thermoregulation, water needs, phenological matching
-  lm(animal_richness ~ plant_richness + mycorrhizal_richness + 
-     temp + precip + temp_seasonality + precip_seasonality + elevation, 
-     data = sem_data_scaled),
-  
-  # Bidirectional relationships (mutualisms)
-  plant_richness %~~% mycorrhizal_richness,    # Carbon-nutrient exchange
-  animal_richness %~~% mycorrhizal_richness,   # Spore dispersal-nutrition
-  
-  data = sem_data_scaled
-)
+  model_full <- psem(
+    # Environment → Mycorrhizae (INCLUDING PET - water-energy balance)
+    lm(mycorrhizal_richness ~ temp + precip + temp_seasonality + 
+       precip_seasonality + soil_ph + soil_carbon + elevation + pet_mean,
+       data = sem_data_scaled),
+    
+    # Environment + FUNGI → Tree Coverage (THEORY: seasonality drives vegetation structure/phenology)
+    lm(tree_cover ~ mycorrhizal_richness + temp + precip + pet_mean +
+       temp_seasonality + precip_seasonality + soil_ph + soil_carbon,
+       data = sem_data_scaled),
+    
+    # Environment + FUNGI → Non-tree Coverage (THEORY: seasonality drives vegetation structure/phenology)
+    lm(nontree_veg ~ mycorrhizal_richness + temp + precip + pet_mean +
+       temp_seasonality + precip_seasonality + soil_ph + soil_carbon,
+       data = sem_data_scaled),
+    
+    # Plant richness - biological (fungi) AND direct environmental effects
+    # SIMPLIFIED: Removed weak coverage mediators, added direct precipitation effects
+    lm(plant_richness ~ mycorrhizal_richness + 
+       temp + temp_seasonality + precip + precip_seasonality + 
+       elevation + pet_mean,
+       data = sem_data_scaled),
+    
+    # Animal richness - biological, habitat structure, AND climate
+    # Includes vegetation coverage for habitat structure (not just plant diversity)
+    lm(animal_richness ~ plant_richness + mycorrhizal_richness + 
+       tree_cover + nontree_veg +
+       temp + temp_seasonality,
+       data = sem_data_scaled),
+    
+    # Bidirectional relationships
+    plant_richness %~~% mycorrhizal_richness,
+    animal_richness %~~% mycorrhizal_richness,
+    tree_cover %~~% nontree_veg,  # Competition/trade-off between vegetation types
+    
+    data = sem_data_scaled
+  )
+}
 
 cat("Full model created.\n")
 
