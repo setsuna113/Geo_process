@@ -153,7 +153,7 @@ function preprocess_data(df::DataFrame, method::String, mesf_columns::Vector{Str
     env_vars = [:annual_temp, :temp_seasonality, :annual_precip, :precip_seasonality,
                 :elevation, :pet, :sand_content_pct, :soil_organic_carbon, 
                 :soil_ph, :slope, :tpi, :modis_tree_cover_pct, 
-                :modis_nontree_veg_pct, :modis_bare_ground_pct]
+                :modis_nontree_veg_pct]
     
     for var in env_vars
         col_std = Symbol(string(var) * "_std")
@@ -255,7 +255,7 @@ function fit_method1(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std", 
                "aspect_cos_std", "aspect_sin_std"]
     water = ["pet_std"]
-    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std", "modis_bare_ground_pct_std"]
+    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std"]
     
     # Combine all abiotic features
     base = vcat(climate, soil, terrain, water, vegetation, state.mesf_columns)
@@ -307,7 +307,7 @@ function fit_method2(state::PipelineState; use_ridge::Bool=true, theta::Union{Fl
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
                "aspect_cos_std", "aspect_sin_std"]
     water = ["pet_std"]
-    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std", "modis_bare_ground_pct_std"]
+    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std"]
     biodiv = ["plants_richness_std", "vertebrates_richness_std"]
     
     # Combine all features
@@ -361,7 +361,7 @@ function fit_method3_dml(state::PipelineState)
     terrain = ["elevation_std", "elevation_std_sq", "slope_std", "tpi_std",
                "aspect_cos_std", "aspect_sin_std"]
     water = ["pet_std"]
-    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std", "modis_bare_ground_pct_std"]
+    vegetation = ["modis_tree_cover_pct_std", "modis_nontree_veg_pct_std"]
     
     confounders = vcat(climate, soil, terrain, water, vegetation, state.mesf_columns)
     

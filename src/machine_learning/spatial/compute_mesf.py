@@ -36,10 +36,10 @@ table = pf.read_table(input_file)
 coord_pairs = [('x', 'y'), ('longitude', 'latitude')]
 for c1, c2 in coord_pairs:
     if c1 in table.column_names:
-        # Simple extraction with sampling
-        x = table[c1].to_numpy()[::step]
-        y = table[c2].to_numpy()[::step]
-        coords = np.column_stack([x, y])
+        # Simple extraction with sampling - ensure fp32
+        x = table[c1].to_numpy()[::step].astype(np.float32)
+        y = table[c2].to_numpy()[::step].astype(np.float32)
+        coords = np.column_stack([x, y]).astype(np.float32)
         break
 else:
     print(f"No coordinates in {table.column_names}")

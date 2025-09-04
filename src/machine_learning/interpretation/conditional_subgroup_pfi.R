@@ -11,7 +11,7 @@ library(dplyr)
 
 # Configuration
 CONFIG <- list(
-  data_path = "/scratch/yl998/biodiversity_climate_production_WITH_MOD44B.arrow",
+  data_path = "/scratch/yl998/biodiversity_climate_production_WITH_MOD44B.arrow",  # Use original data for unbiased PFI
   julia_results_dir = "/scratch/yl998/julia/",
   n_samples = 5000,
   n_permutations = 10,
@@ -27,7 +27,7 @@ CONFIG <- list(
 #' Load Julia GLM results and create predict function
 load_glm_model <- function(response_type) {
   # Find the latest julia_results file for this response type
-  pattern <- sprintf("julia_results_%s_*.json", response_type)
+  pattern <- sprintf("julia_results_%s_.*\\.json$", response_type)
   
   # Get all matching files in the results directory
   json_files <- list.files(CONFIG$julia_results_dir, pattern = pattern, full.names = TRUE)
@@ -72,9 +72,16 @@ load_glm_model <- function(response_type) {
   cat("  Number of coefficients:", length(coef_values), "\n")
   cat("  Response will be calculated using fungi_richness = AM + ECM\n")
   
-  # Get feature names (excluding intercept and MESF)
+  # Get feature names (excluding intercept and MESF - they're not in original data)
   feature_names <- names(coef_values)[!names(coef_values) %in% c("(Intercept)")]
-  feature_names <- feature_names[!grepl("^ME", feature_names)]
+  feature_names <- feature_names[!grepl("^mesf_", feature_names)]  # Skip MESF - not in original data
+  
+  # Map standardized names back to original names for PFI computation
+  feature_names_original <- gsub("_std$", "", feature_names)
+  feature_names_original <- gsub("_sq$", "", feature_names_original)  # Remove squared suffix
+  
+  # Map vertebrates_richness back to terrestrial_richness (the actual column name)
+  feature_names_original <- gsub("^vertebrates_richness$", "terrestrial_richness", feature_names_original)
   
   # Create predict function for GLM with log link
   predict_fn <- function(X) {
@@ -100,6 +107,10 @@ load_glm_model <- function(response_type) {
       } else if (grepl("_std$", feat_name)) {
         # Standardized features - map from unstandardized names
         clean_name <- gsub("_std$", "", feat_name)
+        # Map vertebrates_richness to terrestrial_richness
+        if (clean_name == "vertebrates_richness") {
+          clean_name <- "terrestrial_richness"
+        }
         if (clean_name %in% names(X)) {
           # X is already standardized in load_and_prepare_data
           X_matrix[, i] <- X[[clean_name]]
@@ -130,7 +141,8 @@ load_glm_model <- function(response_type) {
     model_name = model_name,
     coefficients = coef_values,
     predict_fn = predict_fn,
-    feature_names = feature_names
+    feature_names = feature_names,
+    feature_names_original = unique(feature_names_original)  # Unique to handle duplicates like elevation
   ))
 }
 
@@ -159,15 +171,37 @@ load_and_prepare_data <- function(response_type) {
   }
   
   # Get feature columns - ONLY use features that are in the model!
-  # Exclude response variables and identifiers
-  exclude_cols <- c("am_fungi_richness", "ecm_fungi_richness", "plants_richness", 
-                    "terrestrial_richness", "x", "y", "cell_id", "row_id",
-                    # Also exclude longitude/latitude if not in model
-                    "longitude", "latitude")
+  # Exclude response variables and identifiers based on response type
+  # But KEEP the biodiversity predictors that are used as features!
+  exclude_cols <- c("x", "y", "cell_id", "row_id", "longitude", "latitude")
+  
+  # Only exclude the response variable, not the predictors
+  if (response_type == "fungi") {
+    exclude_cols <- c(exclude_cols, "am_fungi_richness", "ecm_fungi_richness")
+    # Keep plants_richness and terrestrial_richness as predictors!
+  } else if (response_type == "plants") {
+    exclude_cols <- c(exclude_cols, "plants_richness")
+    # Keep fungi and vertebrates as predictors!
+  } else if (response_type == "vertebrates") {
+    exclude_cols <- c(exclude_cols, "terrestrial_richness")
+    # Keep fungi and plants as predictors!
+  }
+  
   feature_cols <- setdiff(names(df), exclude_cols)
   
-  # Standardize features using 2SD (Julia pipeline uses 2SD!)
+  # Transform and standardize features to match Julia pipeline
   X <- df[, feature_cols]
+  
+  # First log-transform biodiversity predictors (Julia uses log_biodiversity: true)
+  biodiv_cols <- c("plants_richness", "terrestrial_richness", "vertebrates_richness",
+                    "am_fungi_richness", "ecm_fungi_richness", "fungi_richness")
+  for (col in biodiv_cols) {
+    if (col %in% names(X)) {
+      X[[col]] <- log(X[[col]] + 1)  # log1p transformation
+    }
+  }
+  
+  # Then standardize ALL features using 2SD (Julia pipeline uses 2SD!)
   for (col in names(X)) {
     if (is.numeric(X[[col]])) {
       mean_val <- mean(X[[col]], na.rm = TRUE)
@@ -197,14 +231,22 @@ compute_loss <- function(y_true, y_pred) {
 }
 
 #' Standard (marginal) PFI
-compute_marginal_pfi <- function(X, y, predict_fn, n_perms = 10) {
+compute_marginal_pfi <- function(X, y, predict_fn, n_perms = 10, feature_names = NULL) {
   baseline_pred <- predict_fn(X)
   baseline_loss <- compute_loss(y, baseline_pred)
   
-  importance <- numeric(ncol(X))
-  names(importance) <- names(X)
+  # Only compute PFI for features that are in the model (excluding MESF)
+  if (!is.null(feature_names)) {
+    # Only test features that exist in both X and feature_names
+    vars_to_test <- intersect(names(X), feature_names)
+  } else {
+    vars_to_test <- names(X)
+  }
   
-  for (var in names(X)) {
+  importance <- numeric(length(vars_to_test))
+  names(importance) <- vars_to_test
+  
+  for (var in vars_to_test) {
     perm_losses <- numeric(n_perms)
     
     for (p in 1:n_perms) {
@@ -257,7 +299,14 @@ create_subgroups <- function(X, conditioning_vars, n_groups = 5) {
     # Single variable: use quantiles
     var <- conditioning_vars[1]
     cuts <- quantile(X[[var]], probs = seq(0, 1, length.out = n_groups + 1), na.rm = TRUE)
-    groups <- cut(X[[var]], breaks = cuts, include.lowest = TRUE, labels = FALSE)
+    # Handle non-unique breaks by using unique values
+    cuts <- unique(cuts)
+    if (length(cuts) < 2) {
+      # If all values are the same, return all observations in one group
+      groups <- rep(1, nrow(X))
+    } else {
+      groups <- cut(X[[var]], breaks = cuts, include.lowest = TRUE, labels = FALSE)
+    }
   } else {
     # Multiple variables: use k-means clustering
     X_subset <- X[, conditioning_vars]
@@ -278,17 +327,24 @@ create_subgroups <- function(X, conditioning_vars, n_groups = 5) {
 }
 
 #' Conditional subgroup PFI (Molnar et al. 2023)
-compute_conditional_pfi <- function(X, y, predict_fn, corr_pairs, n_perms = 10, n_groups = 5) {
+compute_conditional_pfi <- function(X, y, predict_fn, corr_pairs, n_perms = 10, n_groups = 5, feature_names = NULL) {
   baseline_pred <- predict_fn(X)
   baseline_loss <- compute_loss(y, baseline_pred)
   
-  importance <- numeric(ncol(X))
-  names(importance) <- names(X)
+  # Only compute PFI for features in the model (excluding MESF)
+  if (!is.null(feature_names)) {
+    vars_to_test <- intersect(names(X), feature_names)
+  } else {
+    vars_to_test <- names(X)
+  }
+  
+  importance <- numeric(length(vars_to_test))
+  names(importance) <- vars_to_test
   
   # Track which variables need conditional permutation
   conditional_vars <- unique(unlist(lapply(corr_pairs, function(p) c(p$var1, p$var2))))
   
-  for (var in names(X)) {
+  for (var in vars_to_test) {
     if (var %in% conditional_vars) {
       # Find correlated variables for conditioning
       conditioning_vars <- c()
@@ -432,13 +488,22 @@ analyze_response <- function(response_type) {
     message("\nTop correlated pairs:")
     for (i in 1:min(5, length(corr_pairs))) {
       p <- corr_pairs[[i]]
-      message(sprintf("  %s <-> %s: r = %.3f", p$var1, p$var2, p$correlation))
+      # Rename for display
+      var1_display <- ifelse(p$var1 == "terrestrial_richness", "vertebrates_richness", p$var1)
+      var2_display <- ifelse(p$var2 == "terrestrial_richness", "vertebrates_richness", p$var2)
+      message(sprintf("  %s <-> %s: r = %.3f", var1_display, var2_display, p$correlation))
     }
   }
   
-  # Compute marginal PFI
+  # Compute marginal PFI (only for features in the model, excluding MESF)
   message("\nComputing marginal PFI...")
-  marginal_imp <- compute_marginal_pfi(X, y, model$predict_fn, CONFIG$n_permutations)
+  marginal_imp <- compute_marginal_pfi(X, y, model$predict_fn, CONFIG$n_permutations,
+                                       feature_names = model$feature_names_original)
+  
+  # Rename terrestrial_richness to vertebrates_richness in results for clarity
+  if ("terrestrial_richness" %in% names(marginal_imp)) {
+    names(marginal_imp)[names(marginal_imp) == "terrestrial_richness"] <- "vertebrates_richness"
+  }
   
   # Debug: Check if all features have importance values
   message(sprintf("Features in X: %d", ncol(X)))
@@ -454,7 +519,13 @@ analyze_response <- function(response_type) {
   # Compute conditional PFI
   message("Computing conditional PFI...")
   conditional_imp <- compute_conditional_pfi(X, y, model$predict_fn, corr_pairs, 
-                                            CONFIG$n_permutations, CONFIG$n_subgroups)
+                                            CONFIG$n_permutations, CONFIG$n_subgroups,
+                                            feature_names = model$feature_names_original)
+  
+  # Rename terrestrial_richness to vertebrates_richness in results for clarity
+  if ("terrestrial_richness" %in% names(conditional_imp)) {
+    names(conditional_imp)[names(conditional_imp) == "terrestrial_richness"] <- "vertebrates_richness"
+  }
   
   # Show top features
   top_n <- 10
