@@ -2,7 +2,6 @@ gpkg_data/
 outputs/
 output/
 results/
-data/
 test_output/
 checkpoints/
 checkpoint_outputs/
@@ -13,7 +12,7 @@ db_data/
 __pycache__/
 pytest.cache/
 db_data
-data
+./data
 *.pyc
 *.pyo
 *.pyd
@@ -27,7 +26,6 @@ data
 # Backup files
 *.backup
 *.bak
-*~
 
 #data
 metadata.json
