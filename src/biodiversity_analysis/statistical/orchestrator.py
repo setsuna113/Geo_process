@@ -23,6 +23,7 @@ from src.biodiversity_analysis.statistical.global_map import analyze_global_maps
 from src.biodiversity_analysis.statistical.trust_map import analyze_trust_maps
 from src.biodiversity_analysis.statistical.biome_analysis import analyze_by_biome
 from src.biodiversity_analysis.statistical.partial_correlation import analyze_partial_correlations
+from src.biodiversity_analysis.statistical.distribution_transformation import analyze_distribution_transformation
 
 logger = get_logger(__name__)
 
@@ -65,6 +66,11 @@ METHOD_REGISTRY = {
     },
     'partial_correlation': {
         'function': analyze_partial_correlations,
+        'requires': ['merged'],  # Needs merged parquet
+        'data_type': 'tabular'
+    },
+    'distribution_transformation': {
+        'function': analyze_distribution_transformation,
         'requires': ['merged'],  # Needs merged parquet
         'data_type': 'tabular'
     }
