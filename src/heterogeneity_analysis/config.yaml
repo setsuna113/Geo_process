@@ -1,0 +1,96 @@
+# ============================================================================
+# Heterogeneity Analysis Module Configuration
+# ============================================================================
+# This config file controls all heterogeneity analysis workflows
+# Each script reads from this config - no hardcoded fallbacks
+
+# Data paths
+data:
+  # Input data for assign_wwf_biomes.py
+  raw_biodiversity: "/scratch/yl998/biodiversity_data.arrow"
+  
+  # Output from assign_wwf_biomes.py / Input for analysis scripts
+  biodiversity_with_biomes: "/scratch/yl998/biodiversity_with_biomes.arrow"
+  
+  # WWF ecoregions shapefile (auto-downloaded if not present)
+  wwf_ecoregions_dir: "/scratch/yl998/wwf_ecoregions"
+
+# Output directories
+output:
+  # Base output directory
+  base_dir: "./results/heterogeneity_analysis"
+  
+  # Subdirectories for different analyses
+  biome_assignment: "biome_assignment"
+  spearman_correlations: "spearman_correlations"
+  partial_spearman: "partial_spearman"
+  permanova_analysis: "permanova_beta_dispersion"
+
+# Analysis parameters
+parameters:
+  # Sampling parameters
+  max_samples_spearman: 1000000        # Max samples for Spearman correlation
+  max_samples_partial: 1000000         # Max samples for partial correlation
+  max_samples_permanova: 10000         # Max samples for PERMANOVA (memory limited)
+  
+  # Minimum samples per biome to include in analysis
+  min_samples_per_biome: 100
+  
+  # Random seed for reproducibility
+  random_seed: 42
+  
+  # Number of permutations for PERMANOVA
+  permutations: 999
+
+# Visualization settings
+visualization:
+  # Figure dimensions (pixels)
+  figure_width: 1200
+  figure_height: 800
+  
+  # DPI for PNG output
+  dpi: 100
+  
+  # Color palettes
+  correlation_palette: "RdBu"  # Red-Blue diverging for correlations
+  biome_palette: "Set3"        # Categorical colors for biomes
+
+# Column name mappings
+columns:
+  # Biodiversity columns
+  fungi: "fungi_richness"
+  plants: "plants_richness"
+  vertebrates: "vertebrates_richness"
+  
+  # Alternative names (for compatibility)
+  fungi_alt:
+    - "am_fungi_richness"
+    - "ecm_fungi_richness"
+  vertebrates_alt: "terrestrial_richness"
+  
+  # Coordinate columns
+  longitude: "longitude"
+  latitude: "latitude"
+  longitude_alt: "x"
+  latitude_alt: "y"
+  
+  # Biome columns
+  biome_code: "biome_code"
+  biome_name: "biome_name"
+
+# Processing options
+processing:
+  # Number of parallel cores to use (0 = auto-detect)
+  n_cores: 0
+  
+  # Verbosity level (0=quiet, 1=normal, 2=verbose)
+  verbosity: 1
+  
+  # Whether to overwrite existing results
+  overwrite: false
+
+# Module metadata
+metadata:
+  version: "1.0.0"
+  author: "Biodiversity-Environment Analysis Pipeline"
+  description: "Heterogeneity analysis of biodiversity relationships across biomes"
