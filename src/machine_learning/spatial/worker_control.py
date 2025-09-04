@@ -33,10 +33,7 @@ class WorkerController:
         
         # Store original values
         env_vars = [
-            # Numba (MUST be set before import!)
-            'NUMBA_NUM_THREADS',
-            
-            # OpenMP (Numba, GCC OpenMP)
+            # OpenMP (GCC OpenMP, SciPy, etc.)
             'OMP_NUM_THREADS',
             'OMP_THREAD_LIMIT',
             'OMP_MAX_ACTIVE_LEVELS',
@@ -81,11 +78,7 @@ class WorkerController:
         for var in env_vars:
             self._original_env[var] = os.environ.get(var)
             
-        # Set primary thread limits
-        # No longer using Numba - sklearn uses proper OpenMP
-        os.environ['NUMBA_NUM_THREADS'] = n_str  # Set anyway in case something imports it
-        
-        # Set OMP_NUM_THREADS for other OpenMP libraries
+        # Set primary thread limits for OpenMP libraries
         os.environ['OMP_NUM_THREADS'] = n_str
         os.environ['OMP_THREAD_LIMIT'] = n_str  # Hard limit for OpenMP
         os.environ['OMP_MAX_ACTIVE_LEVELS'] = '1'  # Prevent nested parallelism
@@ -134,24 +127,8 @@ class WorkerController:
         import importlib
         import sys
         
-        # Configure Numba FIRST if it's imported (before numpy triggers OMP lock)
-        if 'numba' in sys.modules:
-            import numba
-            from numba import config
-            # Set config before using set_num_threads
-            config.NUMBA_NUM_THREADS = self.max_workers
-            config.NUMBA_DEFAULT_NUM_THREADS = self.max_workers
-            if hasattr(numba, 'set_num_threads'):
-                try:
-                    numba.set_num_threads(self.max_workers)
-                    print(f"✅ Numba threads set to {self.max_workers}")
-                except ValueError as e:
-                    print(f"⚠️  Numba threads already restricted: {e}")
-            
-            # Now set OMP_NUM_THREADS for other libraries
-            os.environ['OMP_NUM_THREADS'] = str(self.max_workers)
-            self._libraries_configured.add('Numba')
-            print(f"✅ Numba configured with {numba.get_num_threads()} threads")
+        # Skip Numba configuration - not used in current implementation
+        # Keeping environment variable set in case other libraries check it
         
         # Configure NumPy/SciPy (MKL/OpenBLAS)
         try:

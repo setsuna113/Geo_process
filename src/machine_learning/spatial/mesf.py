@@ -162,9 +162,6 @@ def meigen_f(coords, enum=DEFAULT_ENUM, model="exp", n_workers=64):
         # Fallback: just warn that WorkerController is not available
         print(f"  WARNING: WorkerController not available, thread limits may not be properly set")
     
-    # Warn if dataset is very small
-    if n_points < 100:
-        print(f"Warning: Very small dataset (n={n_points}), results may be unstable")
     
     # K-means clustering with sqrt(n) centers
     n_centers = min(int(np.sqrt(n_points)), n_points)
@@ -207,45 +204,45 @@ def meigen_f(coords, enum=DEFAULT_ENUM, model="exp", n_workers=64):
     print("Building connectivity matrix...", flush=True)
     t_conn = time.time()
     # Use Haversine distance for geographic coordinates
-    # Convert to JAX arrays for distance computation
-    centers_jax = jnp.array(centers)
-    D_centers = np.array(compute_haversine_distances_jax(centers_jax, centers_jax))
+    # Convert to JAX arrays for distance computation - ensure fp32
+    centers_jax = jnp.array(centers.astype(np.float32))
+    D_centers = np.array(compute_haversine_distances_jax(centers_jax, centers_jax)).astype(np.float32)
     h = compute_bandwidth(D_centers)
-    C = build_connectivity_matrix(D_centers, h, model)
+    C = build_connectivity_matrix(D_centers, h, model).astype(np.float32)
     print(f"  Connectivity matrix took {time.time() - t_conn:.2f} seconds", flush=True)
     
     # Step 5: Eigendecomposition on centers using sparse solver
     print(f"Computing eigendecomposition (top {enum} eigenvectors)...", flush=True)
     t_eigen = time.time()
     
-    # Centering operator: M = I - 11'/n
-    Cmean = C.mean(axis=1, keepdims=True)
-    MCM = (C - Cmean) - Cmean.T + Cmean.mean()
+    # Centering operator: M = I - 11'/n - ensure fp32
+    Cmean = C.mean(axis=1, keepdims=True).astype(np.float32)
+    MCM = ((C - Cmean) - Cmean.T + Cmean.mean()).astype(np.float32)
     
     # Use sparse eigendecomposition for top-k eigenvectors
     n_eigs = min(enum, n_centers - 2)
     eigenvalues, eigenvectors = eigsh(MCM, k=n_eigs, which='LA', tol=1e-6)
     
-    # Sort in descending order (eigsh returns ascending)
+    # Sort in descending order (eigsh returns ascending) - ensure fp32
     idx = eigenvalues.argsort()[::-1]
-    eigenvalues = eigenvalues[idx]
-    eigenvectors = eigenvectors[:, idx]
+    eigenvalues = eigenvalues[idx].astype(np.float32)
+    eigenvectors = eigenvectors[:, idx].astype(np.float32)
     
     print(f"  Eigendecomposition took {time.time() - t_eigen:.2f} seconds", flush=True)
     
     # Filter positive eigenvalues
     pos_idx = eigenvalues > 1e-8
-    sf0 = eigenvectors[:, pos_idx]
-    ev0 = eigenvalues[pos_idx]
+    sf0 = eigenvectors[:, pos_idx].astype(np.float32)
+    ev0 = eigenvalues[pos_idx].astype(np.float32)
     
-    # Scale eigenvalues (as per meigen_f)
-    ev_full = ev0 * (n_points / n_centers) - 1
-    ev_ap = ev_full[ev_full > 1e-8]
+    # Scale eigenvalues (as per meigen_f) - ensure fp32
+    ev_full = (ev0 * (n_points / n_centers) - 1).astype(np.float32)
+    ev_ap = ev_full[ev_full > 1e-8].astype(np.float32)
     
     # Step 7: Project back to original points
     print("Projecting eigenvectors to all points...", flush=True)
     t_proj = time.time()
-    sf_ap0 = sf0 @ np.diag(1 / ev0)
+    sf_ap0 = (sf0 @ np.diag(1 / ev0)).astype(np.float32)
     
     # Compute connectivity from centers to all unique points
     print(f"  Computing distance matrix ({centers.shape[0]} x {coords_work.shape[0]})...", flush=True)
@@ -255,57 +252,70 @@ def meigen_f(coords, enum=DEFAULT_ENUM, model="exp", n_workers=64):
     memory_gb = (n_centers * coords_work.shape[0] * 4) / (1024**3)  # Float32
     print(f"  Memory required for full distance matrix: {memory_gb:.1f} GB", flush=True)
     
-    # INCREMENTAL PROJECTION - Using Numba for 30-1000x speedup
-    from scipy.linalg import blas
+    # INCREMENTAL PROJECTION - Using JAX throughout for consistency
     
     print(f"  Using JAX vectorized haversine (9-10x faster than sklearn)", flush=True)
-    # Warmup JIT compilation with realistic batch size
-    print(f"  Warming up JAX JIT compilation...", flush=True)
-    warmup_centers = jnp.array(centers.astype(np.float32))
-    warmup_points = jnp.array(coords_work[:min(1000, coords_work.shape[0])].astype(np.float32))
-    _ = compute_haversine_distances_jax(warmup_centers, warmup_points)
-    print(f"  JIT compilation complete", flush=True)
     
     # Thread settings are already configured by WorkerController
     
     batch_size = 100000  # Process 100K points at a time
+    
+    # Warmup JIT compilation with realistic batch size
+    print(f"  Warming up JAX JIT compilation...", flush=True)
+    warmup_centers = jnp.array(centers.astype(np.float32))
+    warmup_points = jnp.array(coords_work[:min(batch_size, coords_work.shape[0])].astype(np.float32))
+    _ = compute_haversine_distances_jax(warmup_centers, warmup_points)
+    print(f"  JIT compilation complete", flush=True)
     n_batches = (coords_work.shape[0] + batch_size - 1) // batch_size
     print(f"  Processing in {n_batches} batches of {batch_size} points")
     print(f"  Note: All parallel operations limited to {n_workers} threads")
     
     # Initialize output matrix for projections
     n_eigenvectors = sf_ap0.shape[1]
-    sf_ap = np.zeros((coords_work.shape[0], n_eigenvectors), dtype=np.float32)
     
-    # Process each batch sequentially (but each batch uses parallel BLAS)
-    Cmean_flat = Cmean.flatten().astype(np.float32)
-    
-    # Convert centers to JAX ONCE before the loop
+    # Convert everything to JAX ONCE before the loop
     centers_jax = jnp.array(centers.astype(np.float32))
+    sf_ap0_jax = jnp.array(sf_ap0.astype(np.float32))
+    Cmean_flat = Cmean.flatten().astype(np.float32)
+    Cmean_jax = jnp.array(Cmean_flat)
     
+    # Initialize JAX output matrix
+    sf_ap_jax = jnp.zeros((coords_work.shape[0], n_eigenvectors), dtype=jnp.float32)
+    
+    # Process each batch using pure JAX
     for i in range(n_batches):
         start_idx = i * batch_size
         end_idx = min((i + 1) * batch_size, coords_work.shape[0])
         batch = coords_work[start_idx:end_idx]
         
-        # Convert only the batch to JAX, compute, convert back
+        # Stay in JAX throughout
         batch_jax = jnp.array(batch.astype(np.float32))
-        D_batch = np.array(compute_haversine_distances_jax(centers_jax, batch_jax))
+        D_batch = compute_haversine_distances_jax(centers_jax, batch_jax)  # Stay in JAX
         
-        # Build connectivity for this batch (vectorized numpy operations)
-        C_batch = build_connectivity_matrix(D_batch, h, model)
+        # Build connectivity in JAX
+        if model == "exp":
+            C_batch = jnp.exp(-D_batch / h)
+        elif model == "gau":
+            C_batch = jnp.exp(-(D_batch / h) ** 2)
+        else:
+            raise ValueError(f"Unknown model: {model}")
         
-        # Center the connectivity matrix
-        C_batch_centered = C_batch - Cmean_flat[:, np.newaxis]
+        # Center the connectivity matrix in JAX
+        C_batch_centered = C_batch - Cmean_jax[:, jnp.newaxis]
         
-        # BLAS sgemm uses MKL_NUM_THREADS automatically for parallelization
-        result = blas.sgemm(alpha=1.0, a=C_batch_centered.T, b=sf_ap0)
-        sf_ap[start_idx:end_idx] = result
+        # JAX matrix multiplication
+        result = jnp.dot(C_batch_centered.T, sf_ap0_jax)
+        
+        # Update JAX array (functional update)
+        sf_ap_jax = sf_ap_jax.at[start_idx:end_idx].set(result)
         
         if (i + 1) % 10 == 0:
             print(f"    Processed {i + 1}/{n_batches} batches ({end_idx:,}/{coords_work.shape[0]:,} points)", flush=True)
     
-    # Re-center after all batches (vectorized)
+    # Convert back to NumPy ONCE at the end
+    sf_ap = np.array(sf_ap_jax)
+    
+    # Re-center after all batches (now in NumPy)
     sf_ap = sf_ap - sf_ap.mean(axis=0)
     
     print(f"  Distance computation and projection took {time.time() - t_dist:.2f} seconds")

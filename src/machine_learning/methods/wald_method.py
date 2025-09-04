@@ -60,7 +60,7 @@ class WaldMethod:
                 continue
                 
             # Track biodiversity predictors for joint test
-            if 'plants' in name.lower() or 'vertebrates' in name.lower():
+            if 'plants_richness' in name.lower() or 'vertebrates_richness' in name.lower() or 'fungi_richness' in name.lower():
                 bio_indices.append(i)
                 bio_names.append(name)
         

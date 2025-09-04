@@ -15,7 +15,7 @@ regression_analysis:
 
 # Method 1 specific configuration
 method1:
-  response: "plants"
+  response: "fungi"
   log_biodiversity: true  # If true, log-transform biodiversity predictors before standardization
 
 # Ridge regression configuration for GLM models
