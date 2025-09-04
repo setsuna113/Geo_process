@@ -42,14 +42,25 @@ def run_distribution_tests(data: np.ndarray) -> Dict[str, Any]:
             'n_valid': len(clean_data)
         }
     
+    # Basic statistics
+    q25, q50, q75 = np.percentile(clean_data, [25, 50, 75])
+    iqr = q75 - q25
+    
     results = {
         'n_samples': len(clean_data),
         'mean': np.mean(clean_data),
         'std': np.std(clean_data),
+        'cv': np.std(clean_data) / np.mean(clean_data) if np.mean(clean_data) != 0 else np.inf,
         'skewness': stats.skew(clean_data),
         'kurtosis': stats.kurtosis(clean_data),
         'min': np.min(clean_data),
-        'max': np.max(clean_data)
+        'max': np.max(clean_data),
+        'q25': q25,
+        'q50': q50,
+        'q75': q75,
+        'iqr': iqr,
+        'range': np.max(clean_data) - np.min(clean_data),
+        'iqr_range_ratio': iqr / (np.max(clean_data) - np.min(clean_data)) if np.max(clean_data) != np.min(clean_data) else 0
     }
     
     # Normality tests
@@ -82,6 +93,18 @@ def run_distribution_tests(data: np.ndarray) -> Dict[str, Any]:
         # Jarque-Bera test (based on skewness and kurtosis)
         jb_stat, jb_pval = stats.jarque_bera(clean_data)
         results['jarque_bera'] = {'statistic': jb_stat, 'p_value': jb_pval}
+        
+        # Q-Q plot linearity (R² of Q-Q plot points)
+        try:
+            # Get theoretical quantiles
+            theoretical_quantiles = stats.norm.ppf(np.linspace(0.01, 0.99, min(1000, len(clean_data))))
+            sample_quantiles = np.percentile(standardized, np.linspace(1, 99, min(1000, len(clean_data))))
+            
+            # Calculate R² of Q-Q plot
+            correlation = np.corrcoef(theoretical_quantiles, sample_quantiles)[0, 1]
+            results['qq_r_squared'] = correlation ** 2
+        except:
+            results['qq_r_squared'] = 0.0
     
     return results
 
@@ -217,11 +240,14 @@ def analyze_transform(
         # Format test results as text
         text_lines = [
             f"{'='*30}",
-            f"DISTRIBUTION TESTS",
+            f"DISTRIBUTION METRICS",
             f"{'='*30}",
             f"N samples: {test_results.get('n_samples', 'N/A')}",
             f"Skewness: {test_results.get('skewness', 'N/A'):.3f}",
             f"Kurtosis: {test_results.get('kurtosis', 'N/A'):.3f}",
+            f"CV: {test_results.get('cv', 'N/A'):.3f}",
+            f"IQR/Range: {test_results.get('iqr_range_ratio', 'N/A'):.3f}",
+            f"Q-Q R²: {test_results.get('qq_r_squared', 'N/A'):.3f}",
             f"",
             f"NORMALITY TESTS (p-values):",
             f"{'-'*25}",
@@ -341,6 +367,7 @@ def analyze_distribution_transformation(
     # Store all results
     all_results = {}
     summary_stats = {}
+    improvement_scores = {}
     
     # Process each feature
     for col in selected_cols:
@@ -359,28 +386,65 @@ def analyze_distribution_transformation(
                     output_dir
                 )
                 feature_results[transform] = result
-                
-                # Track which transform gives best normality
-                if 'shapiro_wilk' in result['test_results']:
-                    p_val = result['test_results']['shapiro_wilk']['p_value']
-                    if col not in summary_stats or p_val > summary_stats[col]['best_p']:
-                        summary_stats[col] = {
-                            'best_transform': transform,
-                            'best_p': p_val,
-                            'original_skew': feature_results['raw']['test_results']['skewness']
-                        }
                         
             except Exception as e:
                 logger.error(f"Failed {transform} transform on {col}: {e}")
                 feature_results[transform] = {'error': str(e)}
         
         all_results[col] = feature_results
+        
+        # Calculate improvement metrics for each transform
+        if 'raw' in feature_results and 'test_results' in feature_results['raw']:
+            raw_stats = feature_results['raw']['test_results']
+            
+            # Initialize best tracking
+            best_score = float('inf')
+            best_transform = 'raw'
+            
+            for transform in transforms:
+                if transform in feature_results and 'test_results' in feature_results[transform]:
+                    t_stats = feature_results[transform]['test_results']
+                    
+                    # Calculate improvement metrics
+                    improvements = {
+                        'skew_improvement': 1 - abs(t_stats.get('skewness', float('inf'))) / abs(raw_stats.get('skewness', 1)),
+                        'kurt_improvement': 1 - abs(t_stats.get('kurtosis', 0) - 3) / abs(raw_stats.get('kurtosis', 0) - 3) if raw_stats.get('kurtosis', 0) != 3 else 0,
+                        'cv_reduction': 1 - t_stats.get('cv', float('inf')) / raw_stats.get('cv', 1),
+                        'qq_r2': t_stats.get('qq_r_squared', 0),
+                        'iqr_ratio': t_stats.get('iqr_range_ratio', 0)
+                    }
+                    
+                    # Composite score (lower is better)
+                    score = (
+                        abs(t_stats.get('skewness', float('inf'))) + 
+                        abs(t_stats.get('kurtosis', 0) - 3) + 
+                        (1 - t_stats.get('qq_r_squared', 0))
+                    )
+                    
+                    if transform not in improvement_scores:
+                        improvement_scores[transform] = {}
+                    improvement_scores[transform][col] = improvements
+                    
+                    if score < best_score:
+                        best_score = score
+                        best_transform = transform
+                        best_p = t_stats.get('shapiro_wilk', {}).get('p_value', 0) if 'shapiro_wilk' in t_stats else 0
+            
+            summary_stats[col] = {
+                'best_transform': best_transform,
+                'best_p': best_p,
+                'best_score': best_score,
+                'original_skew': raw_stats['skewness'],
+                'original_kurt': raw_stats['kurtosis'],
+                'original_cv': raw_stats.get('cv', 0)
+            }
     
     # Save comprehensive results
     results_path = output_dir / 'distribution_analysis.json'
     save_results({
         'features': all_results,
         'summary': summary_stats,
+        'improvement_scores': improvement_scores,
         'config': {
             'columns': selected_cols,
             'transforms': transforms,
